@@ -57,13 +57,6 @@
             lib.composeManyExtensions [
               pyproject-build-systems.overlays.default
               overlay
-              (final: prev: {
-                webrtcvad = prev.webrtcvad.overrideAttrs (old: {
-                  nativeBuildInputs = (old.nativeBuildInputs or [ ]) ++ [
-                    final.pyprojectBuildHook
-                  ];
-                });
-              })
             ]
           )
       );
