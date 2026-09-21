@@ -84,15 +84,16 @@ uv run --extra cli fish-voice           # mic duplex
 | ------------------------------------- | ------------- | ------------------------------- |
 | `FISH_API_KEY`                        | proxy, voice  | none (required)                 |
 | `FISH_VOICE_ID`                       | voice         | none (required for TTS)         |
-| `FISH_BASE`                           | proxy         | `https://api.fish.audio` (self-host: `http://127.0.0.1:8080`) |
+| `FISH_BASE`                           | proxy, voice  | `https://api.fish.audio` (self-host: `http://127.0.0.1:8080`) |
 | `FISH_MODEL` / `FISH_TTS_MODEL`       | proxy / voice | `s2.1-pro`                      |
 | `FISH_LATENCY`                        | both          | `normal`                        |
 | `FISH_SPEED` / `FISH_SPEED_SCALE`     | voice / proxy | `1.05`                          |
 | `FISH_CHUNK_LENGTH`                   | both          | `200` (cloud max 300)           |
 | `FISH_FORMAT`                         | proxy         | `mp3` (voice live uses `pcm`)   |
-| `FISH_ASR_LANGUAGE`                   | proxy         | omit (Fish auto-detects)        |
+| `FISH_ASR_LANGUAGE`                   | proxy, duplex | omit (Fish auto-detects)        |
 | `FISH_ASR_STRIP_SPEAKERS`             | proxy         | off                             |
 | `FISH_TTS_DIALOGUE_ONLY`              | proxy         | off                             |
+| `FISH_VOICE_SPEECH_FRAMES`            | duplex CLI    | `8` (~240 ms min speech)        |
 | `FISH_PLAYBACK`                       | voice CLI     | `sounddevice`                   |
 | `FISH_LLM_KEY` / `OPENROUTER_API_KEY` | duplex CLI    | none (required for duplex)      |
 | `FISH_LLM_MODEL` / `OPENROUTER_MODEL` | duplex CLI    | none (required for duplex)      |
