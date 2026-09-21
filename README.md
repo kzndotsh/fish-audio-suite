@@ -1,6 +1,6 @@
 # fish-audio-suite
 
-Unofficial toolkit for [Fish Audio](https://fish.audio) TTS, ASR, and live speech. Not affiliated with Fish Audio.
+An opinionated toolkit for [Fish Audio](https://fish.audio): TTS, ASR, and live speech. Unofficial — not a Fish Audio product.
 
 Three packages. Use one, or mix them.
 
@@ -48,7 +48,11 @@ docker build -t fish-audio-suite-proxy:latest .
 docker run --rm -p 127.0.0.1:8849:8849 --env-file /path/to/env fish-audio-suite-proxy:latest
 ```
 
-The env file must contain `FISH_API_KEY`. Pass a Fish reference id as `voice` / `reference_id` on the speech request.
+The env file must contain `FISH_API_KEY` for Fish Cloud. Pass a Fish voice as `voice` (string) or `reference_id` (string, or a list of ids for S2 multi-speaker with `<|speaker:0|>` tags in `input`). Optional speech fields: `seed`, `references` (clips with `audio` + `text`), `use_memory_cache` (`on` / `off`).
+
+Inline `references` audio bytes need Fish **MessagePack** (`application/msgpack`). This proxy forwards JSON only, so JSON `references` work only if the clips are already JSON-safe (for example base64 that Fish accepts). For raw WAV/MP3 bytes, call Fish `POST /v1/tts` with msgpack directly.
+
+Point `FISH_BASE` at a self-hosted [fish-speech](https://github.com/fishaudio/fish-speech) HTTP server (typically `http://127.0.0.1:8080`) to use this proxy as an OpenAI `/v1/audio/speech` adapter. Local fish-speech speaks `POST /v1/tts`, not OpenAI paths. Cloud default remains `https://api.fish.audio`. Cloud `chunk_length` is clamped to 100–300; self-host allows up to 1000.
 
 ## voice
 
@@ -80,12 +84,15 @@ uv run --extra cli fish-voice           # mic duplex
 | ------------------------------------- | ------------- | ------------------------------- |
 | `FISH_API_KEY`                        | proxy, voice  | none (required)                 |
 | `FISH_VOICE_ID`                       | voice         | none (required for TTS)         |
-| `FISH_BASE`                           | proxy         | `https://api.fish.audio`        |
+| `FISH_BASE`                           | proxy         | `https://api.fish.audio` (self-host: `http://127.0.0.1:8080`) |
 | `FISH_MODEL` / `FISH_TTS_MODEL`       | proxy / voice | `s2.1-pro`                      |
 | `FISH_LATENCY`                        | both          | `normal`                        |
 | `FISH_SPEED` / `FISH_SPEED_SCALE`     | voice / proxy | `1.05`                          |
-| `FISH_CHUNK_LENGTH`                   | both          | `200`                           |
+| `FISH_CHUNK_LENGTH`                   | both          | `200` (cloud max 300)           |
 | `FISH_FORMAT`                         | proxy         | `mp3` (voice live uses `pcm`)   |
+| `FISH_ASR_LANGUAGE`                   | proxy         | omit (Fish auto-detects)        |
+| `FISH_ASR_STRIP_SPEAKERS`             | proxy         | off                             |
+| `FISH_TTS_DIALOGUE_ONLY`              | proxy         | off                             |
 | `FISH_PLAYBACK`                       | voice CLI     | `sounddevice`                   |
 | `FISH_LLM_KEY` / `OPENROUTER_API_KEY` | duplex CLI    | none (required for duplex)      |
 | `FISH_LLM_MODEL` / `OPENROUTER_MODEL` | duplex CLI    | none (required for duplex)      |
