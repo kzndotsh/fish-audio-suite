@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from fastapi.testclient import TestClient
 
 from fish_audio_suite_kit import is_asr_hallucination, is_tts_junk
@@ -7,6 +8,7 @@ from fish_audio_suite_proxy.server import (
     _chunk_length_hi,
     _pick_reference_id,
     _resolve_asr_model,
+    _uvicorn_run_kwargs,
     app,
     prepare_tts_text,
 )
@@ -70,3 +72,30 @@ def test_health_without_api_key() -> None:
         ids = {m["id"] for m in models.json()["data"]}
         assert "s2.1-pro-free" in ids
         assert "drama-3-preview" in ids
+
+
+def test_uvicorn_run_kwargs_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("FISH_PROXY_WORKERS", raising=False)
+    monkeypatch.delenv("WEB_CONCURRENCY", raising=False)
+    monkeypatch.delenv("FISH_PROXY_LIMIT_CONCURRENCY", raising=False)
+    monkeypatch.delenv("FISH_PROXY_GRACEFUL_SHUTDOWN", raising=False)
+    monkeypatch.delenv("FISH_PROXY_PORT", raising=False)
+    kw = _uvicorn_run_kwargs()
+    assert kw["workers"] == 1
+    assert kw["port"] == 8849
+    assert kw["loop"] == "auto"
+    assert kw["http"] == "auto"
+    assert kw["ws"] == "none"
+    assert kw["timeout_graceful_shutdown"] == 120
+    assert kw["timeout_keep_alive"] == 5
+    assert "limit_concurrency" not in kw
+
+
+def test_uvicorn_run_kwargs_workers_and_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FISH_PROXY_WORKERS", "4")
+    monkeypatch.setenv("FISH_PROXY_LIMIT_CONCURRENCY", "32")
+    monkeypatch.setenv("FISH_PROXY_GRACEFUL_SHUTDOWN", "90")
+    kw = _uvicorn_run_kwargs()
+    assert kw["workers"] == 4
+    assert kw["limit_concurrency"] == 32
+    assert kw["timeout_graceful_shutdown"] == 90

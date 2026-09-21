@@ -454,10 +454,41 @@ async def health(request: Request):
     }
 
 
+def _int_env(name: str, default: int) -> int:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _uvicorn_run_kwargs() -> dict[str, Any]:
+    workers = max(_int_env("FISH_PROXY_WORKERS", _int_env("WEB_CONCURRENCY", 1)), 1)
+    kwargs: dict[str, Any] = {
+        "host": os.environ.get("FISH_PROXY_HOST", "0.0.0.0"),
+        "port": _int_env("FISH_PROXY_PORT", 8849),
+        "workers": workers,
+        "loop": "auto",
+        "http": "auto",
+        "ws": "none",
+        "timeout_keep_alive": _int_env("FISH_PROXY_KEEP_ALIVE", 5),
+        "timeout_graceful_shutdown": _int_env("FISH_PROXY_GRACEFUL_SHUTDOWN", 120),
+        "proxy_headers": True,
+    }
+    limit_raw = os.environ.get("FISH_PROXY_LIMIT_CONCURRENCY", "").strip()
+    if limit_raw:
+        with suppress(ValueError):
+            limit = int(limit_raw)
+            if limit > 0:
+                kwargs["limit_concurrency"] = limit
+    return kwargs
+
+
 def main() -> None:
-    host = os.environ.get("FISH_PROXY_HOST", "0.0.0.0")
-    port = int(os.environ.get("FISH_PROXY_PORT", "8849"))
-    uvicorn.run(app, host=host, port=port)
+    # Import string so --workers / FISH_PROXY_WORKERS can spawn processes.
+    uvicorn.run("fish_audio_suite_proxy.server:app", **_uvicorn_run_kwargs())
 
 
 if __name__ == "__main__":
