@@ -6,6 +6,14 @@ from fish_audio_suite_kit.defaults import (
     LatencySnapshot,
     SuiteDefaults,
 )
+from fish_audio_suite_kit.http_errors import (
+    FISH_RETRY_ATTEMPTS,
+    FishHttpError,
+    fish_backoff_seconds,
+    fish_error_body,
+    parse_fish_error,
+    should_retry_fish_status,
+)
 from fish_audio_suite_kit.text_filters import (
     extract_quoted_speech,
     is_asr_hallucination,
@@ -26,10 +34,14 @@ from fish_audio_suite_kit.trace_context import (
 
 __all__ = [
     "DEFAULT_SYSTEM_PROMPT",
+    "FISH_RETRY_ATTEMPTS",
+    "FishHttpError",
     "LatencySnapshot",
     "SuiteDefaults",
     "canonical_traceparent",
     "extract_quoted_speech",
+    "fish_backoff_seconds",
+    "fish_error_body",
     "is_asr_hallucination",
     "is_backchannel",
     "is_quit_utterance",
@@ -37,8 +49,10 @@ __all__ = [
     "make_traceparent",
     "next_tts_cut",
     "normalize_cues",
+    "parse_fish_error",
     "scrub_asr",
     "scrub_tts",
+    "should_retry_fish_status",
     "skip_empty_delta",
     "trace_id_of",
     "w3c_trace_headers",

@@ -5,6 +5,8 @@ from fish_audio_suite_kit import (
     SuiteDefaults,
     canonical_traceparent,
     extract_quoted_speech,
+    fish_backoff_seconds,
+    fish_error_body,
     is_asr_hallucination,
     is_backchannel,
     is_quit_utterance,
@@ -12,8 +14,10 @@ from fish_audio_suite_kit import (
     make_traceparent,
     next_tts_cut,
     normalize_cues,
+    parse_fish_error,
     scrub_asr,
     scrub_tts,
+    should_retry_fish_status,
     skip_empty_delta,
     trace_id_of,
     w3c_trace_headers,
@@ -232,3 +236,21 @@ def test_w3c_trace_headers_and_mint() -> None:
     child = make_traceparent(trace_id="4bf92f3577b34da6a3ce929d0e0e4736")
     assert trace_id_of(child) == "4bf92f3577b34da6a3ce929d0e0e4736"
     assert child != minted
+
+
+def test_fish_error_shape_and_retry_policy() -> None:
+    assert should_retry_fish_status(429)
+    assert should_retry_fish_status(503)
+    assert not should_retry_fish_status(400)
+    assert not should_retry_fish_status(401)
+    assert not should_retry_fish_status(402)
+    assert not should_retry_fish_status(404)
+    assert fish_backoff_seconds(0) == 1.0
+    assert fish_backoff_seconds(2) == 4.0
+    assert parse_fish_error(401, {"message": "Invalid Token", "status": 401}) == {
+        "message": "Invalid Token",
+        "status": 401,
+    }
+    assert parse_fish_error(400, b"not json")["message"] == "not json"
+    assert parse_fish_error(502, {"error": {"message": "upstream"}})["message"] == "upstream"
+    assert fish_error_body(402, "Insufficient credits")["status"] == 402
