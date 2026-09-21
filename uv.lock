@@ -209,12 +209,12 @@ dev = [
 [[package]]
 name = "fish-audio-suite-kit"
 version = "0.1.0"
-source = { editable = "packages/fish-audio-suite-kit" }
+source = { editable = "packages/kit" }
 
 [[package]]
 name = "fish-audio-suite-proxy"
 version = "0.1.0"
-source = { editable = "packages/fish-audio-suite-proxy" }
+source = { editable = "packages/proxy" }
 dependencies = [
     { name = "fastapi" },
     { name = "fish-audio-suite-kit" },
@@ -226,7 +226,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
-    { name = "fish-audio-suite-kit", editable = "packages/fish-audio-suite-kit" },
+    { name = "fish-audio-suite-kit", editable = "packages/kit" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "python-multipart", specifier = ">=0.0.12" },
     { name = "uvicorn", specifier = ">=0.32" },
@@ -235,7 +235,7 @@ requires-dist = [
 [[package]]
 name = "fish-audio-suite-voice"
 version = "0.1.0"
-source = { editable = "packages/fish-audio-suite-voice" }
+source = { editable = "packages/voice" }
 dependencies = [
     { name = "fish-audio-sdk" },
     { name = "fish-audio-suite-kit" },
@@ -258,7 +258,7 @@ vad = [
 [package.metadata]
 requires-dist = [
     { name = "fish-audio-sdk", specifier = ">=1.0" },
-    { name = "fish-audio-suite-kit", editable = "packages/fish-audio-suite-kit" },
+    { name = "fish-audio-suite-kit", editable = "packages/kit" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "numpy", specifier = ">=2.0" },
     { name = "sounddevice", marker = "extra == 'cli'", specifier = ">=0.5" },

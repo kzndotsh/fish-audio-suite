@@ -4,9 +4,9 @@ Unofficial Fish Audio toolkit. Not affiliated with Fish Audio. Dist names stay `
 
 ## Layout
 
-- `packages/fish-audio-suite-kit` — text only. No sockets.
-- `packages/fish-audio-suite-proxy` — FastAPI on **8849**. `FISH_API_KEY` in lifespan.
-- `packages/fish-audio-suite-voice` — `live.py` (`IsolatedFishTts`), `playback.py`, `barge.py`, `cli.py` (duplex recipe).
+- `packages/kit` — dist `fish-audio-suite-kit`, import `fish_audio_suite_kit`. Text only. No sockets.
+- `packages/proxy` — dist `fish-audio-suite-proxy`. FastAPI on **8849**. `FISH_API_KEY` in lifespan.
+- `packages/voice` — dist `fish-audio-suite-voice`. `live.py` (`IsolatedFishTts`), `playback.py`, `barge.py`, `cli.py` (duplex recipe).
 
 ## Invariants
 

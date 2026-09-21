@@ -12,11 +12,7 @@ dependencies = []
 package = false
 
 [tool.uv.workspace]
-members = [
-    "packages/fish-audio-suite-kit",
-    "packages/fish-audio-suite-proxy",
-    "packages/fish-audio-suite-voice",
-]
+members = ["packages/*"]
 
 [dependency-groups]
 dev = [
@@ -33,9 +29,9 @@ addopts = "--import-mode=importlib"
 target-version = "py312"
 line-length = 100
 src = [
-    "packages/fish-audio-suite-kit/src",
-    "packages/fish-audio-suite-proxy/src",
-    "packages/fish-audio-suite-voice/src",
+    "packages/kit/src",
+    "packages/proxy/src",
+    "packages/voice/src",
 ]
 
 [tool.ruff.lint]
