@@ -11,17 +11,23 @@ Docs: https://docs.fish.audio/llms.txt
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
+import json
 import logging
 import os
 import re
 from collections.abc import Mapping
 from contextlib import asynccontextmanager, suppress
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
+import ormsgpack
 import uvicorn
-from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
+from starlette.datastructures import FormData, UploadFile
 
 from fish_audio_suite_kit import (
     FISH_RETRY_ATTEMPTS,
@@ -29,7 +35,6 @@ from fish_audio_suite_kit import (
     SuiteDefaults,
     extract_quoted_speech,
     fish_backoff_seconds,
-    fish_error_body,
     format_as_srt,
     format_as_vtt,
     is_asr_hallucination,
@@ -48,7 +53,25 @@ _MEDIA = {
     "mp3": "audio/mpeg",
     "opus": "audio/opus",
     "pcm": "audio/pcm",
+    "pcm16": "audio/pcm",
     "wav": "audio/wav",
+}
+
+_TTS_MODEL_ALIASES = {
+    "tts-1": "s2.1-pro",
+    "tts-1-hd": "s2.1-pro",
+    "gpt-4o-mini-tts": "s2.1-pro",
+    "playai-tts": "s2.1-pro",
+}
+_ASR_MODEL_ALIASES = {
+    "whisper-1",
+    "whisper",
+    "openai-whisper",
+    "gpt-4o-transcribe",
+    "gpt-4o-mini-transcribe",
+    "whisper-large-v3",
+    "whisper-large-v3-turbo",
+    "distil-whisper-large-v3-en",
 }
 
 _TTS_MODELS = [
@@ -162,11 +185,21 @@ def _pick_latency(body: dict[str, Any], default: str) -> str:
 def _pick_format(body: dict[str, Any], default: str) -> str:
     raw = body.get("format") or body.get("response_format") or body.get("fish_format") or default
     raw = str(raw).lower().strip()
-    if raw in {"mp3", "opus", "pcm", "wav"}:
+    if raw in {"mp3", "opus", "pcm", "pcm16", "wav"}:
         return raw
     if raw in {"aac", "flac"}:
         return "mp3"
     return default if default in _MEDIA else "mp3"
+
+
+def _pcm_sample_rate(fmt: str, body: dict[str, Any], default: int) -> int:
+    raw = body.get("sample_rate")
+    if raw is not None:
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return 24000 if fmt == "pcm16" else default
+    return 24000 if fmt == "pcm16" else default
 
 
 def _want_quality_guard(body: dict[str, Any]) -> bool:
@@ -180,13 +213,35 @@ def _want_quality_guard(body: dict[str, Any]) -> bool:
     return _env_bool("FISH_QUALITY_GUARD")
 
 
+def _native_model_id(raw: str) -> str:
+    name = raw.strip()
+    if name.lower().startswith("fish-audio/"):
+        return name.split("/", 1)[1]
+    return name
+
+
+def _resolve_tts_model(model: str | None, default: str) -> str:
+    raw = _native_model_id(model or default)
+    return _TTS_MODEL_ALIASES.get(raw.lower(), raw)
+
+
 def _resolve_asr_model(model: str | None, default: str) -> str:
-    raw = (model or default).strip()
-    if raw in {"whisper-1", "whisper", "openai-whisper"}:
+    raw = _native_model_id(model or default)
+    key = raw.lower()
+    if key in _ASR_MODEL_ALIASES:
         return default
-    if raw in {"transcribe-1", "transcribe-1-pro"}:
-        return raw
+    if key in {"transcribe-1", "transcribe-1-pro"}:
+        return key
     return default
+
+
+def _catalog_ids() -> list[str]:
+    ids = list(_MODELS)
+    for name in [*_TTS_MODELS, "transcribe-1", "transcribe-1-pro"]:
+        prefixed = f"fish-audio/{name}"
+        if prefixed not in ids:
+            ids.append(prefixed)
+    return ids
 
 
 def prepare_tts_text(raw_input: str, *, dialogue_only: bool) -> str:
@@ -203,21 +258,191 @@ def _upstream_trace_headers(headers: Mapping[str, str]) -> dict[str, str]:
     return {"traceparent": make_traceparent()}
 
 
+def _openai_error_type(status: int) -> str:
+    if status == 401:
+        return "authentication_error"
+    if status == 403:
+        return "permission_error"
+    if status == 404:
+        return "not_found_error"
+    if status == 429:
+        return "rate_limit_error"
+    if status >= 500:
+        return "api_error"
+    return "invalid_request_error"
+
+
+def openai_error_body(status: int, message: str, *, provider: bool = False) -> dict[str, Any]:
+    err: dict[str, Any] = {
+        "code": int(status),
+        "message": str(message),
+        "type": "provider_error" if provider else _openai_error_type(status),
+    }
+    if provider:
+        err["metadata"] = {"provider_name": "fish-audio"}
+    return {"error": err}
+
+
 def _json_error(status: int, message: str) -> JSONResponse:
-    return JSONResponse(fish_error_body(status, message), status_code=status)
+    return JSONResponse(openai_error_body(status, message), status_code=status)
 
 
 def _json_from_upstream(status: int, raw: Any) -> JSONResponse:
     detail = parse_fish_error(status, raw)
-    return JSONResponse(detail, status_code=int(detail["status"]))
+    code = int(detail["status"])
+    return JSONResponse(
+        openai_error_body(code, str(detail["message"]), provider=True),
+        status_code=code,
+    )
 
 
-def _form_granularities(*groups: list[str] | None) -> list[str]:
-    out: list[str] = []
-    for group in groups:
-        if not group:
+class _ReferenceError(Exception):
+    def __init__(self, message: str) -> None:
+        self.message = message
+        super().__init__(message)
+
+
+def _decode_audio_b64(value: Any) -> bytes:
+    if isinstance(value, (bytes, bytearray)):
+        audio = bytes(value)
+        if not audio:
+            raise _ReferenceError("reference audio is empty")
+        return audio
+    if not isinstance(value, str) or not value.strip():
+        raise _ReferenceError("reference audio is empty")
+    raw = "".join(value.strip().split())
+    if raw.startswith("data:") and "," in raw:
+        raw = raw.split(",", 1)[1]
+    padded = raw + ("=" * ((-len(raw)) % 4))
+    try:
+        audio = base64.b64decode(padded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise _ReferenceError("reference audio is not valid base64") from exc
+    if not audio:
+        raise _ReferenceError("reference audio is empty")
+    return audio
+
+
+def _clip_from_parts(item: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "audio": _decode_audio_b64(item.get("audio")),
+        "text": str(item.get("text") or ""),
+    }
+
+
+def _normalize_references(raw: Any) -> Any:
+    if isinstance(raw, list):
+        return [_normalize_references(item) for item in raw]
+    if isinstance(raw, Mapping):
+        return _clip_from_parts(raw)
+    raise _ReferenceError("references must be clips")
+
+
+def _clips_from_input_references(items: list[Any]) -> list[dict[str, Any]]:
+    audio: Any = None
+    text = ""
+    for item in items:
+        if not isinstance(item, Mapping):
             continue
-        out.extend(item for item in group if item)
+        kind = str(item.get("type") or "")
+        if kind == "input_audio":
+            inner = item.get("input_audio")
+            data = inner.get("data") if isinstance(inner, Mapping) else None
+            audio = data
+        elif kind == "text":
+            text = str(item.get("text") or "")
+    if audio is None:
+        raise _ReferenceError("input_references needs one input_audio part")
+    return [{"audio": _decode_audio_b64(audio), "text": text}]
+
+
+def _fish_reference_clips(body: Mapping[str, Any]) -> Any | None:
+    raw_in = body.get("input_references")
+    if isinstance(raw_in, list) and raw_in:
+        return _clips_from_input_references(raw_in)
+    raw = body.get("references")
+    if isinstance(raw, list) and raw:
+        return _normalize_references(raw)
+    return None
+
+
+@dataclass(frozen=True)
+class _InboundAsr:
+    audio: bytes
+    filename: str
+    content_type: str
+    model: str | None
+    language: str
+    response_format: str
+    granularities: list[str]
+
+
+def _granularity_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value] if value else []
+    if isinstance(value, list):
+        return [str(item) for item in value if item]
+    return []
+
+
+async def _read_asr(request: Request) -> _InboundAsr | JSONResponse:
+    content_type = request.headers.get("content-type", "")
+    if "application/json" in content_type:
+        try:
+            parsed = await request.json()
+        except json.JSONDecodeError:
+            return _json_error(400, "invalid JSON body")
+        if not isinstance(parsed, dict):
+            return _json_error(400, "JSON body must be an object")
+        inner = parsed.get("input_audio")
+        data = inner.get("data") if isinstance(inner, dict) else None
+        fmt = str(inner.get("format") or "wav") if isinstance(inner, dict) else "wav"
+        try:
+            audio = _decode_audio_b64(data)
+        except _ReferenceError as exc:
+            return _json_error(400, exc.message)
+        model = parsed.get("model")
+        language = str(parsed.get("language") or "")
+        response_format = str(parsed.get("response_format") or "json")
+        granularities = _granularity_list(parsed.get("timestamp_granularities"))
+        return _InboundAsr(
+            audio,
+            f"utterance.{fmt}",
+            f"audio/{fmt}",
+            str(model) if model else None,
+            language,
+            response_format,
+            granularities,
+        )
+
+    form = await request.form()
+    upload = form.get("file")
+    if not isinstance(upload, UploadFile):
+        return _json_error(400, "empty audio upload")
+    audio = await upload.read()
+    if not audio:
+        return _json_error(400, "empty audio upload")
+    model_field = form.get("model")
+    language_field = form.get("language")
+    format_field = form.get("response_format")
+    granularities = _form_strings(form, "timestamp_granularities", "timestamp_granularities[]")
+    return _InboundAsr(
+        audio,
+        upload.filename or "audio.webm",
+        upload.content_type or "application/octet-stream",
+        str(model_field) if isinstance(model_field, str) else None,
+        str(language_field) if isinstance(language_field, str) else "",
+        str(format_field) if isinstance(format_field, str) else "json",
+        granularities,
+    )
+
+
+def _form_strings(form: FormData, *names: str) -> list[str]:
+    out: list[str] = []
+    for name in names:
+        out.extend(item for item in form.getlist(name) if isinstance(item, str) and item)
     return out
 
 
@@ -316,7 +541,7 @@ app = FastAPI(lifespan=lifespan, title="fish-audio-suite-proxy")
 async def speech(request: Request):
     defaults: SuiteDefaults = request.app.state.defaults
     body = await request.json()
-    model = body.get("model") or defaults.tts_model
+    model = _resolve_tts_model(body.get("model"), defaults.tts_model)
     try:
         raw_speed = float(body.get("speed", 1)) * defaults.speed
     except (TypeError, ValueError):
@@ -360,9 +585,10 @@ async def speech(request: Request):
     if not request.app.state.fish_api_key:
         return _json_error(401, "Invalid Token")
 
+    native_fmt = "pcm" if fmt == "pcm16" else fmt
     payload: dict[str, Any] = {
         "text": spoken,
-        "format": fmt,
+        "format": native_fmt,
         "latency": latency,
         "temperature": float(body.get("temperature", defaults.temperature)),
         "top_p": float(body.get("top_p", defaults.top_p)),
@@ -380,14 +606,14 @@ async def speech(request: Request):
         "early_stop_threshold": float(body.get("early_stop_threshold", 1)),
     }
 
-    if fmt == "mp3":
+    if native_fmt == "mp3":
         payload["mp3_bitrate"] = int(body.get("mp3_bitrate", defaults.mp3_bitrate))
         payload["sample_rate"] = int(body.get("sample_rate", defaults.sample_rate))
-    elif fmt == "opus":
+    elif native_fmt == "opus":
         payload["opus_bitrate"] = int(body.get("opus_bitrate", -1000))
         payload["sample_rate"] = int(body.get("sample_rate", 48000))
     else:
-        payload["sample_rate"] = int(body.get("sample_rate", defaults.sample_rate))
+        payload["sample_rate"] = _pcm_sample_rate(fmt, body, defaults.sample_rate)
 
     voice = _pick_reference_id(body)
     if voice:
@@ -398,9 +624,12 @@ async def speech(request: Request):
         with suppress(TypeError, ValueError):
             payload["seed"] = int(seed)
 
-    references = body.get("references")
-    if isinstance(references, list) and references:
-        payload["references"] = references
+    try:
+        clips = _fish_reference_clips(body)
+    except _ReferenceError as exc:
+        return _json_error(400, exc.message)
+    if clips is not None:
+        payload["references"] = clips
 
     cache = body.get("use_memory_cache")
     if cache in {"on", "off"}:
@@ -414,7 +643,7 @@ async def speech(request: Request):
         payload["pronunciation_dictionary"] = _scrub_pronunciation_dictionary(pd)
 
     headers = {
-        "Content-Type": "application/json",
+        "Content-Type": "application/msgpack" if clips is not None else "application/json",
         "model": str(model),
         **_upstream_trace_headers(request.headers),
     }
@@ -431,8 +660,8 @@ async def speech(request: Request):
         stream=True,
         method="POST",
         url="/v1/tts",
-        json=payload,
         headers=headers,
+        **({"content": ormsgpack.packb(payload)} if clips is not None else {"json": payload}),
     )
     if isinstance(upstream, JSONResponse):
         return upstream
@@ -451,36 +680,23 @@ async def speech(request: Request):
 
 
 @app.post("/v1/audio/transcriptions")
-async def transcriptions(
-    request: Request,
-    file: UploadFile = File(...),
-    model: str | None = Form(None),
-    language: str | None = Form(None),
-    response_format: str = Form("json"),
-    timestamp_granularities: list[str] | None = Form(None),
-    timestamp_granularities_bracket: list[str] | None = Form(
-        None, alias="timestamp_granularities[]"
-    ),
-):
+async def transcriptions(request: Request):
     defaults: SuiteDefaults = request.app.state.defaults
-    asr_model = _resolve_asr_model(model, defaults.asr_model)
-    audio_bytes = await file.read()
-    if not audio_bytes:
-        return _json_error(400, "empty audio upload")
+    inbound = await _read_asr(request)
+    if isinstance(inbound, JSONResponse):
+        return inbound
+    asr_model = _resolve_asr_model(inbound.model, defaults.asr_model)
     if not request.app.state.fish_api_key:
         return _json_error(401, "Invalid Token")
 
-    filename = file.filename or "audio.webm"
-    content_type = file.content_type or "application/octet-stream"
-
-    granularities = _form_granularities(timestamp_granularities, timestamp_granularities_bracket)
-    fmt = (response_format or "json").lower().strip()
+    granularities = inbound.granularities
+    fmt = (inbound.response_format or "json").lower().strip()
     want_ts = fmt in {"verbose_json", "vtt", "srt"} or bool(granularities)
     ignore_timestamps = "false" if want_ts else "true"
 
-    files = {"audio": (filename, audio_bytes, content_type)}
+    files = {"audio": (inbound.filename, inbound.audio, inbound.content_type)}
     form: dict[str, str] = {"ignore_timestamps": ignore_timestamps}
-    lang = (language or defaults.asr_language or "").strip()
+    lang = (inbound.language or defaults.asr_language or "").strip()
     if lang:
         form["language"] = lang
 
@@ -523,13 +739,16 @@ async def transcriptions(
     if fmt == "vtt":
         return PlainTextResponse(format_as_vtt(cues), media_type="text/vtt")
     if fmt == "verbose_json":
-        return {
+        body: dict[str, Any] = {
             "task": "transcribe",
-            "language": data.get("language_code") or data.get("language") or language,
+            "language": data.get("language_code") or data.get("language") or inbound.language,
             "duration": data.get("duration"),
             "text": text,
             "segments": [{"text": c.text, "start": c.start, "end": c.end} for c in cues],
         }
+        if any(g.lower() == "word" for g in granularities):
+            body["words"] = [{"word": c.text, "start": c.start, "end": c.end} for c in cues]
+        return body
     return {"text": text}
 
 
@@ -537,7 +756,7 @@ async def transcriptions(
 async def models():
     return {
         "object": "list",
-        "data": [{"id": m, "object": "model"} for m in _MODELS],
+        "data": [{"id": m, "object": "model"} for m in _catalog_ids()],
     }
 
 

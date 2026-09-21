@@ -1,20 +1,29 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import httpx
+import ormsgpack
 import pytest
 from fastapi.testclient import TestClient
+from starlette.datastructures import FormData
 
 from fish_audio_suite_kit import is_asr_hallucination, is_tts_junk
 from fish_audio_suite_proxy.server import (
+    _catalog_ids,
     _chunk_length_hi,
     _fish_send,
-    _form_granularities,
+    _form_strings,
+    _json_from_upstream,
+    _pcm_sample_rate,
+    _pick_format,
     _pick_reference_id,
     _resolve_asr_model,
+    _resolve_tts_model,
     _upstream_trace_headers,
     _uvicorn_run_kwargs,
     app,
@@ -81,6 +90,32 @@ def test_asr_model_whisper_remap() -> None:
     assert _resolve_asr_model("whisper-1", "transcribe-1") == "transcribe-1"
 
 
+def test_tts_and_asr_model_aliases() -> None:
+    assert _resolve_tts_model("fish-audio/s2.1-pro", "s1") == "s2.1-pro"
+    assert _resolve_tts_model("tts-1", "s1") == "s2.1-pro"
+    assert _resolve_tts_model("playai-tts", "s1") == "s2.1-pro"
+    assert _resolve_tts_model("s2.1-pro-free", "s2.1-pro") == "s2.1-pro-free"
+    assert _resolve_tts_model("drama-3-preview", "s2.1-pro") == "drama-3-preview"
+    assert _resolve_asr_model("fish-audio/transcribe-1", "transcribe-1-pro") == "transcribe-1"
+    assert _resolve_asr_model("gpt-4o-transcribe", "transcribe-1") == "transcribe-1"
+    assert _resolve_asr_model("fish-audio/transcribe-1-pro", "transcribe-1") == "transcribe-1-pro"
+
+
+def test_pcm16_format_and_rate() -> None:
+    assert _pick_format({"response_format": "pcm16"}, "mp3") == "pcm16"
+    assert _pcm_sample_rate("pcm16", {}, 44100) == 24000
+    assert _pcm_sample_rate("pcm16", {"sample_rate": 16000}, 44100) == 16000
+    assert _pcm_sample_rate("pcm", {}, 44100) == 44100
+
+
+def test_catalog_includes_fish_audio_slugs() -> None:
+    ids = _catalog_ids()
+    assert "s2.1-pro" in ids
+    assert "fish-audio/s2.1-pro" in ids
+    assert "fish-audio/transcribe-1" in ids
+    assert "whisper-1" in ids
+
+
 def test_asr_hallucination_without_network() -> None:
     assert is_asr_hallucination("谢谢观看")
     assert not is_asr_hallucination("你好")
@@ -104,7 +139,13 @@ def test_empty_transcription_is_fish_error_shape() -> None:
             files={"file": ("a.wav", b"", "audio/wav")},
         )
         assert r.status_code == 400
-        assert r.json() == {"message": "empty audio upload", "status": 400}
+        assert r.json() == {
+            "error": {
+                "code": 400,
+                "message": "empty audio upload",
+                "type": "invalid_request_error",
+            }
+        }
 
 
 def test_speech_without_key_is_401(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -113,8 +154,9 @@ def test_speech_without_key_is_401(monkeypatch: pytest.MonkeyPatch) -> None:
         r = client.post("/v1/audio/speech", json={"input": "[clear] Hello there friend"})
         assert r.status_code == 401
         body = r.json()
-        assert body["status"] == 401
-        assert "message" in body
+        assert body["error"]["code"] == 401
+        assert body["error"]["type"] == "authentication_error"
+        assert "message" in body["error"]
 
 
 def test_health_without_api_key() -> None:
@@ -129,6 +171,7 @@ def test_health_without_api_key() -> None:
         ids = {m["id"] for m in models.json()["data"]}
         assert "s2.1-pro-free" in ids
         assert "drama-3-preview" in ids
+        assert "fish-audio/s2.1-pro" in ids
 
 
 def test_upstream_trace_headers_forward_or_mint() -> None:
@@ -236,10 +279,21 @@ def test_fish_send_retries_timeout_then_ok(monkeypatch: pytest.MonkeyPatch) -> N
     sleeps.assert_awaited_once()
 
 
-def test_form_granularities_merges_bracket_alias() -> None:
-    assert _form_granularities(None, ["segment"]) == ["segment"]
-    assert _form_granularities(["word"], None) == ["word"]
-    assert _form_granularities(["word"], ["segment"]) == ["word", "segment"]
+def test_form_strings_merges_bracket_alias() -> None:
+    both = FormData(
+        [
+            ("timestamp_granularities", "word"),
+            ("timestamp_granularities[]", "segment"),
+        ]
+    )
+    assert _form_strings(both, "timestamp_granularities", "timestamp_granularities[]") == [
+        "word",
+        "segment",
+    ]
+    bracket = FormData([("timestamp_granularities[]", "segment")])
+    assert _form_strings(bracket, "timestamp_granularities", "timestamp_granularities[]") == [
+        "segment"
+    ]
 
 
 class _AsrJson:
@@ -290,3 +344,141 @@ def test_transcriptions_srt_and_granularities_bracket(
         )
         assert json_body.json() == {"text": "hello there"}
         assert captured["data"]["ignore_timestamps"] == "false"
+        verbose = client.post(
+            "/v1/audio/transcriptions",
+            files={"file": ("a.wav", b"xx", "audio/wav")},
+            data={
+                "response_format": "verbose_json",
+                "timestamp_granularities[]": "word",
+            },
+        )
+        payload = verbose.json()
+        assert payload["text"] == "hello there"
+        assert payload["segments"][0]["text"] == "hello"
+        assert payload["words"] == [
+            {"word": "hello", "start": 0.0, "end": 0.6},
+            {"word": "there", "start": 0.6, "end": 1.5},
+        ]
+        verbose_seg = client.post(
+            "/v1/audio/transcriptions",
+            files={"file": ("a.wav", b"xx", "audio/wav")},
+            data={"response_format": "verbose_json"},
+        )
+        assert "words" not in verbose_seg.json()
+
+
+def test_upstream_errors_use_openai_envelope() -> None:
+    resp = _json_from_upstream(402, {"message": "no credits", "status": 402})
+    assert resp.status_code == 402
+    body = json.loads(bytes(resp.body))
+    assert body == {
+        "error": {
+            "code": 402,
+            "message": "no credits",
+            "type": "provider_error",
+            "metadata": {"provider_name": "fish-audio"},
+        }
+    }
+
+
+def test_json_transcription(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    async def fake_send(*_args: object, **kwargs: object) -> _AsrJson:
+        captured["files"] = kwargs.get("files")
+        return _AsrJson()
+
+    monkeypatch.setenv("FISH_API_KEY", "test-key")
+    monkeypatch.setattr("fish_audio_suite_proxy.server._fish_send", fake_send)
+    audio = base64.b64encode(b"RIFF").decode()
+    with TestClient(app) as client:
+        r = client.post(
+            "/v1/audio/transcriptions",
+            json={
+                "model": "fish-audio/transcribe-1",
+                "input_audio": {"data": audio, "format": "wav"},
+            },
+        )
+    assert r.status_code == 200
+    assert r.json()["text"] == "hello there"
+    name, data, content_type = captured["files"]["audio"]
+    assert name == "utterance.wav"
+    assert data == b"RIFF"
+    assert content_type == "audio/wav"
+
+
+class _AudioStream:
+    async def aiter_bytes(self, _n: int = 4096):
+        yield b"mp3"
+
+    async def aclose(self) -> None:
+        return None
+
+
+def test_input_references_sent_as_msgpack(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    async def fake_send(*_args: object, **kwargs: object) -> _AudioStream:
+        captured.update(kwargs)
+        return _AudioStream()
+
+    monkeypatch.setenv("FISH_API_KEY", "test-key")
+    monkeypatch.setattr("fish_audio_suite_proxy.server._fish_send", fake_send)
+    sample = base64.b64encode(b"RIFF").decode()
+    with TestClient(app) as client:
+        r = client.post(
+            "/v1/audio/speech",
+            json={
+                "input": "Hello there friend",
+                "input_references": [
+                    {
+                        "type": "input_audio",
+                        "input_audio": {"data": f"data:audio/wav;base64,{sample}"},
+                    },
+                    {"type": "text", "text": "sample line"},
+                ],
+            },
+        )
+    assert r.status_code == 200
+    assert captured["headers"]["Content-Type"] == "application/msgpack"
+    packed = ormsgpack.unpackb(captured["content"])
+    assert packed["references"] == [{"audio": b"RIFF", "text": "sample line"}]
+
+
+def test_references_sent_as_msgpack(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+
+    async def fake_send(*_args: object, **kwargs: object) -> _AudioStream:
+        captured.update(kwargs)
+        return _AudioStream()
+
+    monkeypatch.setenv("FISH_API_KEY", "test-key")
+    monkeypatch.setattr("fish_audio_suite_proxy.server._fish_send", fake_send)
+    sample = base64.b64encode(b"RIFF").decode()
+    with TestClient(app) as client:
+        r = client.post(
+            "/v1/audio/speech",
+            json={
+                "input": "Hello there friend",
+                "references": [{"audio": sample, "text": "sample line"}],
+            },
+        )
+    assert r.status_code == 200
+    packed = ormsgpack.unpackb(captured["content"])
+    assert packed["references"] == [{"audio": b"RIFF", "text": "sample line"}]
+
+
+def test_bad_reference_audio_is_400(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FISH_API_KEY", "test-key")
+    with TestClient(app) as client:
+        r = client.post(
+            "/v1/audio/speech",
+            json={
+                "input": "Hello there friend",
+                "input_references": [
+                    {"type": "input_audio", "input_audio": {"data": "!!!!"}},
+                ],
+            },
+        )
+    assert r.status_code == 400
+    assert r.json()["error"]["type"] == "invalid_request_error"

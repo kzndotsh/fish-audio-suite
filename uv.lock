@@ -231,6 +231,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "fish-audio-suite-kit" },
     { name = "httpx" },
+    { name = "ormsgpack" },
     { name = "python-multipart" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -240,6 +241,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "fish-audio-suite-kit", editable = "packages/kit" },
     { name = "httpx", specifier = ">=0.28" },
+    { name = "ormsgpack", specifier = ">=1.5" },
     { name = "python-multipart", specifier = ">=0.0.12" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
 ]

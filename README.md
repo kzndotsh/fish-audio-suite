@@ -37,7 +37,7 @@ Also: `extract_quoted_speech`, `is_tts_junk`, `scrub_asr`, `is_asr_hallucination
 
 ## proxy
 
-Drop-in for clients that speak OpenAI `/v1/audio/speech` and `/v1/audio/transcriptions` (AIRI, OpenWebUI, and similar). Forwards W3C `traceparent` / `tracestate` to Fish TTS and ASR (mints one if the client omitted them). Fish 429/5xx are retried with backoff; other 4xx are returned as `{message, status}`.
+Drop-in for clients that speak OpenAI `/v1/audio/speech` and `/v1/audio/transcriptions` (AIRI, OpenWebUI, and similar). Forwards W3C `traceparent` / `tracestate` to Fish TTS and ASR (mints one if the client omitted them). Fish 429/5xx are retried with backoff; other 4xx are returned as-is. Errors use the OpenAI envelope `{error: {code, message, type}}`. Upstream Fish failures add `type: provider_error` and `metadata.provider_name: fish-audio`.
 
 ```bash
 export FISH_API_KEY=…
@@ -50,13 +50,13 @@ docker build -t fish-audio-suite-proxy:latest .
 docker run --rm -p 127.0.0.1:8849:8849 --env-file /path/to/env fish-audio-suite-proxy:latest
 ```
 
-The env file must contain `FISH_API_KEY` for Fish Cloud. Pass a Fish voice as `voice` (string) or `reference_id` (string, or a list of ids for S2 multi-speaker with `<|speaker:0|>` tags in `input`). Optional speech fields: `seed`, `references` (clips with `audio` + `text`), `use_memory_cache` (`on` / `off`).
+The env file must contain `FISH_API_KEY` for Fish Cloud. Pass a Fish voice as `voice` (string) or `reference_id` (string, or a list of ids for S2 multi-speaker with `<|speaker:0|>` tags in `input`). Optional speech fields: `seed`, `use_memory_cache` (`on` / `off`). `references` (clips with base64 `audio` + `text`) and OpenRouter `input_references` are decoded and sent to Fish as MessagePack.
 
-Inline `references` audio bytes need Fish **MessagePack** (`application/msgpack`). This proxy forwards JSON only, so JSON `references` work only if the clips are already JSON-safe (for example base64 that Fish accepts). For raw WAV/MP3 bytes, call Fish `POST /v1/tts` with msgpack directly.
+Transcription accepts multipart `file` or JSON `input_audio.data` (base64, optional `data:` URI).
 
 Point `FISH_BASE` at a self-hosted [fish-speech](https://github.com/fishaudio/fish-speech) HTTP server (typically `http://127.0.0.1:8080`) to use this proxy as an OpenAI `/v1/audio/speech` adapter. Local fish-speech speaks `POST /v1/tts`, not OpenAI paths. Cloud default remains `https://api.fish.audio`. Cloud `chunk_length` is clamped to 100–300; self-host allows up to 1000.
 
-`response_format=srt` or `vtt` on `/v1/audio/transcriptions` returns those caption files (not JSON). OpenAI clients that send `timestamp_granularities[]` are accepted.
+`response_format=srt` or `vtt` on `/v1/audio/transcriptions` returns those caption files (not JSON). OpenAI clients that send `timestamp_granularities[]` are accepted. `verbose_json` with `timestamp_granularities=word` includes a `words` array. TTS `response_format=pcm16` is Fish PCM at 24 kHz. Model ids may be `fish-audio/s2.1-pro` or OpenAI/Groq aliases (`tts-1`, `whisper-1`, `gpt-4o-transcribe`); the proxy strips the prefix and maps aliases onto native Fish model headers.
 
 ### OpenWebUI
 
