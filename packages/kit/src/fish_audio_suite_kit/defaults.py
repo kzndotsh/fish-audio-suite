@@ -43,6 +43,7 @@ class LatencySnapshot:
     llm_ttfs: float | None = None
     ttfa: float | None = None
     voice_to_voice: float | None = None
+    trace_id: str | None = None
 
     def log_line(self) -> str:
         def fmt(name: str, value: float | None) -> str:
@@ -50,11 +51,13 @@ class LatencySnapshot:
                 return f"{name}=-1"
             return f"{name}={value:.0f}ms"
 
-        return (
-            "[timing "
-            f"{fmt('srt', self.srt)} "
-            f"{fmt('llm_ttft', self.llm_ttft)} "
-            f"{fmt('llm_ttfs', self.llm_ttfs)} "
-            f"{fmt('ttfa', self.ttfa)} "
-            f"{fmt('voice_to_voice', self.voice_to_voice)}]"
-        )
+        parts = [
+            fmt("srt", self.srt),
+            fmt("llm_ttft", self.llm_ttft),
+            fmt("llm_ttfs", self.llm_ttfs),
+            fmt("ttfa", self.ttfa),
+            fmt("voice_to_voice", self.voice_to_voice),
+        ]
+        if self.trace_id:
+            parts.append(f"trace={self.trace_id}")
+        return "[timing " + " ".join(parts) + "]"

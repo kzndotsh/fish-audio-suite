@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+from collections.abc import Mapping
 from contextlib import asynccontextmanager, suppress
 from typing import Any
 
@@ -27,9 +28,12 @@ from fish_audio_suite_kit import (
     extract_quoted_speech,
     is_asr_hallucination,
     is_tts_junk,
+    make_traceparent,
     normalize_cues,
     scrub_asr,
     scrub_tts,
+    trace_id_of,
+    w3c_trace_headers,
 )
 
 _MEDIA = {
@@ -184,6 +188,13 @@ def prepare_tts_text(raw_input: str, *, dialogue_only: bool) -> str:
     return normalize_cues(cleaned)
 
 
+def _upstream_trace_headers(headers: Mapping[str, str]) -> dict[str, str]:
+    found = w3c_trace_headers(headers)
+    if found:
+        return found
+    return {"traceparent": make_traceparent()}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     defaults = _runtime_defaults()
@@ -309,7 +320,14 @@ async def speech(request: Request):
     headers = {
         "Content-Type": "application/json",
         "model": str(model),
+        **_upstream_trace_headers(request.headers),
     }
+    log.info(
+        "tts model=%s fmt=%s trace=%s",
+        model,
+        fmt,
+        trace_id_of(headers["traceparent"]),
+    )
 
     client: httpx.AsyncClient = request.app.state.http
     req = client.build_request("POST", "/v1/tts", json=payload, headers=headers)
@@ -368,10 +386,11 @@ async def transcriptions(
     if lang:
         form["language"] = lang
 
+    asr_headers = {"model": asr_model, **_upstream_trace_headers(request.headers)}
     client: httpx.AsyncClient = request.app.state.http
     r = await client.post(
         "/v1/asr",
-        headers={"model": asr_model},
+        headers=asr_headers,
         files=files,
         data=form,
     )
@@ -387,10 +406,11 @@ async def transcriptions(
     strip_speakers = _env_bool("FISH_ASR_STRIP_SPEAKERS", "0")
     text = scrub_asr(data.get("text") or "", strip_speakers=strip_speakers)
     log.info(
-        "asr model=%s lang=%s chars=%d",
+        "asr model=%s lang=%s chars=%d trace=%s",
         asr_model,
         data.get("language") or lang,
         len(text),
+        trace_id_of(asr_headers["traceparent"]),
     )
     detected_lang = data.get("language") or data.get("language_code") or lang
     if is_asr_hallucination(text):

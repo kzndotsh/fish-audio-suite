@@ -16,6 +16,7 @@ Import: `fish_audio_suite_kit`. Tests: `uv run pytest packages/kit`.
 | `scrub_asr` / `is_asr_hallucination` | Optional speaker strip, timestamps, `<|…|>`; drop nospeech / YouTube-caption BoH (thanks-for-watching, Amara, 谢谢观看) and gzip-repetition; keep real CJK |
 | `is_backchannel` / `is_quit_utterance` | `yeah` / `uh huh` / … ; `bye` / `quit` / … |
 | `next_tts_cut` | Flush index or `-1`. Sentence end (skip `Dr.` / `1.`); else ~40 chars |
-| `SuiteDefaults` / `LatencySnapshot` | Shared knobs; millisecond timings, no utterance field |
+| `SuiteDefaults` / `LatencySnapshot` | Shared knobs; millisecond timings, no utterance field; optional `trace_id` on the log line |
+| `w3c_trace_headers` / `make_traceparent` | Parse/mint W3C `traceparent` (+ optional `tracestate`). No OpenTelemetry |
 
 Do not add `httpx` / FastAPI / `fishaudio` / sounddevice here.

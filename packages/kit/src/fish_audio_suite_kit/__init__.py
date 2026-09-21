@@ -17,19 +17,29 @@ from fish_audio_suite_kit.text_filters import (
     scrub_tts,
     skip_empty_delta,
 )
+from fish_audio_suite_kit.trace_context import (
+    canonical_traceparent,
+    make_traceparent,
+    trace_id_of,
+    w3c_trace_headers,
+)
 
 __all__ = [
     "DEFAULT_SYSTEM_PROMPT",
     "LatencySnapshot",
     "SuiteDefaults",
+    "canonical_traceparent",
     "extract_quoted_speech",
     "is_asr_hallucination",
     "is_backchannel",
     "is_quit_utterance",
     "is_tts_junk",
+    "make_traceparent",
     "next_tts_cut",
     "normalize_cues",
     "scrub_asr",
     "scrub_tts",
     "skip_empty_delta",
+    "trace_id_of",
+    "w3c_trace_headers",
 ]

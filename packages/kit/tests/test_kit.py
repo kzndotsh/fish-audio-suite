@@ -3,16 +3,20 @@ from __future__ import annotations
 from fish_audio_suite_kit import (
     LatencySnapshot,
     SuiteDefaults,
+    canonical_traceparent,
     extract_quoted_speech,
     is_asr_hallucination,
     is_backchannel,
     is_quit_utterance,
     is_tts_junk,
+    make_traceparent,
     next_tts_cut,
     normalize_cues,
     scrub_asr,
     scrub_tts,
     skip_empty_delta,
+    trace_id_of,
+    w3c_trace_headers,
 )
 
 
@@ -203,3 +207,28 @@ def test_suite_defaults_and_timing() -> None:
     line = LatencySnapshot(ttfa=12.4).log_line()
     assert "ttfa=12ms" in line
     assert "srt=-1" in line
+    assert "trace=" not in line
+    traced = LatencySnapshot(ttfa=12.4, trace_id="4bf92f3577b34da6a3ce929d0e0e4736").log_line()
+    assert "trace=4bf92f3577b34da6a3ce929d0e0e4736" in traced
+
+
+_SAMPLE_PARENT = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+
+
+def test_canonical_traceparent() -> None:
+    assert canonical_traceparent(_SAMPLE_PARENT) == _SAMPLE_PARENT
+    assert canonical_traceparent(_SAMPLE_PARENT.upper()) == _SAMPLE_PARENT
+    assert canonical_traceparent("not-a-trace") is None
+    assert canonical_traceparent("00-" + "0" * 32 + "-" + "0" * 16 + "-01") is None
+
+
+def test_w3c_trace_headers_and_mint() -> None:
+    headers = w3c_trace_headers({"Traceparent": _SAMPLE_PARENT, "tracestate": "congo=t61rcWkgMzE"})
+    assert headers["traceparent"] == _SAMPLE_PARENT
+    assert headers["tracestate"] == "congo=t61rcWkgMzE"
+    assert w3c_trace_headers({}) == {}
+    minted = make_traceparent()
+    assert canonical_traceparent(minted) == minted
+    child = make_traceparent(trace_id="4bf92f3577b34da6a3ce929d0e0e4736")
+    assert trace_id_of(child) == "4bf92f3577b34da6a3ce929d0e0e4736"
+    assert child != minted

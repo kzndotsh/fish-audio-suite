@@ -28,9 +28,11 @@ from fish_audio_suite_kit import (
     is_backchannel,
     is_quit_utterance,
     is_tts_junk,
+    make_traceparent,
     normalize_cues,
     scrub_asr,
     scrub_tts,
+    trace_id_of,
 )
 from fish_audio_suite_voice.barge import (
     POST_SPEAK_COOLDOWN_S,
@@ -122,10 +124,12 @@ async def fish_asr(
     *,
     base: str,
     language: str = "",
+    extra_headers: dict[str, str] | None = None,
 ) -> str:
     headers = {
         "Authorization": f"Bearer {api_key}",
         "model": "transcribe-1",
+        **(extra_headers or {}),
     }
     files = {"audio": ("utterance.wav", audio_wav, "audio/wav")}
     data: dict[str, str] = {}
@@ -271,6 +275,7 @@ async def smoke_test(c: dict[str, Any]) -> int:
         chunk_length=c["fish_chunk"],
         min_chunk_length=c["fish_min_chunk"],
         volume=c["fish_volume"],
+        base_url=c["fish_base"],
     )
     sink = FileSink(out, sample_rate=c["fish_sample_rate"], wav=True)
     result = tts.speak_isolated("[clear] Hello there.", sink)
@@ -319,6 +324,7 @@ async def run_loop(c: dict[str, Any]) -> int:
         chunk_length=c["fish_chunk"],
         min_chunk_length=c["fish_min_chunk"],
         volume=c["fish_volume"],
+        base_url=c["fish_base"],
     )
 
     while True:
@@ -331,12 +337,15 @@ async def run_loop(c: dict[str, Any]) -> int:
         if not wav:
             continue
         t0 = time.perf_counter()
+        asr_parent = make_traceparent()
+        turn_trace = trace_id_of(asr_parent)
         try:
             text = await fish_asr(
                 wav,
                 c["fish_api_key"],
                 base=c["fish_base"],
                 language=c["fish_asr_language"],
+                extra_headers={"traceparent": asr_parent},
             )
         except Exception as e:
             print(f"[asr] {e}", file=sys.stderr)
@@ -392,6 +401,7 @@ async def run_loop(c: dict[str, Any]) -> int:
         snapshot = LatencySnapshot(
             srt=asr_ms,
             llm_ttft=first_tok_ms[0] if first_tok_ms else None,
+            trace_id=turn_trace,
         )
         if reply:
             scrubbed = normalize_cues(scrub_tts(reply))
@@ -408,6 +418,9 @@ async def run_loop(c: dict[str, Any]) -> int:
                     sample_rate=c["fish_sample_rate"],
                     device=device,
                 )
+                tts.trace_headers = {
+                    "traceparent": make_traceparent(trace_id=turn_trace),
+                }
                 result = await asyncio.to_thread(tts.speak_isolated, scrubbed, sink, cancel)
                 tts_playing = False
                 snapshot = LatencySnapshot(
@@ -416,6 +429,7 @@ async def run_loop(c: dict[str, Any]) -> int:
                     llm_ttfs=result.llm_ttfs_ms,
                     ttfa=result.ttfa_ms,
                     voice_to_voice=(time.perf_counter() - t0) * 1000,
+                    trace_id=turn_trace,
                 )
                 if result.cancelled and not result.got_audio:
                     pass

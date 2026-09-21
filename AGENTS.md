@@ -37,7 +37,7 @@ Proven from this tree (kit is the only text package; proxy import must work with
 
 | Do | Don’t |
 | --- | --- |
-| Shared cue/scrub/cut in kit | Copy those regexes into proxy or voice |
+| Shared cue/scrub/cut/W3C parse in kit | Copy those regexes into proxy or voice |
 | Read `FISH_API_KEY` in lifespan / CLI / `IsolatedFishTts(...)` | `os.environ["FISH_API_KEY"]` at import |
 | Empty `FISH_VOICE_ID` unless env sets it | Default voice id |
 | One `stream_websocket` per turn; one `FlushEvent` after sent text; TTS via `asyncio.run` | Per-sentence flush; Fish WS on the LLM event loop |

@@ -10,15 +10,18 @@ from collections.abc import AsyncIterable, AsyncIterator, Iterable
 from dataclasses import dataclass, field
 from typing import Any, cast
 
+import httpx
 from fishaudio import AsyncFishAudio, FlushEvent, TextEvent
 from fishaudio.types import AudioFormat, LatencyMode, Model, Prosody, TTSConfig
 
 from fish_audio_suite_kit import (
     SuiteDefaults,
+    make_traceparent,
     next_tts_cut,
     normalize_cues,
     scrub_tts,
     skip_empty_delta,
+    w3c_trace_headers,
 )
 from fish_audio_suite_voice.playback import PlaybackSink
 
@@ -55,6 +58,8 @@ class IsolatedFishTts:
         min_chunk_length: int = _STOCK.min_chunk_length,
         volume: float = 0.0,
         partial_chars: int = _STOCK.tts_partial_chars,
+        base_url: str = _STOCK.fish_base,
+        trace_headers: dict[str, str] | None = None,
     ) -> None:
         self.api_key = api_key
         self.voice_id = voice_id
@@ -70,6 +75,8 @@ class IsolatedFishTts:
         self.min_chunk_length = min_chunk_length
         self.volume = volume
         self.partial_chars = partial_chars
+        self.base_url = base_url.rstrip("/")
+        self.trace_headers = dict(trace_headers or {})
 
     def speak_isolated(
         self,
@@ -163,7 +170,20 @@ class IsolatedFishTts:
         *,
         sent_text: str,
     ) -> IsolatedResult:
-        client = AsyncFishAudio(api_key=self.api_key)
+        extra = w3c_trace_headers(self.trace_headers)
+        if not extra:
+            extra = {"traceparent": make_traceparent()}
+        http = httpx.AsyncClient(
+            base_url=self.base_url,
+            headers=extra,
+            timeout=httpx.Timeout(240.0),
+            http2=False,
+        )
+        client = AsyncFishAudio(
+            api_key=self.api_key,
+            base_url=self.base_url,
+            httpx_client=http,
+        )
         got_audio = False
         ttfa_ms: float | None = None
         acc = _EventAcc()

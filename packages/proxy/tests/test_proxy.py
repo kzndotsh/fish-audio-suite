@@ -8,6 +8,7 @@ from fish_audio_suite_proxy.server import (
     _chunk_length_hi,
     _pick_reference_id,
     _resolve_asr_model,
+    _upstream_trace_headers,
     _uvicorn_run_kwargs,
     app,
     prepare_tts_text,
@@ -72,6 +73,15 @@ def test_health_without_api_key() -> None:
         ids = {m["id"] for m in models.json()["data"]}
         assert "s2.1-pro-free" in ids
         assert "drama-3-preview" in ids
+
+
+def test_upstream_trace_headers_forward_or_mint() -> None:
+    sample = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+    forwarded = _upstream_trace_headers({"traceparent": sample, "tracestate": "vendor=1"})
+    assert forwarded["traceparent"] == sample
+    assert forwarded["tracestate"] == "vendor=1"
+    minted = _upstream_trace_headers({})
+    assert minted["traceparent"].startswith("00-")
 
 
 def test_uvicorn_run_kwargs_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
