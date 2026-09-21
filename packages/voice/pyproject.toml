@@ -3,7 +3,7 @@ name = "fish-audio-suite-voice"
 version = "0.1.0"
 description = "Importable Fish live TTS websocket, playback sinks, and a duplex CLI recipe"
 readme = "README.md"
-authors = [{ name = "Logan", email = "kzndotsh@users.noreply.github.com" }]
+authors = [{ name = "Logan Honeycutt", email = "admin@kzn.sh" }]
 requires-python = ">=3.12"
 license = { text = "MIT" }
 dependencies = [
