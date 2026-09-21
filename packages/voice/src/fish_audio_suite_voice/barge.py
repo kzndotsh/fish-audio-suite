@@ -14,7 +14,12 @@ from typing import Any
 
 import numpy as np
 
-from fish_audio_suite_voice.aec import AdaptiveFloor, clean_mic_frame, effective_bleed_s
+from fish_audio_suite_voice.aec import (
+    AdaptiveFloor,
+    clean_mic_frame,
+    effective_bleed_s,
+    far_end_playing,
+)
 from fish_audio_suite_voice.debug import env_debug, logger
 from fish_audio_suite_voice.playback import load_sounddevice
 
@@ -33,9 +38,11 @@ MIN_UTTERANCE_FRAMES = 4
 LISTEN_HEARTBEAT_FRAMES = 20
 DEFAULT_MIN_VOICED_FRAMES = 12
 IMPULSE_PEAK_RATIO = 4.0
-IMPULSE_EXTRA_VOICED = 6
+IMPULSE_EXTRA_VOICED = 12
+IMPULSE_START_EXTRA = 6
 DEFAULT_BARGE_HIT_FRAMES = 10
 DEFAULT_BARGE_RMS = 220.0
+DEFAULT_BARGE_OVER = 2.2
 DEFAULT_BLEED_DELAY_S = 0.9
 DEFAULT_POST_SPEAK_COOLDOWN_S = 0.8
 
@@ -46,6 +53,13 @@ def _env_int(name: str, default: int) -> int:
 
 def _env_float(name: str, default: float) -> float:
     return float(os.environ.get(name, str(default)))
+
+
+def barge_rms_need(min_rms: float, *, far_playing: bool, over: float) -> float:
+    """While the DAC is live, demand louder cleaned-mic energy than residual echo."""
+    if far_playing:
+        return min_rms * over
+    return min_rms
 
 
 def post_speak_cooldown_s() -> float:
@@ -62,12 +76,12 @@ def pcm_rms(frame: bytes) -> float:
 def start_hit(rms: float, vad_speech: bool, min_rms: float) -> bool:
     """Count a listen-start frame. Score VAD once per capture; do not replay the ring.
 
-    Require VAD so keyboard/room noise does not start a turn. Quiet but
-    VAD-positive frames still count at the hold floor so a fast onset is kept.
+    Require VAD and full min RMS. The hold ratio is only for staying in an
+    utterance after it has already started.
     """
     if not vad_speech:
         return False
-    return rms >= min_rms * HOLD_RMS_RATIO
+    return rms >= min_rms
 
 
 def listen_reject_reason(
@@ -85,10 +99,17 @@ def listen_reject_reason(
         return "too_little_voice"
     if (
         peak_rms >= min_speech_rms * IMPULSE_PEAK_RATIO
-        and speech_hits < min_voiced + IMPULSE_EXTRA_VOICED
+        and speech_hits <= min_voiced + IMPULSE_EXTRA_VOICED
     ):
         return "impulse"
     return None
+
+
+def start_frames_needed(peak_rms: float, min_rms: float, speech_frames_start: int) -> int:
+    """A 4x spike in the pre-pad ring is a chair pop until more VAD hits pile up."""
+    if peak_rms >= min_rms * IMPULSE_PEAK_RATIO:
+        return speech_frames_start + IMPULSE_START_EXTRA
+    return speech_frames_start
 
 
 class BargeGate:
@@ -124,13 +145,15 @@ class BargeGate:
 
         vad = webrtcvad.Vad(3)
         hit = 0
+        over = _env_float("FISH_VOICE_BARGE_OVER", DEFAULT_BARGE_OVER)
         q: queue.Queue[bytes] = queue.Queue()
         if env_debug():
             logger.debug(
-                "barge.arm delay_s={} hit_frames={} min_rms={} vad=3",
+                "barge.arm delay_s={} hit_frames={} min_rms={} over={} vad=3",
                 self.bleed_delay_s,
                 self.hit_frames,
                 self.min_rms,
+                over,
             )
 
         def callback(indata: Any, frames: int, time_info: Any, status: Any) -> None:
@@ -155,9 +178,17 @@ class BargeGate:
                     frame = frame[:FRAME_BYTES]
                     frame = clean_mic_frame(frame)
                     rms = pcm_rms(frame)
-                    if rms < self.min_rms:
+                    far = far_end_playing()
+                    need = barge_rms_need(self.min_rms, far_playing=far, over=over)
+                    if rms < need:
                         if hit and env_debug():
-                            logger.debug("barge.decay hit={} rms={:.0f}", hit, rms)
+                            logger.debug(
+                                "barge.decay hit={} rms={:.0f} need={:.0f} far={}",
+                                hit,
+                                rms,
+                                need,
+                                far,
+                            )
                         hit = max(0, hit - 1)
                         continue
                     if vad.is_speech(frame, SAMPLE_RATE):
@@ -283,17 +314,21 @@ def record_utterance(
 
             if not triggered:
                 ring.append((frame, start_hit(rms, vad_speech, min_speech_now)))
-                if sum(1 for _, counted in ring if counted) >= speech_frames_start:
+                hits_now = sum(1 for _, counted in ring if counted)
+                peak_ring = max((pcm_rms(pcm) for pcm, _ in ring), default=0.0)
+                need_start = start_frames_needed(peak_ring, min_speech_now, speech_frames_start)
+                if hits_now >= need_start:
                     triggered = True
                     voiced.extend(pcm for pcm, _ in ring)
-                    speech_hits = sum(1 for _, counted in ring if counted)
+                    speech_hits = hits_now
                     if env_debug():
                         logger.debug(
-                            "listen.speech_start rms={:.0f} vad={} prepad_frames={} voiced_hits={}",
+                            "listen.speech_start rms={:.0f} vad={} prepad_frames={} voiced_hits={} need_start={}",
                             rms,
                             vad_speech,
                             len(voiced),
                             speech_hits,
+                            need_start,
                         )
                     ring.clear()
                     silence = 0

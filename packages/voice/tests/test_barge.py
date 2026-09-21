@@ -6,8 +6,10 @@ from fish_audio_suite_voice.barge import (
     DEFAULT_BARGE_HIT_FRAMES,
     DEFAULT_BLEED_DELAY_S,
     BargeGate,
+    barge_rms_need,
     listen_reject_reason,
     post_speak_cooldown_s,
+    start_frames_needed,
     start_hit,
 )
 
@@ -42,11 +44,21 @@ def test_barge_defaults_without_env(monkeypatch: pytest.MonkeyPatch) -> None:
     assert post_speak_cooldown_s() == 0.3
 
 
-def test_start_hit_requires_vad() -> None:
+def test_barge_over_speaker_raises_need() -> None:
+    assert barge_rms_need(220.0, far_playing=False, over=2.2) == 220.0
+    assert barge_rms_need(220.0, far_playing=True, over=2.2) == pytest.approx(220.0 * 2.2)
+
+
+def test_start_hit_requires_vad_and_full_floor() -> None:
     assert not start_hit(200.0, False, 200.0)
-    assert start_hit(111.0, True, 200.0)
-    assert not start_hit(80.0, False, 200.0)
-    assert not start_hit(100.0, True, 200.0)
+    assert start_hit(200.0, True, 200.0)
+    assert not start_hit(121.0, True, 200.0)
+    assert not start_hit(111.0, True, 200.0)
+
+
+def test_start_frames_needed_raises_on_spike() -> None:
+    assert start_frames_needed(200.0, 200.0, 4) == 4
+    assert start_frames_needed(964.0, 200.0, 4) == 10
 
 
 def test_listen_reject_cough_and_impulse() -> None:
@@ -73,8 +85,28 @@ def test_listen_reject_cough_and_impulse() -> None:
     assert (
         listen_reject_reason(
             voiced_frames=80,
+            speech_hits=18,
+            peak_rms=1047.0,
+            min_voiced=12,
+            min_speech_rms=200.0,
+        )
+        == "impulse"
+    )
+    assert (
+        listen_reject_reason(
+            voiced_frames=80,
             speech_hits=20,
             peak_rms=400.0,
+            min_voiced=12,
+            min_speech_rms=200.0,
+        )
+        is None
+    )
+    assert (
+        listen_reject_reason(
+            voiced_frames=120,
+            speech_hits=68,
+            peak_rms=1486.0,
             min_voiced=12,
             min_speech_rms=200.0,
         )

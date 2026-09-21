@@ -10,7 +10,7 @@ from fish_audio_suite_voice.aec import (
     effective_bleed_s,
     resample_int16,
 )
-from fish_audio_suite_voice.playback import SounddeviceSink
+from fish_audio_suite_voice.playback import SounddeviceSink, dac_slice_bytes, iter_pcm_slices
 
 
 def test_resample_44100_to_16000_length() -> None:
@@ -56,7 +56,26 @@ def test_adaptive_floor_stays_default_until_window() -> None:
     assert floor.value() == 200.0
     for _ in range(30):
         floor.observe(40.0, quiet=True)
-    assert 80.0 <= floor.value() <= 200.0
+    assert floor.value() == 200.0
+    for _ in range(30):
+        floor.observe(200.0, quiet=True)
+    assert floor.value() >= 200.0
+
+
+def test_far_end_playing_covers_marked_duration() -> None:
+    tap = FarEndTap()
+    assert not tap.playing_recently(0.0)
+    tap.mark_playing(0.3)
+    assert tap.playing_recently(0.0)
+
+
+def test_iter_pcm_slices_caps_30ms() -> None:
+    step = dac_slice_bytes(44100)
+    assert step == 2646
+    pcm = b"\x00\x00" * 3000
+    parts = list(iter_pcm_slices(pcm, step))
+    assert sum(len(p) for p in parts) == len(pcm)
+    assert all(len(p) <= step for p in parts)
 
 
 def test_sounddevice_sink_taps_and_clears(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -83,8 +102,11 @@ def test_sounddevice_sink_taps_and_clears(monkeypatch: pytest.MonkeyPatch) -> No
             return None
 
     sink._stream = Fake()
-    pcm = b"\x00\x00" * 8
+    pcm = b"\x00\x00" * 3000
     sink.write(pcm)
-    assert taps == [(pcm, 44100)]
+    step = dac_slice_bytes(44100)
+    assert taps
+    assert all(len(p) <= step for p, _sr in taps)
+    assert sum(len(p) for p, _sr in taps) == len(pcm)
     sink.finish()
     assert cleared["n"] == 1

@@ -19,7 +19,7 @@ from fish_audio_suite_voice.debug import env_debug, logger
 AEC_RATE = 16_000
 FAR_HOLD_SAMPLES = AEC_RATE * 2
 FAR_SILENCE_RMS = 40.0
-DEFAULT_AEC_BLEED_S = 0.1
+DEFAULT_AEC_BLEED_S = 0.3
 DEFAULT_AEC_WET = 0.85
 _TRUTHY = frozenset({"1", "true", "yes", "on"})
 _FALSY = frozenset({"0", "false", "no", "off"})
@@ -63,24 +63,29 @@ class FarEndTap:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._pcm = bytearray()
-        self._last_energy = 0.0
+        self._playing_until = 0.0
 
     def clear(self) -> None:
         with self._lock:
             self._pcm.clear()
+            self._playing_until = 0.0
+
+    def mark_playing(self, duration_s: float) -> None:
+        end = time.monotonic() + max(0.0, duration_s)
+        with self._lock:
+            self._playing_until = max(self._playing_until, end)
 
     def push(self, pcm: bytes, sample_rate: int) -> None:
         chunk = resample_int16(pcm, sample_rate, AEC_RATE)
         if not chunk:
             return
-        rms = _rms(chunk)
+        duration_s = (len(pcm) - (len(pcm) % 2)) / 2 / sample_rate if sample_rate else 0.0
         with self._lock:
             self._pcm.extend(chunk)
             extra = len(self._pcm) - FAR_HOLD_SAMPLES * 2
             if extra > 0:
                 del self._pcm[:extra]
-            if rms >= FAR_SILENCE_RMS:
-                self._last_energy = time.monotonic()
+            self._playing_until = max(self._playing_until, time.monotonic() + duration_s)
 
     def pop(self, n_bytes: int) -> bytes:
         if n_bytes <= 0:
@@ -92,8 +97,8 @@ class FarEndTap:
             del self._pcm[:n_bytes]
             return out
 
-    def playing_recently(self, window_s: float = 0.35) -> bool:
-        return (time.monotonic() - self._last_energy) < window_s
+    def playing_recently(self, window_s: float = 0.4) -> bool:
+        return time.monotonic() < (self._playing_until + window_s)
 
 
 TAP = FarEndTap()
@@ -107,6 +112,10 @@ def tap_playback(pcm: bytes, sample_rate: int) -> None:
 
 def tap_clear() -> None:
     TAP.clear()
+
+
+def far_end_playing(window_s: float = 0.4) -> bool:
+    return TAP.playing_recently(window_s)
 
 
 def _rms(frame: bytes) -> float:
@@ -212,4 +221,5 @@ class AdaptiveFloor:
             return self.default
         quiet = np.fromiter(self.window, dtype=np.float64)
         est = float(np.percentile(quiet, self.percentile) * self.gain)
-        return float(min(self.hi, max(self.lo, est)))
+        # Never go below the seed. A quiet room must not open the gate for hiss.
+        return float(min(self.hi, max(self.default, self.lo, est)))

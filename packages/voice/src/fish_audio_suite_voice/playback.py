@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import wave
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -99,6 +100,26 @@ class StdoutSink:
         return self._played
 
 
+DAC_SLICE_MS = 30
+
+
+def dac_slice_bytes(sample_rate: int, frame_ms: int = DAC_SLICE_MS) -> int:
+    return max(1, sample_rate * frame_ms // 1000) * 2
+
+
+def iter_pcm_slices(chunk: bytes, slice_bytes: int) -> Iterator[bytes]:
+    if slice_bytes <= 0:
+        if chunk:
+            yield chunk
+        return
+    for i in range(0, len(chunk), slice_bytes):
+        piece = chunk[i : i + slice_bytes]
+        if len(piece) % 2:
+            piece = piece[:-1]
+        if piece:
+            yield piece
+
+
 class SounddeviceSink:
     def __init__(
         self,
@@ -129,11 +150,14 @@ class SounddeviceSink:
     def write(self, chunk: bytes) -> None:
         if not chunk or self._stream is None:
             return
-        if self._cancel is not None and self._cancel.is_set():
-            return
-        self._stream.write(chunk)
-        self._played += len(chunk)
-        tap_playback(chunk, self.sample_rate)
+        step = dac_slice_bytes(self.sample_rate)
+        for piece in iter_pcm_slices(chunk, step):
+            if self._cancel is not None and self._cancel.is_set():
+                return
+            # Tap before the blocking DAC write so AEC has far-end while this slice plays.
+            tap_playback(piece, self.sample_rate)
+            self._stream.write(piece)
+            self._played += len(piece)
 
     def finish(self, *, kill: bool = False) -> None:
         stream = self._stream
