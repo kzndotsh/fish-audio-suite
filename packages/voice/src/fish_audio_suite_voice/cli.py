@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import os
 import signal
@@ -113,13 +114,9 @@ def cfg() -> dict[str, Any]:
             "FISH_LLM_KEY",
             os.environ.get("OPENROUTER_API_KEY", os.environ.get("OPENAI_API_KEY", "")),
         ),
-        "llm_model": os.environ.get(
-            "FISH_LLM_MODEL",
-            os.environ.get(
-                "OPENROUTER_MODEL",
-                "cognitivecomputations/dolphin-mistral-24b-venice-edition",
-            ),
-        ),
+        "llm_model": (
+            os.environ.get("FISH_LLM_MODEL") or os.environ.get("OPENROUTER_MODEL") or ""
+        ).strip(),
         "defaults": defaults,
     }
 
@@ -130,12 +127,7 @@ def _want_nitro(model: str, base: str) -> bool:
     raw = os.environ.get("FISH_LLM_NITRO", "").strip().lower()
     if raw in {"0", "false", "no", "off"}:
         return False
-    if raw in {"1", "true", "yes", "on"}:
-        return ":" not in model.split("/")[-1]
-    ml = model.lower()
-    if "venice" in ml or "dolphin-mistral-24b-venice" in ml:
-        return False
-    return ":" not in model.split("/")[-1]
+    return ":" not in model.rsplit("/", maxsplit=1)[-1]
 
 
 async def fish_asr(audio_wav: bytes, api_key: str) -> str:
@@ -183,48 +175,63 @@ async def llm_token_stream(
     if "openrouter.ai" in base and _want_nitro(model, base):
         payload["provider"] = {"sort": "throughput"}
     yielded = 0
-    last_finish = None
+    last_finish: str | None = None
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
-            async with client.stream("POST", url, headers=headers, json=payload) as resp:
-                if resp.status_code >= 400:
-                    body = (await resp.aread())[:800].decode("utf-8", "replace")
-                    print(
-                        f"[llm] HTTP {resp.status_code} model={route_model}: {body}",
-                        file=sys.stderr,
-                    )
-                    return
-                async for line in resp.aiter_lines():
-                    if cancel is not None and cancel.is_set():
-                        break
-                    if not line or line.startswith(":") or not line.startswith("data:"):
-                        continue
-                    data = line[5:].strip()
-                    if data == "[DONE]":
-                        break
-                    try:
-                        obj = json.loads(data)
-                    except Exception:
-                        continue
-                    err = obj.get("error")
-                    if err:
-                        print(f"[llm] stream error: {err}", file=sys.stderr)
-                        break
-                    choices = obj.get("choices") or []
-                    if not choices:
-                        continue
-                    ch0 = choices[0]
-                    fr = ch0.get("finish_reason")
-                    if fr:
-                        last_finish = fr
-                    delta = ch0.get("delta") or {}
-                    piece = delta.get("content") or ""
-                    if not piece:
-                        msg = ch0.get("message") or {}
-                        piece = msg.get("content") or ""
-                    if piece:
-                        yielded += 1
-                        yield piece
+        async with (
+            httpx.AsyncClient(timeout=120.0) as client,
+            client.stream("POST", url, headers=headers, json=payload) as resp,
+        ):
+            if resp.status_code >= 400:
+                body = (await resp.aread())[:800].decode("utf-8", "replace")
+                print(
+                    f"[llm] HTTP {resp.status_code} model={route_model}: {body}",
+                    file=sys.stderr,
+                )
+                return
+            async for line in resp.aiter_lines():
+                if cancel is not None and cancel.is_set():
+                    break
+                if not line or line.startswith(":") or not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data == "[DONE]":
+                    break
+                try:
+                    parsed = json.loads(data)
+                except Exception:
+                    continue
+                if not isinstance(parsed, dict):
+                    continue
+                obj: dict[str, Any] = parsed
+                err = obj.get("error")
+                if err:
+                    print(f"[llm] stream error: {err}", file=sys.stderr)
+                    break
+                choices = obj.get("choices") or []
+                if not isinstance(choices, list) or not choices:
+                    continue
+                ch0 = choices[0]
+                if not isinstance(ch0, dict):
+                    continue
+                fr = ch0.get("finish_reason")
+                if isinstance(fr, str):
+                    last_finish = fr
+                delta = ch0.get("delta") or {}
+                if not isinstance(delta, dict):
+                    delta = {}
+                piece = delta.get("content") or ""
+                if not isinstance(piece, str):
+                    piece = ""
+                if not piece:
+                    msg = ch0.get("message") or {}
+                    if not isinstance(msg, dict):
+                        msg = {}
+                    piece = msg.get("content") or ""
+                    if not isinstance(piece, str):
+                        piece = ""
+                if piece:
+                    yielded += 1
+                    yield piece
     except (asyncio.CancelledError, GeneratorExit):
         return
     except BaseExceptionGroup:
@@ -285,6 +292,9 @@ async def run_loop(c: dict[str, Any]) -> int:
         return missing
     if not c["llm_key"]:
         print("BLOCKER: FISH_LLM_KEY / OPENROUTER_API_KEY missing", file=sys.stderr)
+        return 2
+    if not c["llm_model"]:
+        print("BLOCKER: FISH_LLM_MODEL / OPENROUTER_MODEL missing", file=sys.stderr)
         return 2
 
     history: list[dict[str, str]] = [
@@ -392,12 +402,6 @@ async def run_loop(c: dict[str, Any]) -> int:
                 barge = BargeGate(device=device)
                 barge.start_after_bleed(cancel)
                 tts_playing = True
-
-                def _on_barge_watch() -> None:
-                    if cancel.is_set():
-                        llm_cancel.set()
-
-                threading.Thread(target=_on_barge_watch, daemon=True).start()
                 sink = make_sink(
                     playback,
                     path=None,
@@ -421,10 +425,8 @@ async def run_loop(c: dict[str, Any]) -> int:
         cancel.set()
         llm_cancel.set()
         await asyncio.sleep(0)
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await asyncio.sleep(POST_SPEAK_COOLDOWN_S)
-        except asyncio.CancelledError:
-            pass
 
 
 def main(argv: list[str] | None = None) -> int:
