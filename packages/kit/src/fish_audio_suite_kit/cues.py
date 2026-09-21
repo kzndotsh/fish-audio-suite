@@ -27,7 +27,102 @@ _CUE_ALIASES = {
     "whisper": "whispering",
     "whispers": "whispering",
     "pause": "break",
+    "sigh": "sighing",
+    "chuckle": "chuckling",
 }
+
+# S1 / V1.6 used parentheses. Rewrite known tags to S2 [brackets] before asides are stripped.
+_S1_PAREN_TAGS = frozenset(
+    {
+        "break",
+        "long-break",
+        "breath",
+        "cough",
+        "lip-smacking",
+        "pause",
+        "laugh",
+        "laughs",
+        "laughing",
+        "chuckle",
+        "chuckling",
+        "sigh",
+        "sighing",
+        "whisper",
+        "whispers",
+        "whispering",
+        "emphasis",
+        "shouting",
+        "screaming",
+        "happy",
+        "sad",
+        "angry",
+        "excited",
+        "calm",
+        "nervous",
+        "confident",
+        "surprised",
+        "satisfied",
+        "delighted",
+        "scared",
+        "worried",
+        "upset",
+        "frustrated",
+        "depressed",
+        "empathetic",
+        "embarrassed",
+        "disgusted",
+        "moved",
+        "proud",
+        "relaxed",
+        "grateful",
+        "curious",
+        "sarcastic",
+        "disdainful",
+        "unhappy",
+        "anxious",
+        "hysterical",
+        "indifferent",
+        "uncertain",
+        "doubtful",
+        "confused",
+        "disappointed",
+        "regretful",
+        "guilty",
+        "ashamed",
+        "jealous",
+        "envious",
+        "hopeful",
+        "optimistic",
+        "pessimistic",
+        "nostalgic",
+        "lonely",
+        "bored",
+        "contemptuous",
+        "sympathetic",
+        "compassionate",
+        "determined",
+        "resigned",
+        "in a hurry tone",
+        "soft tone",
+        "crying loudly",
+        "clear throat",
+        "audience laughing",
+        "background laughter",
+        "crowd laughing",
+        "sobbing",
+        "panting",
+        "gasping",
+        "yawning",
+        "snoring",
+        "groaning",
+    }
+)
+_S1_PAREN_RE = re.compile(
+    r"\(\s*("
+    + "|".join(re.escape(t) for t in sorted(_S1_PAREN_TAGS, key=len, reverse=True))
+    + r")\s*\)",
+    re.IGNORECASE,
+)
 
 
 def _alias_cue(inner: str) -> str:
@@ -42,6 +137,11 @@ def _rewrite_cues(text: str) -> str:
     return _CUE_RE.sub(repl, text)
 
 
+def rewrite_s1_parens(text: str) -> str:
+    """`(happy)` / `(break)` → `[happy]` / `[break]`. Unknown `(asides)` left for scrubbers."""
+    return _S1_PAREN_RE.sub(lambda m: f"[{_alias_cue(m.group(1))}]", text)
+
+
 def _one_sentence(chunk: str) -> str:
     chunk = chunk.strip()
     if not chunk:
@@ -50,9 +150,9 @@ def _one_sentence(chunk: str) -> str:
     if m:
         cues = re.findall(r"\[([^\]]+)\]", m.group(1))
         if cues:
-            tag = _alias_cue(cues[0])
+            tags = " ".join(f"[{_alias_cue(c)}]" for c in cues)
             rest = m.group(2).lstrip()
-            return f"[{tag}] {rest}" if rest else f"[{tag}]"
+            return f"{tags} {rest}" if rest else tags
     m2 = _SPOKEN_MOOD_LEAD.match(chunk)
     if m2:
         tag = _alias_cue(m2.group(1))
@@ -62,10 +162,11 @@ def _one_sentence(chunk: str) -> str:
 
 
 def normalize_cues(text: str) -> str:
-    """Lowercase [Tags]; map aliases; convert 'Excited, …' → '[excited] …'."""
+    """Lowercase [Tags]; keep stacked leads; map aliases; convert 'Excited, …' → '[excited] …'."""
     if not text:
         return text
     text = _WHISPER_XML_RE.sub(lambda m: f"[whispering] {m.group(1).strip()}", text)
+    text = rewrite_s1_parens(text)
     text = _rewrite_cues(text)
     parts = re.split(r"(\n+)", text)
     out: list[str] = []

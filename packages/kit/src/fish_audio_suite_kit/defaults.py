@@ -7,9 +7,9 @@ from dataclasses import dataclass
 DEFAULT_SYSTEM_PROMPT = (
     "You are a spoken assistant using Fish Audio TTS. "
     "English by default. No markdown, bullets, or URLs. Keep replies speakable and bounded. "
-    "The first token of each sentence is a square-bracket [cue] tag "
-    "(for example [clear], [happy], [calm], [laughing], [sighing], [whispering], [break]). "
-    "Lowercase tags only. Those brackets are synthesis instructions and are never spoken. "
+    "Use square-bracket [cue] tags for S2 (for example [happy], [whispering], [break], [long-break]). "
+    "Tags may stack ([sad][whispering] …) and may be free-form ([whisper in small voice]). "
+    "Lowercase. One primary emotion per sentence. Cues are synthesis instructions and are never spoken. "
     "Do not start a sentence with a bare mood word. Speak the user's language if they switch."
 )
 
@@ -18,7 +18,7 @@ DEFAULT_SYSTEM_PROMPT = (
 class SuiteDefaults:
     tts_model: str = "s2.1-pro"
     asr_model: str = "transcribe-1"
-    asr_language: str = "en"
+    asr_language: str = ""
     latency: str = "normal"
     chunk_length: int = 200
     min_chunk_length: int = 50
@@ -27,7 +27,7 @@ class SuiteDefaults:
     speed: float = 1.05
     temperature: float = 0.70
     top_p: float = 0.7
-    repetition_penalty: float = 1.15
+    repetition_penalty: float = 1.2
     tts_partial_chars: int = 40
     sample_rate: int = 44100
     fish_base: str = "https://api.fish.audio"

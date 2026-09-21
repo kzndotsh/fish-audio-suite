@@ -29,6 +29,16 @@ def test_laugh_aliases() -> None:
     assert "[laughing]" in normalize_cues("[laughs] ha")
 
 
+def test_sigh_and_chuckle_aliases() -> None:
+    assert "[sighing]" in normalize_cues("[sigh] ok")
+    assert "[chuckling]" in normalize_cues("[chuckle] ha")
+
+
+def test_stacked_leading_cues_kept() -> None:
+    assert normalize_cues("[sad][whispering] I miss you") == "[sad] [whispering] I miss you"
+    assert "[whisper in small voice]" in normalize_cues("[whisper in small voice] come closer")
+
+
 def test_whisper_aliases() -> None:
     assert "[whispering]" in normalize_cues("[whispers] psst")
     assert "[whispering]" in normalize_cues("[whisper] psst")
@@ -47,16 +57,18 @@ def test_unclosed_cue_is_junk() -> None:
     assert is_tts_junk("[warm, leftover")
 
 
-def test_tts_junk_thin_cjk_and_narration() -> None:
+def test_tts_junk_thin_and_narration() -> None:
     assert is_tts_junk("")
     assert is_tts_junk("hi")
-    assert is_tts_junk("谢谢观看")
     assert is_tts_junk("She smiles and leans closer now")
     assert not is_tts_junk("[clear] Hello there friend")
+    assert not is_tts_junk("你好，很开心认识你")
 
 
-def test_cjk_asr_drop() -> None:
+def test_cjk_asr_keeps_speech_drops_thanks() -> None:
     assert is_asr_hallucination("谢谢观看")
+    assert not is_asr_hallucination("你好，很开心认识你")
+    assert not is_asr_hallucination("<|speaker:0|>你好")
 
 
 def test_asr_english_not_nuked_by_script() -> None:
@@ -65,7 +77,7 @@ def test_asr_english_not_nuked_by_script() -> None:
 
 def test_asr_emoji_and_mixed() -> None:
     assert is_asr_hallucination("🔥🔥🔥")
-    assert is_asr_hallucination("AB你")
+    assert not is_asr_hallucination("AB你")
 
 
 def test_aside_and_bold_stripped() -> None:
@@ -74,6 +86,13 @@ def test_aside_and_bold_stripped() -> None:
     assert "*" not in out
     assert "Hello" in out
     assert "world" in out
+
+
+def test_s1_parens_become_cues() -> None:
+    out = normalize_cues(scrub_tts("(happy) Hello there friend (break)"))
+    assert "[happy]" in out
+    assert "[break]" in out
+    assert "(" not in out
 
 
 def test_url_and_heading_strip() -> None:
@@ -88,6 +107,19 @@ def test_s1_and_nospeech() -> None:
     assert "[S1]" not in scrub_tts("[S1] Hello there friend")
     assert is_asr_hallucination("<|nospeech|>")
     assert is_asr_hallucination("<|HAPPY|>")
+
+
+def test_scrub_tts_keeps_fish_control_tokens() -> None:
+    speaker = scrub_tts("<|speaker:0|> [happy] Hello there friend")
+    assert "<|speaker:0|>" in speaker
+    assert "[happy]" in speaker
+    phoneme = scrub_tts("<|phoneme_start|>HH AH0 L OW1<|phoneme_end|>")
+    assert "<|phoneme_start|>" in phoneme
+    assert "<|phoneme_end|>" in phoneme
+    assert "HH AH0 L OW1" in phoneme
+    asr = scrub_asr("<|speaker:0|> hello there")
+    assert "<|" not in asr
+    assert "hello there" in asr
 
 
 def test_speaker_and_timestamp_asr() -> None:

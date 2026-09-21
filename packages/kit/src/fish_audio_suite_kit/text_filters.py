@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 
+from fish_audio_suite_kit.cues import rewrite_s1_parens
 from fish_audio_suite_kit.defaults import SuiteDefaults
 
 _PARTIAL_CHARS = SuiteDefaults().tts_partial_chars
@@ -112,6 +113,7 @@ _EN_HALLUCINATION_PHRASES = frozenset(
         "like and subscribe",
     }
 )
+_CJK_HALLUCINATION_PHRASES = frozenset({"谢谢观看", "感谢观看"})
 
 _EMOJI_RE = re.compile(
     "[\U0001f300-\U0001faff\U00002700-\U000027bf\U0001f1e0-\U0001f1ff]+",
@@ -144,9 +146,15 @@ def _folded(text: str) -> str:
 
 
 def _too_thin(s: str, *, min_latin: int) -> bool:
-    if not s.strip() or len(s.strip()) <= 2:
+    stripped = s.strip()
+    if not stripped:
         return True
-    return _cjk_latin_counts(s)[1] < min_latin
+    cjk, latin = _cjk_latin_counts(stripped)
+    if cjk >= 2:
+        return False
+    if len(stripped) <= 2:
+        return True
+    return latin < min_latin
 
 
 def _looks_like_narration(text: str) -> bool:
@@ -161,20 +169,27 @@ def _looks_like_narration(text: str) -> bool:
 
 
 def _strip_markdownish(text: str) -> str:
-    cleaned = _MD_HEADING_RE.sub("", text)
+    cleaned = rewrite_s1_parens(text)
+    cleaned = _MD_HEADING_RE.sub("", cleaned)
     cleaned = _MD_LINK_RE.sub(r"\1", cleaned)
     cleaned = _URL_RE.sub("", cleaned)
     cleaned = _PARENS_RE.sub("", cleaned)
-    return _MD_WRAP_RE.sub("", cleaned)
+    parts: list[str] = []
+    last = 0
+    for m in _ANGLE_TOKEN_RE.finditer(cleaned):
+        parts.append(_MD_WRAP_RE.sub("", cleaned[last : m.start()]))
+        parts.append(m.group(0))
+        last = m.end()
+    parts.append(_MD_WRAP_RE.sub("", cleaned[last:]))
+    return "".join(parts)
 
 
 def scrub_tts(text: str) -> str:
-    """Strip thoughts, stage junk, markdown, MOSS/TTSD markup; keep Fish [cues]."""
+    """Strip thoughts, CosyVoice stage junk, markdown, MOSS/TTSD markup; keep Fish [cues] and <|…|> control tokens."""
     if not text:
         return ""
     cleaned = _THOUGHTS_RE.sub("", text)
     cleaned = _STAGE_TOKEN_RE.sub("", cleaned)
-    cleaned = _ANGLE_TOKEN_RE.sub("", cleaned)
     cleaned = _MOSS_PAUSE_RE.sub("", cleaned)
     cleaned = _TTSD_SPEAKER_RE.sub("", cleaned)
     cleaned = _strip_markdownish(cleaned)
@@ -252,7 +267,8 @@ def is_asr_hallucination(text: str) -> bool:
     folded = _folded(s)
     if folded in _EN_HALLUCINATION_PHRASES or "nospeech" in s.lower():
         return True
-    if _too_thin(s, min_latin=3):
+    compact = re.sub(r"\s+", "", s)
+    if compact in _CJK_HALLUCINATION_PHRASES:
         return True
     no_emoji = _EMOJI_RE.sub("", s).strip()
     if not no_emoji:
@@ -260,7 +276,12 @@ def is_asr_hallucination(text: str) -> bool:
     if _ANGLE_TOKEN_RE.fullmatch(s.replace(" ", "")):
         return True
     tagged = _ANGLE_TOKEN_RE.sub("", s).strip()
-    return not tagged
+    if not tagged:
+        return True
+    cjk, latin = _cjk_latin_counts(s)
+    if cjk:
+        return False
+    return latin < 3
 
 
 def is_backchannel(text: str) -> bool:
