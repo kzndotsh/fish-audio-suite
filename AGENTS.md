@@ -15,7 +15,7 @@ Three members under `packages/`. Usage: [`README.md`](README.md).
 | CI | GitHub Actions `.github/workflows/ci.yml` (ruff, basedpyright, pytest) |
 | Wheels | `uv build --all` |
 | Proxy | `uv run --package fish-audio-suite-proxy fish-audio-suite-proxy` |
-| Voice smoke | `uv run --extra cli fish-voice --smoke` |
+| Voice smoke | `uv run --package fish-audio-suite-voice --extra cli fish-voice --smoke` · local: `./packages/voice/dev.sh --smoke` |
 | Flake | `nix flake show` |
 
 Python 3.12. **uv** only. Root is virtual (`package = false`).

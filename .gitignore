@@ -14,3 +14,4 @@ result-*
 *.mp3
 tts-sweep/
 .python-version.bak
+.env

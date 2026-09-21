@@ -33,7 +33,7 @@ cut = next_tts_cut(spoken)  # sentence end, or ~40 chars; -1 = keep buffering
 
 Stacked leads stay (`[sad][whispering] …`). Mid-sentence `[chuckle]` becomes `[chuckling]`. `[cough]` is left as `[cough]`.
 
-Also: `extract_quoted_speech`, `is_tts_junk`, `scrub_asr`, `is_asr_hallucination`, `is_backchannel`, `is_quit_utterance`, `SuiteDefaults`, `LatencySnapshot`, `w3c_trace_headers`, `make_traceparent`, `parse_fish_error`, `should_retry_fish_status`, `fish_backoff_seconds`, `format_as_srt`, `format_as_vtt`.
+Also: `extract_quoted_speech`, `is_tts_junk`, `scrub_asr`, `is_asr_hallucination`, `is_backchannel`, `is_quit_utterance`, `ensure_lead_cue`, `spread_cues`, `SuiteDefaults`, `LatencySnapshot`, `w3c_trace_headers`, `make_traceparent`, `parse_fish_error`, `should_retry_fish_status`, `fish_backoff_seconds`, `format_as_srt`, `format_as_vtt`.
 
 ## proxy
 
@@ -89,15 +89,32 @@ sink = FileSink(Path("turn.wav"))
 result = tts.speak_isolated("[clear] Hello there.", sink)
 ```
 
-Playback sinks: `sounddevice` (default PCM), `file`, `stdout`, optional `mpv`.
+Playback sinks: `sounddevice` (default PCM), `file`, `stdout`, optional `mpv`. Mic/speakers need the **PortAudio** C library; `pip`/`uv` do not install it. `--smoke` uses `FileSink` and does not need it.
+
+Duplex `cli` extra includes AEC3 (`pywebrtc-audio`): speaker PCM is tapped and subtracted from the mic before VAD. `FISH_VOICE_AEC=0` turns that off (bleed delay stays 0.9 s). PipeWire `echo-cancel` is a host trick, not a package dep.
 
 ```bash
-export FISH_API_KEY=… FISH_VOICE_ID=… OPENROUTER_API_KEY=… FISH_LLM_MODEL=…
-uv run --extra cli fish-voice --smoke   # writes a wav; no speakers
-uv run --extra cli fish-voice           # mic duplex
+# Debian/Ubuntu
+sudo apt install libportaudio2
+# Fedora
+sudo dnf install portaudio
+# macOS
+brew install portaudio
+# NixOS (do not use bare `uv run` for duplex)
+nix run .#fish-audio-suite-voice
+# or this repo's wrapper:
+./packages/voice/dev.sh
 ```
 
-`--smoke` exits 2 if the key or voice id is missing.
+`--smoke` is TTS-only (writes `/tmp/fish-audio-suite-smoke.wav`). Duplex is mic → Fish ASR → OpenRouter → one Fish WS per turn. Settings are env vars (no YAML). Process env wins, then `--env-file`, else `./.env` if present.
+
+```bash
+cp .env.example .env   # gitignored; fill keys
+./packages/voice/dev.sh --smoke                 # needs FISH_API_KEY + FISH_VOICE_ID
+./packages/voice/dev.sh --debug                 # VAD / barge / Fish WS / OpenRouter meta
+```
+
+Or export the same vars and `uv run --package fish-audio-suite-voice --extra cli fish-voice --smoke`. `--smoke` exits 2 if the key or voice id is missing.
 
 ## Environment
 
@@ -112,10 +129,20 @@ uv run --extra cli fish-voice           # mic duplex
 | `FISH_SPEED` / `FISH_SPEED_SCALE`     | voice / proxy | `1.05`                          |
 | `FISH_CHUNK_LENGTH`                   | both          | `200` (cloud max 300)           |
 | `FISH_FORMAT`                         | proxy         | `mp3` (voice live uses `pcm`)   |
-| `FISH_ASR_LANGUAGE`                   | proxy, duplex | omit (Fish auto-detects)        |
+| `FISH_ASR_LANGUAGE`                   | proxy, duplex | omit (hint only; Fish may still return `zh` on noise) |
 | `FISH_ASR_STRIP_SPEAKERS`             | proxy         | off                             |
 | `FISH_TTS_DIALOGUE_ONLY`              | proxy         | off                             |
-| `FISH_VOICE_SPEECH_FRAMES`            | duplex CLI    | `8` (~240 ms min speech)        |
+| `FISH_VOICE_SPEECH_FRAMES`            | duplex CLI    | `4` (~120 ms min speech)        |
+| `FISH_VOICE_MIN_RMS`                  | duplex CLI    | `200` (seed; then quiet percentile) |
+| `FISH_VOICE_MIN_VOICED`               | duplex CLI    | `12` (~360 ms VAD-true; drops coughs) |
+| `FISH_VOICE_VAD`                      | duplex CLI    | `1` (0–3; higher = pickier)     |
+| `FISH_VOICE_COOLDOWN`                 | duplex CLI    | `0.8` (seconds after TTS)       |
+| `FISH_VOICE_BLEED_DELAY`              | duplex CLI    | `0.9` (no AEC / AEC extra missing) |
+| `FISH_VOICE_AEC`                      | duplex CLI    | on (`0` disables)               |
+| `FISH_VOICE_AEC_WET`                  | duplex CLI    | `0.85`                          |
+| `FISH_VOICE_AEC_BLEED`                | duplex CLI    | `0.1` when AEC3 is loaded       |
+| `FISH_VOICE_BARGE_RMS`                | duplex CLI    | `220`                           |
+| `FISH_VOICE_DEBUG`                    | duplex CLI    | off (`--debug` or `1`)          |
 | `FISH_PLAYBACK`                       | voice CLI     | `sounddevice`                   |
 | `FISH_LLM_KEY` / `OPENROUTER_API_KEY` | duplex CLI    | none (required for duplex)      |
 | `FISH_LLM_MODEL` / `OPENROUTER_MODEL` | duplex CLI    | none (required for duplex)      |
@@ -133,7 +160,7 @@ inputs.fish-audio-suite.url = "git+file:///home/kaizen/Projects/fish-audio-suite
 ```
 
 - `nixosModules.default` — OCI container `127.0.0.1:8849:8849`, `autoStart = false`, `environmentFiles` for `FISH_API_KEY`.
-- `nix run .#fish-audio-suite-voice` — PortAudio wrap. mpv optional.
+- `nix run .#fish-audio-suite-voice` — PortAudio + Pulse on `LD_LIBRARY_PATH`. Duplex via `uv run` on NixOS will fail with “PortAudio library not found” unless you prefix that path (`./packages/voice/dev.sh` does).
 
 ## License
 
