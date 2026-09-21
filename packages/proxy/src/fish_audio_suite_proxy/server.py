@@ -10,7 +10,7 @@ Docs: https://docs.fish.audio/llms.txt
 
 from __future__ import annotations
 
-import json
+import asyncio
 import logging
 import os
 import re
@@ -24,14 +24,19 @@ from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
 
 from fish_audio_suite_kit import (
+    FISH_RETRY_ATTEMPTS,
     SuiteDefaults,
     extract_quoted_speech,
+    fish_backoff_seconds,
+    fish_error_body,
     is_asr_hallucination,
     is_tts_junk,
     make_traceparent,
     normalize_cues,
+    parse_fish_error,
     scrub_asr,
     scrub_tts,
+    should_retry_fish_status,
     trace_id_of,
     w3c_trace_headers,
 )
@@ -195,6 +200,60 @@ def _upstream_trace_headers(headers: Mapping[str, str]) -> dict[str, str]:
     return {"traceparent": make_traceparent()}
 
 
+def _json_error(status: int, message: str) -> JSONResponse:
+    return JSONResponse(fish_error_body(status, message), status_code=status)
+
+
+def _json_from_upstream(status: int, raw: Any) -> JSONResponse:
+    detail = parse_fish_error(status, raw)
+    return JSONResponse(detail, status_code=int(detail["status"]))
+
+
+async def _fish_send(
+    client: httpx.AsyncClient,
+    *,
+    stream: bool,
+    **request_kwargs: Any,
+) -> httpx.Response | JSONResponse:
+    last_error: JSONResponse | None = None
+    for attempt in range(FISH_RETRY_ATTEMPTS):
+        try:
+            req = client.build_request(**request_kwargs)
+            upstream = await client.send(req, stream=stream)
+        except httpx.TimeoutException:
+            last_error = _json_error(504, "Fish request timed out")
+            if attempt + 1 >= FISH_RETRY_ATTEMPTS:
+                return last_error
+            await asyncio.sleep(fish_backoff_seconds(attempt))
+            continue
+        except httpx.RequestError as exc:
+            last_error = _json_error(502, str(exc) or "Fish upstream unreachable")
+            if attempt + 1 >= FISH_RETRY_ATTEMPTS:
+                return last_error
+            await asyncio.sleep(fish_backoff_seconds(attempt))
+            continue
+        if should_retry_fish_status(upstream.status_code):
+            err = await upstream.aread()
+            await upstream.aclose()
+            last_error = _json_from_upstream(upstream.status_code, err)
+            log.warning(
+                "fish retry status=%s attempt=%s/%s",
+                upstream.status_code,
+                attempt + 1,
+                FISH_RETRY_ATTEMPTS,
+            )
+            if attempt + 1 >= FISH_RETRY_ATTEMPTS:
+                return last_error
+            await asyncio.sleep(fish_backoff_seconds(attempt))
+            continue
+        if upstream.status_code >= 400:
+            err = await upstream.aread()
+            await upstream.aclose()
+            return _json_from_upstream(upstream.status_code, err)
+        return upstream
+    return last_error or _json_error(502, "Fish upstream unreachable")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     defaults = _runtime_defaults()
@@ -264,6 +323,9 @@ async def speech(request: Request):
         log.info("tts skip junk preview=%r", preview)
         return Response(content=_SILENT_MP3, media_type="audio/mpeg")
 
+    if not request.app.state.fish_api_key:
+        return _json_error(401, "Invalid Token")
+
     payload: dict[str, Any] = {
         "text": spoken,
         "format": fmt,
@@ -330,21 +392,16 @@ async def speech(request: Request):
     )
 
     client: httpx.AsyncClient = request.app.state.http
-    req = client.build_request("POST", "/v1/tts", json=payload, headers=headers)
-    upstream = await client.send(req, stream=True)
-    if upstream.status_code >= 400:
-        err = await upstream.aread()
-        await upstream.aclose()
-        try:
-            detail: Any = json.loads(err)
-        except (json.JSONDecodeError, UnicodeDecodeError):
-            detail = {
-                "message": err.decode("utf-8", errors="replace"),
-                "status": upstream.status_code,
-            }
-        if not isinstance(detail, dict):
-            detail = {"message": str(detail), "status": upstream.status_code}
-        return JSONResponse(detail, status_code=upstream.status_code)
+    upstream = await _fish_send(
+        client,
+        stream=True,
+        method="POST",
+        url="/v1/tts",
+        json=payload,
+        headers=headers,
+    )
+    if isinstance(upstream, JSONResponse):
+        return upstream
 
     async def stream_audio():
         try:
@@ -372,7 +429,9 @@ async def transcriptions(
     asr_model = _resolve_asr_model(model, defaults.asr_model)
     audio_bytes = await file.read()
     if not audio_bytes:
-        return JSONResponse({"error": "empty audio upload"}, status_code=400)
+        return _json_error(400, "empty audio upload")
+    if not request.app.state.fish_api_key:
+        return _json_error(401, "Invalid Token")
 
     filename = file.filename or "audio.webm"
     content_type = file.content_type or "application/octet-stream"
@@ -388,18 +447,17 @@ async def transcriptions(
 
     asr_headers = {"model": asr_model, **_upstream_trace_headers(request.headers)}
     client: httpx.AsyncClient = request.app.state.http
-    r = await client.post(
-        "/v1/asr",
+    r = await _fish_send(
+        client,
+        stream=False,
+        method="POST",
+        url="/v1/asr",
         headers=asr_headers,
         files=files,
         data=form,
     )
-    if r.status_code >= 400:
-        try:
-            detail = r.json()
-        except Exception:
-            detail = {"message": r.text, "status": r.status_code}
-        return JSONResponse(detail, status_code=r.status_code)
+    if isinstance(r, JSONResponse):
+        return r
 
     raw = r.json()
     data: dict[str, Any] = raw if isinstance(raw, dict) else {}

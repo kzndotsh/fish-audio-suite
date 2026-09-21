@@ -61,6 +61,26 @@ def test_pick_reference_id_list() -> None:
     assert _pick_reference_id({"voice": "solo"}) == "solo"
 
 
+def test_empty_transcription_is_fish_error_shape() -> None:
+    with TestClient(app) as client:
+        r = client.post(
+            "/v1/audio/transcriptions",
+            files={"file": ("a.wav", b"", "audio/wav")},
+        )
+        assert r.status_code == 400
+        assert r.json() == {"message": "empty audio upload", "status": 400}
+
+
+def test_speech_without_key_is_401(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("FISH_API_KEY", raising=False)
+    with TestClient(app) as client:
+        r = client.post("/v1/audio/speech", json={"input": "[clear] Hello there friend"})
+        assert r.status_code == 401
+        body = r.json()
+        assert body["status"] == 401
+        assert "message" in body
+
+
 def test_health_without_api_key() -> None:
     with TestClient(app) as client:
         r = client.get("/health")
