@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import subprocess
 import sys
 import wave
 from pathlib import Path
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 
 @runtime_checkable
@@ -76,7 +77,7 @@ class SounddeviceSink:
     def __init__(self, *, sample_rate: int = 44100, device: str | int | None = None) -> None:
         self.sample_rate = sample_rate
         self.device = device
-        self._stream: object | None = None
+        self._stream: Any = None
         self._played = 0
 
     def start(self) -> None:
@@ -109,10 +110,8 @@ class SounddeviceSink:
                 stream.stop()
         except Exception:
             pass
-        try:
+        with contextlib.suppress(Exception):
             stream.close()
-        except Exception:
-            pass
 
     def bytes_played(self) -> int:
         return self._played
@@ -161,26 +160,18 @@ class MpvSink:
         except Exception:
             pass
         if kill:
-            try:
+            with contextlib.suppress(Exception):
                 self.proc.kill()
-            except Exception:
-                pass
-            try:
+            with contextlib.suppress(Exception):
                 self.proc.wait(timeout=2)
-            except Exception:
-                pass
         else:
             try:
                 self.proc.wait(timeout=90)
             except subprocess.TimeoutExpired:
-                try:
+                with contextlib.suppress(Exception):
                     self.proc.kill()
-                except Exception:
-                    pass
-                try:
+                with contextlib.suppress(Exception):
                     self.proc.wait(timeout=2)
-                except Exception:
-                    pass
         self.proc = None
 
     def bytes_played(self) -> int:
