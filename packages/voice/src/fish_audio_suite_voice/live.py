@@ -6,12 +6,12 @@ import asyncio
 import sys
 import threading
 import time
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterable, AsyncIterator, Iterable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 from fishaudio import AsyncFishAudio, FlushEvent, TextEvent
-from fishaudio.types import Prosody, TTSConfig
+from fishaudio.types import AudioFormat, LatencyMode, Model, Prosody, TTSConfig
 
 from fish_audio_suite_kit import next_tts_cut, normalize_cues, scrub_tts, skip_empty_delta
 from fish_audio_suite_kit.defaults import (
@@ -90,9 +90,10 @@ class IsolatedFishTts:
             return asyncio.run(_run())
         except (asyncio.CancelledError, BaseExceptionGroup, RuntimeError, GeneratorExit) as e:
             msg = str(e).lower()
-            if not any(x in msg for x in ("cancel scope", "athrow", "generator didn't stop")):
-                if type(e) not in (BaseExceptionGroup, GeneratorExit, asyncio.CancelledError):
-                    print(f"[tts] {e}", file=sys.stderr)
+            if not any(
+                x in msg for x in ("cancel scope", "athrow", "generator didn't stop")
+            ) and type(e) not in (BaseExceptionGroup, GeneratorExit, asyncio.CancelledError):
+                print(f"[tts] {e}", file=sys.stderr)
             return IsolatedResult("", 0, False, cancel.is_set(), None, None)
 
     async def speak(
@@ -174,10 +175,10 @@ class IsolatedFishTts:
         sink.start()
         try:
             cfg = TTSConfig(
-                format=self.audio_format,  # type: ignore[arg-type]
+                format=cast(AudioFormat, self.audio_format),
                 mp3_bitrate=128,
                 sample_rate=self.sample_rate,
-                latency=self.latency,  # type: ignore[arg-type]
+                latency=cast(LatencyMode, self.latency),
                 normalize=True,
                 chunk_length=self.chunk_length,
                 min_chunk_length=self.min_chunk_length,
@@ -193,11 +194,11 @@ class IsolatedFishTts:
             stream = client.tts.stream_websocket(
                 logged_events,
                 reference_id=self.voice_id,
-                format=self.audio_format,  # type: ignore[arg-type]
-                latency=self.latency,  # type: ignore[arg-type]
+                format=cast(AudioFormat, self.audio_format),
+                latency=cast(LatencyMode, self.latency),
                 speed=self.speed,
                 config=cfg,
-                model=self.model,  # type: ignore[arg-type]
+                model=cast(Model, self.model),
             )
             async for chunk in stream:
                 if cancel.is_set():
@@ -213,9 +214,12 @@ class IsolatedFishTts:
         except BaseExceptionGroup:
             pass
         except RuntimeError as e:
-            if "cancel scope" not in str(e).lower() and "athrow" not in str(e).lower():
-                if not cancel.is_set():
-                    print(f"[tts] {e}", file=sys.stderr)
+            if (
+                "cancel scope" not in str(e).lower()
+                and "athrow" not in str(e).lower()
+                and not cancel.is_set()
+            ):
+                print(f"[tts] {e}", file=sys.stderr)
         except Exception as e:
             msg = str(e).lower()
             if "athrow" in msg or "cancel scope" in msg or "generator didn't stop" in msg:
@@ -300,10 +304,10 @@ def _spoken_prefix(
     return sent_text.strip()
 
 
-async def _as_async(deltas: Iterable[str] | AsyncIterator[str]) -> AsyncIterator[str]:
-    if hasattr(deltas, "__anext__") or hasattr(deltas, "__aiter__"):
-        async for item in deltas:  # type: ignore[union-attr]
+async def _as_async(deltas: Iterable[str] | AsyncIterable[str]) -> AsyncIterator[str]:
+    if isinstance(deltas, AsyncIterable):
+        async for item in deltas:
             yield item
         return
-    for item in deltas:  # type: ignore[union-attr]
+    for item in deltas:
         yield item
