@@ -97,7 +97,10 @@ uv run --extra cli fish-voice           # mic duplex
 | `FISH_PLAYBACK`                       | voice CLI     | `sounddevice`                   |
 | `FISH_LLM_KEY` / `OPENROUTER_API_KEY` | duplex CLI    | none (required for duplex)      |
 | `FISH_LLM_MODEL` / `OPENROUTER_MODEL` | duplex CLI    | none (required for duplex)      |
-| `FISH_SYSTEM_PROMPT`                  | duplex CLI    | spoken assistant + `[cue]` tags |
+| `FISH_PROXY_HOST` / `FISH_PROXY_PORT` | proxy         | `0.0.0.0` / `8849`              |
+| `FISH_PROXY_WORKERS` / `WEB_CONCURRENCY` | proxy      | `1` (OCI: keep 1)               |
+| `FISH_PROXY_GRACEFUL_SHUTDOWN`        | proxy         | `120` (seconds)                 |
+| `FISH_PROXY_LIMIT_CONCURRENCY`        | proxy         | unset (no 503 cap)              |
 
 
 ## Nix

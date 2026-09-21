@@ -4,7 +4,7 @@
 
 OpenAI-shaped Fish HTTP on **8849**: `/v1/audio/speech`, `/v1/audio/transcriptions`, `/v1/models`, `/health`.
 
-CLI: `fish-audio-suite-proxy`. Import: `fish_audio_suite_proxy`.
+CLI: `fish-audio-suite-proxy`. Import: `fish_audio_suite_proxy`. Uvicorn uses `uvicorn[standard]` (`loop`/`http` auto → uvloop + httptools). Default **one worker**. Import string `fish_audio_suite_proxy.server:app` so `FISH_PROXY_WORKERS` can spawn processes. `timeout_graceful_shutdown` default 120s (Fish stream budget). Optional `FISH_PROXY_LIMIT_CONCURRENCY` → 503. `ws=none`. Do not set `forwarded-allow-ips=*`.
 
 | Task | Command |
 | --- | --- |
