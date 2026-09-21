@@ -31,6 +31,8 @@ spoken = normalize_cues(scrub_tts(llm_text))
 cut = next_tts_cut(spoken)  # sentence end, or ~40 chars; -1 = keep buffering
 ```
 
+Stacked leads stay (`[sad][whispering] …`). Mid-sentence `[chuckle]` becomes `[chuckling]`. `[cough]` is left as `[cough]`.
+
 Also: `extract_quoted_speech`, `is_tts_junk`, `scrub_asr`, `is_asr_hallucination`, `is_backchannel`, `is_quit_utterance`, `SuiteDefaults`, `LatencySnapshot`, `w3c_trace_headers`, `make_traceparent`, `parse_fish_error`, `should_retry_fish_status`, `fish_backoff_seconds`, `format_as_srt`, `format_as_vtt`.
 
 ## proxy

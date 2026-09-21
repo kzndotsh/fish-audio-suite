@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fish_audio_suite_kit import (
+    DEFAULT_SYSTEM_PROMPT,
     CaptionCue,
     LatencySnapshot,
     SuiteDefaults,
@@ -54,6 +55,13 @@ def test_whisper_aliases() -> None:
     assert "[whispering]" in normalize_cues("[whispers] psst")
     assert "[whispering]" in normalize_cues("[whisper] psst")
     assert "[whispering]" in normalize_cues("<whisper>psst</whisper>")
+
+
+def test_inline_chuckle_and_cough() -> None:
+    out = normalize_cues("I'll call you back [chuckle] in a minute [cough]")
+    assert "[chuckling]" in out
+    assert "[cough]" in out
+    assert "[coughing]" not in out
 
 
 def test_pause_alias_vs_moss_duration() -> None:
@@ -211,6 +219,9 @@ def test_suite_defaults_and_timing() -> None:
     d = SuiteDefaults()
     assert d.tts_model == "s2.1-pro"
     assert d.tts_partial_chars == 40
+    assert d.system_prompt == DEFAULT_SYSTEM_PROMPT
+    assert "mid-sentence" in DEFAULT_SYSTEM_PROMPT
+    assert "Leave [cough] as [cough]" in DEFAULT_SYSTEM_PROMPT
     line = LatencySnapshot(ttfa=12.4).log_line()
     assert "ttfa=12ms" in line
     assert "srt=-1" in line
