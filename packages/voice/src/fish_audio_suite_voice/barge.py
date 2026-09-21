@@ -14,18 +14,28 @@ from typing import Any
 
 import numpy as np
 
+from fish_audio_suite_voice.aec import AdaptiveFloor, clean_mic_frame, effective_bleed_s
+from fish_audio_suite_voice.debug import env_debug, logger
+from fish_audio_suite_voice.playback import load_sounddevice
+
 SAMPLE_RATE = 16_000
 FRAME_MS = 30
 FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000
 FRAME_BYTES = FRAME_SAMPLES * 2
 MAX_UTTERANCE_FRAMES = 500
-DEFAULT_VAD_AGGRESSIVENESS = 2
+DEFAULT_VAD_AGGRESSIVENESS = 1
 DEFAULT_SILENCE_FRAMES_END = 22
-DEFAULT_SPEECH_FRAMES_START = 8
-DEFAULT_MIN_SPEECH_RMS = 280.0
-DEFAULT_PRE_PAD_FRAMES = 10
-DEFAULT_BARGE_HIT_FRAMES = 16
-DEFAULT_BARGE_RMS = 400.0
+DEFAULT_SPEECH_FRAMES_START = 4
+DEFAULT_MIN_SPEECH_RMS = 200.0
+DEFAULT_PRE_PAD_FRAMES = 20
+HOLD_RMS_RATIO = 0.55
+MIN_UTTERANCE_FRAMES = 4
+LISTEN_HEARTBEAT_FRAMES = 20
+DEFAULT_MIN_VOICED_FRAMES = 12
+IMPULSE_PEAK_RATIO = 4.0
+IMPULSE_EXTRA_VOICED = 6
+DEFAULT_BARGE_HIT_FRAMES = 10
+DEFAULT_BARGE_RMS = 220.0
 DEFAULT_BLEED_DELAY_S = 0.9
 DEFAULT_POST_SPEAK_COOLDOWN_S = 0.8
 
@@ -49,6 +59,38 @@ def pcm_rms(frame: bytes) -> float:
     return float(np.sqrt(np.mean(samples * samples)) + 1e-9)
 
 
+def start_hit(rms: float, vad_speech: bool, min_rms: float) -> bool:
+    """Count a listen-start frame. Score VAD once per capture; do not replay the ring.
+
+    Require VAD so keyboard/room noise does not start a turn. Quiet but
+    VAD-positive frames still count at the hold floor so a fast onset is kept.
+    """
+    if not vad_speech:
+        return False
+    return rms >= min_rms * HOLD_RMS_RATIO
+
+
+def listen_reject_reason(
+    *,
+    voiced_frames: int,
+    speech_hits: int,
+    peak_rms: float,
+    min_voiced: int,
+    min_speech_rms: float,
+) -> str | None:
+    """Drop coughs and spikes. None means send the clip to ASR."""
+    if voiced_frames < MIN_UTTERANCE_FRAMES:
+        return "too_short"
+    if speech_hits < min_voiced:
+        return "too_little_voice"
+    if (
+        peak_rms >= min_speech_rms * IMPULSE_PEAK_RATIO
+        and speech_hits < min_voiced + IMPULSE_EXTRA_VOICED
+    ):
+        return "impulse"
+    return None
+
+
 class BargeGate:
     """VAD-energy + min-speech. Apps that own the mic can import this."""
 
@@ -61,6 +103,7 @@ class BargeGate:
         min_rms: float | None = None,
     ) -> None:
         self.device = device
+        self._bleed_override = bleed_delay_s
         self.bleed_delay_s = (
             _env_float("FISH_VOICE_BLEED_DELAY", DEFAULT_BLEED_DELAY_S)
             if bleed_delay_s is None
@@ -76,12 +119,19 @@ class BargeGate:
         )
 
     def watch(self, cancel: threading.Event) -> None:
-        import sounddevice as sd
+        sd = load_sounddevice()
         import webrtcvad
 
         vad = webrtcvad.Vad(3)
         hit = 0
         q: queue.Queue[bytes] = queue.Queue()
+        if env_debug():
+            logger.debug(
+                "barge.arm delay_s={} hit_frames={} min_rms={} vad=3",
+                self.bleed_delay_s,
+                self.hit_frames,
+                self.min_rms,
+            )
 
         def callback(indata: Any, frames: int, time_info: Any, status: Any) -> None:
             q.put(bytes(indata))
@@ -103,12 +153,20 @@ class BargeGate:
                     if len(frame) < FRAME_BYTES:
                         continue
                     frame = frame[:FRAME_BYTES]
-                    if pcm_rms(frame) < self.min_rms:
+                    frame = clean_mic_frame(frame)
+                    rms = pcm_rms(frame)
+                    if rms < self.min_rms:
+                        if hit and env_debug():
+                            logger.debug("barge.decay hit={} rms={:.0f}", hit, rms)
                         hit = max(0, hit - 1)
                         continue
                     if vad.is_speech(frame, SAMPLE_RATE):
                         hit += 1
+                        if env_debug():
+                            logger.debug("barge.hit {}/{} rms={:.0f}", hit, self.hit_frames, rms)
                         if hit >= self.hit_frames:
+                            if env_debug():
+                                logger.debug("barge.interrupt rms={:.0f} hits={}", rms, hit)
                             cancel.set()
                             return
                     else:
@@ -118,8 +176,18 @@ class BargeGate:
 
     def start_after_bleed(self, cancel: threading.Event) -> threading.Thread:
         def _run() -> None:
-            time.sleep(self.bleed_delay_s)
+            delay = (
+                self._bleed_override
+                if self._bleed_override is not None
+                else effective_bleed_s(_env_float("FISH_VOICE_BLEED_DELAY", DEFAULT_BLEED_DELAY_S))
+            )
+            self.bleed_delay_s = delay
+            if env_debug():
+                logger.debug("barge.bleed sleep_s={}", delay)
+            time.sleep(delay)
             if cancel.is_set():
+                if env_debug():
+                    logger.debug("barge.bleed skipped (already cancelled)")
                 return
             self.watch(cancel)
 
@@ -133,7 +201,7 @@ def record_utterance(
     stop: threading.Event | None = None,
 ) -> bytes | None:
     """Block until one VAD utterance. Returns WAV bytes (16 kHz mono) or None."""
-    import sounddevice as sd
+    sd = load_sounddevice()
     import webrtcvad
 
     vad_aggressiveness = _env_int("FISH_VOICE_VAD", DEFAULT_VAD_AGGRESSIVENESS)
@@ -141,6 +209,7 @@ def record_utterance(
     speech_frames_start = _env_int("FISH_VOICE_SPEECH_FRAMES", DEFAULT_SPEECH_FRAMES_START)
     min_speech_rms = _env_float("FISH_VOICE_MIN_RMS", DEFAULT_MIN_SPEECH_RMS)
     pre_pad_frames = _env_int("FISH_VOICE_PRE_PAD", DEFAULT_PRE_PAD_FRAMES)
+    min_voiced = _env_int("FISH_VOICE_MIN_VOICED", DEFAULT_MIN_VOICED_FRAMES)
 
     vad = webrtcvad.Vad(vad_aggressiveness)
     q: queue.Queue[bytes] = queue.Queue()
@@ -149,9 +218,25 @@ def record_utterance(
         q.put(bytes(indata))
 
     voiced: list[bytes] = []
-    ring: collections.deque[bytes] = collections.deque(maxlen=pre_pad_frames)
+    ring: collections.deque[tuple[bytes, bool]] = collections.deque(maxlen=pre_pad_frames)
     triggered = False
     silence = 0
+    idle_frames = 0
+    window_peak = 0.0
+    clip_peak = 0.0
+    speech_hits = 0
+    floor = AdaptiveFloor(min_speech_rms)
+    min_speech_now = min_speech_rms
+    if env_debug():
+        logger.debug(
+            "listen.open vad={} start_frames={} min_rms={} min_voiced={} pre_pad={} silence_end={}",
+            vad_aggressiveness,
+            speech_frames_start,
+            min_speech_rms,
+            min_voiced,
+            pre_pad_frames,
+            silence_frames_end,
+        )
 
     with sd.RawInputStream(
         samplerate=SAMPLE_RATE,
@@ -171,27 +256,51 @@ def record_utterance(
             if len(frame) < FRAME_BYTES:
                 continue
             frame = frame[:FRAME_BYTES]
+            frame = clean_mic_frame(frame)
             rms = pcm_rms(frame)
-            hold_rms = min_speech_rms * 0.55
-            need = min_speech_rms if not triggered else hold_rms
-            loud = rms >= need
-            is_speech = loud and bool(vad.is_speech(frame, SAMPLE_RATE))
+            vad_speech = bool(vad.is_speech(frame, SAMPLE_RATE))
+            min_speech_now = floor.value()
+            if not triggered:
+                floor.observe(rms, quiet=True)
+            hold_rms = min_speech_now * HOLD_RMS_RATIO
+            need = min_speech_now if not triggered else hold_rms
+            is_speech = rms >= need and vad_speech
+            idle_frames += 1
+            window_peak = max(window_peak, rms)
+            clip_peak = max(clip_peak, rms)
+            if env_debug() and idle_frames % LISTEN_HEARTBEAT_FRAMES == 0:
+                logger.debug(
+                    "listen.mic frames={} peak_rms={:.0f} last_rms={:.0f} floor={:.0f} vad={} triggered={} hits={}",
+                    idle_frames,
+                    window_peak,
+                    rms,
+                    min_speech_now,
+                    vad_speech,
+                    triggered,
+                    sum(1 for _, counted in ring if counted) if not triggered else speech_hits,
+                )
+                window_peak = 0.0
 
             if not triggered:
-                ring.append(frame)
-                speechish = sum(
-                    1
-                    for f in ring
-                    if pcm_rms(f) >= min_speech_rms and vad.is_speech(f, SAMPLE_RATE)
-                )
-                if speechish >= speech_frames_start:
+                ring.append((frame, start_hit(rms, vad_speech, min_speech_now)))
+                if sum(1 for _, counted in ring if counted) >= speech_frames_start:
                     triggered = True
-                    voiced.extend(ring)
+                    voiced.extend(pcm for pcm, _ in ring)
+                    speech_hits = sum(1 for _, counted in ring if counted)
+                    if env_debug():
+                        logger.debug(
+                            "listen.speech_start rms={:.0f} vad={} prepad_frames={} voiced_hits={}",
+                            rms,
+                            vad_speech,
+                            len(voiced),
+                            speech_hits,
+                        )
                     ring.clear()
                     silence = 0
             else:
                 voiced.append(frame)
                 if is_speech:
+                    speech_hits += 1
                     silence = 0
                 else:
                     silence += 1
@@ -200,10 +309,36 @@ def record_utterance(
                 if len(voiced) >= MAX_UTTERANCE_FRAMES:
                     break
 
-    if len(voiced) < speech_frames_start + 3:
+    why = listen_reject_reason(
+        voiced_frames=len(voiced),
+        speech_hits=speech_hits,
+        peak_rms=clip_peak,
+        min_voiced=min_voiced,
+        min_speech_rms=min_speech_now if triggered else min_speech_rms,
+    )
+    if why is not None:
+        if env_debug():
+            logger.debug(
+                "listen.reject {} frames={} voiced_hits={} peak_rms={:.0f} min_voiced={}",
+                why,
+                len(voiced),
+                speech_hits,
+                clip_peak,
+                min_voiced,
+            )
         return None
 
     pcm = b"".join(voiced)
+    if env_debug():
+        logger.debug(
+            "listen.end frames={} wav_bytes={} silence={} voiced_hits={} peak_rms={:.0f} duration_ms={}",
+            len(voiced),
+            len(pcm) + 44,
+            silence,
+            speech_hits,
+            clip_peak,
+            len(voiced) * FRAME_MS,
+        )
     with tempfile.SpooledTemporaryFile(max_size=2_000_000) as buf:
         with wave.open(buf, "wb") as wf:
             wf.setnchannels(1)

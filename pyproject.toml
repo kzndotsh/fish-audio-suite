@@ -142,7 +142,7 @@ extraPaths = [
 ]
 reportUnnecessaryTypeIgnoreComment = "warning"
 reportMissingTypeStubs = "none"
-allowedUntypedLibraries = ["sounddevice", "webrtcvad", "fishaudio"]
+allowedUntypedLibraries = ["sounddevice", "webrtcvad", "fishaudio", "pywebrtc_audio"]
 
 [[tool.basedpyright.executionEnvironments]]
 root = "packages/kit/tests"

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import sys
 import threading
 import time
-from collections.abc import AsyncIterable, AsyncIterator, Iterable
+from collections.abc import AsyncIterable, AsyncIterator, Coroutine, Iterable
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -27,9 +28,11 @@ from fish_audio_suite_kit import (
     skip_empty_delta,
     w3c_trace_headers,
 )
+from fish_audio_suite_voice.debug import env_debug, logger
 from fish_audio_suite_voice.playback import PlaybackSink
 
 _STOCK = SuiteDefaults()
+ANEXT_POLL_S = 0.25
 
 
 @dataclass(frozen=True)
@@ -90,20 +93,27 @@ class IsolatedFishTts:
         sink: PlaybackSink,
         cancel: threading.Event | None = None,
     ) -> IsolatedResult:
+        """Run Fish WS on a private thread and loop. Safe from asyncio.run / to_thread."""
         cancel = cancel or threading.Event()
+        box: list[IsolatedResult] = []
 
-        async def _run() -> IsolatedResult:
-            return await self.speak(text, sink, cancel)
+        def worker() -> None:
+            async def _run() -> IsolatedResult:
+                return await self.speak(text, sink, cancel)
 
-        try:
-            return asyncio.run(_run())
-        except (asyncio.CancelledError, BaseExceptionGroup, RuntimeError, GeneratorExit) as e:
-            msg = str(e).lower()
-            if not any(
-                x in msg for x in ("cancel scope", "athrow", "generator didn't stop")
-            ) and type(e) not in (BaseExceptionGroup, GeneratorExit, asyncio.CancelledError):
-                print(f"[tts] {e}", file=sys.stderr)
-            return IsolatedResult("", 0, False, cancel.is_set(), None, None)
+            try:
+                box.append(_isolated_run(_run()))
+            except (asyncio.CancelledError, BaseExceptionGroup, RuntimeError, GeneratorExit) as e:
+                if not _is_cancel_noise(e):
+                    print(f"[tts] {e}", file=sys.stderr)
+                box.append(IsolatedResult("", 0, False, cancel.is_set(), None, None))
+
+        thread = threading.Thread(target=worker, name="fish-tts", daemon=True)
+        thread.start()
+        thread.join()
+        if box:
+            return box[0]
+        return IsolatedResult("", 0, False, cancel.is_set(), None, None)
 
     async def speak(
         self,
@@ -163,6 +173,18 @@ class IsolatedFishTts:
         extra = w3c_trace_headers(self.trace_headers)
         if not extra:
             extra = {"traceparent": make_traceparent()}
+        if env_debug():
+            logger.debug(
+                "tts.start voice={} model={} format={} sr={} latency={} speed={} chars={} trace={}",
+                self.voice_id,
+                self.model,
+                self.audio_format,
+                self.sample_rate,
+                self.latency,
+                self.speed,
+                len(sent_text),
+                extra.get("traceparent", ""),
+            )
         got_audio = False
         ttfa_ms: float | None = None
         err_status: int | None = None
@@ -229,18 +251,48 @@ class IsolatedFishTts:
                         config=cfg,
                         model=cast(Model, self.model),
                     )
-                    async for chunk in stream:
-                        if cancel.is_set():
-                            break
-                        if chunk:
-                            if not got_audio:
-                                got_audio = True
-                                ttfa_ms = (time.perf_counter() - t0) * 1000
-                                print("  [tts first audio ttfa]", flush=True)
-                            sink.write(chunk)
+                    it = aiter(stream)
+                    pending: asyncio.Task[Any] = asyncio.create_task(_anext_chunk(it))
+                    try:
+                        while True:
+                            if cancel.is_set():
+                                if env_debug():
+                                    logger.debug("tts.cancel before/during stream")
+                                await close_client()
+                                break
+                            if not await _wait_task(pending, ANEXT_POLL_S):
+                                continue
+                            try:
+                                chunk = pending.result()
+                            except StopAsyncIteration:
+                                break
+                            pending = asyncio.create_task(_anext_chunk(it))
+                            if chunk:
+                                if not got_audio:
+                                    got_audio = True
+                                    ttfa_ms = (time.perf_counter() - t0) * 1000
+                                    print("  [tts first audio ttfa]", flush=True)
+                                    if env_debug():
+                                        logger.debug(
+                                            "tts.first_audio ttfa_ms={:.0f} chunk={}",
+                                            ttfa_ms,
+                                            len(chunk),
+                                        )
+                                if cancel.is_set():
+                                    await close_client()
+                                    break
+                                sink.write(chunk)
+                    finally:
+                        if not pending.done():
+                            pending.cancel()
+                            with contextlib.suppress(BaseException):
+                                await pending
                     break
-                except (asyncio.CancelledError, GeneratorExit):
-                    break
+                except (asyncio.CancelledError, GeneratorExit) as exc:
+                    await close_client()
+                    if cancel.is_set() or _is_cancel_noise(exc):
+                        break
+                    raise
                 except BaseException as exc:
                     if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                         raise
@@ -271,6 +323,12 @@ class IsolatedFishTts:
         finally:
             sink.finish(kill=cancel.is_set())
             await close_client()
+
+        if not got_audio and not cancel.is_set() and err_status is None:
+            print(
+                f"[tts] no audio voice={self.voice_id} model={self.model}",
+                file=sys.stderr,
+            )
 
         full = sent_text or "".join(acc.flushed)
         spoken = _spoken_prefix(
@@ -335,6 +393,14 @@ def _tee_text_events(
                 acc.flushed.append(ev.text)
                 if acc.ttfs_ms is None:
                     acc.ttfs_ms = (time.perf_counter() - t0) * 1000
+                    if env_debug():
+                        logger.debug(
+                            "tts.text_event chars={} ttfs_ms={:.0f}",
+                            len(ev.text),
+                            acc.ttfs_ms,
+                        )
+            elif isinstance(ev, FlushEvent) and env_debug():
+                logger.debug("tts.flush")
             yield ev
 
     return gen()
@@ -383,9 +449,50 @@ def _root_exc(exc: BaseException) -> BaseException:
     return cur
 
 
+async def _anext_chunk(it: AsyncIterator[Any]) -> Any:
+    return await anext(it)
+
+
+async def _wait_task(task: asyncio.Task[Any], wait_s: float) -> bool:
+    """True if task finished. Timeout does not cancel it (wait_for would kill Fish WS)."""
+    done, _ = await asyncio.wait({task}, timeout=wait_s)
+    return bool(done)
+
+
+def _isolated_run(coro: Coroutine[Any, Any, IsolatedResult]) -> IsolatedResult:
+    """Fresh loop for Fish WS. Close the client on cancel; do not aclose the iterator."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        if not loop.is_closed() and not loop.is_running():
+            with contextlib.suppress(BaseException):
+                loop.run_until_complete(_quiet_shutdown(loop))
+        if not loop.is_closed():
+            loop.close()
+        asyncio.set_event_loop(None)
+
+
+async def _quiet_shutdown(loop: asyncio.AbstractEventLoop) -> None:
+    current = asyncio.current_task()
+    pending = [task for task in asyncio.all_tasks(loop) if task is not current]
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
 def _is_cancel_noise(exc: BaseException) -> bool:
+    if isinstance(exc, (asyncio.CancelledError, GeneratorExit)):
+        return True
     msg = str(exc).lower()
-    return "athrow" in msg or "cancel scope" in msg or "generator didn't stop" in msg
+    return (
+        "athrow" in msg
+        or "cancel scope" in msg
+        or "generator didn't stop" in msg
+        or "different task than it was entered" in msg
+    )
 
 
 def _classify_fish_exc(exc: BaseException) -> tuple[bool, int | None, str]:

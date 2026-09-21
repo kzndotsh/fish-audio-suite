@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
 import json
 import os
 import signal
@@ -26,6 +25,7 @@ from fish_audio_suite_kit import (
     FishHttpError,
     LatencySnapshot,
     SuiteDefaults,
+    ensure_lead_cue,
     fish_backoff_seconds,
     is_asr_hallucination,
     is_backchannel,
@@ -37,6 +37,7 @@ from fish_audio_suite_kit import (
     scrub_asr,
     scrub_tts,
     should_retry_fish_status,
+    spread_cues,
     trace_id_of,
 )
 from fish_audio_suite_voice.barge import (
@@ -44,26 +45,74 @@ from fish_audio_suite_voice.barge import (
     post_speak_cooldown_s,
     record_utterance,
 )
+from fish_audio_suite_voice.debug import (
+    configure_voice_logging,
+    env_debug,
+    header_meta,
+    logger,
+    public_meta,
+)
 from fish_audio_suite_voice.live import IsolatedFishTts
-from fish_audio_suite_voice.playback import FileSink, make_sink
+from fish_audio_suite_voice.playback import FileSink, PortAudioMissingError, make_sink
 
 HISTORY_TURNS = 20
 STOP_RECORD = threading.Event()
-SECRETS_PATH = Path.home() / ".secrets" / "ai.env"
+DEFAULT_ENV_FILE = Path(".env")
 
 
-def _load_dotenv(path: Path) -> None:
+class _TurnSignals:
+    cancel: threading.Event | None = None
+    llm_cancel: asyncio.Event | None = None
+
+
+TURN = _TurnSignals()
+
+
+def request_quit() -> None:
+    """SIGINT: stop mic listen and cancel in-flight LLM/TTS. Sticky until process exit."""
+    STOP_RECORD.set()
+    if TURN.cancel is not None:
+        TURN.cancel.set()
+    if TURN.llm_cancel is not None:
+        TURN.llm_cancel.set()
+
+
+def _load_dotenv(path: Path) -> bool:
+    """Fill os.environ from KEY=VAL lines. Existing keys win. Returns whether the file existed."""
     if not path.is_file():
-        return
+        return False
     for raw in path.read_text(encoding="utf-8").splitlines():
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
+        if line.startswith("export "):
+            line = line[7:].strip()
         key, _, val = line.partition("=")
         key = key.strip()
         val = val.strip().strip("'").strip('"')
         if key and key not in os.environ:
             os.environ[key] = val
+    return True
+
+
+def apply_cli_env_files(paths: list[Path], *, required: bool) -> list[Path]:
+    """Load dotenv files in order. First file wins per key. Process env already wins."""
+    loaded: list[Path] = []
+    seen: set[Path] = set()
+    for path in paths:
+        expanded = path.expanduser()
+        try:
+            resolved = expanded.resolve()
+        except OSError:
+            resolved = expanded
+        if resolved in seen:
+            continue
+        if _load_dotenv(expanded):
+            seen.add(resolved)
+            loaded.append(path)
+        elif required:
+            print(f"fish-voice: --env-file not found: {path}", file=sys.stderr)
+    return loaded
 
 
 def _parse_device(raw: str | None) -> str | int | None:
@@ -76,7 +125,6 @@ def _parse_device(raw: str | None) -> str | int | None:
 
 
 def cfg() -> dict[str, Any]:
-    _load_dotenv(SECRETS_PATH)
     d = SuiteDefaults()
     voice_id = os.environ.get("FISH_VOICE_ID", "").strip()
     return {
@@ -142,6 +190,8 @@ async def fish_asr(
         data["language"] = language
     last_error: FishHttpError | None = None
     body: Any = None
+    asr_status = 0
+    asr_headers: dict[str, str] = {}
     async with httpx.AsyncClient(timeout=60.0) as client:
         for attempt in range(FISH_RETRY_ATTEMPTS):
             try:
@@ -174,11 +224,22 @@ async def fish_asr(
                     continue
                 raise last_error
             body = r.json()
+            asr_status = r.status_code
+            raw_headers = getattr(r, "headers", None)
+            asr_headers = dict(raw_headers) if raw_headers is not None else {}
             break
         else:
             raise last_error or FishHttpError(502, "Fish upstream unreachable")
     if not isinstance(body, dict):
         return ""
+    if env_debug():
+        logger.debug(
+            "fish.asr status={} language_sent={!r} headers={} meta={}",
+            asr_status,
+            language or "auto",
+            header_meta(asr_headers),
+            public_meta(body),
+        )
     return scrub_asr((body.get("text") or "").strip())
 
 
@@ -207,8 +268,22 @@ async def llm_token_stream(
     }
     if "openrouter.ai" in base and _want_nitro(model, base):
         payload["provider"] = {"sort": "throughput"}
+    if env_debug():
+        payload["stream_options"] = {"include_usage": True}
+        logger.debug(
+            "llm.request url={} model={} nitro={} msgs={}",
+            url,
+            route_model,
+            _want_nitro(model, base),
+            len(messages),
+        )
     yielded = 0
     last_finish: str | None = None
+    last_usage: dict[str, Any] | None = None
+    last_id = ""
+    last_model = ""
+    last_provider = ""
+    last_native = ""
     try:
         async with (
             httpx.AsyncClient(timeout=120.0) as client,
@@ -221,6 +296,12 @@ async def llm_token_stream(
                     file=sys.stderr,
                 )
                 return
+            if env_debug():
+                logger.debug(
+                    "llm.response status={} headers={}",
+                    resp.status_code,
+                    header_meta(resp.headers),
+                )
             async for line in resp.aiter_lines():
                 if cancel is not None and cancel.is_set():
                     break
@@ -240,6 +321,18 @@ async def llm_token_stream(
                 if err:
                     print(f"[llm] stream error: {err}", file=sys.stderr)
                     break
+                usage = obj.get("usage")
+                if isinstance(usage, dict):
+                    last_usage = usage
+                oid = obj.get("id")
+                if isinstance(oid, str) and oid:
+                    last_id = oid
+                omodel = obj.get("model")
+                if isinstance(omodel, str) and omodel:
+                    last_model = omodel
+                oprov = obj.get("provider")
+                if isinstance(oprov, str) and oprov:
+                    last_provider = oprov
                 choices = obj.get("choices") or []
                 if not isinstance(choices, list) or not choices:
                     continue
@@ -249,6 +342,9 @@ async def llm_token_stream(
                 fr = ch0.get("finish_reason")
                 if isinstance(fr, str):
                     last_finish = fr
+                nfr = ch0.get("native_finish_reason")
+                if isinstance(nfr, str) and nfr:
+                    last_native = nfr
                 delta = ch0.get("delta") or {}
                 if not isinstance(delta, dict):
                     delta = {}
@@ -274,6 +370,17 @@ async def llm_token_stream(
         if "athrow" in msg or "generator didn't stop" in msg or "cancel scope" in msg:
             return
         print(f"[llm] {e}", file=sys.stderr)
+    if env_debug():
+        logger.debug(
+            "llm.done id={} model={} provider={} finish={} native_finish={} usage={} deltas={}",
+            last_id,
+            last_model or route_model,
+            last_provider,
+            last_finish,
+            last_native,
+            last_usage,
+            yielded,
+        )
     if yielded == 0:
         print(
             f"[llm] empty reply (model={route_model} finish={last_finish!r})",
@@ -346,8 +453,10 @@ async def run_loop(c: dict[str, Any]) -> int:
     tts_playing = False
     playback = c["playback"]
     print(
-        f"fish-voice ready | tts={c['fish_tts_model']} latency={c['fish_latency']} "
-        f"playback={playback} | llm={c['llm_backend']}:{c['llm_model']} | Ctrl+C quit",
+        f"fish-voice ready | tts={c['fish_tts_model']} voice={c['fish_voice_id']} "
+        f"asr_lang={c['fish_asr_language'] or 'auto'} latency={c['fish_latency']} "
+        f"playback={playback} | "
+        f"llm={c['llm_backend']}:{c['llm_model']} | Ctrl+C quit",
         flush=True,
     )
 
@@ -370,13 +479,22 @@ async def run_loop(c: dict[str, Any]) -> int:
 
     while True:
         print("listening…")
-        STOP_RECORD.clear()
-        wav = await asyncio.to_thread(record_utterance, device, STOP_RECORD)
+        if env_debug():
+            logger.debug("listen.waiting device={}", device)
+        try:
+            wav = await asyncio.to_thread(record_utterance, device, STOP_RECORD)
+        except PortAudioMissingError as e:
+            print(e, file=sys.stderr)
+            return 2
         if STOP_RECORD.is_set():
             print("\nbye")
             return 0
         if not wav:
+            if env_debug():
+                logger.debug("listen.dropped (too short or none)")
             continue
+        if env_debug():
+            logger.debug("listen.wav bytes={}", len(wav))
         t0 = time.perf_counter()
         asr_parent = make_traceparent()
         turn_trace = trace_id_of(asr_parent)
@@ -397,15 +515,19 @@ async def run_loop(c: dict[str, Any]) -> int:
             print(f"[asr] {e}", file=sys.stderr)
             continue
         asr_ms = (time.perf_counter() - t0) * 1000
+        if is_backchannel(text):
+            if env_debug():
+                logger.debug("asr skip backchannel chars={}", len(text.strip()))
+            continue
         if is_asr_hallucination(text):
             print("[asr skip hallucination]", file=sys.stderr)
+            if env_debug():
+                logger.debug("asr skip hallucination chars={}", len(text.strip()))
             continue
         if is_quit_utterance(text):
             print("\nbye")
             return 0
         if tts_playing:
-            continue
-        if is_backchannel(text):
             continue
         if text.strip() == last_user.strip():
             continue
@@ -420,6 +542,8 @@ async def run_loop(c: dict[str, Any]) -> int:
 
         cancel = threading.Event()
         llm_cancel = asyncio.Event()
+        TURN.cancel = cancel
+        TURN.llm_cancel = llm_cancel
         reply_parts: list[str] = []
         t_llm = time.perf_counter()
         first_tok_ms: list[float] = []
@@ -449,12 +573,14 @@ async def run_loop(c: dict[str, Any]) -> int:
             llm_ttft=first_tok_ms[0] if first_tok_ms else None,
             trace_id=turn_trace,
         )
+        if STOP_RECORD.is_set():
+            print("\nbye")
+            return 0
         if reply:
-            scrubbed = normalize_cues(scrub_tts(reply))
+            scrubbed = spread_cues(ensure_lead_cue(normalize_cues(scrub_tts(reply))))
             if is_tts_junk(scrubbed):
                 print("  (skip junk TTS)", flush=True)
             else:
-                cancel.clear()
                 barge = BargeGate(device=device)
                 barge.start_after_bleed(cancel)
                 tts_playing = True
@@ -463,14 +589,33 @@ async def run_loop(c: dict[str, Any]) -> int:
                     path=None,
                     sample_rate=c["fish_sample_rate"],
                     device=device,
+                    cancel=cancel,
                 )
                 tts.trace_headers = {
                     "traceparent": make_traceparent(trace_id=turn_trace),
                 }
                 result = await asyncio.to_thread(tts.speak_isolated, scrubbed, sink, cancel)
                 tts_playing = False
+                if env_debug():
+                    logger.debug(
+                        "tts.done cancelled={} audio={} bytes={} spoken_chars={} err={} {}",
+                        result.cancelled,
+                        result.got_audio,
+                        result.bytes_played,
+                        len(result.spoken_so_far),
+                        result.error_status,
+                        result.error_message or "",
+                    )
                 if result.error_status in {401, 402, 403}:
                     return 2
+                if not result.got_audio:
+                    if result.cancelled:
+                        print("  [tts cancelled before audio]", flush=True)
+                    elif result.error_status is None:
+                        print(
+                            f"  [tts silent] voice={c['fish_voice_id']} model={c['fish_tts_model']}",
+                            flush=True,
+                        )
                 snapshot = LatencySnapshot(
                     srt=asr_ms,
                     llm_ttft=first_tok_ms[0] if first_tok_ms else None,
@@ -486,9 +631,13 @@ async def run_loop(c: dict[str, Any]) -> int:
         print(f"  {snapshot.log_line()}", flush=True)
         cancel.set()
         llm_cancel.set()
-        await asyncio.sleep(0)
-        with contextlib.suppress(asyncio.CancelledError):
-            await asyncio.sleep(post_speak_cooldown_s())
+        TURN.cancel = None
+        TURN.llm_cancel = None
+        if STOP_RECORD.is_set() or await asyncio.to_thread(
+            STOP_RECORD.wait, post_speak_cooldown_s()
+        ):
+            print("\nbye")
+            return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -499,13 +648,35 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="sounddevice | file | stdout | mpv (overrides FISH_PLAYBACK)",
     )
+    p.add_argument(
+        "--env-file",
+        action="append",
+        default=[],
+        type=Path,
+        metavar="PATH",
+        help="dotenv to load (repeatable). Default: ./.env if it exists. Process env wins",
+    )
+    p.add_argument(
+        "--debug",
+        action="store_true",
+        help="verbose stderr logs: VAD, barge, Fish WS events, ASR/LLM meta (or FISH_VOICE_DEBUG=1)",
+    )
     args = p.parse_args(argv)
+    if args.env_file:
+        loaded = apply_cli_env_files(args.env_file, required=True)
+    else:
+        loaded = apply_cli_env_files([DEFAULT_ENV_FILE], required=False)
+    if loaded:
+        print("env: " + " ".join(str(p) for p in loaded), flush=True)
+    debug = bool(args.debug or env_debug())
+    configure_voice_logging(debug=debug)
     c = cfg()
     if args.playback:
         c["playback"] = args.playback
 
     def _sigint(*_a: Any) -> None:
-        STOP_RECORD.set()
+        request_quit()
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
 
     signal.signal(signal.SIGINT, _sigint)
 

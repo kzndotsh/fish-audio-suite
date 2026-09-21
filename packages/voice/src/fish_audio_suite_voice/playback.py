@@ -5,9 +5,35 @@ from __future__ import annotations
 import contextlib
 import subprocess
 import sys
+import threading
 import wave
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
+
+from fish_audio_suite_voice.aec import tap_clear, tap_playback
+
+PORTAUDIO_HINT = """sounddevice needs the PortAudio C library (the Python wheel does not ship it).
+  Debian/Ubuntu: sudo apt install libportaudio2
+  Fedora: sudo dnf install portaudio
+  macOS: brew install portaudio
+  NixOS: nix run .#fish-audio-suite-voice   # flake prefixes LD_LIBRARY_PATH
+          or ./packages/voice/dev.sh"""
+
+
+class PortAudioMissingError(OSError):
+    """sounddevice imported, but libportaudio is not on the loader path."""
+
+
+def missing_portaudio(exc: OSError) -> PortAudioMissingError:
+    return PortAudioMissingError(PORTAUDIO_HINT)
+
+
+def load_sounddevice() -> Any:
+    try:
+        import sounddevice as sd
+    except OSError as exc:
+        raise missing_portaudio(exc) from exc
+    return sd
 
 
 @runtime_checkable
@@ -74,16 +100,24 @@ class StdoutSink:
 
 
 class SounddeviceSink:
-    def __init__(self, *, sample_rate: int = 44100, device: str | int | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        sample_rate: int = 44100,
+        device: str | int | None = None,
+        cancel: threading.Event | None = None,
+    ) -> None:
         self.sample_rate = sample_rate
         self.device = device
+        self._cancel = cancel
         self._stream: Any = None
         self._played = 0
 
     def start(self) -> None:
-        import sounddevice as sd
+        sd = load_sounddevice()
 
         self._played = 0
+        tap_clear()
         self._stream = sd.RawOutputStream(
             samplerate=self.sample_rate,
             channels=1,
@@ -95,8 +129,11 @@ class SounddeviceSink:
     def write(self, chunk: bytes) -> None:
         if not chunk or self._stream is None:
             return
+        if self._cancel is not None and self._cancel.is_set():
+            return
         self._stream.write(chunk)
         self._played += len(chunk)
+        tap_playback(chunk, self.sample_rate)
 
     def finish(self, *, kill: bool = False) -> None:
         stream = self._stream
@@ -112,6 +149,7 @@ class SounddeviceSink:
             pass
         with contextlib.suppress(Exception):
             stream.close()
+        tap_clear()
 
     def bytes_played(self) -> int:
         return self._played
@@ -184,6 +222,7 @@ def make_sink(
     path: Path | None = None,
     sample_rate: int = 44100,
     device: str | int | None = None,
+    cancel: threading.Event | None = None,
 ) -> PlaybackSink:
     key = name.strip().lower()
     if key == "file":
@@ -195,5 +234,5 @@ def make_sink(
     if key == "mpv":
         return MpvSink()
     if key in {"sounddevice", "speakers", "pcm"}:
-        return SounddeviceSink(sample_rate=sample_rate, device=device)
+        return SounddeviceSink(sample_rate=sample_rate, device=device, cancel=cancel)
     raise ValueError(f"unknown playback sink {name!r}")
