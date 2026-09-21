@@ -37,7 +37,6 @@ from fish_audio_suite_kit import (
     scrub_asr,
     scrub_tts,
     should_retry_fish_status,
-    spread_cues,
     trace_id_of,
 )
 from fish_audio_suite_voice.barge import (
@@ -577,7 +576,7 @@ async def run_loop(c: dict[str, Any]) -> int:
             print("\nbye")
             return 0
         if reply:
-            scrubbed = spread_cues(ensure_lead_cue(normalize_cues(scrub_tts(reply))))
+            scrubbed = ensure_lead_cue(normalize_cues(scrub_tts(reply)))
             if is_tts_junk(scrubbed):
                 print("  (skip junk TTS)", flush=True)
             else:

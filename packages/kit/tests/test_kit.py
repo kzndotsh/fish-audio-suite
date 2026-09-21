@@ -24,7 +24,6 @@ from fish_audio_suite_kit import (
     scrub_tts,
     should_retry_fish_status,
     skip_empty_delta,
-    spread_cues,
     trace_id_of,
     w3c_trace_headers,
 )
@@ -71,27 +70,6 @@ def test_ensure_lead_cue_only_when_missing() -> None:
     assert ensure_lead_cue("I'll call you back [chuckle] in a minute").startswith("I'll")
     assert ensure_lead_cue("yeah i hear you") == "[clear] yeah i hear you"
     assert ensure_lead_cue("  ") == "  "
-
-
-def test_spread_cues_skips_short_replies() -> None:
-    short = "[curious] yeah i hear you. what's up?"
-    assert spread_cues(short) == short
-
-
-def test_spread_cues_beats_long_untagged_story() -> None:
-    story = (
-        "[sweetly] of course! let me spin a tale. "
-        "once upon a time there was a girl. "
-        "she found a book in the moss. "
-        "gold letters shimmered on the cover. "
-        "she opened it and began to read. "
-        "the village never saw her the same way again."
-    )
-    out = spread_cues(story)
-    assert out.startswith("[sweetly]")
-    assert out.count("[") >= 3
-    assert "[calm]" in out or "[curious]" in out or "[soft tone]" in out
-    assert "[sweetly] of course" in out
 
 
 def test_pause_alias_vs_moss_duration() -> None:
@@ -256,7 +234,11 @@ def test_suite_defaults_and_timing() -> None:
     assert "mid-sentence" in DEFAULT_SYSTEM_PROMPT
     assert "Leave [cough] as [cough]" in DEFAULT_SYSTEM_PROMPT
     assert "do not tag every sentence" in DEFAULT_SYSTEM_PROMPT
+    assert "You write every cue" in DEFAULT_SYSTEM_PROMPT
     assert "every two sentences" in DEFAULT_SYSTEM_PROMPT
+    assert "[excited]" in DEFAULT_SYSTEM_PROMPT
+    assert "vague one-word tags" in DEFAULT_SYSTEM_PROMPT
+    assert "[playful], [whispering]" not in DEFAULT_SYSTEM_PROMPT
     line = LatencySnapshot(ttfa=12.4).log_line()
     assert "ttfa=12ms" in line
     assert "srt=-1" in line
