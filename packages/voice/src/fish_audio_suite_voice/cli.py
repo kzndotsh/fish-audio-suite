@@ -22,7 +22,6 @@ from typing import Any
 import httpx
 
 from fish_audio_suite_kit import (
-    DEFAULT_SYSTEM_PROMPT,
     LatencySnapshot,
     SuiteDefaults,
     is_asr_hallucination,
@@ -32,17 +31,6 @@ from fish_audio_suite_kit import (
     normalize_cues,
     scrub_asr,
     scrub_tts,
-)
-from fish_audio_suite_kit.defaults import (
-    DEFAULT_CHUNK_LENGTH,
-    DEFAULT_LATENCY,
-    DEFAULT_MIN_CHUNK_LENGTH,
-    DEFAULT_REPETITION_PENALTY,
-    DEFAULT_SAMPLE_RATE,
-    DEFAULT_SPEED,
-    DEFAULT_TEMPERATURE,
-    DEFAULT_TOP_P,
-    DEFAULT_TTS_MODEL,
 )
 from fish_audio_suite_voice.barge import (
     POST_SPEAK_COOLDOWN_S,
@@ -83,27 +71,25 @@ def _parse_device(raw: str | None) -> str | int | None:
 
 def cfg() -> dict[str, Any]:
     _load_dotenv(SECRETS_PATH)
-    defaults = SuiteDefaults()
+    d = SuiteDefaults()
     voice_id = os.environ.get("FISH_VOICE_ID", "").strip()
     return {
         "fish_api_key": os.environ.get("FISH_API_KEY", "").strip(),
         "fish_voice_id": voice_id,
-        "fish_tts_model": os.environ.get("FISH_TTS_MODEL", DEFAULT_TTS_MODEL),
-        "fish_latency": os.environ.get("FISH_LATENCY", DEFAULT_LATENCY),
-        "fish_speed": float(os.environ.get("FISH_SPEED", str(DEFAULT_SPEED))),
-        "fish_temperature": float(os.environ.get("FISH_TEMPERATURE", str(DEFAULT_TEMPERATURE))),
-        "fish_top_p": float(os.environ.get("FISH_TOP_P", str(DEFAULT_TOP_P))),
+        "fish_tts_model": os.environ.get("FISH_TTS_MODEL", d.tts_model),
+        "fish_latency": os.environ.get("FISH_LATENCY", d.latency),
+        "fish_speed": float(os.environ.get("FISH_SPEED", str(d.speed))),
+        "fish_temperature": float(os.environ.get("FISH_TEMPERATURE", str(d.temperature))),
+        "fish_top_p": float(os.environ.get("FISH_TOP_P", str(d.top_p))),
         "fish_rep_penalty": float(
-            os.environ.get("FISH_REPETITION_PENALTY", str(DEFAULT_REPETITION_PENALTY))
+            os.environ.get("FISH_REPETITION_PENALTY", str(d.repetition_penalty))
         ),
-        "fish_chunk": int(os.environ.get("FISH_CHUNK_LENGTH", str(DEFAULT_CHUNK_LENGTH))),
-        "fish_min_chunk": int(
-            os.environ.get("FISH_MIN_CHUNK_LENGTH", str(DEFAULT_MIN_CHUNK_LENGTH))
-        ),
+        "fish_chunk": int(os.environ.get("FISH_CHUNK_LENGTH", str(d.chunk_length))),
+        "fish_min_chunk": int(os.environ.get("FISH_MIN_CHUNK_LENGTH", str(d.min_chunk_length))),
         "fish_volume": float(os.environ.get("FISH_VOLUME", "0")),
-        "fish_sample_rate": int(os.environ.get("FISH_SAMPLE_RATE", str(DEFAULT_SAMPLE_RATE))),
+        "fish_sample_rate": int(os.environ.get("FISH_SAMPLE_RATE", str(d.sample_rate))),
         "playback": os.environ.get("FISH_PLAYBACK", "sounddevice"),
-        "system_prompt": os.environ.get("FISH_SYSTEM_PROMPT", DEFAULT_SYSTEM_PROMPT),
+        "system_prompt": os.environ.get("FISH_SYSTEM_PROMPT", d.system_prompt),
         "device": os.environ.get("FISH_VOICE_DEVICE"),
         "llm_backend": os.environ.get("FISH_LLM_BACKEND", "openrouter"),
         "llm_base": os.environ.get(
@@ -117,7 +103,6 @@ def cfg() -> dict[str, Any]:
         "llm_model": (
             os.environ.get("FISH_LLM_MODEL") or os.environ.get("OPENROUTER_MODEL") or ""
         ).strip(),
-        "defaults": defaults,
     }
 
 

@@ -31,7 +31,7 @@ spoken = normalize_cues(scrub_tts(llm_text))
 cut = next_tts_cut(spoken)  # sentence end, or ~40 chars; -1 = keep buffering
 ```
 
-Also: `is_tts_junk`, `scrub_asr`, `is_asr_hallucination`, `is_backchannel`, `SuiteDefaults`, `LatencySnapshot`.
+Also: `extract_quoted_speech`, `is_tts_junk`, `scrub_asr`, `is_asr_hallucination`, `is_backchannel`, `is_quit_utterance`, `SuiteDefaults`, `LatencySnapshot`.
 
 ## proxy
 

@@ -13,20 +13,16 @@ from typing import Any, cast
 from fishaudio import AsyncFishAudio, FlushEvent, TextEvent
 from fishaudio.types import AudioFormat, LatencyMode, Model, Prosody, TTSConfig
 
-from fish_audio_suite_kit import next_tts_cut, normalize_cues, scrub_tts, skip_empty_delta
-from fish_audio_suite_kit.defaults import (
-    DEFAULT_CHUNK_LENGTH,
-    DEFAULT_LATENCY,
-    DEFAULT_MIN_CHUNK_LENGTH,
-    DEFAULT_REPETITION_PENALTY,
-    DEFAULT_SAMPLE_RATE,
-    DEFAULT_SPEED,
-    DEFAULT_TEMPERATURE,
-    DEFAULT_TOP_P,
-    DEFAULT_TTS_MODEL,
-    DEFAULT_TTS_PARTIAL_CHARS,
+from fish_audio_suite_kit import (
+    SuiteDefaults,
+    next_tts_cut,
+    normalize_cues,
+    scrub_tts,
+    skip_empty_delta,
 )
 from fish_audio_suite_voice.playback import PlaybackSink
+
+_STOCK = SuiteDefaults()
 
 
 @dataclass(frozen=True)
@@ -47,18 +43,18 @@ class IsolatedFishTts:
         *,
         api_key: str,
         voice_id: str,
-        model: str = DEFAULT_TTS_MODEL,
-        latency: str = DEFAULT_LATENCY,
-        speed: float = DEFAULT_SPEED,
+        model: str = _STOCK.tts_model,
+        latency: str = _STOCK.latency,
+        speed: float = _STOCK.speed,
         audio_format: str = "pcm",
-        sample_rate: int = DEFAULT_SAMPLE_RATE,
-        temperature: float = DEFAULT_TEMPERATURE,
-        top_p: float = DEFAULT_TOP_P,
-        repetition_penalty: float = DEFAULT_REPETITION_PENALTY,
-        chunk_length: int = DEFAULT_CHUNK_LENGTH,
-        min_chunk_length: int = DEFAULT_MIN_CHUNK_LENGTH,
+        sample_rate: int = _STOCK.sample_rate,
+        temperature: float = _STOCK.temperature,
+        top_p: float = _STOCK.top_p,
+        repetition_penalty: float = _STOCK.repetition_penalty,
+        chunk_length: int = _STOCK.chunk_length,
+        min_chunk_length: int = _STOCK.min_chunk_length,
         volume: float = 0.0,
-        partial_chars: int = DEFAULT_TTS_PARTIAL_CHARS,
+        partial_chars: int = _STOCK.tts_partial_chars,
     ) -> None:
         self.api_key = api_key
         self.voice_id = voice_id
@@ -102,7 +98,7 @@ class IsolatedFishTts:
         sink: PlaybackSink,
         cancel: threading.Event,
     ) -> IsolatedResult:
-        prepared = normalize_cues(scrub_tts(text, dialogue_only=False))
+        prepared = normalize_cues(scrub_tts(text))
 
         async def events() -> AsyncIterator[Any]:
             buf = prepared

@@ -22,22 +22,12 @@ from fastapi.responses import JSONResponse, PlainTextResponse, Response, Streami
 
 from fish_audio_suite_kit import (
     SuiteDefaults,
+    extract_quoted_speech,
     is_asr_hallucination,
     is_tts_junk,
     normalize_cues,
     scrub_asr,
     scrub_tts,
-)
-from fish_audio_suite_kit.defaults import (
-    DEFAULT_ASR_LANGUAGE,
-    DEFAULT_ASR_MODEL,
-    DEFAULT_CHUNK_LENGTH,
-    DEFAULT_FORMAT,
-    DEFAULT_LATENCY,
-    DEFAULT_MIN_CHUNK_LENGTH,
-    DEFAULT_MP3_BITRATE,
-    DEFAULT_SPEED,
-    DEFAULT_TTS_MODEL,
 )
 
 _MEDIA = {
@@ -70,19 +60,18 @@ def _env_bool(name: str, default: str = "0") -> bool:
 
 
 def _runtime_defaults() -> SuiteDefaults:
+    stock = SuiteDefaults()
     return SuiteDefaults(
-        tts_model=os.environ.get("FISH_MODEL", DEFAULT_TTS_MODEL),
-        asr_model=os.environ.get("FISH_ASR_MODEL", DEFAULT_ASR_MODEL),
-        asr_language=os.environ.get("FISH_ASR_LANGUAGE", DEFAULT_ASR_LANGUAGE),
-        latency=os.environ.get("FISH_LATENCY", DEFAULT_LATENCY),
-        chunk_length=int(os.environ.get("FISH_CHUNK_LENGTH", str(DEFAULT_CHUNK_LENGTH))),
-        min_chunk_length=int(
-            os.environ.get("FISH_MIN_CHUNK_LENGTH", str(DEFAULT_MIN_CHUNK_LENGTH))
-        ),
-        audio_format=os.environ.get("FISH_FORMAT", DEFAULT_FORMAT),
-        mp3_bitrate=int(os.environ.get("FISH_MP3_BITRATE", str(DEFAULT_MP3_BITRATE))),
-        speed=float(os.environ.get("FISH_SPEED_SCALE", str(DEFAULT_SPEED))),
-        fish_base=os.environ.get("FISH_BASE", SuiteDefaults().fish_base).rstrip("/"),
+        tts_model=os.environ.get("FISH_MODEL", stock.tts_model),
+        asr_model=os.environ.get("FISH_ASR_MODEL", stock.asr_model),
+        asr_language=os.environ.get("FISH_ASR_LANGUAGE", stock.asr_language),
+        latency=os.environ.get("FISH_LATENCY", stock.latency),
+        chunk_length=int(os.environ.get("FISH_CHUNK_LENGTH", str(stock.chunk_length))),
+        min_chunk_length=int(os.environ.get("FISH_MIN_CHUNK_LENGTH", str(stock.min_chunk_length))),
+        audio_format=os.environ.get("FISH_FORMAT", stock.audio_format),
+        mp3_bitrate=int(os.environ.get("FISH_MP3_BITRATE", str(stock.mp3_bitrate))),
+        speed=float(os.environ.get("FISH_SPEED_SCALE", str(stock.speed))),
+        fish_base=os.environ.get("FISH_BASE", stock.fish_base).rstrip("/"),
     )
 
 
@@ -131,7 +120,10 @@ def _resolve_asr_model(model: str | None, default: str) -> str:
 
 
 def prepare_tts_text(raw_input: str, *, dialogue_only: bool) -> str:
-    return normalize_cues(scrub_tts(raw_input, dialogue_only=dialogue_only))
+    cleaned = scrub_tts(raw_input)
+    if dialogue_only:
+        cleaned = extract_quoted_speech(cleaned)
+    return normalize_cues(cleaned)
 
 
 @asynccontextmanager
@@ -315,7 +307,7 @@ async def transcriptions(
         len(text),
     )
     detected_lang = data.get("language") or data.get("language_code") or lang
-    if is_asr_hallucination(text, detected_lang):
+    if is_asr_hallucination(text):
         log.info("asr drop hallucination lang=%r chars=%d", detected_lang, len(text))
         text = ""
 

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import re
-import unicodedata
 
-from fish_audio_suite_kit.defaults import DEFAULT_TTS_PARTIAL_CHARS
+from fish_audio_suite_kit.defaults import SuiteDefaults
+
+_PARTIAL_CHARS = SuiteDefaults().tts_partial_chars
 
 _THOUGHTS_RE = re.compile(
     r"<\s*(?:Thoughts?|thinking|reasoning|think)\s*>.*?"
@@ -117,8 +118,10 @@ _EMOJI_RE = re.compile(
     flags=re.UNICODE,
 )
 
+_QUOTES = frozenset({'"', "“", "”"})
 
-def cjk_latin_counts(s: str) -> tuple[int, int]:
+
+def _cjk_latin_counts(s: str) -> tuple[int, int]:
     cjk = latin = 0
     for ch in s:
         o = ord(ch)
@@ -135,11 +138,22 @@ def cjk_latin_counts(s: str) -> tuple[int, int]:
     return cjk, latin
 
 
+def _folded(text: str) -> str:
+    s = re.sub(r"[.!,?]+", "", (text or "").strip().lower())
+    return re.sub(r"\s+", " ", s)
+
+
+def _too_thin(s: str, *, min_latin: int) -> bool:
+    if not s.strip() or len(s.strip()) <= 2:
+        return True
+    return _cjk_latin_counts(s)[1] < min_latin
+
+
 def _looks_like_narration(text: str) -> bool:
     s = text.strip()
     if not s:
         return False
-    if '"' in s or "\u201c" in s or "\u201d" in s:
+    if any(q in s for q in _QUOTES):
         return False
     if not _NARRATION_RE.match(s):
         return False
@@ -154,7 +168,7 @@ def _strip_markdownish(text: str) -> str:
     return _MD_WRAP_RE.sub("", cleaned)
 
 
-def scrub_tts(text: str, *, dialogue_only: bool = False) -> str:
+def scrub_tts(text: str) -> str:
     """Strip thoughts, stage junk, markdown, MOSS/TTSD markup; keep Fish [cues]."""
     if not text:
         return ""
@@ -166,61 +180,55 @@ def scrub_tts(text: str, *, dialogue_only: bool = False) -> str:
     cleaned = _strip_markdownish(cleaned)
     cleaned = re.sub(r"[ \t]+\n", "\n", cleaned)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
-    cleaned = cleaned.strip()
-    if not cleaned:
+    return cleaned.strip()
+
+
+def extract_quoted_speech(text: str) -> str:
+    """Keep quoted dialogue (optional leading [cue]); drop stage notes."""
+    if not text:
         return ""
-
-    if dialogue_only:
-        parts: list[str] = []
-        for m in _DIALOGUE_RE.finditer(cleaned):
-            inner = (m.group(1) or "").strip()
-            if not inner or (inner.startswith("[") and inner.endswith("]")):
-                continue
-            if sum(ch.isascii() and ch.isalpha() for ch in inner) < 2:
-                continue
-            chunk = m.group(0).strip()
-            if chunk:
-                parts.append(chunk)
-        if parts:
-            return " ".join(parts)
-        m = _OPEN_DIALOGUE_RE.match(cleaned.strip())
-        if m:
-            inner = (m.group(1) or "").strip().rstrip('"”').strip()
-            latin = sum(ch.isascii() and ch.isalpha() for ch in inner)
-            cue_only = inner.startswith("[") and "]" in inner[:24] and latin < 3
-            if inner and latin >= 2 and not cue_only:
-                cue = ""
-                cm = re.match(r"(\[[^\]\n]{1,80}\]\s*)", cleaned.strip())
-                if cm:
-                    cue = cm.group(1)
-                return f'{cue}"{inner}"'
-        if any(ch in cleaned for ch in ('"', "“", "”")):
-            return ""
-        return cleaned
-
-    return cleaned
+    parts: list[str] = []
+    for m in _DIALOGUE_RE.finditer(text):
+        inner = (m.group(1) or "").strip()
+        if not inner or (inner.startswith("[") and inner.endswith("]")):
+            continue
+        if _cjk_latin_counts(inner)[1] < 2:
+            continue
+        chunk = m.group(0).strip()
+        if chunk:
+            parts.append(chunk)
+    if parts:
+        return " ".join(parts)
+    stripped = text.strip()
+    m = _OPEN_DIALOGUE_RE.match(stripped)
+    if m:
+        inner = (m.group(1) or "").strip().rstrip('"”').strip()
+        latin = _cjk_latin_counts(inner)[1]
+        cue_only = inner.startswith("[") and "]" in inner[:24] and latin < 3
+        if inner and latin >= 2 and not cue_only:
+            cue = ""
+            cm = re.match(r"(\[[^\]\n]{1,80}\]\s*)", stripped)
+            if cm:
+                cue = cm.group(1)
+            return f'{cue}"{inner}"'
+    if any(ch in text for ch in _QUOTES):
+        return ""
+    return text
 
 
 def is_tts_junk(text: str) -> bool:
-    if not text or not text.strip():
-        return True
-    s = text.strip()
-    if len(s) <= 2:
-        return True
+    s = (text or "").strip()
     if s.count("[") > s.count("]"):
         return True
     bare = re.sub(r"\[[^\]\n]{0,80}\]", " ", s)
-    for q in ('"', "\u201c", "\u201d"):
+    for q in _QUOTES:
         bare = bare.replace(q, " ")
     bare = re.sub(r"\s+", " ", bare).strip()
     if not bare:
         return True
-    cjk, latin = cjk_latin_counts(s)
-    if cjk and latin < 3:
+    if _too_thin(s, min_latin=3):
         return True
-    if latin < 3:
-        return True
-    return bool(_looks_like_narration(s))
+    return _looks_like_narration(s)
 
 
 def scrub_asr(text: str, *, strip_speakers: bool = True) -> str:
@@ -237,33 +245,14 @@ def scrub_asr(text: str, *, strip_speakers: bool = True) -> str:
     return cleaned.strip()
 
 
-def is_asr_hallucination(text: str, language: str | None = None) -> bool:
+def is_asr_hallucination(text: str) -> bool:
     if not text or not text.strip():
         return True
     s = text.strip()
-    if len(s) <= 2:
+    folded = _folded(s)
+    if folded in _EN_HALLUCINATION_PHRASES or "nospeech" in s.lower():
         return True
-    folded = re.sub(r"[.!,?]+$", "", s.lower()).strip()
-    if folded in _EN_HALLUCINATION_PHRASES:
-        return True
-    if "<|nospeech|>" in s.lower() or folded == "nospeech":
-        return True
-    lang = (language or "").strip().lower()
-    if (
-        lang
-        and lang not in {"en", "english", "eng"}
-        and any(
-            x in lang for x in ("zh", "chinese", "ja", "japanese", "ko", "korean", "yue", "cmn")
-        )
-    ):
-        return True
-    cjk, latin = cjk_latin_counts(s)
-    if cjk and latin == 0:
-        return True
-    if cjk >= 1 and latin < 3 and cjk >= latin:
-        return True
-    letters = [ch for ch in s if ch.isalpha()]
-    if not letters and not any(ch.isdigit() for ch in s):
+    if _too_thin(s, min_latin=3):
         return True
     no_emoji = _EMOJI_RE.sub("", s).strip()
     if not no_emoji:
@@ -271,19 +260,15 @@ def is_asr_hallucination(text: str, language: str | None = None) -> bool:
     if _ANGLE_TOKEN_RE.fullmatch(s.replace(" ", "")):
         return True
     tagged = _ANGLE_TOKEN_RE.sub("", s).strip()
-    return bool(not tagged)
+    return not tagged
 
 
 def is_backchannel(text: str) -> bool:
-    s = re.sub(r"[.!,?]+", "", (text or "").strip().lower())
-    s = re.sub(r"\s+", " ", s)
-    return s in _BACKCHANNELS
+    return _folded(text) in _BACKCHANNELS
 
 
 def is_quit_utterance(text: str) -> bool:
-    s = re.sub(r"[.!,?]+", "", (text or "").strip().lower())
-    s = re.sub(r"\s+", " ", s)
-    return s in _QUIT
+    return _folded(text) in _QUIT
 
 
 def _skip_abbreviation(buf: str, end_start: int) -> bool:
@@ -299,7 +284,7 @@ def _skip_abbreviation(buf: str, end_start: int) -> bool:
     return w.lower() in _ABBREVIATIONS
 
 
-def next_tts_cut(buf: str, *, partial_chars: int = DEFAULT_TTS_PARTIAL_CHARS) -> int:
+def next_tts_cut(buf: str, *, partial_chars: int = _PARTIAL_CHARS) -> int:
     """Index to flush into Fish TTS, or -1 to keep buffering."""
     if not buf:
         return -1
@@ -322,10 +307,3 @@ def next_tts_cut(buf: str, *, partial_chars: int = DEFAULT_TTS_PARTIAL_CHARS) ->
 
 def skip_empty_delta(piece: str) -> bool:
     return not (piece or "").strip()
-
-
-def is_punctuation_only(text: str) -> bool:
-    s = (text or "").strip()
-    if not s:
-        return True
-    return all(unicodedata.category(ch).startswith("P") or ch.isspace() for ch in s)

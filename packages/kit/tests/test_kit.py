@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 from fish_audio_suite_kit import (
+    LatencySnapshot,
+    SuiteDefaults,
+    extract_quoted_speech,
     is_asr_hallucination,
     is_backchannel,
+    is_quit_utterance,
     is_tts_junk,
     next_tts_cut,
     normalize_cues,
     scrub_asr,
     scrub_tts,
+    skip_empty_delta,
 )
 
 
@@ -42,8 +47,25 @@ def test_unclosed_cue_is_junk() -> None:
     assert is_tts_junk("[warm, leftover")
 
 
+def test_tts_junk_thin_cjk_and_narration() -> None:
+    assert is_tts_junk("")
+    assert is_tts_junk("hi")
+    assert is_tts_junk("谢谢观看")
+    assert is_tts_junk("She smiles and leans closer now")
+    assert not is_tts_junk("[clear] Hello there friend")
+
+
 def test_cjk_asr_drop() -> None:
     assert is_asr_hallucination("谢谢观看")
+
+
+def test_asr_english_not_nuked_by_script() -> None:
+    assert not is_asr_hallucination("hello there friend")
+
+
+def test_asr_emoji_and_mixed() -> None:
+    assert is_asr_hallucination("🔥🔥🔥")
+    assert is_asr_hallucination("AB你")
 
 
 def test_aside_and_bold_stripped() -> None:
@@ -75,11 +97,23 @@ def test_speaker_and_timestamp_asr() -> None:
     assert "hello there" in out
 
 
+def test_scrub_asr_keeps_speakers_when_asked() -> None:
+    out = scrub_asr("Speaker 1: hello there", strip_speakers=False)
+    assert "Speaker 1" in out
+    assert "hello there" in out
+
+
 def test_backchannel() -> None:
     assert is_backchannel("yeah")
     assert is_backchannel("uh huh")
     assert is_backchannel("mm hmm")
     assert not is_backchannel("yeah can you repeat that")
+
+
+def test_quit_utterance() -> None:
+    assert is_quit_utterance("bye")
+    assert is_quit_utterance("Goodbye!")
+    assert not is_quit_utterance("don't stop now")
 
 
 def test_next_tts_cut_skips_abbreviations() -> None:
@@ -106,7 +140,29 @@ def test_thanks_for_watching() -> None:
     assert is_asr_hallucination("Thanks for watching.")
 
 
-def test_dialogue_only_keeps_quotes() -> None:
-    spoken = scrub_tts('[warm] "Loud and clear." Stage note.', dialogue_only=True)
+def test_extract_quoted_keeps_quotes() -> None:
+    spoken = extract_quoted_speech(scrub_tts('[warm] "Loud and clear." Stage note.'))
     assert "Loud and clear" in spoken
     assert "Stage note" not in spoken
+
+
+def test_extract_quoted_open_passthrough_and_empty() -> None:
+    open_q = extract_quoted_speech('[warm] "hello there friend')
+    assert "hello there friend" in open_q
+    assert extract_quoted_speech('He said "x" but wait') == ""
+    assert extract_quoted_speech("no quotes here at all") == "no quotes here at all"
+    assert extract_quoted_speech('[warm] "[clear]"') == '[warm] "[clear]"'
+
+
+def test_skip_empty_delta() -> None:
+    assert skip_empty_delta("  ")
+    assert not skip_empty_delta("hi")
+
+
+def test_suite_defaults_and_timing() -> None:
+    d = SuiteDefaults()
+    assert d.tts_model == "s2.1-pro"
+    assert d.tts_partial_chars == 40
+    line = LatencySnapshot(ttfa=12.4).log_line()
+    assert "ttfa=12ms" in line
+    assert "srt=-1" in line

@@ -7,6 +7,7 @@ from fish_audio_suite_kit.defaults import (
     SuiteDefaults,
 )
 from fish_audio_suite_kit.text_filters import (
+    extract_quoted_speech,
     is_asr_hallucination,
     is_backchannel,
     is_quit_utterance,
@@ -21,6 +22,7 @@ __all__ = [
     "DEFAULT_SYSTEM_PROMPT",
     "LatencySnapshot",
     "SuiteDefaults",
+    "extract_quoted_speech",
     "is_asr_hallucination",
     "is_backchannel",
     "is_quit_utterance",
