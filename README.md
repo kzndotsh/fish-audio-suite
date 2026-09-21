@@ -12,7 +12,7 @@ Three packages. Use one, or mix them.
 | voice   | `fish-audio-suite-voice` | One Fish websocket per turn, playback sinks, optional duplex CLI. |
 
 
-Python 3.12. MIT.
+Python 3.12. MIT. CI is GitHub Actions (ruff, basedpyright, pytest), not `nix flake check`.
 
 ```bash
 uv sync --all-packages --extra cli --group dev

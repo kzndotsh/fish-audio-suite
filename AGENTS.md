@@ -12,6 +12,7 @@ Three members under `packages/`. Usage: [`README.md`](README.md).
 | Test | `uv run pytest` |
 | Lint | `uv run ruff check packages` · `uv run ruff format packages` |
 | Types | `uv run basedpyright` |
+| CI | GitHub Actions `.github/workflows/ci.yml` (ruff, basedpyright, pytest) |
 | Wheels | `uv build --all` |
 | Proxy | `uv run --package fish-audio-suite-proxy fish-audio-suite-proxy` |
 | Voice smoke | `uv run --extra cli fish-voice --smoke` |
