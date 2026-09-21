@@ -10,6 +10,7 @@ import tempfile
 import threading
 import time
 import wave
+from typing import Any
 
 import numpy as np
 
@@ -60,7 +61,7 @@ class BargeGate:
         hit = 0
         q: queue.Queue[bytes] = queue.Queue()
 
-        def callback(indata, frames, time_info, status):  # noqa: ARG001
+        def callback(indata: Any, frames: int, time_info: Any, status: Any) -> None:
             q.put(bytes(indata))
 
         try:
@@ -116,7 +117,7 @@ def record_utterance(
     vad = webrtcvad.Vad(VAD_AGGRESSIVENESS)
     q: queue.Queue[bytes] = queue.Queue()
 
-    def callback(indata, frames, time_info, status):  # noqa: ARG001
+    def callback(indata: Any, frames: int, time_info: Any, status: Any) -> None:
         q.put(bytes(indata))
 
     voiced: list[bytes] = []
@@ -146,7 +147,7 @@ def record_utterance(
             hold_rms = MIN_SPEECH_RMS * 0.55
             need = MIN_SPEECH_RMS if not triggered else hold_rms
             loud = rms >= need
-            is_speech = loud and vad.is_speech(frame, SAMPLE_RATE)
+            is_speech = loud and bool(vad.is_speech(frame, SAMPLE_RATE))
 
             if not triggered:
                 ring.append(frame)
@@ -175,11 +176,11 @@ def record_utterance(
         return None
 
     pcm = b"".join(voiced)
-    buf = tempfile.SpooledTemporaryFile(max_size=2_000_000)
-    with wave.open(buf, "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(SAMPLE_RATE)
-        wf.writeframes(pcm)
-    buf.seek(0)
-    return buf.read()
+    with tempfile.SpooledTemporaryFile(max_size=2_000_000) as buf:
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(SAMPLE_RATE)
+            wf.writeframes(pcm)
+        buf.seek(0)
+        return buf.read()
