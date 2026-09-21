@@ -34,7 +34,8 @@ def test_pause_alias_vs_moss_duration() -> None:
     assert "[break]" in normalize_cues("[pause] wait")
     stripped = scrub_tts("hello [pause 3.2s] there")
     assert "pause" not in stripped.lower()
-    assert "hello" in stripped and "there" in stripped
+    assert "hello" in stripped
+    assert "there" in stripped
 
 
 def test_unclosed_cue_is_junk() -> None:
