@@ -19,5 +19,6 @@ Import: `fish_audio_suite_kit`. Tests: `uv run pytest packages/kit`.
 | `SuiteDefaults` / `LatencySnapshot` | Shared knobs; millisecond timings, no utterance field; optional `trace_id` on the log line |
 | `w3c_trace_headers` / `make_traceparent` | Parse/mint W3C `traceparent` (+ optional `tracestate`). No OpenTelemetry |
 | `parse_fish_error` / `should_retry_fish_status` / `fish_backoff_seconds` | `{message, status}` body; retry 429 and 5xx only |
+| `CaptionCue` / `format_as_srt` / `format_as_vtt` | Timed ASR cues → SubRip / WebVTT. No network |
 
 Do not add `httpx` / FastAPI / `fishaudio` / sounddevice here.

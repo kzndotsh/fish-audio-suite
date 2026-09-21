@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from fish_audio_suite_kit import (
+    CaptionCue,
     LatencySnapshot,
     SuiteDefaults,
     canonical_traceparent,
     extract_quoted_speech,
     fish_backoff_seconds,
     fish_error_body,
+    format_as_srt,
+    format_as_vtt,
     is_asr_hallucination,
     is_backchannel,
     is_quit_utterance,
@@ -254,3 +257,21 @@ def test_fish_error_shape_and_retry_policy() -> None:
     assert parse_fish_error(400, b"not json")["message"] == "not json"
     assert parse_fish_error(502, {"error": {"message": "upstream"}})["message"] == "upstream"
     assert fish_error_body(402, "Insufficient credits")["status"] == 402
+
+
+def test_format_as_srt_and_vtt() -> None:
+    cues = [
+        CaptionCue(0.0, 0.6, "hello"),
+        CaptionCue(0.6, 1.5, "there"),
+    ]
+    assert format_as_srt(cues) == (
+        "1\n00:00:00,000 --> 00:00:00,600\nhello\n\n2\n00:00:00,600 --> 00:00:01,500\nthere\n"
+    )
+    assert format_as_vtt(cues) == (
+        "WEBVTT\n\n00:00:00.000 --> 00:00:00.600\nhello\n\n00:00:00.600 --> 00:00:01.500\nthere\n"
+    )
+    assert format_as_srt([]) == ""
+    assert format_as_vtt([]) == "WEBVTT\n"
+    assert format_as_srt([CaptionCue(0.0, 2.0, "  hello  ")]) == (
+        "1\n00:00:00,000 --> 00:00:02,000\nhello\n"
+    )
