@@ -1,29 +1,49 @@
-# AGENTS.md
+# AGENTS.md — fish-audio-suite
 
 Unofficial Fish Audio toolkit. Not affiliated with Fish Audio. Dist names stay `fish-audio-suite-{kit,proxy,voice}` only.
 
-## Layout
+Three members under `packages/`. Usage: [`README.md`](README.md).
 
-- `packages/kit` — dist `fish-audio-suite-kit`, import `fish_audio_suite_kit`. Text only. No sockets.
-- `packages/proxy` — dist `fish-audio-suite-proxy`. FastAPI on **8849**. `FISH_API_KEY` in lifespan.
-- `packages/voice` — dist `fish-audio-suite-voice`. `live.py` (`IsolatedFishTts`), `playback.py`, `barge.py`, `cli.py` (duplex recipe).
+## Quick reference
 
-## Invariants
+| Task | Command |
+| --- | --- |
+| Sync | `uv sync --all-packages --extra cli --group dev` |
+| Test | `uv run pytest` |
+| Lint | `uv run ruff check packages` · `uv run ruff format packages` |
+| Wheels | `uv build --all` |
+| Proxy | `uv run --package fish-audio-suite-proxy fish-audio-suite-proxy` |
+| Voice smoke | `uv run --extra cli fish-voice --smoke` |
+| Flake | `nix flake show` |
 
-- No default `FISH_VOICE_ID`.
-- One Fish `stream_websocket` per turn. Skip empty LLM deltas. One `FlushEvent` at end of turn (not per sentence).
-- Isolated TTS on a fresh event loop. Do not merge the LLM token stream onto the Fish socket.
-- Default live audio is PCM into `SounddeviceSink`. mpv is optional.
-- Assistant history on barge-in is spoken-so-far or omitted. No interrupt markers.
-- Ignore ASR while TTS is playing unless the barge gate fired. Skip backchannels and duplicate utterances.
-- Latency logs never print utterances or keys.
-- Do not vendor Pipecat / Athena / Rapida / CosyVoice / MOSS / SenseVoice / VibeVoice source.
-- Do not publish or `gh repo create` unless asked.
+Python 3.12. **uv** only. Root is virtual (`package = false`).
 
-## Checks
+## Sub-AGENTS
 
-```bash
-uv run pytest
-uv build --all
-nix flake show
-```
+Read the nested file before editing that tree.
+
+| Tree | Dist / import |
+| --- | --- |
+| [`nix`](nix/AGENTS.md) | NixOS module |
+| [`packages`](packages/AGENTS.md) | Workspace members |
+| [`packages/kit`](packages/kit/AGENTS.md) | `fish-audio-suite-kit` / `fish_audio_suite_kit` |
+| [`packages/proxy`](packages/proxy/AGENTS.md) | `fish-audio-suite-proxy` / `fish_audio_suite_proxy` |
+| [`packages/voice`](packages/voice/AGENTS.md) | `fish-audio-suite-voice` / `fish_audio_suite_voice` |
+
+## Boundaries
+
+Proven from this tree (kit is the only text package; proxy import must work without a key; live.py isolates Fish WS; `FISH_VOICE_ID` has no default).
+
+| Do | Don’t |
+| --- | --- |
+| Shared cue/scrub/cut in kit | Copy those regexes into proxy or voice |
+| Read `FISH_API_KEY` in lifespan / CLI / `IsolatedFishTts(...)` | `os.environ["FISH_API_KEY"]` at import |
+| Empty `FISH_VOICE_ID` unless env sets it | Default voice id |
+| One `stream_websocket` per turn; one `FlushEvent` after sent text; TTS via `asyncio.run` | Per-sentence flush; Fish WS on the LLM event loop |
+| Barge-in history = `spoken_so_far`, or omit if no audio | Full unplayed LLM reply |
+
+## Gotchas
+
+- Do not `aclose()` the fishaudio websocket iterator. Stop iterating; close the **client**. Empty turn + bare `FlushEvent` is invalid.
+- pytest: `--import-mode=importlib` (several `tests/` dirs).
+- `nixosModules.default`: `127.0.0.1:8849:8849`, `autoStart = false`. Voice derivation wraps PortAudio on `LD_LIBRARY_PATH`.
