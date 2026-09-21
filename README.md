@@ -31,11 +31,11 @@ spoken = normalize_cues(scrub_tts(llm_text))
 cut = next_tts_cut(spoken)  # sentence end, or ~40 chars; -1 = keep buffering
 ```
 
-Also: `extract_quoted_speech`, `is_tts_junk`, `scrub_asr`, `is_asr_hallucination`, `is_backchannel`, `is_quit_utterance`, `SuiteDefaults`, `LatencySnapshot`, `w3c_trace_headers`, `make_traceparent`.
+Also: `extract_quoted_speech`, `is_tts_junk`, `scrub_asr`, `is_asr_hallucination`, `is_backchannel`, `is_quit_utterance`, `SuiteDefaults`, `LatencySnapshot`, `w3c_trace_headers`, `make_traceparent`, `parse_fish_error`.
 
 ## proxy
 
-Drop-in for clients that speak OpenAI `/v1/audio/speech` and `/v1/audio/transcriptions` (AIRI, OpenWebUI, and similar). Forwards W3C `traceparent` / `tracestate` to Fish TTS and ASR (mints one if the client omitted them).
+Drop-in for clients that speak OpenAI `/v1/audio/speech` and `/v1/audio/transcriptions` (AIRI, OpenWebUI, and similar). Forwards W3C `traceparent` / `tracestate` to Fish TTS and ASR (mints one if the client omitted them). Fish 429/5xx are retried with backoff; other 4xx are returned as `{message, status}`.
 
 ```bash
 export FISH_API_KEY=…
