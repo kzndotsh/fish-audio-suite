@@ -20,6 +20,8 @@ Three members under `packages/`. Usage: [`README.md`](README.md).
 
 Python 3.12. **uv** only. Root is virtual (`package = false`).
 
+Load [`.agents/skills/finalize`](.agents/skills/finalize) by name (`/finalize`) when wrapping up a chunk. Do not rely on auto-selection.
+
 ## Sub-AGENTS
 
 Read the nested file before editing that tree.
