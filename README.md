@@ -66,7 +66,7 @@ result = tts.speak_isolated("[clear] Hello there.", sink)
 Playback sinks: `sounddevice` (default PCM), `file`, `stdout`, optional `mpv`.
 
 ```bash
-export FISH_API_KEY=… FISH_VOICE_ID=… OPENROUTER_API_KEY=…
+export FISH_API_KEY=… FISH_VOICE_ID=… OPENROUTER_API_KEY=… FISH_LLM_MODEL=…
 uv run --extra cli fish-voice --smoke   # writes a wav; no speakers
 uv run --extra cli fish-voice           # mic duplex
 ```
@@ -87,7 +87,8 @@ uv run --extra cli fish-voice           # mic duplex
 | `FISH_CHUNK_LENGTH`                   | both          | `200`                           |
 | `FISH_FORMAT`                         | proxy         | `mp3` (voice live uses `pcm`)   |
 | `FISH_PLAYBACK`                       | voice CLI     | `sounddevice`                   |
-| `FISH_LLM_KEY` / `OPENROUTER_API_KEY` | duplex CLI    | none                            |
+| `FISH_LLM_KEY` / `OPENROUTER_API_KEY` | duplex CLI    | none (required for duplex)      |
+| `FISH_LLM_MODEL` / `OPENROUTER_MODEL` | duplex CLI    | none (required for duplex)      |
 | `FISH_SYSTEM_PROMPT`                  | duplex CLI    | spoken assistant + `[cue]` tags |
 
 
