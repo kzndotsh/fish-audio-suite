@@ -91,8 +91,6 @@ uv run --extra cli fish-voice           # mic duplex
 | `FISH_SYSTEM_PROMPT`                  | duplex CLI    | spoken assistant + `[cue]` tags |
 
 
-
-
 ## Nix
 
 ```nix
@@ -105,4 +103,4 @@ inputs.fish-audio-suite.url = "git+file:///home/kaizen/Projects/fish-audio-suite
 
 ## License
 
-MIT. Logan \<kzndotsh\>.
+MIT
