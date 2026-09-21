@@ -10,9 +10,11 @@ Docs: https://docs.fish.audio/llms.txt
 
 from __future__ import annotations
 
+import json
 import logging
 import os
-from contextlib import asynccontextmanager
+import re
+from contextlib import asynccontextmanager, suppress
 from typing import Any
 
 import httpx
@@ -39,8 +41,10 @@ _MEDIA = {
 
 _TTS_MODELS = [
     "s2.1-pro",
+    "s2.1-pro-free",
     "s2-pro",
     "s1",
+    "drama-3-preview",
 ]
 _ASR_MODELS = [
     "transcribe-1",
@@ -50,6 +54,8 @@ _ASR_MODELS = [
 _MODELS = _TTS_MODELS + _ASR_MODELS
 
 _SILENT_MP3 = b"\xff\xfb\x90\x00" + b"\x00" * 64
+
+_PHONEME_MARK_RE = re.compile(r"<\|phoneme_(?:start|end)\|>")
 
 log = logging.getLogger("fish-audio-suite-proxy")
 logging.basicConfig(level=logging.INFO)
@@ -81,6 +87,58 @@ def _clamp_int(value: Any, lo: int, hi: int, default: int) -> int:
     except (TypeError, ValueError):
         return default
     return max(lo, min(hi, n))
+
+
+def _clamp_float(value: Any, lo: float, hi: float, default: float) -> float:
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(lo, min(hi, n))
+
+
+def _chunk_length_hi(fish_base: str) -> int:
+    """Cloud OpenAPI max is 300; self-hosted fish-speech allows 1000."""
+    return 300 if "api.fish.audio" in fish_base.lower() else 1000
+
+
+def _pick_reference_id(body: dict[str, Any]) -> str | list[str] | None:
+    rid = body.get("reference_id")
+    if isinstance(rid, list):
+        ids = [str(x) for x in rid if str(x).strip()]
+        return ids or None
+    if isinstance(rid, str) and rid.strip():
+        return rid
+    voice = body.get("voice")
+    if isinstance(voice, list):
+        ids = [str(x) for x in voice if str(x).strip()]
+        return ids or None
+    if isinstance(voice, str) and voice.strip():
+        return voice
+    return None
+
+
+def _scrub_pronunciation_dictionary(pd: Any) -> Any:
+    if not isinstance(pd, list):
+        return pd
+    cleaned: list[Any] = []
+    for entry in pd:
+        if not isinstance(entry, dict):
+            cleaned.append(entry)
+            continue
+        items = entry.get("items")
+        if not isinstance(items, list):
+            cleaned.append(entry)
+            continue
+        new_items: list[Any] = []
+        for item in items:
+            if isinstance(item, dict) and "value" in item:
+                value = _PHONEME_MARK_RE.sub("", str(item["value"]))
+                new_items.append({**item, "value": value})
+            else:
+                new_items.append(item)
+        cleaned.append({**entry, "items": new_items})
+    return cleaned
 
 
 def _pick_latency(body: dict[str, Any], default: str) -> str:
@@ -155,15 +213,17 @@ async def speech(request: Request):
     defaults: SuiteDefaults = request.app.state.defaults
     body = await request.json()
     model = body.get("model") or defaults.tts_model
-    if str(model).strip() in {"drama-3-preview", "drama-3", "s2.1-pro-free"}:
-        model = defaults.tts_model
-    speed = float(body.get("speed", 1)) * defaults.speed
+    try:
+        raw_speed = float(body.get("speed", 1)) * defaults.speed
+    except (TypeError, ValueError):
+        raw_speed = defaults.speed
+    speed = _clamp_float(raw_speed, 0.5, 2.0, defaults.speed)
     fmt = _pick_format(body, defaults.audio_format)
     latency = _pick_latency(body, defaults.latency)
     chunk_length = _clamp_int(
         body.get("chunk_length", body.get("fish_chunk_length", defaults.chunk_length)),
         100,
-        300,
+        _chunk_length_hi(defaults.fish_base),
         defaults.chunk_length,
     )
     min_chunk_length = _clamp_int(
@@ -177,7 +237,7 @@ async def speech(request: Request):
     )
 
     raw_input = body.get("input", "") or ""
-    dialogue_only = _env_bool("FISH_TTS_DIALOGUE_ONLY", "1")
+    dialogue_only = _env_bool("FISH_TTS_DIALOGUE_ONLY", "0")
     if "dialogue_only" in body:
         dialogue_only = bool(body["dialogue_only"])
     spoken = prepare_tts_text(raw_input, dialogue_only=dialogue_only)
@@ -222,16 +282,29 @@ async def speech(request: Request):
     else:
         payload["sample_rate"] = int(body.get("sample_rate", defaults.sample_rate))
 
-    voice = body.get("voice") or body.get("reference_id")
+    voice = _pick_reference_id(body)
     if voice:
         payload["reference_id"] = voice
+
+    seed = body.get("seed")
+    if seed is not None:
+        with suppress(TypeError, ValueError):
+            payload["seed"] = int(seed)
+
+    references = body.get("references")
+    if isinstance(references, list) and references:
+        payload["references"] = references
+
+    cache = body.get("use_memory_cache")
+    if cache in {"on", "off"}:
+        payload["use_memory_cache"] = cache
 
     if _want_quality_guard(body):
         payload["features"] = ["quality-guard"]
 
     pd = body.get("pronunciation_dictionary")
     if pd:
-        payload["pronunciation_dictionary"] = pd
+        payload["pronunciation_dictionary"] = _scrub_pronunciation_dictionary(pd)
 
     headers = {
         "Content-Type": "application/json",
@@ -239,15 +312,28 @@ async def speech(request: Request):
     }
 
     client: httpx.AsyncClient = request.app.state.http
+    req = client.build_request("POST", "/v1/tts", json=payload, headers=headers)
+    upstream = await client.send(req, stream=True)
+    if upstream.status_code >= 400:
+        err = await upstream.aread()
+        await upstream.aclose()
+        try:
+            detail: Any = json.loads(err)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            detail = {
+                "message": err.decode("utf-8", errors="replace"),
+                "status": upstream.status_code,
+            }
+        if not isinstance(detail, dict):
+            detail = {"message": str(detail), "status": upstream.status_code}
+        return JSONResponse(detail, status_code=upstream.status_code)
 
     async def stream_audio():
-        async with client.stream("POST", "/v1/tts", json=payload, headers=headers) as r:
-            if r.status_code >= 400:
-                err = await r.aread()
-                yield err
-                return
-            async for chunk in r.aiter_bytes(4096):
+        try:
+            async for chunk in upstream.aiter_bytes(4096):
                 yield chunk
+        finally:
+            await upstream.aclose()
 
     return StreamingResponse(
         stream_audio(),
@@ -298,7 +384,7 @@ async def transcriptions(
 
     raw = r.json()
     data: dict[str, Any] = raw if isinstance(raw, dict) else {}
-    strip_speakers = _env_bool("FISH_ASR_STRIP_SPEAKERS", "1")
+    strip_speakers = _env_bool("FISH_ASR_STRIP_SPEAKERS", "0")
     text = scrub_asr(data.get("text") or "", strip_speakers=strip_speakers)
     log.info(
         "asr model=%s lang=%s chars=%d",
@@ -362,8 +448,8 @@ async def health(request: Request):
             "format": defaults.audio_format,
             "speed_scale": defaults.speed,
             "quality_guard": _env_bool("FISH_QUALITY_GUARD"),
-            "asr_strip_speakers": _env_bool("FISH_ASR_STRIP_SPEAKERS", "1"),
-            "tts_dialogue_only": _env_bool("FISH_TTS_DIALOGUE_ONLY", "1"),
+            "asr_strip_speakers": _env_bool("FISH_ASR_STRIP_SPEAKERS", "0"),
+            "tts_dialogue_only": _env_bool("FISH_TTS_DIALOGUE_ONLY", "0"),
         },
     }
 

@@ -12,6 +12,6 @@ CLI: `fish-audio-suite-proxy`. Import: `fish_audio_suite_proxy`.
 | Tests | `uv run pytest packages/proxy` |
 | Image | `docker build -t fish-audio-suite-proxy:latest .` |
 
-Scrub through kit. `FISH_API_KEY` is read in lifespan — importing the app and `GET /health` must work with it unset.
+Scrub through kit. `FISH_API_KEY` is read in lifespan — importing the app and `GET /health` must work with it unset. `FISH_BASE` may be Fish Cloud or a self-hosted fish-speech `:8080`.
 
-In `server.py`: remap `drama-3-preview` / `s2.1-pro-free` to the default TTS model, `whisper-1` to `transcribe-1`. `is_tts_junk` → silent MP3, not a Fish round-trip.
+In `server.py`: `whisper-1` → `transcribe-1`. Do not remap `s2.1-pro-free` or `drama-3-preview`. `is_tts_junk` → silent MP3. Forward `seed`, `references`, `use_memory_cache`, `reference_id` (string or list). Fish TTS 4xx/5xx → JSON with the upstream status. Cloud `chunk_length` 100–300; self-host 100–1000. Omit ASR `language` unless the client or `FISH_ASR_LANGUAGE` sets it.
