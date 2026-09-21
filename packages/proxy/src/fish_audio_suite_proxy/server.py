@@ -304,7 +304,8 @@ async def transcriptions(
             detail = {"message": r.text, "status": r.status_code}
         return JSONResponse(detail, status_code=r.status_code)
 
-    data = r.json()
+    raw = r.json()
+    data: dict[str, Any] = raw if isinstance(raw, dict) else {}
     strip_speakers = _env_bool("FISH_ASR_STRIP_SPEAKERS", "1")
     text = scrub_asr(data.get("text") or "", strip_speakers=strip_speakers)
     log.info(
@@ -323,15 +324,19 @@ async def transcriptions(
         return PlainTextResponse(text)
 
     if fmt == "verbose_json":
-        segments = []
-        for seg in data.get("segments") or []:
-            segments.append(
-                {
-                    "text": seg.get("text", ""),
-                    "start": float(seg.get("start", 0)),
-                    "end": float(seg.get("end", 0)),
-                }
-            )
+        segments: list[dict[str, float | str]] = []
+        raw_segments = data.get("segments") or []
+        if isinstance(raw_segments, list):
+            for seg in raw_segments:
+                if not isinstance(seg, dict):
+                    continue
+                segments.append(
+                    {
+                        "text": str(seg.get("text", "")),
+                        "start": float(seg.get("start", 0) or 0),
+                        "end": float(seg.get("end", 0) or 0),
+                    }
+                )
         return {
             "task": "transcribe",
             "language": data.get("language_code") or data.get("language") or language,
