@@ -12,6 +12,7 @@ from fish_audio_suite_kit import is_asr_hallucination, is_tts_junk
 from fish_audio_suite_proxy.server import (
     _chunk_length_hi,
     _fish_send,
+    _form_granularities,
     _pick_reference_id,
     _resolve_asr_model,
     _upstream_trace_headers,
@@ -233,3 +234,59 @@ def test_fish_send_retries_timeout_then_ok(monkeypatch: pytest.MonkeyPatch) -> N
     asyncio.run(_run())
     assert client.sends == 2
     sleeps.assert_awaited_once()
+
+
+def test_form_granularities_merges_bracket_alias() -> None:
+    assert _form_granularities(None, ["segment"]) == ["segment"]
+    assert _form_granularities(["word"], None) == ["word"]
+    assert _form_granularities(["word"], ["segment"]) == ["word", "segment"]
+
+
+class _AsrJson:
+    def json(self) -> dict[str, Any]:
+        return {
+            "text": "hello there",
+            "duration": 1.5,
+            "language": "en",
+            "segments": [
+                {"text": "hello", "start": 0, "end": 0.6},
+                {"text": "there", "start": 0.6, "end": 1.5},
+            ],
+        }
+
+
+def test_transcriptions_srt_and_granularities_bracket(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    async def fake_send(*_args: object, **kwargs: object) -> _AsrJson:
+        captured["data"] = kwargs.get("data")
+        return _AsrJson()
+
+    monkeypatch.setenv("FISH_API_KEY", "test-key")
+    monkeypatch.setattr("fish_audio_suite_proxy.server._fish_send", fake_send)
+    with TestClient(app) as client:
+        srt = client.post(
+            "/v1/audio/transcriptions",
+            files={"file": ("a.wav", b"xx", "audio/wav")},
+            data={"response_format": "srt"},
+        )
+        assert srt.status_code == 200
+        assert srt.headers["content-type"].startswith("application/x-subrip")
+        assert "00:00:00,000 --> 00:00:00,600" in srt.text
+        assert "hello" in srt.text
+        vtt = client.post(
+            "/v1/audio/transcriptions",
+            files={"file": ("a.wav", b"xx", "audio/wav")},
+            data={"response_format": "vtt"},
+        )
+        assert vtt.text.startswith("WEBVTT")
+        assert "00:00:00.000 --> 00:00:00.600" in vtt.text
+        json_body = client.post(
+            "/v1/audio/transcriptions",
+            files={"file": ("a.wav", b"xx", "audio/wav")},
+            data={"timestamp_granularities[]": "segment"},
+        )
+        assert json_body.json() == {"text": "hello there"}
+        assert captured["data"]["ignore_timestamps"] == "false"

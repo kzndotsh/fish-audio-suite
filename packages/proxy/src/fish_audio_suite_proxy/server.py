@@ -25,10 +25,13 @@ from fastapi.responses import JSONResponse, PlainTextResponse, Response, Streami
 
 from fish_audio_suite_kit import (
     FISH_RETRY_ATTEMPTS,
+    CaptionCue,
     SuiteDefaults,
     extract_quoted_speech,
     fish_backoff_seconds,
     fish_error_body,
+    format_as_srt,
+    format_as_vtt,
     is_asr_hallucination,
     is_tts_junk,
     make_traceparent,
@@ -207,6 +210,37 @@ def _json_error(status: int, message: str) -> JSONResponse:
 def _json_from_upstream(status: int, raw: Any) -> JSONResponse:
     detail = parse_fish_error(status, raw)
     return JSONResponse(detail, status_code=int(detail["status"]))
+
+
+def _form_granularities(*groups: list[str] | None) -> list[str]:
+    out: list[str] = []
+    for group in groups:
+        if not group:
+            continue
+        out.extend(item for item in group if item)
+    return out
+
+
+def _caption_cues(data: dict[str, Any], text: str, *, strip_speakers: bool) -> list[CaptionCue]:
+    cues: list[CaptionCue] = []
+    raw_segments = data.get("segments") or []
+    if isinstance(raw_segments, list):
+        for seg in raw_segments:
+            if not isinstance(seg, dict):
+                continue
+            body = scrub_asr(str(seg.get("text", "")), strip_speakers=strip_speakers)
+            if not body:
+                continue
+            start = float(seg.get("start", 0) or 0)
+            end = float(seg.get("end", 0) or 0)
+            cues.append(CaptionCue(start, end, body))
+    if cues:
+        return cues
+    if not text:
+        return []
+    duration = data.get("duration")
+    end = float(duration) if isinstance(duration, (int, float)) else 0.0
+    return [CaptionCue(0.0, end, text)]
 
 
 async def _fish_send(
@@ -424,6 +458,9 @@ async def transcriptions(
     language: str | None = Form(None),
     response_format: str = Form("json"),
     timestamp_granularities: list[str] | None = Form(None),
+    timestamp_granularities_bracket: list[str] | None = Form(
+        None, alias="timestamp_granularities[]"
+    ),
 ):
     defaults: SuiteDefaults = request.app.state.defaults
     asr_model = _resolve_asr_model(model, defaults.asr_model)
@@ -436,7 +473,9 @@ async def transcriptions(
     filename = file.filename or "audio.webm"
     content_type = file.content_type or "application/octet-stream"
 
-    want_ts = response_format in {"verbose_json", "vtt", "srt"} or bool(timestamp_granularities)
+    granularities = _form_granularities(timestamp_granularities, timestamp_granularities_bracket)
+    fmt = (response_format or "json").lower().strip()
+    want_ts = fmt in {"verbose_json", "vtt", "srt"} or bool(granularities)
     ignore_timestamps = "false" if want_ts else "true"
 
     files = {"audio": (filename, audio_bytes, content_type)}
@@ -474,33 +513,23 @@ async def transcriptions(
     if is_asr_hallucination(text):
         log.info("asr drop hallucination lang=%r chars=%d", detected_lang, len(text))
         text = ""
-
-    fmt = (response_format or "json").lower().strip()
+        cues: list[CaptionCue] = []
+    else:
+        cues = _caption_cues(data, text, strip_speakers=strip_speakers)
     if fmt == "text":
         return PlainTextResponse(text)
-
+    if fmt == "srt":
+        return PlainTextResponse(format_as_srt(cues), media_type="application/x-subrip")
+    if fmt == "vtt":
+        return PlainTextResponse(format_as_vtt(cues), media_type="text/vtt")
     if fmt == "verbose_json":
-        segments: list[dict[str, float | str]] = []
-        raw_segments = data.get("segments") or []
-        if isinstance(raw_segments, list):
-            for seg in raw_segments:
-                if not isinstance(seg, dict):
-                    continue
-                segments.append(
-                    {
-                        "text": str(seg.get("text", "")),
-                        "start": float(seg.get("start", 0) or 0),
-                        "end": float(seg.get("end", 0) or 0),
-                    }
-                )
         return {
             "task": "transcribe",
             "language": data.get("language_code") or data.get("language") or language,
             "duration": data.get("duration"),
             "text": text,
-            "segments": segments,
+            "segments": [{"text": c.text, "start": c.start, "end": c.end} for c in cues],
         }
-
     return {"text": text}
 
 
