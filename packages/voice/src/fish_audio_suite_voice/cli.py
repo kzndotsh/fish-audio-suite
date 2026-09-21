@@ -14,7 +14,9 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import AsyncIterator
+import uuid
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import AsyncExitStack, asynccontextmanager
 from pathlib import Path
 from typing import Any
 
@@ -161,13 +163,123 @@ def cfg() -> dict[str, Any]:
     }
 
 
+LLM_REFERER = "https://github.com/kzndotsh/fish-audio-suite"
+LLM_TITLE = "fish-audio-suite-voice"
+
+
+def _openrouter_base(base: str) -> bool:
+    return "openrouter.ai" in base
+
+
 def _want_nitro(model: str, base: str) -> bool:
-    if "openrouter.ai" not in base:
+    if not _openrouter_base(base):
         return False
     raw = os.environ.get("FISH_LLM_NITRO", "").strip().lower()
     if raw in {"0", "false", "no", "off"}:
         return False
     return ":" not in model.rsplit("/", maxsplit=1)[-1]
+
+
+def _model_author_slug(model: str) -> tuple[str, str] | None:
+    if "/" not in model:
+        return None
+    author, slug = model.split("/", maxsplit=1)
+    if not author or not slug:
+        return None
+    return author, slug
+
+
+async def check_openrouter_model(client: Any, model: str, base: str) -> None:
+    """Resolve FISH_LLM_MODEL via models.get. Warn on 404; never abort duplex."""
+    route = f"{model}:nitro" if _want_nitro(model, base) else model
+    parts = _model_author_slug(route)
+    if parts is None:
+        return
+    from openrouter.errors import OpenRouterError
+
+    author, slug = parts
+    try:
+        res = await client.models.get_async(author=author, slug=slug, timeout_ms=15_000)
+    except OpenRouterError as e:
+        if e.status_code == 404:
+            print(f"[llm] unknown model {route}", file=sys.stderr)
+        else:
+            print(f"[llm] models.get HTTP {e.status_code}: {e.body[:200]}", file=sys.stderr)
+        return
+    except Exception as e:
+        print(f"[llm] models.get {e}", file=sys.stderr)
+        return
+    data = getattr(res, "data", res)
+    mid = getattr(data, "id", None)
+    if mid is None and isinstance(data, dict):
+        mid = data.get("id")
+    name = getattr(data, "name", None)
+    if name is None and isinstance(data, dict):
+        name = data.get("name")
+    ctx = getattr(data, "context_length", None)
+    if ctx is None and isinstance(data, dict):
+        ctx = data.get("context_length")
+    if env_debug():
+        logger.debug(
+            "llm.model id={mid} display={display} context={ctx} requested={requested}",
+            mid=mid,
+            display=name,
+            ctx=ctx,
+            requested=route,
+        )
+    if isinstance(mid, str) and mid and mid != route:
+        print(f"  [llm model {route} → {mid}]", flush=True)
+
+
+def _delta_content(chunk: object) -> str:
+    choices = getattr(chunk, "choices", None)
+    if choices is None and isinstance(chunk, dict):
+        choices = chunk.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return ""
+    ch0 = choices[0]
+    delta = getattr(ch0, "delta", None)
+    if delta is None and isinstance(ch0, dict):
+        delta = ch0.get("delta")
+    content = getattr(delta, "content", None) if delta is not None else None
+    if content is None and isinstance(delta, dict):
+        content = delta.get("content")
+    if isinstance(content, str) and content:
+        return content
+    if isinstance(ch0, dict):
+        msg = ch0.get("message") or {}
+        if isinstance(msg, dict):
+            piece = msg.get("content")
+            if isinstance(piece, str):
+                return piece
+    return ""
+
+
+@asynccontextmanager
+async def _or_client_ctx(key: str, base: str, client: Any | None) -> AsyncGenerator[Any, None]:
+    if client is not None:
+        yield client
+        return
+    from openrouter import OpenRouter
+
+    async with OpenRouter(
+        api_key=key,
+        http_referer=LLM_REFERER,
+        x_open_router_title=LLM_TITLE,
+        x_open_router_categories="cli-agent",
+        server_url=base.rstrip("/"),
+    ) as owned:
+        yield owned
+
+
+@asynccontextmanager
+async def _chat_event_stream(res: Any) -> AsyncGenerator[Any, None]:
+    enter = getattr(res, "__aenter__", None)
+    if callable(enter):
+        async with res as event_stream:
+            yield event_stream
+        return
+    yield res
 
 
 async def fish_asr(
@@ -249,31 +361,19 @@ async def llm_token_stream(
     key: str,
     model: str,
     cancel: asyncio.Event | None = None,
+    client: Any | None = None,
+    session_id: str | None = None,
+    trace_id: str | None = None,
 ) -> AsyncIterator[str]:
-    url = f"{base.rstrip('/')}/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {key}",
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://github.com/kzndotsh/fish-audio-suite",
-        "X-Title": "fish-audio-suite-voice",
-    }
     route_model = f"{model}:nitro" if _want_nitro(model, base) else model
-    payload: dict[str, Any] = {
-        "model": route_model,
-        "messages": messages,
-        "stream": True,
-        "temperature": 0.8,
-        "max_tokens": int(os.environ.get("FISH_LLM_MAX_TOKENS", "600")),
-    }
-    if "openrouter.ai" in base and _want_nitro(model, base):
-        payload["provider"] = {"sort": "throughput"}
+    max_tokens = int(os.environ.get("FISH_LLM_MAX_TOKENS", "600"))
+    nitro = _want_nitro(model, base)
     if env_debug():
-        payload["stream_options"] = {"include_usage": True}
         logger.debug(
             "llm.request url={} model={} nitro={} msgs={}",
-            url,
+            f"{base.rstrip('/')}/chat/completions",
             route_model,
-            _want_nitro(model, base),
+            nitro,
             len(messages),
         )
     yielded = 0
@@ -284,82 +384,172 @@ async def llm_token_stream(
     last_provider = ""
     last_native = ""
     try:
-        async with (
-            httpx.AsyncClient(timeout=120.0) as client,
-            client.stream("POST", url, headers=headers, json=payload) as resp,
-        ):
-            if resp.status_code >= 400:
-                body = (await resp.aread())[:800].decode("utf-8", "replace")
+        if _openrouter_base(base):
+            from openrouter.errors import OpenRouterError
+
+            send_kw: dict[str, Any] = {
+                "messages": messages,
+                "model": route_model,
+                "stream": True,
+                "temperature": 0.8,
+                "max_completion_tokens": max_tokens,
+                "timeout_ms": 120_000,
+            }
+            if nitro:
+                send_kw["provider"] = {"sort": "throughput"}
+            if session_id:
+                send_kw["session_id"] = session_id
+            if trace_id:
+                send_kw["trace"] = {
+                    "trace_id": trace_id,
+                    "trace_name": LLM_TITLE,
+                }
+            if env_debug():
+                send_kw["stream_options"] = {"include_usage": True}
+                send_kw["x_open_router_metadata"] = "enabled"
+            try:
+                async with _or_client_ctx(key, base, client) as or_client:
+                    res = await or_client.chat.send_async(**send_kw)
+                    async with _chat_event_stream(res) as event_stream:
+                        async for event in event_stream:
+                            if cancel is not None and cancel.is_set():
+                                break
+                            err = getattr(event, "error", None)
+                            if err is None and isinstance(event, dict):
+                                err = event.get("error")
+                            if err:
+                                print(f"[llm] stream error: {err}", file=sys.stderr)
+                                break
+                            usage = getattr(event, "usage", None)
+                            if usage is None and isinstance(event, dict):
+                                usage = event.get("usage")
+                            if usage is not None:
+                                dump = getattr(usage, "model_dump", None)
+                                if callable(dump):
+                                    dumped = dump(mode="json")
+                                    if isinstance(dumped, dict):
+                                        last_usage = dumped
+                                elif isinstance(usage, dict):
+                                    last_usage = usage
+                            oid = getattr(event, "id", None)
+                            if isinstance(oid, str) and oid:
+                                last_id = oid
+                            omodel = getattr(event, "model", None)
+                            if isinstance(omodel, str) and omodel:
+                                last_model = omodel
+                            oprov = getattr(event, "provider", None)
+                            if isinstance(oprov, str) and oprov:
+                                last_provider = oprov
+                            meta = getattr(event, "openrouter_metadata", None)
+                            if meta is None and isinstance(event, dict):
+                                meta = event.get("openrouter_metadata")
+                            if last_provider == "" and meta is not None:
+                                summary = getattr(meta, "summary", None)
+                                if summary is None and isinstance(meta, dict):
+                                    summary = meta.get("summary")
+                                if isinstance(summary, str) and summary:
+                                    last_provider = summary
+                            choices = getattr(event, "choices", None)
+                            if isinstance(choices, list) and choices:
+                                ch0 = choices[0]
+                                fr = getattr(ch0, "finish_reason", None)
+                                if fr is None and isinstance(ch0, dict):
+                                    fr = ch0.get("finish_reason")
+                                if isinstance(fr, str) and fr:
+                                    last_finish = fr
+                                elif fr is not None and not isinstance(fr, str):
+                                    last_finish = str(fr)
+                            piece = _delta_content(event)
+                            if piece:
+                                yielded += 1
+                                yield piece
+            except OpenRouterError as e:
                 print(
-                    f"[llm] HTTP {resp.status_code} model={route_model}: {body}",
+                    f"[llm] HTTP {e.status_code} model={route_model}: {e.body[:800]}",
                     file=sys.stderr,
                 )
                 return
+        else:
+            url = f"{base.rstrip('/')}/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+                "HTTP-Referer": LLM_REFERER,
+                "X-Title": LLM_TITLE,
+            }
+            payload: dict[str, Any] = {
+                "model": route_model,
+                "messages": messages,
+                "stream": True,
+                "temperature": 0.8,
+                "max_tokens": max_tokens,
+            }
             if env_debug():
-                logger.debug(
-                    "llm.response status={} headers={}",
-                    resp.status_code,
-                    header_meta(resp.headers),
-                )
-            async for line in resp.aiter_lines():
-                if cancel is not None and cancel.is_set():
-                    break
-                if not line or line.startswith(":") or not line.startswith("data:"):
-                    continue
-                data = line[5:].strip()
-                if data == "[DONE]":
-                    break
-                try:
-                    parsed = json.loads(data)
-                except Exception:
-                    continue
-                if not isinstance(parsed, dict):
-                    continue
-                obj: dict[str, Any] = parsed
-                err = obj.get("error")
-                if err:
-                    print(f"[llm] stream error: {err}", file=sys.stderr)
-                    break
-                usage = obj.get("usage")
-                if isinstance(usage, dict):
-                    last_usage = usage
-                oid = obj.get("id")
-                if isinstance(oid, str) and oid:
-                    last_id = oid
-                omodel = obj.get("model")
-                if isinstance(omodel, str) and omodel:
-                    last_model = omodel
-                oprov = obj.get("provider")
-                if isinstance(oprov, str) and oprov:
-                    last_provider = oprov
-                choices = obj.get("choices") or []
-                if not isinstance(choices, list) or not choices:
-                    continue
-                ch0 = choices[0]
-                if not isinstance(ch0, dict):
-                    continue
-                fr = ch0.get("finish_reason")
-                if isinstance(fr, str):
-                    last_finish = fr
-                nfr = ch0.get("native_finish_reason")
-                if isinstance(nfr, str) and nfr:
-                    last_native = nfr
-                delta = ch0.get("delta") or {}
-                if not isinstance(delta, dict):
-                    delta = {}
-                piece = delta.get("content") or ""
-                if not isinstance(piece, str):
-                    piece = ""
-                if not piece:
-                    msg = ch0.get("message") or {}
-                    if not isinstance(msg, dict):
-                        msg = {}
-                    piece = msg.get("content") or ""
-                    if not isinstance(piece, str):
-                        piece = ""
-                if piece:
-                    yielded += 1
-                    yield piece
+                payload["stream_options"] = {"include_usage": True}
+            async with (
+                httpx.AsyncClient(timeout=120.0) as http,
+                http.stream("POST", url, headers=headers, json=payload) as resp,
+            ):
+                if resp.status_code >= 400:
+                    body = (await resp.aread())[:800].decode("utf-8", "replace")
+                    print(
+                        f"[llm] HTTP {resp.status_code} model={route_model}: {body}",
+                        file=sys.stderr,
+                    )
+                    return
+                if env_debug():
+                    logger.debug(
+                        "llm.response status={} headers={}",
+                        resp.status_code,
+                        header_meta(resp.headers),
+                    )
+                async for line in resp.aiter_lines():
+                    if cancel is not None and cancel.is_set():
+                        break
+                    if not line or line.startswith(":") or not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        break
+                    try:
+                        parsed = json.loads(data)
+                    except Exception:
+                        continue
+                    if not isinstance(parsed, dict):
+                        continue
+                    obj: dict[str, Any] = parsed
+                    err = obj.get("error")
+                    if err:
+                        print(f"[llm] stream error: {err}", file=sys.stderr)
+                        break
+                    usage = obj.get("usage")
+                    if isinstance(usage, dict):
+                        last_usage = usage
+                    oid = obj.get("id")
+                    if isinstance(oid, str) and oid:
+                        last_id = oid
+                    omodel = obj.get("model")
+                    if isinstance(omodel, str) and omodel:
+                        last_model = omodel
+                    oprov = obj.get("provider")
+                    if isinstance(oprov, str) and oprov:
+                        last_provider = oprov
+                    choices = obj.get("choices") or []
+                    if not isinstance(choices, list) or not choices:
+                        continue
+                    ch0 = choices[0]
+                    if not isinstance(ch0, dict):
+                        continue
+                    fr = ch0.get("finish_reason")
+                    if isinstance(fr, str):
+                        last_finish = fr
+                    nfr = ch0.get("native_finish_reason")
+                    if isinstance(nfr, str) and nfr:
+                        last_native = nfr
+                    piece = _delta_content(obj)
+                    if piece:
+                        yielded += 1
+                        yield piece
     except (asyncio.CancelledError, GeneratorExit):
         return
     except BaseExceptionGroup:
@@ -443,13 +633,7 @@ async def run_loop(c: dict[str, Any]) -> int:
         print("BLOCKER: FISH_LLM_MODEL / OPENROUTER_MODEL missing", file=sys.stderr)
         return 2
 
-    history: list[dict[str, str]] = [
-        {"role": "system", "content": c["system_prompt"]},
-    ]
     device = _parse_device(c["device"])
-    last_user = ""
-    pending: list[str] = []
-    tts_playing = False
     playback = c["playback"]
     print(
         f"fish-voice ready | tts={c['fish_tts_model']} voice={c['fish_voice_id']} "
@@ -476,6 +660,38 @@ async def run_loop(c: dict[str, Any]) -> int:
         base_url=c["fish_base"],
     )
 
+    async with AsyncExitStack() as stack:
+        or_client: Any | None = None
+        if _openrouter_base(c["llm_base"]):
+            from openrouter import OpenRouter
+
+            or_client = await stack.enter_async_context(
+                OpenRouter(
+                    api_key=c["llm_key"],
+                    http_referer=LLM_REFERER,
+                    x_open_router_title=LLM_TITLE,
+                    x_open_router_categories="cli-agent",
+                    server_url=c["llm_base"].rstrip("/"),
+                )
+            )
+        if or_client is not None:
+            await check_openrouter_model(or_client, c["llm_model"], c["llm_base"])
+        return await _duplex_turns(c, tts, device, or_client)
+
+
+async def _duplex_turns(
+    c: dict[str, Any],
+    tts: IsolatedFishTts,
+    device: str | int | None,
+    or_client: Any | None,
+) -> int:
+    history: list[dict[str, str]] = [
+        {"role": "system", "content": c["system_prompt"]},
+    ]
+    last_user = ""
+    pending: list[str] = []
+    tts_playing = False
+    llm_session = uuid.uuid4().hex
     while True:
         print("listening…")
         if env_debug():
@@ -553,6 +769,9 @@ async def run_loop(c: dict[str, Any]) -> int:
                 key=c["llm_key"],
                 model=c["llm_model"],
                 cancel=llm_cancel,
+                client=or_client,
+                session_id=llm_session,
+                trace_id=turn_trace,
             ):
                 if not first_tok_ms:
                     first_tok_ms.append((time.perf_counter() - t_llm) * 1000)
@@ -584,7 +803,7 @@ async def run_loop(c: dict[str, Any]) -> int:
                 barge.start_after_bleed(cancel)
                 tts_playing = True
                 sink = make_sink(
-                    playback,
+                    c["playback"],
                     path=None,
                     sample_rate=c["fish_sample_rate"],
                     device=device,

@@ -18,7 +18,12 @@ dependencies = [
 speakers = ["sounddevice>=0.5"]
 vad = ["webrtcvad-wheels>=2.0.14"]
 aec = ["pywebrtc-audio>=0.2"]
-cli = ["sounddevice>=0.5", "webrtcvad-wheels>=2.0.14", "pywebrtc-audio>=0.2"]
+cli = [
+    "sounddevice>=0.5",
+    "webrtcvad-wheels>=2.0.14",
+    "pywebrtc-audio>=0.2",
+    "openrouter>=1.2",
+]
 
 [project.scripts]
 fish-audio-suite-voice = "fish_audio_suite_voice.cli:main"
