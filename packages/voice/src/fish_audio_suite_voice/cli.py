@@ -22,16 +22,21 @@ from typing import Any
 import httpx
 
 from fish_audio_suite_kit import (
+    FISH_RETRY_ATTEMPTS,
+    FishHttpError,
     LatencySnapshot,
     SuiteDefaults,
+    fish_backoff_seconds,
     is_asr_hallucination,
     is_backchannel,
     is_quit_utterance,
     is_tts_junk,
     make_traceparent,
     normalize_cues,
+    parse_fish_error,
     scrub_asr,
     scrub_tts,
+    should_retry_fish_status,
     trace_id_of,
 )
 from fish_audio_suite_voice.barge import (
@@ -135,15 +140,45 @@ async def fish_asr(
     data: dict[str, str] = {}
     if language:
         data["language"] = language
+    last_error: FishHttpError | None = None
+    body: Any = None
     async with httpx.AsyncClient(timeout=60.0) as client:
-        r = await client.post(
-            f"{base}/v1/asr",
-            headers=headers,
-            files=files,
-            data=data or None,
-        )
-        r.raise_for_status()
-        body = r.json()
+        for attempt in range(FISH_RETRY_ATTEMPTS):
+            try:
+                r = await client.post(
+                    f"{base}/v1/asr",
+                    headers=headers,
+                    files=files,
+                    data=data or None,
+                )
+            except httpx.TimeoutException as exc:
+                last_error = FishHttpError(504, "Fish request timed out")
+                if attempt + 1 >= FISH_RETRY_ATTEMPTS:
+                    raise last_error from exc
+                await asyncio.sleep(fish_backoff_seconds(attempt))
+                continue
+            except httpx.RequestError as exc:
+                last_error = FishHttpError(502, str(exc) or "Fish upstream unreachable")
+                if attempt + 1 >= FISH_RETRY_ATTEMPTS:
+                    raise last_error from exc
+                await asyncio.sleep(fish_backoff_seconds(attempt))
+                continue
+            if r.status_code >= 400:
+                detail = parse_fish_error(r.status_code, r.text)
+                last_error = FishHttpError(int(detail["status"]), str(detail["message"]))
+                if (
+                    should_retry_fish_status(last_error.status)
+                    and attempt + 1 < FISH_RETRY_ATTEMPTS
+                ):
+                    await asyncio.sleep(fish_backoff_seconds(attempt))
+                    continue
+                raise last_error
+            body = r.json()
+            break
+        else:
+            raise last_error or FishHttpError(502, "Fish upstream unreachable")
+    if not isinstance(body, dict):
+        return ""
     return scrub_asr((body.get("text") or "").strip())
 
 
@@ -279,6 +314,12 @@ async def smoke_test(c: dict[str, Any]) -> int:
     )
     sink = FileSink(out, sample_rate=c["fish_sample_rate"], wav=True)
     result = tts.speak_isolated("[clear] Hello there.", sink)
+    if result.error_status is not None:
+        print(
+            f"smoke: FAIL {result.error_status} {result.error_message}",
+            file=sys.stderr,
+        )
+        return 1
     ok = result.bytes_played > 1000
     print(f"smoke: wrote {result.bytes_played} bytes → {out} ({'OK' if ok else 'FAIL <1k'})")
     print("sdk: fishaudio; playback=file format=pcm")
@@ -347,6 +388,11 @@ async def run_loop(c: dict[str, Any]) -> int:
                 language=c["fish_asr_language"],
                 extra_headers={"traceparent": asr_parent},
             )
+        except FishHttpError as e:
+            print(f"[asr] {e.status} {e.message}", file=sys.stderr)
+            if e.status in {401, 402, 403}:
+                return 2
+            continue
         except Exception as e:
             print(f"[asr] {e}", file=sys.stderr)
             continue
@@ -423,6 +469,8 @@ async def run_loop(c: dict[str, Any]) -> int:
                 }
                 result = await asyncio.to_thread(tts.speak_isolated, scrubbed, sink, cancel)
                 tts_playing = False
+                if result.error_status in {401, 402, 403}:
+                    return 2
                 snapshot = LatencySnapshot(
                     srt=asr_ms,
                     llm_ttft=first_tok_ms[0] if first_tok_ms else None,

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fish_audio_suite_voice.live import _spoken_prefix
+from fishaudio.exceptions import AuthenticationError, RateLimitError
+
+from fish_audio_suite_voice.live import _classify_fish_exc, _spoken_prefix
 from fish_audio_suite_voice.playback import FileSink, StdoutSink, make_sink
 
 
@@ -70,3 +72,14 @@ def test_spoken_prefix_full_when_complete() -> None:
         )
         == "hello there"
     )
+
+
+def test_classify_fish_exc_retries_429_not_401() -> None:
+    retry, status, message = _classify_fish_exc(RateLimitError(429, "slow down", None))
+    assert retry is True
+    assert status == 429
+    assert message == "slow down"
+    retry, status, message = _classify_fish_exc(AuthenticationError(401, "Invalid Token", None))
+    assert retry is False
+    assert status == 401
+    assert message == "Invalid Token"

@@ -6,10 +6,10 @@
 
 | File | Owns |
 | --- | --- |
-| `live.py` | `IsolatedFishTts` — `stream_websocket`, `next_tts_cut`, `speak_isolated` → `asyncio.run`. Fish `TTSConfig` has no `features`; quality-guard stays proxy HTTP. Custom `httpx.AsyncClient` carries `base_url` + W3C headers onto the live WS upgrade. |
+| `live.py` | `IsolatedFishTts` — `stream_websocket`, `next_tts_cut`, `speak_isolated` → `asyncio.run`. Fish `TTSConfig` has no `features`; quality-guard stays proxy HTTP. Custom `httpx.AsyncClient` carries `base_url` + W3C headers onto the live WS upgrade. Branch `APIError` / `WebSocketError`; retry 429/5xx only before first audio, replaying `speak()` text. |
 | `playback.py` | `SounddeviceSink` (default PCM), `FileSink`, `StdoutSink`, optional `MpvSink` |
 | `barge.py` | VAD record + barge (`BLEED_DELAY_S` default 0.9). RMS + webrtcvad; `FISH_VOICE_SPEECH_FRAMES` default 8. Kit BoH/gzip is the ASR post-filter, not a second VAD. |
-| `cli.py` | Mic → Fish ASR → LLM → isolated TTS. OpenRouter `:nitro` lives here. No default LLM model. Omit ASR `language` unless `FISH_ASR_LANGUAGE`. `FISH_BASE` from env. One sampled W3C trace id per turn on ASR REST + live TTS. |
+| `cli.py` | Mic → Fish ASR → LLM → isolated TTS. OpenRouter `:nitro` lives here. No default LLM model. Omit ASR `language` unless `FISH_ASR_LANGUAGE`. `FISH_BASE` from env. One sampled W3C trace id per turn on ASR REST + live TTS. ASR/TTS 401/402/403 exit 2. |
 
 | Task | Command |
 | --- | --- |
