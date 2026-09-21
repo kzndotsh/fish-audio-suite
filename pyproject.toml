@@ -5,7 +5,7 @@ description = "Unofficial Fish Audio toolkit for apps that need TTS, ASR, and li
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
-authors = [{ name = "Logan", email = "kzndotsh@users.noreply.github.com" }]
+authors = [{ name = "Logan Honeycutt", email = "admin@kzn.sh" }]
 dependencies = []
 
 [tool.uv]
@@ -18,7 +18,7 @@ members = ["packages/*"]
 dev = [
     "pytest>=8.3",
     "ruff>=0.8",
-    "httpx>=0.28",
+    "basedpyright>=1.29",
 ]
 
 [tool.pytest.ini_options]
@@ -28,11 +28,175 @@ addopts = "--import-mode=importlib"
 [tool.ruff]
 target-version = "py312"
 line-length = 100
+indent-width = 4
 src = [
     "packages/kit/src",
     "packages/proxy/src",
     "packages/voice/src",
 ]
+exclude = [
+    ".bzr",
+    ".direnv",
+    ".eggs",
+    ".git",
+    ".git-rewrite",
+    ".hg",
+    ".ipynb_checkpoints",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".pyenv",
+    ".pytest_cache",
+    ".pytype",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    ".vscode",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "build",
+    "dist",
+    "node_modules",
+    "site-packages",
+    "venv",
+]
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP"]
+dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+fixable = ["ALL"]
+unfixable = []
+ignore = [
+    "E501",    # line-too-long (formatter owns wrap)
+    "B008",    # FastAPI File()/Form() defaults
+    "PLC0415", # extras imported inside speakers/vad helpers
+    "PLR0911", # too-many-return-statements
+    "PLR0912", # too-many-branches
+    "PLR0913", # too-many-arguments (TTS/ASR knobs)
+    "PLR0915", # too-many-statements
+    "PLR0917", # too-many-positional-arguments
+    "PLR2004", # magic-value-comparison
+    "RUF001",  # unicode dashes/quotes in cue and ASR regex
+    "TRY003",  # vanilla exception messages
+    "EM101",   # string literal in exception
+    "EM102",   # f-string in exception
+]
+select = [
+    "I",     # isort
+    "E",     # pycodestyle-error
+    "F",     # pyflakes
+    "PERF",  # perflint
+    "N",     # pep8-naming
+    "TRY",   # tryceratops
+    "UP",    # pyupgrade
+    "FURB",  # refurb
+    "PL",    # pylint
+    "B",     # flake8-bugbear
+    "SIM",   # flake8-simplify
+    "ASYNC", # flake8-async
+    "A",     # flake8-builtins
+    "C4",    # flake8-comprehensions
+    "DTZ",   # flake8-datetimez
+    "EM",    # flake8-errmsg
+    "PIE",   # flake8-pie
+    "Q",     # flake8-quotes
+    "RET",   # flake8-return
+    "PTH",   # flake8-use-pathlib
+    "INP",   # flake8-no-pep420
+    "RSE",   # flake8-raise
+    "ICN",   # flake8-import-conventions
+    "PT",    # flake8-pytest-style
+    "RUF",   # ruff
+]
+
+[tool.ruff.lint.isort]
+known-first-party = [
+    "fish_audio_suite_kit",
+    "fish_audio_suite_proxy",
+    "fish_audio_suite_voice",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"packages/*/tests/**" = ["INP001", "PLR2004"]
+
+[tool.ruff.format]
+docstring-code-format = true
+docstring-code-line-length = "dynamic"
+indent-style = "space"
+line-ending = "lf"
+quote-style = "double"
+
+[tool.basedpyright]
+pythonVersion = "3.12"
+pythonPlatform = "All"
+venvPath = "."
+venv = ".venv"
+typeCheckingMode = "strict"
+include = ["packages"]
+exclude = [".venv", "dist", "**/__pycache__"]
+extraPaths = [
+    "packages/kit/src",
+    "packages/proxy/src",
+    "packages/voice/src",
+]
+reportUnnecessaryTypeIgnoreComment = "warning"
+reportMissingTypeStubs = "none"
+allowedUntypedLibraries = ["sounddevice", "webrtcvad", "fishaudio"]
+
+[[tool.basedpyright.executionEnvironments]]
+root = "packages/kit/tests"
+reportUnknownMemberType = "none"
+reportUnknownArgumentType = "none"
+reportUnknownParameterType = "none"
+reportMissingParameterType = "none"
+reportUnknownVariableType = "none"
+reportPrivateUsage = "none"
+reportUnusedImport = "none"
+reportAttributeAccessIssue = "none"
+reportUnknownLambdaType = "none"
+reportMissingTypeStubs = "none"
+
+[[tool.basedpyright.executionEnvironments]]
+root = "packages/proxy/tests"
+reportUnknownMemberType = "none"
+reportUnknownArgumentType = "none"
+reportUnknownParameterType = "none"
+reportMissingParameterType = "none"
+reportUnknownVariableType = "none"
+reportPrivateUsage = "none"
+reportUnusedImport = "none"
+reportAttributeAccessIssue = "none"
+reportUnknownLambdaType = "none"
+reportMissingTypeStubs = "none"
+
+[[tool.basedpyright.executionEnvironments]]
+root = "packages/voice/tests"
+reportUnknownMemberType = "none"
+reportUnknownArgumentType = "none"
+reportUnknownParameterType = "none"
+reportMissingParameterType = "none"
+reportUnknownVariableType = "none"
+reportPrivateUsage = "none"
+reportUnusedImport = "none"
+reportAttributeAccessIssue = "none"
+reportUnknownLambdaType = "none"
+reportMissingTypeStubs = "none"
+
+[[tool.basedpyright.executionEnvironments]]
+root = "packages/kit/src"
+
+[[tool.basedpyright.executionEnvironments]]
+root = "packages/proxy/src"
+reportUnknownMemberType = "none"
+reportUnknownArgumentType = "none"
+reportUnknownVariableType = "none"
+reportUnknownParameterType = "none"
+
+[[tool.basedpyright.executionEnvironments]]
+root = "packages/voice/src"
+reportUnknownMemberType = "none"
+reportUnknownArgumentType = "none"
+reportUnknownVariableType = "none"
+reportUnknownParameterType = "none"
+reportMissingTypeStubs = "none"
