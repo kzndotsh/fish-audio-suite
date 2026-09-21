@@ -6,10 +6,10 @@
 
 | File | Owns |
 | --- | --- |
-| `live.py` | `IsolatedFishTts` — `stream_websocket`, `next_tts_cut`, `speak_isolated` → `asyncio.run` |
+| `live.py` | `IsolatedFishTts` — `stream_websocket`, `next_tts_cut`, `speak_isolated` → `asyncio.run`. Fish `TTSConfig` has no `features`; quality-guard stays proxy HTTP. |
 | `playback.py` | `SounddeviceSink` (default PCM), `FileSink`, `StdoutSink`, optional `MpvSink` |
-| `barge.py` | VAD record + barge (`BLEED_DELAY_S` default 0.9) |
-| `cli.py` | Mic → Fish ASR → LLM → isolated TTS. OpenRouter `:nitro` lives here. No default LLM model. |
+| `barge.py` | VAD record + barge (`BLEED_DELAY_S` default 0.9). RMS + webrtcvad; `FISH_VOICE_SPEECH_FRAMES` default 8. Kit BoH/gzip is the ASR post-filter, not a second VAD. |
+| `cli.py` | Mic → Fish ASR → LLM → isolated TTS. OpenRouter `:nitro` lives here. No default LLM model. Omit ASR `language` unless `FISH_ASR_LANGUAGE`. `FISH_BASE` from env. |
 
 | Task | Command |
 | --- | --- |

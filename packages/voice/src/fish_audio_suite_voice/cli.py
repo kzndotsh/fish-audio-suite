@@ -40,7 +40,6 @@ from fish_audio_suite_voice.barge import (
 from fish_audio_suite_voice.live import IsolatedFishTts
 from fish_audio_suite_voice.playback import FileSink, make_sink
 
-FISH_BASE = "https://api.fish.audio"
 HISTORY_TURNS = 20
 STOP_RECORD = threading.Event()
 SECRETS_PATH = Path.home() / ".secrets" / "ai.env"
@@ -75,7 +74,9 @@ def cfg() -> dict[str, Any]:
     voice_id = os.environ.get("FISH_VOICE_ID", "").strip()
     return {
         "fish_api_key": os.environ.get("FISH_API_KEY", "").strip(),
+        "fish_base": os.environ.get("FISH_BASE", d.fish_base).rstrip("/"),
         "fish_voice_id": voice_id,
+        "fish_asr_language": os.environ.get("FISH_ASR_LANGUAGE", d.asr_language).strip(),
         "fish_tts_model": os.environ.get("FISH_TTS_MODEL", d.tts_model),
         "fish_latency": os.environ.get("FISH_LATENCY", d.latency),
         "fish_speed": float(os.environ.get("FISH_SPEED", str(d.speed))),
@@ -115,19 +116,27 @@ def _want_nitro(model: str, base: str) -> bool:
     return ":" not in model.rsplit("/", maxsplit=1)[-1]
 
 
-async def fish_asr(audio_wav: bytes, api_key: str) -> str:
+async def fish_asr(
+    audio_wav: bytes,
+    api_key: str,
+    *,
+    base: str,
+    language: str = "",
+) -> str:
     headers = {
         "Authorization": f"Bearer {api_key}",
         "model": "transcribe-1",
     }
     files = {"audio": ("utterance.wav", audio_wav, "audio/wav")}
-    data = {"language": "en"}
+    data: dict[str, str] = {}
+    if language:
+        data["language"] = language
     async with httpx.AsyncClient(timeout=60.0) as client:
         r = await client.post(
-            f"{FISH_BASE}/v1/asr",
+            f"{base}/v1/asr",
             headers=headers,
             files=files,
-            data=data,
+            data=data or None,
         )
         r.raise_for_status()
         body = r.json()
@@ -323,12 +332,18 @@ async def run_loop(c: dict[str, Any]) -> int:
             continue
         t0 = time.perf_counter()
         try:
-            text = await fish_asr(wav, c["fish_api_key"])
+            text = await fish_asr(
+                wav,
+                c["fish_api_key"],
+                base=c["fish_base"],
+                language=c["fish_asr_language"],
+            )
         except Exception as e:
             print(f"[asr] {e}", file=sys.stderr)
             continue
         asr_ms = (time.perf_counter() - t0) * 1000
         if is_asr_hallucination(text):
+            print("[asr skip hallucination]", file=sys.stderr)
             continue
         if is_quit_utterance(text):
             print("\nbye")
