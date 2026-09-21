@@ -12,7 +12,7 @@ _SPOKEN_MOOD_LEAD = re.compile(
     r"soft|warm|intimate|flirty|teasing|breathless|angry|scared|"
     r"worried|grateful|proud|shy"
     r")\s*[,:!\-–—]+\s*",
-    re.I,
+    re.IGNORECASE,
 )
 
 _CUE_RE = re.compile(r"\[([^\]\n]+)\]")
@@ -46,7 +46,7 @@ def _one_sentence(chunk: str) -> str:
     chunk = chunk.strip()
     if not chunk:
         return chunk
-    m = re.match(r"^((?:\[[^\]]+\]\s*)+)(.*)$", chunk, flags=re.S)
+    m = re.match(r"^((?:\[[^\]]+\]\s*)+)(.*)$", chunk, flags=re.DOTALL)
     if m:
         cues = re.findall(r"\[([^\]]+)\]", m.group(1))
         if cues:
