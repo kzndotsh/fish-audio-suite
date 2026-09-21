@@ -91,7 +91,7 @@ result = tts.speak_isolated("[clear] Hello there.", sink)
 
 Playback sinks: `sounddevice` (default PCM), `file`, `stdout`, optional `mpv`. Mic/speakers need the **PortAudio** C library; `pip`/`uv` do not install it. `--smoke` uses `FileSink` and does not need it.
 
-Duplex `cli` extra includes AEC3 (`pywebrtc-audio`): speaker PCM is tapped and subtracted from the mic before VAD. `FISH_VOICE_AEC=0` turns that off (bleed delay stays 0.9 s). PipeWire `echo-cancel` is a host trick, not a package dep.
+Duplex `cli` extra includes AEC3 (`pywebrtc-audio`) and the official OpenRouter SDK. Speaker PCM is tapped and subtracted from the mic before VAD. `FISH_VOICE_AEC=0` turns AEC off (bleed delay stays 0.9 s). PipeWire `echo-cancel` is a host trick, not a package dep.
 
 ```bash
 # Debian/Ubuntu
@@ -141,7 +141,7 @@ Or export the same vars and `uv run --package fish-audio-suite-voice --extra cli
 | `FISH_VOICE_AEC`                      | duplex CLI    | on (`0` disables)               |
 | `FISH_VOICE_AEC_WET`                  | duplex CLI    | `0.85`                          |
 | `FISH_VOICE_AEC_BLEED`                | duplex CLI    | `0.3` when AEC3 is loaded       |
-| `FISH_VOICE_BARGE_RMS`                | duplex CLI    | `220` (×2.2 while speakers play) |
+| `FISH_VOICE_BARGE_RMS`                | duplex CLI    | `220` (×2.2 while speakers play only if AEC is off) |
 | `FISH_VOICE_DEBUG`                    | duplex CLI    | off (`--debug` or `1`)          |
 | `FISH_PLAYBACK`                       | voice CLI     | `sounddevice`                   |
 | `FISH_LLM_KEY` / `OPENROUTER_API_KEY` | duplex CLI    | none (required for duplex)      |
