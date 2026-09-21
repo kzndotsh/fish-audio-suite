@@ -11,10 +11,12 @@ Import: `fish_audio_suite_kit`. Tests: `uv run pytest packages/kit`.
 | Name | Role |
 | --- | --- |
 | `normalize_cues` | Lowercase `[Tags]`; keep stacked leads; S1 `(happy)` → `[happy]`; mood-lead → cue; aliases (`laugh`/`sigh`/`chuckle`/`whisper`/`pause` → `laughing`/`sighing`/`chuckling`/`whispering`/`break`). Inline `[chuckle]` aliases too. Leave `[cough]` |
+| `ensure_lead_cue` | If a reply has no `[cue]` at all, prepend `[clear]`. Does not tag every sentence |
+| `spread_cues` | Long replies: a beat cue every two untagged sentences; existing cues reset the gap |
 | `scrub_tts` / `is_tts_junk` | Strip markdown, thoughts, `[pause Xs]`, `[S1]`; keep Fish `[cue]`, S1 parens rewritten to brackets, speaker/phoneme `<|…|>` tokens |
 | `extract_quoted_speech` | Keep quoted dialogue (optional `[cue]`); drop stage notes |
-| `scrub_asr` / `is_asr_hallucination` | Optional speaker strip, timestamps, `<|…|>`; drop nospeech / YouTube-caption BoH (thanks-for-watching, Amara, 谢谢观看) and gzip-repetition; keep real CJK |
-| `is_backchannel` / `is_quit_utterance` | `yeah` / `uh huh` / … ; `bye` / `quit` / … |
+| `scrub_asr` / `is_asr_hallucination` | Optional speaker strip, timestamps, `<|…|>`; drop nospeech / YouTube-caption BoH (thanks-for-watching, Amara, 谢谢观看) and gzip-repetition; drop 1-char CJK-only; keep real CJK sentences |
+| `is_backchannel` / `is_quit_utterance` | `yeah` / `uh huh` / `嗯` / … ; `bye` / `quit` / … |
 | `next_tts_cut` | Flush index or `-1`. Sentence end (skip `Dr.` / `1.`); else ~40 chars |
 | `SuiteDefaults` / `LatencySnapshot` | Shared knobs; millisecond timings, no utterance field; optional `trace_id` on the log line |
 | `w3c_trace_headers` / `make_traceparent` | Parse/mint W3C `traceparent` (+ optional `tracestate`). No OpenTelemetry |

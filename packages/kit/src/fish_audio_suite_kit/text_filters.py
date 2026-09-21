@@ -96,6 +96,29 @@ _BACKCHANNELS = frozenset(
         "uh",
         "um",
         "ah",
+        "嗯",
+        "嗯嗯",
+        "啊",
+        "啊啊",
+        "哦",
+        "噢",
+        "喔",
+        "唔",
+        "呃",
+        "唉",
+        "哎",
+        "诶",
+        "欸",
+        "哼",
+        "呵",
+        "呀",
+        "哇",
+        "呐",
+        "うん",
+        "えっと",
+        "음",
+        "응",
+        "어",
     }
 )
 
@@ -118,7 +141,8 @@ _EN_HALLUCINATION_PHRASES = frozenset(
         "i hope you enjoyed the video",
     }
 )
-_CJK_HALLUCINATION_PHRASES = frozenset({"谢谢观看", "感谢观看", "请订阅"})
+_CJK_HALLUCINATION_PHRASES = frozenset({"谢谢观看", "感谢观看", "请订阅", "字幕"})
+_ASR_PUNCT_RE = re.compile(r"[\s.。、，,!?！？…·・~～'\"“”‘’]+")
 _GZIP_MIN_BYTES = 48
 _GZIP_RATIO = 2.4
 
@@ -148,7 +172,7 @@ def _cjk_latin_counts(s: str) -> tuple[int, int]:
 
 
 def _folded(text: str) -> str:
-    s = re.sub(r"[.!,?]+", "", (text or "").strip().lower())
+    s = re.sub(r"[.。、，,!?！？…·・~～]+", "", (text or "").strip().lower())
     return re.sub(r"\s+", " ", s)
 
 
@@ -282,7 +306,7 @@ def is_asr_hallucination(text: str) -> bool:
     folded = _folded(s)
     if folded in _EN_HALLUCINATION_PHRASES or "nospeech" in s.lower():
         return True
-    compact = re.sub(r"\s+", "", s)
+    compact = _ASR_PUNCT_RE.sub("", s)
     if compact in _CJK_HALLUCINATION_PHRASES:
         return True
     no_emoji = _EMOJI_RE.sub("", s).strip()
@@ -296,6 +320,8 @@ def is_asr_hallucination(text: str) -> bool:
     if _gzip_repetitive(tagged):
         return True
     cjk, latin = _cjk_latin_counts(s)
+    if latin == 0 and cjk == 1:
+        return True
     if cjk:
         return False
     return latin < 3

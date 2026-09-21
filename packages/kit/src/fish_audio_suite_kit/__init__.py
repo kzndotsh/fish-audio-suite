@@ -1,7 +1,7 @@
 """Unofficial Fish Audio text helpers. Not affiliated with Fish Audio."""
 
 from fish_audio_suite_kit.captions import CaptionCue, format_as_srt, format_as_vtt
-from fish_audio_suite_kit.cues import normalize_cues
+from fish_audio_suite_kit.cues import ensure_lead_cue, normalize_cues, spread_cues
 from fish_audio_suite_kit.defaults import (
     DEFAULT_SYSTEM_PROMPT,
     LatencySnapshot,
@@ -41,6 +41,7 @@ __all__ = [
     "LatencySnapshot",
     "SuiteDefaults",
     "canonical_traceparent",
+    "ensure_lead_cue",
     "extract_quoted_speech",
     "fish_backoff_seconds",
     "fish_error_body",
@@ -58,6 +59,7 @@ __all__ = [
     "scrub_tts",
     "should_retry_fish_status",
     "skip_empty_delta",
+    "spread_cues",
     "trace_id_of",
     "w3c_trace_headers",
 ]

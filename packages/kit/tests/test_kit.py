@@ -6,6 +6,7 @@ from fish_audio_suite_kit import (
     LatencySnapshot,
     SuiteDefaults,
     canonical_traceparent,
+    ensure_lead_cue,
     extract_quoted_speech,
     fish_backoff_seconds,
     fish_error_body,
@@ -23,6 +24,7 @@ from fish_audio_suite_kit import (
     scrub_tts,
     should_retry_fish_status,
     skip_empty_delta,
+    spread_cues,
     trace_id_of,
     w3c_trace_headers,
 )
@@ -64,6 +66,34 @@ def test_inline_chuckle_and_cough() -> None:
     assert "[coughing]" not in out
 
 
+def test_ensure_lead_cue_only_when_missing() -> None:
+    assert ensure_lead_cue("[curious] yeah") == "[curious] yeah"
+    assert ensure_lead_cue("I'll call you back [chuckle] in a minute").startswith("I'll")
+    assert ensure_lead_cue("yeah i hear you") == "[clear] yeah i hear you"
+    assert ensure_lead_cue("  ") == "  "
+
+
+def test_spread_cues_skips_short_replies() -> None:
+    short = "[curious] yeah i hear you. what's up?"
+    assert spread_cues(short) == short
+
+
+def test_spread_cues_beats_long_untagged_story() -> None:
+    story = (
+        "[sweetly] of course! let me spin a tale. "
+        "once upon a time there was a girl. "
+        "she found a book in the moss. "
+        "gold letters shimmered on the cover. "
+        "she opened it and began to read. "
+        "the village never saw her the same way again."
+    )
+    out = spread_cues(story)
+    assert out.startswith("[sweetly]")
+    assert out.count("[") >= 3
+    assert "[calm]" in out or "[curious]" in out or "[soft tone]" in out
+    assert "[sweetly] of course" in out
+
+
 def test_pause_alias_vs_moss_duration() -> None:
     assert "[break]" in normalize_cues("[pause] wait")
     stripped = scrub_tts("hello [pause 3.2s] there")
@@ -86,6 +116,7 @@ def test_tts_junk_thin_and_narration() -> None:
 
 def test_cjk_asr_keeps_speech_drops_thanks() -> None:
     assert is_asr_hallucination("谢谢观看")
+    assert is_asr_hallucination("嗯")
     assert not is_asr_hallucination("你好，很开心认识你")
     assert not is_asr_hallucination("<|speaker:0|>你好")
 
@@ -158,6 +189,8 @@ def test_backchannel() -> None:
     assert is_backchannel("yeah")
     assert is_backchannel("uh huh")
     assert is_backchannel("mm hmm")
+    assert is_backchannel("嗯。")
+    assert is_backchannel("嗯嗯")
     assert not is_backchannel("yeah can you repeat that")
 
 
@@ -222,6 +255,8 @@ def test_suite_defaults_and_timing() -> None:
     assert d.system_prompt == DEFAULT_SYSTEM_PROMPT
     assert "mid-sentence" in DEFAULT_SYSTEM_PROMPT
     assert "Leave [cough] as [cough]" in DEFAULT_SYSTEM_PROMPT
+    assert "do not tag every sentence" in DEFAULT_SYSTEM_PROMPT
+    assert "every two sentences" in DEFAULT_SYSTEM_PROMPT
     line = LatencySnapshot(ttfa=12.4).log_line()
     assert "ttfa=12ms" in line
     assert "srt=-1" in line

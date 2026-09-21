@@ -177,3 +177,63 @@ def normalize_cues(text: str) -> str:
         sents = re.split(r"(?<=[.!?…])\s+", part)
         out.append(" ".join(_one_sentence(s) for s in sents if s.strip()))
     return "".join(out)
+
+
+def ensure_lead_cue(text: str, *, default: str = "clear") -> str:
+    """If the model emitted no [cue] at all, prepend one. Does not tag every sentence."""
+    if not text.strip():
+        return text
+    if _CUE_RE.search(text):
+        return text
+    tag = default.strip().lower() or "clear"
+    return f"[{tag}] {text.lstrip()}"
+
+
+_SENTENCE_SPLIT = re.compile(r"(?<=[.!?…])\s+")
+CUE_BEAT_MIN_SENTS = 4
+CUE_BEAT_GAP_SENTS = 2
+CUE_BEAT_TAGS = ("calm", "curious", "soft tone", "hopeful")
+
+
+def spread_cues(
+    text: str,
+    *,
+    min_sents: int = CUE_BEAT_MIN_SENTS,
+    gap_sents: int = CUE_BEAT_GAP_SENTS,
+    beats: tuple[str, ...] = CUE_BEAT_TAGS,
+) -> str:
+    """On long replies, insert a beat cue every `gap_sents` untagged sentences.
+
+    Short replies are unchanged besides `ensure_lead_cue`. Existing cues reset the gap.
+    """
+    text = ensure_lead_cue(text)
+    if not text.strip():
+        return text
+    sents = [s for s in _SENTENCE_SPLIT.split(text) if s.strip()]
+    if len(sents) < min_sents:
+        return text
+    out: list[str] = []
+    since = 0
+    beat_i = 0
+    last_tag = ""
+    for sent in sents:
+        if _CUE_RE.search(sent):
+            since = 0
+            found = _CUE_RE.findall(sent)
+            if found:
+                last_tag = found[-1].strip().lower()
+            out.append(sent)
+            continue
+        since += 1
+        piece = sent
+        if since >= gap_sents:
+            tag = beats[beat_i % len(beats)]
+            beat_i += 1
+            if tag == last_tag and len(beats) > 1:
+                tag = beats[beat_i % len(beats)]
+                beat_i += 1
+            last_tag = tag
+            since = 0
+            piece = f"[{tag}] {sent.lstrip()}"
+        out.append(piece)
+    return " ".join(out)
