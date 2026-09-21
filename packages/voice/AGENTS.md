@@ -9,7 +9,7 @@
 | `live.py` | `IsolatedFishTts` — `stream_websocket`, `next_tts_cut`, `speak_isolated` → `asyncio.run` |
 | `playback.py` | `SounddeviceSink` (default PCM), `FileSink`, `StdoutSink`, optional `MpvSink` |
 | `barge.py` | VAD record + barge (`BLEED_DELAY_S` default 0.9) |
-| `cli.py` | Mic → Fish ASR → LLM → isolated TTS. OpenRouter `:nitro` lives here |
+| `cli.py` | Mic → Fish ASR → LLM → isolated TTS. OpenRouter `:nitro` lives here. No default LLM model. |
 
 | Task | Command |
 | --- | --- |
