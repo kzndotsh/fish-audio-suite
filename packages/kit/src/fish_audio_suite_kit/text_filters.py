@@ -33,11 +33,11 @@ _OPEN_DIALOGUE_RE = re.compile(
     r'["\u201c](.+)$',
     re.DOTALL,
 )
-_NARRATION_RE = re.compile(r"^(She|He|They|Her|His|The|A|An)\b.*", re.I)
+_NARRATION_RE = re.compile(r"^(She|He|They|Her|His|The|A|An)\b.*", re.IGNORECASE)
 _NARRATION_VERB_RE = re.compile(
     r"\b(shifts|leans|smiles|laughs|settles|tilts|watches|murmurs|"
     r"reaches|moves|looks|dropping|rustle|stretches)\b",
-    re.I,
+    re.IGNORECASE,
 )
 _SENT_END = re.compile(r"[.!?؟।۔]+[\"'”’)]*\s")
 _TRAIL_WORD = re.compile(r"(\d+|[A-Za-z]+)\s*$")
@@ -151,8 +151,7 @@ def _strip_markdownish(text: str) -> str:
     cleaned = _MD_LINK_RE.sub(r"\1", cleaned)
     cleaned = _URL_RE.sub("", cleaned)
     cleaned = _PARENS_RE.sub("", cleaned)
-    cleaned = _MD_WRAP_RE.sub("", cleaned)
-    return cleaned
+    return _MD_WRAP_RE.sub("", cleaned)
 
 
 def scrub_tts(text: str, *, dialogue_only: bool = False) -> str:
@@ -221,9 +220,7 @@ def is_tts_junk(text: str) -> bool:
         return True
     if latin < 3:
         return True
-    if _looks_like_narration(s):
-        return True
-    return False
+    return bool(_looks_like_narration(s))
 
 
 def scrub_asr(text: str, *, strip_speakers: bool = True) -> str:
@@ -252,11 +249,14 @@ def is_asr_hallucination(text: str, language: str | None = None) -> bool:
     if "<|nospeech|>" in s.lower() or folded == "nospeech":
         return True
     lang = (language or "").strip().lower()
-    if lang and lang not in {"en", "english", "eng"}:
-        if any(
+    if (
+        lang
+        and lang not in {"en", "english", "eng"}
+        and any(
             x in lang for x in ("zh", "chinese", "ja", "japanese", "ko", "korean", "yue", "cmn")
-        ):
-            return True
+        )
+    ):
+        return True
     cjk, latin = cjk_latin_counts(s)
     if cjk and latin == 0:
         return True
@@ -271,9 +271,7 @@ def is_asr_hallucination(text: str, language: str | None = None) -> bool:
     if _ANGLE_TOKEN_RE.fullmatch(s.replace(" ", "")):
         return True
     tagged = _ANGLE_TOKEN_RE.sub("", s).strip()
-    if not tagged:
-        return True
-    return False
+    return bool(not tagged)
 
 
 def is_backchannel(text: str) -> bool:
