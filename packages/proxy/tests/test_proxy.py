@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import asyncio
+from typing import Any, cast
+from unittest.mock import AsyncMock
+
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
 from fish_audio_suite_kit import is_asr_hallucination, is_tts_junk
 from fish_audio_suite_proxy.server import (
     _chunk_length_hi,
+    _fish_send,
     _pick_reference_id,
     _resolve_asr_model,
     _upstream_trace_headers,
@@ -13,6 +19,35 @@ from fish_audio_suite_proxy.server import (
     app,
     prepare_tts_text,
 )
+
+
+class _FakeUpstream:
+    def __init__(self, status_code: int, body: bytes = b"") -> None:
+        self.status_code = status_code
+        self._body = body
+
+    async def aread(self) -> bytes:
+        return self._body
+
+    async def aclose(self) -> None:
+        return None
+
+
+class _FakeFishClient:
+    def __init__(self, outcomes: list[Exception | _FakeUpstream]) -> None:
+        self._outcomes = list(outcomes)
+        self.sends = 0
+
+    def build_request(self, **request_kwargs: Any) -> dict[str, Any]:
+        return request_kwargs
+
+    async def send(self, _req: Any, stream: bool = False) -> _FakeUpstream:
+        del stream
+        self.sends += 1
+        item = self._outcomes.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
 
 
 def test_prepare_tts_normalizes_cues() -> None:
@@ -129,3 +164,72 @@ def test_uvicorn_run_kwargs_workers_and_limit(monkeypatch: pytest.MonkeyPatch) -
     assert kw["workers"] == 4
     assert kw["limit_concurrency"] == 32
     assert kw["timeout_graceful_shutdown"] == 90
+
+
+def test_fish_send_retries_429_then_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    sleeps = AsyncMock()
+    monkeypatch.setattr("fish_audio_suite_proxy.server.asyncio.sleep", sleeps)
+    client = _FakeFishClient(
+        [
+            _FakeUpstream(429, b'{"message": "slow down", "status": 429}'),
+            _FakeUpstream(200),
+        ]
+    )
+
+    async def _run() -> None:
+        out = await _fish_send(
+            cast(httpx.AsyncClient, client),
+            stream=False,
+            method="POST",
+            url="https://api.fish.audio/v1/tts",
+        )
+        assert isinstance(out, _FakeUpstream)
+        assert out.status_code == 200
+
+    asyncio.run(_run())
+    assert client.sends == 2
+    sleeps.assert_awaited_once()
+
+
+def test_fish_send_does_not_retry_401(monkeypatch: pytest.MonkeyPatch) -> None:
+    sleeps = AsyncMock()
+    monkeypatch.setattr("fish_audio_suite_proxy.server.asyncio.sleep", sleeps)
+    client = _FakeFishClient([_FakeUpstream(401, b'{"message": "Invalid Token", "status": 401}')])
+
+    async def _run() -> None:
+        out = await _fish_send(
+            cast(httpx.AsyncClient, client),
+            stream=False,
+            method="POST",
+            url="https://api.fish.audio/v1/tts",
+        )
+        assert out.status_code == 401
+
+    asyncio.run(_run())
+    assert client.sends == 1
+    sleeps.assert_not_awaited()
+
+
+def test_fish_send_retries_timeout_then_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    sleeps = AsyncMock()
+    monkeypatch.setattr("fish_audio_suite_proxy.server.asyncio.sleep", sleeps)
+    client = _FakeFishClient(
+        [
+            httpx.TimeoutException("timed out"),
+            _FakeUpstream(200),
+        ]
+    )
+
+    async def _run() -> None:
+        out = await _fish_send(
+            cast(httpx.AsyncClient, client),
+            stream=False,
+            method="POST",
+            url="https://api.fish.audio/v1/tts",
+        )
+        assert isinstance(out, _FakeUpstream)
+        assert out.status_code == 200
+
+    asyncio.run(_run())
+    assert client.sends == 2
+    sleeps.assert_awaited_once()

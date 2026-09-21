@@ -40,8 +40,8 @@ from fish_audio_suite_kit import (
     trace_id_of,
 )
 from fish_audio_suite_voice.barge import (
-    POST_SPEAK_COOLDOWN_S,
     BargeGate,
+    post_speak_cooldown_s,
     record_utterance,
 )
 from fish_audio_suite_voice.live import IsolatedFishTts
@@ -488,7 +488,7 @@ async def run_loop(c: dict[str, Any]) -> int:
         llm_cancel.set()
         await asyncio.sleep(0)
         with contextlib.suppress(asyncio.CancelledError):
-            await asyncio.sleep(POST_SPEAK_COOLDOWN_S)
+            await asyncio.sleep(post_speak_cooldown_s())
 
 
 def main(argv: list[str] | None = None) -> int:

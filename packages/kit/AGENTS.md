@@ -18,6 +18,6 @@ Import: `fish_audio_suite_kit`. Tests: `uv run pytest packages/kit`.
 | `next_tts_cut` | Flush index or `-1`. Sentence end (skip `Dr.` / `1.`); else ~40 chars |
 | `SuiteDefaults` / `LatencySnapshot` | Shared knobs; millisecond timings, no utterance field; optional `trace_id` on the log line |
 | `w3c_trace_headers` / `make_traceparent` | Parse/mint W3C `traceparent` (+ optional `tracestate`). No OpenTelemetry |
-| `parse_fish_error` / `should_retry_fish_status` | `{message, status}` body; retry 429 and 5xx only |
+| `parse_fish_error` / `should_retry_fish_status` / `fish_backoff_seconds` | `{message, status}` body; retry 429 and 5xx only |
 
 Do not add `httpx` / FastAPI / `fishaudio` / sounddevice here.

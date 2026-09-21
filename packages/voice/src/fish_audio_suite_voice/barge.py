@@ -18,16 +18,28 @@ SAMPLE_RATE = 16_000
 FRAME_MS = 30
 FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000
 FRAME_BYTES = FRAME_SAMPLES * 2
-VAD_AGGRESSIVENESS = int(os.environ.get("FISH_VOICE_VAD", "2"))
-SILENCE_FRAMES_END = int(os.environ.get("FISH_VOICE_SILENCE_FRAMES", "22"))
-SPEECH_FRAMES_START = int(os.environ.get("FISH_VOICE_SPEECH_FRAMES", "8"))
 MAX_UTTERANCE_FRAMES = 500
-MIN_SPEECH_RMS = float(os.environ.get("FISH_VOICE_MIN_RMS", "280"))
-PRE_PAD_FRAMES = int(os.environ.get("FISH_VOICE_PRE_PAD", "10"))  # ~300 ms
-BARGE_HIT_FRAMES = int(os.environ.get("FISH_VOICE_BARGE_FRAMES", "16"))
-BARGE_RMS = float(os.environ.get("FISH_VOICE_BARGE_RMS", "400"))
-BLEED_DELAY_S = float(os.environ.get("FISH_VOICE_BLEED_DELAY", "0.9"))
-POST_SPEAK_COOLDOWN_S = float(os.environ.get("FISH_VOICE_COOLDOWN", "0.8"))
+DEFAULT_VAD_AGGRESSIVENESS = 2
+DEFAULT_SILENCE_FRAMES_END = 22
+DEFAULT_SPEECH_FRAMES_START = 8
+DEFAULT_MIN_SPEECH_RMS = 280.0
+DEFAULT_PRE_PAD_FRAMES = 10
+DEFAULT_BARGE_HIT_FRAMES = 16
+DEFAULT_BARGE_RMS = 400.0
+DEFAULT_BLEED_DELAY_S = 0.9
+DEFAULT_POST_SPEAK_COOLDOWN_S = 0.8
+
+
+def _env_int(name: str, default: int) -> int:
+    return int(os.environ.get(name, str(default)))
+
+
+def _env_float(name: str, default: float) -> float:
+    return float(os.environ.get(name, str(default)))
+
+
+def post_speak_cooldown_s() -> float:
+    return _env_float("FISH_VOICE_COOLDOWN", DEFAULT_POST_SPEAK_COOLDOWN_S)
 
 
 def pcm_rms(frame: bytes) -> float:
@@ -44,14 +56,24 @@ class BargeGate:
         self,
         *,
         device: str | int | None = None,
-        bleed_delay_s: float = BLEED_DELAY_S,
-        hit_frames: int = BARGE_HIT_FRAMES,
-        min_rms: float = BARGE_RMS,
+        bleed_delay_s: float | None = None,
+        hit_frames: int | None = None,
+        min_rms: float | None = None,
     ) -> None:
         self.device = device
-        self.bleed_delay_s = bleed_delay_s
-        self.hit_frames = hit_frames
-        self.min_rms = min_rms
+        self.bleed_delay_s = (
+            _env_float("FISH_VOICE_BLEED_DELAY", DEFAULT_BLEED_DELAY_S)
+            if bleed_delay_s is None
+            else bleed_delay_s
+        )
+        self.hit_frames = (
+            _env_int("FISH_VOICE_BARGE_FRAMES", DEFAULT_BARGE_HIT_FRAMES)
+            if hit_frames is None
+            else hit_frames
+        )
+        self.min_rms = (
+            _env_float("FISH_VOICE_BARGE_RMS", DEFAULT_BARGE_RMS) if min_rms is None else min_rms
+        )
 
     def watch(self, cancel: threading.Event) -> None:
         import sounddevice as sd
@@ -114,14 +136,20 @@ def record_utterance(
     import sounddevice as sd
     import webrtcvad
 
-    vad = webrtcvad.Vad(VAD_AGGRESSIVENESS)
+    vad_aggressiveness = _env_int("FISH_VOICE_VAD", DEFAULT_VAD_AGGRESSIVENESS)
+    silence_frames_end = _env_int("FISH_VOICE_SILENCE_FRAMES", DEFAULT_SILENCE_FRAMES_END)
+    speech_frames_start = _env_int("FISH_VOICE_SPEECH_FRAMES", DEFAULT_SPEECH_FRAMES_START)
+    min_speech_rms = _env_float("FISH_VOICE_MIN_RMS", DEFAULT_MIN_SPEECH_RMS)
+    pre_pad_frames = _env_int("FISH_VOICE_PRE_PAD", DEFAULT_PRE_PAD_FRAMES)
+
+    vad = webrtcvad.Vad(vad_aggressiveness)
     q: queue.Queue[bytes] = queue.Queue()
 
     def callback(indata: Any, frames: int, time_info: Any, status: Any) -> None:
         q.put(bytes(indata))
 
     voiced: list[bytes] = []
-    ring: collections.deque[bytes] = collections.deque(maxlen=PRE_PAD_FRAMES)
+    ring: collections.deque[bytes] = collections.deque(maxlen=pre_pad_frames)
     triggered = False
     silence = 0
 
@@ -144,8 +172,8 @@ def record_utterance(
                 continue
             frame = frame[:FRAME_BYTES]
             rms = pcm_rms(frame)
-            hold_rms = MIN_SPEECH_RMS * 0.55
-            need = MIN_SPEECH_RMS if not triggered else hold_rms
+            hold_rms = min_speech_rms * 0.55
+            need = min_speech_rms if not triggered else hold_rms
             loud = rms >= need
             is_speech = loud and bool(vad.is_speech(frame, SAMPLE_RATE))
 
@@ -154,9 +182,9 @@ def record_utterance(
                 speechish = sum(
                     1
                     for f in ring
-                    if pcm_rms(f) >= MIN_SPEECH_RMS and vad.is_speech(f, SAMPLE_RATE)
+                    if pcm_rms(f) >= min_speech_rms and vad.is_speech(f, SAMPLE_RATE)
                 )
-                if speechish >= SPEECH_FRAMES_START:
+                if speechish >= speech_frames_start:
                     triggered = True
                     voiced.extend(ring)
                     ring.clear()
@@ -167,12 +195,12 @@ def record_utterance(
                     silence = 0
                 else:
                     silence += 1
-                    if silence >= SILENCE_FRAMES_END:
+                    if silence >= silence_frames_end:
                         break
                 if len(voiced) >= MAX_UTTERANCE_FRAMES:
                     break
 
-    if len(voiced) < SPEECH_FRAMES_START + 3:
+    if len(voiced) < speech_frames_start + 3:
         return None
 
     pcm = b"".join(voiced)
