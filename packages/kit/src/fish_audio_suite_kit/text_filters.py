@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import zlib
 
 from fish_audio_suite_kit.cues import rewrite_s1_parens
 from fish_audio_suite_kit.defaults import SuiteDefaults
@@ -111,9 +112,15 @@ _EN_HALLUCINATION_PHRASES = frozenset(
         "please subscribe",
         "subscribe",
         "like and subscribe",
+        "please like and subscribe",
+        "subtitles by the amaraorg community",
+        "transcribed by",
+        "i hope you enjoyed the video",
     }
 )
-_CJK_HALLUCINATION_PHRASES = frozenset({"谢谢观看", "感谢观看"})
+_CJK_HALLUCINATION_PHRASES = frozenset({"谢谢观看", "感谢观看", "请订阅"})
+_GZIP_MIN_BYTES = 48
+_GZIP_RATIO = 2.4
 
 _EMOJI_RE = re.compile(
     "[\U0001f300-\U0001faff\U00002700-\U000027bf\U0001f1e0-\U0001f1ff]+",
@@ -143,6 +150,14 @@ def _cjk_latin_counts(s: str) -> tuple[int, int]:
 def _folded(text: str) -> str:
     s = re.sub(r"[.!,?]+", "", (text or "").strip().lower())
     return re.sub(r"\s+", " ", s)
+
+
+def _gzip_repetitive(text: str) -> bool:
+    raw = text.encode("utf-8")
+    if len(raw) < _GZIP_MIN_BYTES:
+        return False
+    compressed = zlib.compress(raw)
+    return (len(raw) / max(len(compressed), 1)) >= _GZIP_RATIO
 
 
 def _too_thin(s: str, *, min_latin: int) -> bool:
@@ -277,6 +292,8 @@ def is_asr_hallucination(text: str) -> bool:
         return True
     tagged = _ANGLE_TOKEN_RE.sub("", s).strip()
     if not tagged:
+        return True
+    if _gzip_repetitive(tagged):
         return True
     cjk, latin = _cjk_latin_counts(s)
     if cjk:

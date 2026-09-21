@@ -170,6 +170,11 @@ def test_next_tts_cut_forty_chars() -> None:
 def test_thanks_for_watching() -> None:
     assert is_asr_hallucination("thanks for watching")
     assert is_asr_hallucination("Thanks for watching.")
+    assert is_asr_hallucination("Subtitles by the Amara.org community")
+    assert is_asr_hallucination("I hope you enjoyed the video.")
+    loop = "If the sentence is cut off, do not make up words. " * 12
+    assert is_asr_hallucination(loop)
+    assert not is_asr_hallucination("hello there friend")
 
 
 def test_extract_quoted_keeps_quotes() -> None:
