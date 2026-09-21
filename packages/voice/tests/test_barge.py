@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import collections
+
 import pytest
 
 from fish_audio_suite_voice.barge import (
@@ -9,8 +11,10 @@ from fish_audio_suite_voice.barge import (
     barge_rms_need,
     listen_reject_reason,
     post_speak_cooldown_s,
+    spike_start_allowed,
     start_frames_needed,
     start_hit,
+    trailing_start_hits,
 )
 
 
@@ -46,7 +50,10 @@ def test_barge_defaults_without_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_barge_over_speaker_raises_need() -> None:
     assert barge_rms_need(220.0, far_playing=False, over=2.2) == 220.0
-    assert barge_rms_need(220.0, far_playing=True, over=2.2) == pytest.approx(220.0 * 2.2)
+    assert barge_rms_need(220.0, far_playing=True, over=2.2, aec_on=False) == pytest.approx(
+        220.0 * 2.2
+    )
+    assert barge_rms_need(220.0, far_playing=True, over=2.2, aec_on=True) == 220.0
 
 
 def test_start_hit_requires_vad_and_full_floor() -> None:
@@ -59,6 +66,19 @@ def test_start_hit_requires_vad_and_full_floor() -> None:
 def test_start_frames_needed_raises_on_spike() -> None:
     assert start_frames_needed(200.0, 200.0, 4) == 4
     assert start_frames_needed(964.0, 200.0, 4) == 10
+
+
+def test_trailing_start_hits_ignores_older_scored_frames() -> None:
+    ring: collections.deque[tuple[bytes, bool]] = collections.deque(
+        [(b"", True), (b"", True), (b"", False), (b"", True), (b"", True)]
+    )
+    assert trailing_start_hits(ring) == 2
+
+
+def test_spike_start_blocks_decaying_bang() -> None:
+    assert spike_start_allowed(200.0, 200.0, 200.0)
+    assert not spike_start_allowed(1923.0, 671.0, 200.0)
+    assert spike_start_allowed(1923.0, 1000.0, 200.0)
 
 
 def test_listen_reject_cough_and_impulse() -> None:

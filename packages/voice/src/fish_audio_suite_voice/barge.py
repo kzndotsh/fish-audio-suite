@@ -16,6 +16,7 @@ import numpy as np
 
 from fish_audio_suite_voice.aec import (
     AdaptiveFloor,
+    aec_available,
     clean_mic_frame,
     effective_bleed_s,
     far_end_playing,
@@ -40,9 +41,11 @@ DEFAULT_MIN_VOICED_FRAMES = 12
 IMPULSE_PEAK_RATIO = 4.0
 IMPULSE_EXTRA_VOICED = 12
 IMPULSE_START_EXTRA = 6
+IMPULSE_NOW_RATIO = 0.5
 DEFAULT_BARGE_HIT_FRAMES = 10
 DEFAULT_BARGE_RMS = 220.0
 DEFAULT_BARGE_OVER = 2.2
+BARGE_MISS_DECAY_FRAMES = 3
 DEFAULT_BLEED_DELAY_S = 0.9
 DEFAULT_POST_SPEAK_COOLDOWN_S = 0.8
 
@@ -55,9 +58,18 @@ def _env_float(name: str, default: float) -> float:
     return float(os.environ.get(name, str(default)))
 
 
-def barge_rms_need(min_rms: float, *, far_playing: bool, over: float) -> float:
-    """While the DAC is live, demand louder cleaned-mic energy than residual echo."""
-    if far_playing:
+def barge_rms_need(
+    min_rms: float,
+    *,
+    far_playing: bool,
+    over: float,
+    aec_on: bool = False,
+) -> float:
+    """Raise the barge floor only when speaker bleed is still in the mic.
+
+    AEC3 already subtracts far-end. Stacking over-gain on cleaned RMS blocks real speech.
+    """
+    if far_playing and not aec_on:
         return min_rms * over
     return min_rms
 
@@ -112,6 +124,23 @@ def start_frames_needed(peak_rms: float, min_rms: float, speech_frames_start: in
     return speech_frames_start
 
 
+def trailing_start_hits(ring: collections.deque[tuple[bytes, bool]]) -> int:
+    """Count scored frames at the newest end of the pre-pad. Gaps do not count."""
+    n = 0
+    for _, counted in reversed(ring):
+        if not counted:
+            break
+        n += 1
+    return n
+
+
+def spike_start_allowed(peak_rms: float, now_rms: float, min_rms: float) -> bool:
+    """Reject a decaying bang: 4x peak in the ring but this frame already dropped."""
+    if peak_rms < min_rms * IMPULSE_PEAK_RATIO:
+        return True
+    return now_rms >= peak_rms * IMPULSE_NOW_RATIO
+
+
 class BargeGate:
     """VAD-energy + min-speech. Apps that own the mic can import this."""
 
@@ -145,15 +174,20 @@ class BargeGate:
 
         vad = webrtcvad.Vad(3)
         hit = 0
+        miss = 0
+        idle_frames = 0
         over = _env_float("FISH_VOICE_BARGE_OVER", DEFAULT_BARGE_OVER)
+        aec_on = aec_available()
         q: queue.Queue[bytes] = queue.Queue()
         if env_debug():
             logger.debug(
-                "barge.arm delay_s={} hit_frames={} min_rms={} over={} vad=3",
-                self.bleed_delay_s,
-                self.hit_frames,
-                self.min_rms,
-                over,
+                "barge.arm delay_s={delay} hit_frames={hits} min_rms={min_rms} over={over} "
+                "aec={aec} vad=3",
+                delay=self.bleed_delay_s,
+                hits=self.hit_frames,
+                min_rms=self.min_rms,
+                over=over,
+                aec=aec_on,
             )
 
         def callback(indata: Any, frames: int, time_info: Any, status: Any) -> None:
@@ -179,29 +213,48 @@ class BargeGate:
                     frame = clean_mic_frame(frame)
                     rms = pcm_rms(frame)
                     far = far_end_playing()
-                    need = barge_rms_need(self.min_rms, far_playing=far, over=over)
-                    if rms < need:
-                        if hit and env_debug():
-                            logger.debug(
-                                "barge.decay hit={} rms={:.0f} need={:.0f} far={}",
-                                hit,
-                                rms,
-                                need,
-                                far,
-                            )
-                        hit = max(0, hit - 1)
-                        continue
-                    if vad.is_speech(frame, SAMPLE_RATE):
-                        hit += 1
-                        if env_debug():
-                            logger.debug("barge.hit {}/{} rms={:.0f}", hit, self.hit_frames, rms)
-                        if hit >= self.hit_frames:
+                    need = barge_rms_need(self.min_rms, far_playing=far, over=over, aec_on=aec_on)
+                    idle_frames += 1
+                    if env_debug() and idle_frames % LISTEN_HEARTBEAT_FRAMES == 0:
+                        logger.debug(
+                            "barge.mic rms={rms:.0f} need={need:.0f} far={far} hit={hit} aec={aec}",
+                            rms=rms,
+                            need=need,
+                            far=far,
+                            hit=hit,
+                            aec=aec_on,
+                        )
+                    voiced = rms >= need and vad.is_speech(frame, SAMPLE_RATE)
+                    if not voiced:
+                        miss += 1
+                        if miss >= BARGE_MISS_DECAY_FRAMES and hit:
                             if env_debug():
-                                logger.debug("barge.interrupt rms={:.0f} hits={}", rms, hit)
-                            cancel.set()
-                            return
-                    else:
-                        hit = max(0, hit - 1)
+                                logger.debug(
+                                    "barge.decay hit={hit} rms={rms:.0f} need={need:.0f} far={far}",
+                                    hit=hit,
+                                    rms=rms,
+                                    need=need,
+                                    far=far,
+                                )
+                            hit = max(0, hit - 1)
+                            miss = 0
+                        continue
+                    miss = 0
+                    hit += 1
+                    if env_debug():
+                        logger.debug(
+                            "barge.hit {hit}/{want} rms={rms:.0f}",
+                            hit=hit,
+                            want=self.hit_frames,
+                            rms=rms,
+                        )
+                    if hit >= self.hit_frames:
+                        if env_debug():
+                            logger.debug(
+                                "barge.interrupt rms={rms:.0f} hits={hit}", rms=rms, hit=hit
+                            )
+                        cancel.set()
+                        return
         except Exception as e:
             print(f"[barge-in] {e}", file=sys.stderr)
 
@@ -314,21 +367,23 @@ def record_utterance(
 
             if not triggered:
                 ring.append((frame, start_hit(rms, vad_speech, min_speech_now)))
-                hits_now = sum(1 for _, counted in ring if counted)
                 peak_ring = max((pcm_rms(pcm) for pcm, _ in ring), default=0.0)
                 need_start = start_frames_needed(peak_ring, min_speech_now, speech_frames_start)
-                if hits_now >= need_start:
+                hits_now = trailing_start_hits(ring)
+                if hits_now >= need_start and spike_start_allowed(peak_ring, rms, min_speech_now):
                     triggered = True
                     voiced.extend(pcm for pcm, _ in ring)
                     speech_hits = hits_now
                     if env_debug():
                         logger.debug(
-                            "listen.speech_start rms={:.0f} vad={} prepad_frames={} voiced_hits={} need_start={}",
-                            rms,
-                            vad_speech,
-                            len(voiced),
-                            speech_hits,
-                            need_start,
+                            "listen.speech_start rms={rms:.0f} vad={vad} prepad={prepad} "
+                            "hits={hits} start_need={start_need} peak={peak:.0f}",
+                            rms=rms,
+                            vad=vad_speech,
+                            prepad=len(voiced),
+                            hits=speech_hits,
+                            start_need=need_start,
+                            peak=peak_ring,
                         )
                     ring.clear()
                     silence = 0
