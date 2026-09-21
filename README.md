@@ -33,7 +33,7 @@ cut = next_tts_cut(spoken)  # sentence end, or ~40 chars; -1 = keep buffering
 
 Stacked leads stay (`[sad][whispering] …`). Mid-sentence `[chuckle]` becomes `[chuckling]`. `[cough]` is left as `[cough]`.
 
-Also: `extract_quoted_speech`, `is_tts_junk`, `scrub_asr`, `is_asr_hallucination`, `is_backchannel`, `is_quit_utterance`, `ensure_lead_cue`, `spread_cues`, `SuiteDefaults`, `LatencySnapshot`, `w3c_trace_headers`, `make_traceparent`, `parse_fish_error`, `should_retry_fish_status`, `fish_backoff_seconds`, `format_as_srt`, `format_as_vtt`.
+Also: `extract_quoted_speech`, `is_tts_junk`, `scrub_asr`, `is_asr_hallucination`, `is_backchannel`, `is_quit_utterance`, `ensure_lead_cue`, `SuiteDefaults`, `LatencySnapshot`, `w3c_trace_headers`, `make_traceparent`, `parse_fish_error`, `should_retry_fish_status`, `fish_backoff_seconds`, `format_as_srt`, `format_as_vtt`.
 
 ## proxy
 
@@ -133,15 +133,15 @@ Or export the same vars and `uv run --package fish-audio-suite-voice --extra cli
 | `FISH_ASR_STRIP_SPEAKERS`             | proxy         | off                             |
 | `FISH_TTS_DIALOGUE_ONLY`              | proxy         | off                             |
 | `FISH_VOICE_SPEECH_FRAMES`            | duplex CLI    | `4` (~120 ms min speech)        |
-| `FISH_VOICE_MIN_RMS`                  | duplex CLI    | `200` (seed; then quiet percentile) |
+| `FISH_VOICE_MIN_RMS`                  | duplex CLI    | `200` (floor; may rise in noise) |
 | `FISH_VOICE_MIN_VOICED`               | duplex CLI    | `12` (~360 ms VAD-true; drops coughs) |
 | `FISH_VOICE_VAD`                      | duplex CLI    | `1` (0–3; higher = pickier)     |
 | `FISH_VOICE_COOLDOWN`                 | duplex CLI    | `0.8` (seconds after TTS)       |
 | `FISH_VOICE_BLEED_DELAY`              | duplex CLI    | `0.9` (no AEC / AEC extra missing) |
 | `FISH_VOICE_AEC`                      | duplex CLI    | on (`0` disables)               |
 | `FISH_VOICE_AEC_WET`                  | duplex CLI    | `0.85`                          |
-| `FISH_VOICE_AEC_BLEED`                | duplex CLI    | `0.1` when AEC3 is loaded       |
-| `FISH_VOICE_BARGE_RMS`                | duplex CLI    | `220`                           |
+| `FISH_VOICE_AEC_BLEED`                | duplex CLI    | `0.3` when AEC3 is loaded       |
+| `FISH_VOICE_BARGE_RMS`                | duplex CLI    | `220` (×2.2 while speakers play) |
 | `FISH_VOICE_DEBUG`                    | duplex CLI    | off (`--debug` or `1`)          |
 | `FISH_PLAYBACK`                       | voice CLI     | `sounddevice`                   |
 | `FISH_LLM_KEY` / `OPENROUTER_API_KEY` | duplex CLI    | none (required for duplex)      |
