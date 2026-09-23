@@ -9,8 +9,25 @@ from typing import Any
 from fishaudio.resources import realtime as _fish_rt
 from loguru import logger
 
-_TRUTHY = frozenset({"1", "true", "yes", "on"})
+from fish_audio_suite_kit import env_bool
+
 _SECRET_HEADER = frozenset({"authorization", "proxy-authorization", "cookie", "set-cookie"})
+_HIDDEN_KEYS = frozenset({"text", "content", "audio", "messages"})
+_META_DEPTH = 3
+_PUBLIC_HEADERS = frozenset(
+    {
+        "content-type",
+        "retry-after",
+        "openai-processing-ms",
+        "openai-version",
+    }
+)
+
+
+def _is_secret(key: object) -> bool:
+    return str(key).lower() in _SECRET_HEADER
+
+
 _fish_realtime: Any = _fish_rt
 
 
@@ -22,20 +39,33 @@ _WS_TAP = _WsTap()
 
 
 def env_debug() -> bool:
-    return os.environ.get("FISH_VOICE_DEBUG", "").strip().lower() in _TRUTHY
+    return env_bool("FISH_VOICE_DEBUG")
+
+
+def debug(message: str, *args: Any, **fields: Any) -> None:
+    if env_debug():
+        logger.debug(message, *args, **fields)
+
+
+def heartbeat_due(idle_frames: int, every: int) -> bool:
+    return env_debug() and idle_frames % every == 0
+
+
+def _stderr_logger(level: str) -> None:
+    logger.remove()
+    logger.add(
+        sys.stderr,
+        level=level,
+        format="{time:HH:mm:ss.SSS} | {level:<5} | {message}",
+        colorize=False,
+    )
 
 
 def configure_voice_logging(*, debug: bool) -> None:
     """stderr DEBUG when on; otherwise only ERROR so debug() is silent."""
     if debug:
         os.environ["FISH_VOICE_DEBUG"] = "1"
-    logger.remove()
-    logger.add(
-        sys.stderr,
-        level="DEBUG" if debug else "ERROR",
-        format="{time:HH:mm:ss.SSS} | {level:<5} | {message}",
-        colorize=False,
-    )
+    _stderr_logger("DEBUG" if debug else "ERROR")
     if debug:
         install_fish_ws_tap()
         logger.debug("debug on (Fish WS tap + listen/barge/llm meta)")
@@ -62,54 +92,68 @@ def install_fish_ws_tap() -> None:
     _WS_TAP.on = True
 
 
-logger.remove()
-logger.add(
-    sys.stderr,
-    level="ERROR",
-    format="{time:HH:mm:ss.SSS} | {level:<5} | {message}",
-    colorize=False,
-)
+_stderr_logger("ERROR")
+
+
+def _plain(val: object) -> bool:
+    return isinstance(val, (str, int, float, bool)) or val is None
+
+
+def _byte_len(key: str, val: object) -> tuple[str, int] | None:
+    if isinstance(val, (bytes, bytearray)):
+        return f"{key}_bytes", len(val)
+    return None
+
+
+def _hidden_size(key: str, val: object) -> tuple[str, int] | None:
+    sized = _byte_len(key, val)
+    if sized is not None:
+        return sized
+    if isinstance(val, str):
+        return f"{key}_chars", len(val)
+    if isinstance(val, list):
+        return f"{key}_len", len(val)
+    return None
+
+
+def _note_size(out: dict[str, Any], sized: tuple[str, int] | None) -> bool:
+    if sized is None:
+        return False
+    name, count = sized
+    out[name] = count
+    return True
 
 
 def ws_event_view(data: dict[str, Any]) -> dict[str, Any]:
     view: dict[str, Any] = {}
     for key, val in data.items():
-        if key == "audio" and isinstance(val, (bytes, bytearray)):
-            view["audio_bytes"] = len(val)
-        elif isinstance(val, (str, int, float, bool)) or val is None:
+        if _plain(val):
             view[key] = val
-        elif isinstance(val, (bytes, bytearray)):
-            view[f"{key}_bytes"] = len(val)
-        else:
-            view[key] = type(val).__name__
+            continue
+        if _note_size(view, _byte_len(key, val)):
+            continue
+        view[key] = type(val).__name__
     return view
 
 
 def public_meta(data: dict[str, Any], *, depth: int = 0) -> dict[str, Any]:
     """JSON-ish metadata without utterance bodies or secrets."""
-    if depth > 3:
+    if depth > _META_DEPTH:
         return {"_truncated": True}
     out: dict[str, Any] = {}
     for key, val in data.items():
-        low = key.lower()
-        if low in _SECRET_HEADER:
+        low = str(key).lower()
+        if _is_secret(key):
             continue
-        if low in {"text", "content", "audio", "messages"}:
-            if isinstance(val, str):
-                out[f"{key}_chars"] = len(val)
-            elif isinstance(val, (bytes, bytearray)):
-                out[f"{key}_bytes"] = len(val)
-            elif isinstance(val, list):
-                out[f"{key}_len"] = len(val)
+        if low in _HIDDEN_KEYS:
+            _note_size(out, _hidden_size(key, val))
             continue
-        if isinstance(val, (str, int, float, bool)) or val is None:
+        if _plain(val):
             out[key] = val
-        elif isinstance(val, list):
-            out[f"{key}_len"] = len(val)
         elif isinstance(val, dict):
             out[key] = public_meta(val, depth=depth + 1)
-        elif isinstance(val, (bytes, bytearray)):
-            out[f"{key}_bytes"] = len(val)
+        else:
+            _note_size(out, _hidden_size(key, val))
     return out
 
 
@@ -117,13 +161,8 @@ def header_meta(headers: Any) -> dict[str, str]:
     out: dict[str, str] = {}
     for key, val in headers.items():
         low = str(key).lower()
-        if low in _SECRET_HEADER:
+        if _is_secret(key):
             continue
-        if low.startswith("x-") or low in {
-            "content-type",
-            "retry-after",
-            "openai-processing-ms",
-            "openai-version",
-        }:
+        if low.startswith("x-") or low in _PUBLIC_HEADERS:
             out[str(key)] = str(val)
     return out
