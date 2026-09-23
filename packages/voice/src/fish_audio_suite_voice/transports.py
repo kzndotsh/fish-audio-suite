@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import sys
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -12,7 +11,7 @@ from typing import Any, Protocol
 import httpx
 
 from fish_audio_suite_kit import MS_PER_S, bearer, strip_base
-from fish_audio_suite_voice.debug import debug, env_debug, header_meta
+from fish_audio_suite_voice.debug import debug, env_debug, header_meta, warn
 
 LLM_REFERER = "https://github.com/kzndotsh/fish-audio-suite"
 LLM_TITLE = "fish-audio-suite-voice"
@@ -28,6 +27,15 @@ class _AbortStats(Protocol):
 
 @dataclass
 class ChatCall:
+    """One duplex chat request, shared by the OpenRouter SDK and httpx SSE paths.
+
+    Notes
+    -----
+    ``route_model`` may already include ``:nitro``. ``use_openrouter`` is true
+    only when ``base`` contains ``openrouter.ai``. ``stats`` is filled while
+    events are consumed and is how a HTTP error aborts the stream.
+    """
+
     messages: list[dict[str, str]]
     base: str
     key: str
@@ -43,6 +51,25 @@ class ChatCall:
 
 @asynccontextmanager
 async def openrouter_client(key: str, base: str) -> AsyncGenerator[Any, None]:
+    """Open an OpenRouter client for the duplex loop.
+
+    Parameters
+    ----------
+    key : str
+        API key.
+    base : str
+        Server URL passed through to the SDK.
+
+    Yields
+    ------
+    Any
+        The SDK client. Closed when the context exits.
+
+    Notes
+    -----
+    ``openrouter`` is imported inside this function so ``import fish_audio_suite_voice``
+    works without the ``cli`` extra.
+    """
     from openrouter import OpenRouter
 
     async with OpenRouter(
@@ -118,7 +145,7 @@ def _abort_preview(body: object) -> str:
 
 
 def _abort_http(stats: _AbortStats, status: object, model: str, body: str) -> None:
-    print(f"[llm] HTTP {status} model={model}: {body}", file=sys.stderr)
+    warn(f"[llm] HTTP {status} model={model}: {body}")
     stats.aborted = True
 
 
@@ -137,6 +164,7 @@ def _data_line(line: str) -> str | None:
 
 
 def chat_completions_url(base: str) -> str:
+    """Return the OpenAI-compatible chat completions URL for ``base``."""
     return f"{strip_base(base)}/chat/completions"
 
 
@@ -176,6 +204,19 @@ async def _iter_httpx_sse_events(call: ChatCall) -> AsyncIterator[object]:
 
 
 def chat_events(call: ChatCall) -> AsyncIterator[object]:
+    """Pick the OpenRouter or httpx event stream for one chat call.
+
+    Parameters
+    ----------
+    call : ChatCall
+        Request. ``use_openrouter`` selects the SDK.
+
+    Returns
+    -------
+    AsyncIterator
+        Raw chat events. ``llm_token_stream`` is the only consumer and applies
+        the same field reads to both transports.
+    """
     if call.use_openrouter:
         return _iter_openrouter_events(call)
     return _iter_httpx_sse_events(call)

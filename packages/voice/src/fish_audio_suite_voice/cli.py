@@ -21,6 +21,7 @@ from fish_audio_suite_voice.debug import (
     configure_voice_logging,
     end_reply_line,
     env_debug,
+    warn,
 )
 from fish_audio_suite_voice.duplex import EXIT_FATAL, EXIT_OK, bye, duplex_turns
 from fish_audio_suite_voice.live import IsolatedFishTts
@@ -47,10 +48,10 @@ def _load_dotenv(path: Path) -> bool:
     try:
         text = path.read_text(encoding="utf-8")
     except UnicodeDecodeError:
-        print(f"fish-voice: env file is not utf-8: {path}", file=sys.stderr)
+        warn(f"fish-voice: env file is not utf-8: {path}")
         return False
     except OSError as exc:
-        print(f"fish-voice: could not read env file {path}: {exc.strerror}", file=sys.stderr)
+        warn(f"fish-voice: could not read env file {path}: {exc.strerror}")
         return False
     for raw in text.splitlines():
         line = raw.strip()
@@ -80,7 +81,7 @@ def apply_cli_env_files(paths: list[Path], *, required: bool) -> list[Path]:
             continue
         if not expanded.is_file():
             if required:
-                print(f"fish-voice: --env-file not found: {path}", file=sys.stderr)
+                warn(f"fish-voice: --env-file not found: {path}")
             continue
         if _load_dotenv(expanded):
             seen.add(resolved)
@@ -101,7 +102,7 @@ def _parse_device(raw: str | None) -> str | int | None:
 
 
 def _blocker(label: str) -> int:
-    print(f"BLOCKER: {label} missing", file=sys.stderr)
+    warn(f"BLOCKER: {label} missing")
     return EXIT_FATAL
 
 
@@ -133,6 +134,19 @@ def _fish_tts(c: VoiceCliConfig, audio_format: str) -> IsolatedFishTts:
 
 
 async def smoke_test(c: VoiceCliConfig) -> int:
+    """Speak one line to a WAV file. Does not open the microphone.
+
+    Parameters
+    ----------
+    c : VoiceCliConfig
+        Needs ``FISH_API_KEY`` and ``FISH_VOICE_ID``.
+
+    Returns
+    -------
+    int
+        0 when the file is at least 1000 bytes. 1 when Fish returns audio that
+        is shorter than that. 2 when a required setting is missing.
+    """
     missing = _require_fish(c)
     if missing is not None:
         return missing
@@ -141,10 +155,7 @@ async def smoke_test(c: VoiceCliConfig) -> int:
     sink = FileSink(out, sample_rate=c.sample_rate, wav=True)
     result = tts.speak_isolated("[clear] Hello there.", sink)
     if result.error_status is not None:
-        print(
-            f"smoke: FAIL {result.error_status} {result.error_message}",
-            file=sys.stderr,
-        )
+        warn(f"smoke: FAIL {result.error_status} {result.error_message}")
         return _SMOKE_FAIL
     ok = result.bytes_played > _SMOKE_MIN_BYTES
     print(f"smoke: wrote {result.bytes_played} bytes → {out} ({'OK' if ok else 'FAIL <1k'})")
@@ -153,6 +164,19 @@ async def smoke_test(c: VoiceCliConfig) -> int:
 
 
 async def run_loop(c: VoiceCliConfig) -> int:
+    """Run duplex until quit, after checking keys, model, and the playback sink.
+
+    Parameters
+    ----------
+    c : VoiceCliConfig
+        Environment snapshot.
+
+    Returns
+    -------
+    int
+        2 when a key, the LLM model, or the playback sink is unusable.
+        Otherwise the code from ``duplex_turns``.
+    """
     missing = _require_fish(c)
     if missing is not None:
         return missing
@@ -162,7 +186,7 @@ async def run_loop(c: VoiceCliConfig) -> int:
         return _blocker("FISH_LLM_MODEL / OPENROUTER_MODEL")
     playback_problem = duplex_playback_problem(c.playback)
     if playback_problem is not None:
-        print(f"BLOCKER: {playback_problem}", file=sys.stderr)
+        warn(f"BLOCKER: {playback_problem}")
         return EXIT_FATAL
 
     device = _parse_device(c.device)
@@ -211,6 +235,24 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """``fish-voice`` entry. Load dotenv, then smoke or duplex.
+
+    Parameters
+    ----------
+    argv : list of str or None, optional
+        Arguments without the program name. None reads ``sys.argv``.
+
+    Returns
+    -------
+    int
+        Process exit code. A second SIGINT uses the default terminate handler.
+
+    Notes
+    -----
+    Process environment wins, then ``--env-file``, otherwise ``./.env`` when
+    it exists. ``--debug`` or ``FISH_VOICE_DEBUG=1`` turns on the stderr sink.
+    Logging is configured here, not at import.
+    """
     args = _parser().parse_args(argv)
     if args.env_file:
         loaded = apply_cli_env_files(args.env_file, required=True)

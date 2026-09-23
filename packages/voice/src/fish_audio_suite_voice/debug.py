@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from typing import Any
@@ -53,6 +54,7 @@ def write_reply_token(text: str) -> None:
 
 
 def end_reply_line() -> None:
+    """Close the open token line with a newline."""
     if not _REPLY.open:
         return
     sys.stdout.write("\n")
@@ -61,22 +63,71 @@ def end_reply_line() -> None:
 
 
 def env_debug() -> bool:
+    """Return whether FISH_VOICE_DEBUG is on."""
     return env_bool("FISH_VOICE_DEBUG")
 
 
 def debug(message: str, *args: Any, **fields: Any) -> None:
+    """Log at debug when FISH_VOICE_DEBUG is on, after closing the token line."""
     if env_debug():
         end_reply_line()
         logger.debug(message, *args, **fields)
 
 
 def heartbeat_due(idle_frames: int, every: int) -> bool:
+    """Return whether a debug heartbeat should print on this idle frame."""
     return env_debug() and idle_frames % every == 0
 
 
 def _write_stderr(message: str) -> None:
     """Write at emit time so a wrapped stderr (pytest, a later redirect) is the one used."""
     sys.stderr.write(message)
+
+
+class _Configured:
+    """True after the CLI installs the stderr sink. warn() must not configure loguru itself."""
+
+    on: bool = False
+
+
+_CONFIGURED = _Configured()
+
+
+def warn(message: str) -> None:
+    """Stderr diagnostic. Closes an open reply line first. Does not configure logging."""
+    end_reply_line()
+    if _CONFIGURED.on:
+        logger.warning(message)
+        return
+    _write_stderr(f"{message}\n")
+
+
+class _InterceptHandler(logging.Handler):
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            level: str | int = logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+        frame = logging.currentframe()
+        depth = 2
+        while frame is not None and frame.f_code.co_filename == logging.__file__:
+            frame = frame.f_back
+            depth += 1
+        logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
+
+
+_INTERCEPTED = ("httpx", "httpcore", "websockets", "asyncio")
+
+
+def _intercept_libraries(*, debug: bool) -> None:
+    level = logging.DEBUG if debug else logging.WARNING
+    handler = _InterceptHandler()
+    for name in _INTERCEPTED:
+        lib = logging.getLogger(name)
+        lib.handlers.clear()
+        lib.addHandler(handler)
+        lib.setLevel(level)
+        lib.propagate = False
 
 
 def _stderr_logger(level: str) -> None:
@@ -90,10 +141,12 @@ def _stderr_logger(level: str) -> None:
 
 
 def configure_voice_logging(*, debug: bool) -> None:
-    """stderr DEBUG when on; otherwise only ERROR so debug() is silent."""
+    """Idempotent stderr sink. DEBUG when on; otherwise WARNING. Call from the CLI only."""
     if debug:
         os.environ["FISH_VOICE_DEBUG"] = "1"
-    _stderr_logger("DEBUG" if debug else "ERROR")
+    _stderr_logger("DEBUG" if debug else "WARNING")
+    _CONFIGURED.on = True
+    _intercept_libraries(debug=debug)
     if debug:
         install_fish_ws_tap()
         logger.debug("debug on (Fish WS tap + listen/barge/llm meta)")
@@ -118,9 +171,6 @@ def install_fish_ws_tap() -> None:
     _fish_realtime._should_stop = stop
     _fish_realtime._process_audio_event = proc
     _WS_TAP.on = True
-
-
-_stderr_logger("ERROR")
 
 
 def _plain(val: object) -> bool:
@@ -153,6 +203,7 @@ def _note_size(out: dict[str, Any], sized: tuple[str, int] | None) -> bool:
 
 
 def ws_event_view(data: dict[str, Any]) -> dict[str, Any]:
+    """Copy a websocket event, replacing byte payloads with their lengths."""
     view: dict[str, Any] = {}
     for key, val in data.items():
         if _plain(val):
@@ -186,6 +237,7 @@ def public_meta(data: dict[str, Any], *, depth: int = 0) -> dict[str, Any]:
 
 
 def header_meta(headers: Any) -> dict[str, str]:
+    """Copy response headers, omitting secrets."""
     out: dict[str, str] = {}
     for key, val in headers.items():
         low = str(key).lower()

@@ -8,7 +8,7 @@
 | --- | --- |
 | `live.py` | `IsolatedFishTts` speak API. `speak_isolated` runs on a **private thread + loop** (safe under `asyncio.run` / `to_thread`). |
 | `session.py` | One Fish turn: retry 429/5xx only before first audio, replaying `speak()` text, on a private loop. |
-| `wire.py` | The live websocket. Poll Ctrl+C with `asyncio.wait` on `anext`; do not `wait_for` (timeout cancels the WS generator). On barge/Ctrl+C close the **client**; do not `aclose()` the WS iterator. Custom `httpx.AsyncClient` carries `base_url` + W3C headers onto the live WS upgrade. Branch `APIError` / `WebSocketError`. Empty Fish audio prints `[tts] no audio voice=…`. Fish `TTSConfig` has no `features`; quality-guard stays proxy HTTP. |
+| `wire.py` | The live websocket. Poll Ctrl+C with `asyncio.wait` on `anext`; do not `wait_for` (timeout cancels the WS generator). On barge/Ctrl+C close the **client**; do not `aclose()` the WS iterator. Custom `httpx.AsyncClient` carries `base_url` + W3C headers onto the live WS upgrade. Branch `APIError` / `WebSocketError`. Empty Fish audio logs `[tts] no audio voice=…` on stderr. Fish `TTSConfig` has no `features`; quality-guard stays proxy HTTP. |
 | `playback.py` | `SounddeviceSink` writes ~30 ms DAC slices and taps far-end **before** each blocking write so AEC matches playback. `FileSink`, `StdoutSink`, optional `MpvSink`. |
 | `aec.py` | Optional AEC3 (`pywebrtc-audio` extra). 44.1 kHz speaker PCM → 16 kHz; `process(near, far)` when far has energy. `FISH_VOICE_AEC=0` / missing extra / FileSink: mic passthrough. Bleed 0.3 s when loaded else 0.9. PipeWire echo-cancel is host-only. |
 | `barge.py` | `BargeGate` interrupt. Bleed: `effective_bleed_s` at arm (AEC short vs `FISH_VOICE_BLEED_DELAY` 0.9). Far-end ×2.2 barge floor only when AEC is off; with AEC3 the cleaned mic already dropped speaker bleed. Hits decay after 3 missed frames so a short gap in a phrase does not reset. A trip keeps the last 20 frames, clears the speaker tap, and the next listen starts from that clip with no post-speak cooldown. |
@@ -17,10 +17,10 @@
 | `transports.py` | OpenRouter SDK (`send_async`, `stream=True`) when the base is `openrouter.ai`; httpx SSE otherwise. `:nitro` + `provider.sort=throughput`. `max_completion_tokens`, one duplex `session_id`, `async with res` on the event stream. `openrouter` stays imported inside the helpers that need it. |
 | `cli.py` | Env files, `fish-voice` entry, smoke test. Process env, then `--env-file`, else `./.env`. A non-UTF-8 env file is skipped. Duplex exits 2 when playback is `file`, unknown, or `mpv` is not on PATH. `--debug` / `FISH_VOICE_DEBUG=1`. Second SIGINT is default terminate. |
 | `duplex.py` | Mic → Fish ASR → LLM → `speak_isolated` (full reply, then TTS). One sampled W3C trace id per turn on ASR REST + live TTS. ASR/TTS 401/402/403 exit 2. Ctrl+C sets `STOP_RECORD` and the in-flight TTS/LLM cancel; sticky quit (no `STOP_RECORD.clear()` per listen). |
-| `asr.py` | Fish ASR over httpx. No default voice. Omit ASR `language` unless `FISH_ASR_LANGUAGE`. Retry 429/5xx. |
+| `asr.py` | Fish ASR over httpx. Connect timeout 10s; read/write/pool 60s. No default voice. Omit ASR `language` unless `FISH_ASR_LANGUAGE`. Retry 429/5xx. |
 | `config.py` | `VoiceCliConfig` from the process environment. `FISH_LLM_BACKEND` is only the ready-line label. |
 | `signals.py` | `STOP_RECORD`, `TURN`, `request_quit`. |
-| `debug.py` | loguru DEBUG sink + Fish WS msgpack tap (audio as byte length). The sink writes to the current stderr. Off unless configured. A debug line closes an open reply before it writes. |
+| `debug.py` | CLI calls `configure_voice_logging` (idempotent). Stderr is DEBUG with `--debug` / `FISH_VOICE_DEBUG=1`, otherwise WARNING. Intercepts `httpx`, `httpcore`, `websockets`, `asyncio`. `warn` is the stderr diagnostic (closes an open reply first). Transcript lines stay on stdout. Fish WS msgpack tap (audio as byte length) only when debug is on. |
 
 | Task | Command |
 | --- | --- |

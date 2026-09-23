@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import io
+import logging
+import os
 import sys
 
 import pytest
@@ -14,6 +16,26 @@ from fish_audio_suite_voice.debug import (
     write_reply_token,
     ws_event_view,
 )
+
+
+def test_configure_voice_logging_replaces_library_handlers() -> None:
+    previous = os.environ.get("FISH_VOICE_DEBUG")
+    try:
+        os.environ.pop("FISH_VOICE_DEBUG", None)
+        configure_voice_logging(debug=False)
+        configure_voice_logging(debug=False)
+        httpx_log = logging.getLogger("httpx")
+        assert httpx_log.level == logging.WARNING
+        assert len(httpx_log.handlers) == 1
+        configure_voice_logging(debug=True)
+        assert logging.getLogger("httpx").level == logging.DEBUG
+        assert len(logging.getLogger("asyncio").handlers) == 1
+    finally:
+        configure_voice_logging(debug=False)
+        if previous is None:
+            os.environ.pop("FISH_VOICE_DEBUG", None)
+        else:
+            os.environ["FISH_VOICE_DEBUG"] = previous
 
 
 def test_debug_follows_a_replaced_stderr(

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 import threading
 import time
 import uuid
@@ -27,7 +26,7 @@ from fish_audio_suite_kit import (
 from fish_audio_suite_voice.asr import fish_asr
 from fish_audio_suite_voice.barge import BargeGate, post_speak_cooldown_s
 from fish_audio_suite_voice.config import VoiceCliConfig
-from fish_audio_suite_voice.debug import debug, end_reply_line, write_reply_token
+from fish_audio_suite_voice.debug import debug, end_reply_line, warn, write_reply_token
 from fish_audio_suite_voice.listen import record_utterance
 from fish_audio_suite_voice.live import IsolatedFishTts, IsolatedResult, is_cancel_noise
 from fish_audio_suite_voice.llm import llm_token_stream
@@ -81,7 +80,7 @@ async def _collect_reply(
             write_reply_token(tok)
     except (asyncio.CancelledError, BaseExceptionGroup, RuntimeError) as e:
         if not is_cancel_noise(e):
-            print(f"[llm] {e}", file=sys.stderr)
+            warn(f"[llm] {e}")
     finally:
         end_reply_line()
     reply = "".join(parts).strip()
@@ -169,7 +168,7 @@ def _accept_asr(text: str, last_user: str) -> Literal["skip", "quit", "ok"]:
     if is_backchannel(text):
         return _skip_asr("backchannel", text)
     if is_asr_hallucination(text):
-        print("[asr skip hallucination]", file=sys.stderr)
+        warn("[asr skip hallucination]")
         return _skip_asr("hallucination", text)
     if is_quit_utterance(text):
         return "quit"
@@ -201,12 +200,12 @@ async def _recognize(loop: _Loop, wav: bytes, last_user: str) -> _HeardLine:
             extra_headers={"traceparent": asr_parent},
         )
     except FishHttpError as e:
-        print(f"[asr] {e.status} {e.message}", file=sys.stderr)
+        warn(f"[asr] {e.status} {e.message}")
         if e.status in _FATAL_FISH:
             return _HeardLine("fatal", code=EXIT_FATAL)
         return _HeardLine("again")
     except Exception as e:
-        print(f"[asr] {e}", file=sys.stderr)
+        warn(f"[asr] {e}")
         return _HeardLine("again")
     asr_ms = elapsed_ms(started)
     decision = _accept_asr(text, last_user)
@@ -232,7 +231,7 @@ async def _hear_line(loop: _Loop, last_user: str) -> _HeardLine:
         loop.barge_prefix = b""
         wav = await asyncio.to_thread(record_utterance, loop.device, STOP_RECORD, prefix=prefix)
     except PortAudioMissingError as e:
-        print(e, file=sys.stderr)
+        warn(str(e))
         return _HeardLine("fatal", code=EXIT_FATAL)
     if STOP_RECORD.is_set():
         return _HeardLine("bye")
@@ -244,6 +243,13 @@ async def _hear_line(loop: _Loop, last_user: str) -> _HeardLine:
 
 
 def bye() -> int:
+    """Print the quit line and return success.
+
+    Returns
+    -------
+    int
+        ``EXIT_OK`` (0). Fatal Fish and PortAudio failures use 2 instead.
+    """
     print("\nbye")
     return EXIT_OK
 
@@ -295,6 +301,31 @@ async def duplex_turns(
     device: str | int | None,
     or_client: Any | None,
 ) -> int:
+    """Mic, Fish ASR, LLM, then one isolated TTS turn, until quit.
+
+    Parameters
+    ----------
+    c : VoiceCliConfig
+        Env-backed duplex settings.
+    tts : IsolatedFishTts
+        Live TTS client. Each reply uses ``speak_isolated``.
+    device : str or int or None
+        Mic and speaker device, or None for the host default.
+    or_client : Any or None
+        OpenRouter client when the base is openrouter.ai. Other bases use httpx.
+
+    Returns
+    -------
+    int
+        ``0`` on a normal bye. ``2`` when Fish returns 401, 402, or 403, or
+        PortAudio is missing.
+
+    Notes
+    -----
+    One sampled trace id is shared by ASR and the TTS websocket for that turn.
+    Barge-in keeps the audio that tripped the gate and skips the post-speak
+    cooldown. Ctrl+C sets ``STOP_RECORD`` and cancels the in-flight TTS task.
+    """
     loop = _Loop(
         config=c,
         tts=tts,

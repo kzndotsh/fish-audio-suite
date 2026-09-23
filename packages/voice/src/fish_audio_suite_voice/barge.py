@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import queue
-import sys
 import threading
 import time
 from collections import deque
@@ -21,7 +20,7 @@ from fish_audio_suite_voice.aec import (
     pcm_rms,
     tap_clear,
 )
-from fish_audio_suite_voice.debug import debug, heartbeat_due
+from fish_audio_suite_voice.debug import debug, heartbeat_due, warn
 from fish_audio_suite_voice.playback import load_sounddevice, pcm_stream_kwargs
 
 SAMPLE_RATE = AEC_RATE
@@ -88,6 +87,7 @@ def barge_rms_need(
 
 
 def post_speak_cooldown_s() -> float:
+    """Return the post-playback cooldown from FISH_VOICE_COOLDOWN."""
     return env_float("FISH_VOICE_COOLDOWN", DEFAULT_POST_SPEAK_COOLDOWN_S)
 
 
@@ -124,7 +124,17 @@ def _barge_heartbeat(
 
 
 class BargeGate:
-    """VAD-energy + min-speech. Apps that own the mic can import this."""
+    """Interrupt TTS when the mic stays above the floor for enough frames.
+
+    Notes
+    -----
+    The bleed delay is short when AEC3 is loaded and 0.9 seconds otherwise,
+    so the speaker's own voice is not treated as the user. The barge floor is
+    raised while audio is playing only when AEC is off. A trip keeps the last
+    20 frames; the next listen starts from that clip and skips the post-speak
+    cooldown. Hits decay after 3 missed frames so a short gap does not reset
+    the phrase.
+    """
 
     def __init__(
         self,
@@ -154,6 +164,7 @@ class BargeGate:
         return effective_bleed_s(delay)
 
     def watch(self, cancel: threading.Event) -> None:
+        """Listen on the mic and set ``cancel`` after enough speech frames."""
         import webrtcvad
 
         vad = webrtcvad.Vad(_BARGE_VAD)
@@ -205,9 +216,11 @@ class BargeGate:
                     cancel.set()
                     return
         except Exception as e:
-            print(f"[barge-in] {e}", file=sys.stderr)
+            warn(f"[barge-in] {e}")
 
     def start_after_bleed(self, cancel: threading.Event) -> threading.Thread:
+        """Sleep out speaker bleed, then start ``watch`` unless already cancelled."""
+
         def _run() -> None:
             delay = self._bleed_wait()
             self.bleed_delay_s = delay
@@ -224,6 +237,7 @@ class BargeGate:
 
 
 def frame_is_speech(vad: Any, frame: bytes) -> bool:
+    """Return whether WebRTC VAD scores this 16 kHz frame as speech."""
     return bool(vad.is_speech(frame, SAMPLE_RATE))
 
 
@@ -233,6 +247,7 @@ def mic_frames(
     *,
     timeout: float,
 ) -> Iterator[bytes]:
+    """Yield 16 kHz AEC-cleaned mic frames until ``stop`` is set."""
     sd = load_sounddevice()
     audio: queue.Queue[bytes] = queue.Queue()
 

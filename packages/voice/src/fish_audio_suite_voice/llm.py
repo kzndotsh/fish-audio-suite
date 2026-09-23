@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
 from fish_audio_suite_kit import MS_PER_S, env_int, env_off, utf8_text
-from fish_audio_suite_voice.debug import debug
+from fish_audio_suite_voice.debug import debug, warn
 from fish_audio_suite_voice.live import is_cancel_noise
 from fish_audio_suite_voice.transports import ChatCall, chat_completions_url, chat_events
 
@@ -20,6 +19,19 @@ _LOOKUP_BODY_CHARS = 200
 
 
 def openrouter_base(base: str) -> bool:
+    """Return whether chat should use the OpenRouter SDK.
+
+    Parameters
+    ----------
+    base : str
+        LLM API base URL.
+
+    Returns
+    -------
+    bool
+        True when the base contains ``openrouter.ai``. Any other base uses
+        httpx server-sent events.
+    """
     return "openrouter.ai" in base
 
 
@@ -61,15 +73,12 @@ async def check_openrouter_model(client: Any, model: str, base: str) -> None:
         res = await client.models.get_async(author=author, slug=slug, timeout_ms=_MODEL_LOOKUP_MS)
     except OpenRouterError as e:
         if e.status_code == 404:
-            print(f"[llm] unknown model {route}", file=sys.stderr)
+            warn(f"[llm] unknown model {route}")
         else:
-            print(
-                f"[llm] models.get HTTP {e.status_code}: {e.body[:_LOOKUP_BODY_CHARS]}",
-                file=sys.stderr,
-            )
+            warn(f"[llm] models.get HTTP {e.status_code}: {e.body[:_LOOKUP_BODY_CHARS]}")
         return
     except Exception as e:
-        print(f"[llm] models.get {e}", file=sys.stderr)
+        warn(f"[llm] models.get {e}")
         return
     data = _event_field(res, "data")
     if data is None:
@@ -179,7 +188,7 @@ def _note_choice(choice: object, stats: _ChatStats) -> None:
 def _note_chat_event(event: object, stats: _ChatStats) -> str:
     err = _event_field(event, "error")
     if err:
-        print(f"[llm] stream error: {err}", file=sys.stderr)
+        warn(f"[llm] stream error: {err}")
         stats.aborted = True
         return ""
     usage = _event_field(event, "usage")
@@ -226,10 +235,7 @@ def _finish_llm(stats: _ChatStats, route_model: str) -> None:
         stats.yielded,
     )
     if stats.yielded == 0:
-        print(
-            f"[llm] empty reply (model={route_model} finish={stats.last_finish!r})",
-            file=sys.stderr,
-        )
+        warn(f"[llm] empty reply (model={route_model} finish={stats.last_finish!r})")
 
 
 async def llm_token_stream(
@@ -243,6 +249,38 @@ async def llm_token_stream(
     session_id: str | None = None,
     trace_id: str | None = None,
 ) -> AsyncIterator[str]:
+    """Stream assistant text from OpenRouter or a generic chat-completions URL.
+
+    Parameters
+    ----------
+    messages : list of dict
+        OpenAI-style chat messages, including the system prompt.
+    base : str
+        API origin. ``openrouter.ai`` selects the SDK.
+    key : str
+        Bearer token.
+    model : str
+        Model id. An OpenRouter ``:nitro`` suffix is added when the base is
+        OpenRouter and the id does not already request a provider sort.
+    cancel : asyncio.Event or None, optional
+        Stops the stream. Cancel is not a fatal duplex error.
+    client : Any or None, optional
+        An already-open OpenRouter client. Created when omitted.
+    session_id : str or None, optional
+        One duplex session id sent on every call.
+    trace_id : str or None, optional
+        Logged with the request. Not an OpenTelemetry span.
+
+    Yields
+    ------
+    str
+        Text deltas. Empty deltas are omitted.
+
+    Notes
+    -----
+    ``models.get`` 404 warns and does not abort. A stream error is logged and
+    ends the iterator. Both transports share one event consumer.
+    """
     nitro = _want_nitro(model, base)
     route_model = _nitro_route(model, nitro=nitro)
     max_tokens = env_int("FISH_LLM_MAX_TOKENS", _DEFAULT_MAX_TOKENS)
@@ -279,5 +317,5 @@ async def llm_token_stream(
     except Exception as e:
         if is_cancel_noise(e):
             return
-        print(f"[llm] {e}", file=sys.stderr)
+        warn(f"[llm] {e}")
     _finish_llm(stats, route_model)

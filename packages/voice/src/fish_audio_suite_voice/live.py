@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 import threading
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass, field
@@ -21,6 +20,7 @@ from fish_audio_suite_kit import (
     split_tts_piece,
     strip_base,
 )
+from fish_audio_suite_voice.debug import warn
 from fish_audio_suite_voice.playback import PlaybackSink
 from fish_audio_suite_voice.session import (
     IsolatedResult,
@@ -73,6 +73,7 @@ class IsolatedFishTts:
     trace_headers: dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        """Strip the Fish base URL and copy the trace header map."""
         self.base_url = strip_base(self.base_url)
         self.trace_headers = dict(self.trace_headers)
 
@@ -82,7 +83,29 @@ class IsolatedFishTts:
         sink: PlaybackSink,
         cancel: threading.Event | None = None,
     ) -> IsolatedResult:
-        """Run Fish WS on a private thread and loop. Safe from asyncio.run / to_thread."""
+        """Run one Fish websocket on a private thread and event loop.
+
+        Parameters
+        ----------
+        text : str
+            Full reply. Scrubbed and given a lead cue inside ``speak``.
+        sink : PlaybackSink
+            Where PCM or encoded audio is written.
+        cancel : threading.Event or None, optional
+            Set to stop the turn. A new event is created when omitted.
+
+        Returns
+        -------
+        IsolatedResult
+            How much was spoken. ``spoken_so_far`` is the played prefix, not
+            the full unplayed reply.
+
+        Notes
+        -----
+        Safe to call from ``asyncio.run`` or ``to_thread``. The Fish websocket
+        must not share the LLM's event loop. On cancel, close the httpx client.
+        Do not ``aclose()`` the websocket iterator.
+        """
         cancel = cancel or threading.Event()
         result: IsolatedResult | None = None
 
@@ -92,7 +115,7 @@ class IsolatedFishTts:
                 result = run_isolated(self.speak(text, sink, cancel))
             except (asyncio.CancelledError, BaseExceptionGroup, RuntimeError, GeneratorExit) as e:
                 if not is_cancel_noise(e):
-                    print(f"[tts] {e}", file=sys.stderr)
+                    warn(f"[tts] {e}")
                 result = _quiet_result(cancel.is_set())
 
         thread = threading.Thread(target=worker, name="fish-tts", daemon=True)
@@ -108,6 +131,28 @@ class IsolatedFishTts:
         sink: PlaybackSink,
         cancel: threading.Event,
     ) -> IsolatedResult:
+        """Speak one full string on the caller's loop.
+
+        Parameters
+        ----------
+        text : str
+            Reply text. Cues are normalized before the websocket opens.
+        sink : PlaybackSink
+            Playback target.
+        cancel : threading.Event
+            Stops the turn. Also used as the retry boundary: 429 and 5xx
+            replay only before the first audio byte.
+
+        Returns
+        -------
+        IsolatedResult
+            Played audio and the spoken prefix.
+
+        Notes
+        -----
+        Prefer ``speak_isolated`` when the caller is already inside an event
+        loop that must stay free for the LLM. Duplex does that.
+        """
         prepared = _spoken(text)
         return await run_turn(
             self._spec(),
@@ -123,6 +168,28 @@ class IsolatedFishTts:
         sink: PlaybackSink,
         cancel: threading.Event,
     ) -> IsolatedResult:
+        """Stream model deltas, cutting them into Fish text events.
+
+        Parameters
+        ----------
+        deltas : Iterable or AsyncIterator of str
+            Token stream. Empty pieces are skipped.
+        sink : PlaybackSink
+            Playback target.
+        cancel : threading.Event
+            Stops the turn.
+
+        Returns
+        -------
+        IsolatedResult
+            Played audio. ``sent_text`` stays empty because the text arrived
+            as deltas, so a retry cannot replay the turn.
+
+        Notes
+        -----
+        The duplex loop does not call this. It waits for the full reply and
+        uses ``speak_isolated``, which can replay on 429 or 5xx.
+        """
         return await run_turn(
             self._spec(),
             self._delta_events(deltas, cancel),

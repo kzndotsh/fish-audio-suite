@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import sys
 import threading
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
@@ -25,7 +24,7 @@ from fish_audio_suite_kit import (
     split_tts_piece,
 )
 from fish_audio_suite_voice.aec import SAMPLE_BYTES
-from fish_audio_suite_voice.debug import debug
+from fish_audio_suite_voice.debug import debug, warn
 from fish_audio_suite_voice.playback import PlaybackSink
 
 ANEXT_POLL_S = 0.25
@@ -33,6 +32,23 @@ ANEXT_POLL_S = 0.25
 
 @dataclass(frozen=True)
 class IsolatedResult:
+    """What one TTS turn actually played.
+
+    Attributes
+    ----------
+    spoken_so_far : str
+        The prefix that reached the sink, not the full unplayed reply.
+        Barge-in history must use this.
+    bytes_played : int
+        Bytes the sink accepted.
+    got_audio : bool
+        True after the first Fish audio chunk.
+    cancelled : bool
+        True when barge-in or Ctrl+C stopped the turn.
+    error_status : int or None
+        Fish HTTP status when the turn failed. 401, 402, and 403 end duplex.
+    """
+
     spoken_so_far: str
     bytes_played: int
     got_audio: bool
@@ -45,6 +61,14 @@ class IsolatedResult:
 
 @dataclass(frozen=True)
 class TurnSpec:
+    """Inputs for one Fish websocket. Built by ``IsolatedFishTts``, not by apps.
+
+    Notes
+    -----
+    ``trace_headers`` are copied onto the httpx client that upgrades the
+    socket. ``partial_chars`` is the cut size from ``SuiteDefaults``.
+    """
+
     api_key: str
     base_url: str
     voice_id: str
@@ -60,18 +84,24 @@ class TurnSpec:
 
 @dataclass
 class Heard:
+    """Audio that actually arrived on this Fish websocket."""
+
     got_audio: bool = False
     ttfa_ms: float | None = None
 
 
 @dataclass
 class EventAcc:
+    """Text events and first-sentence timing collected during one turn."""
+
     flushed: list[str] = field(default_factory=list)
     ttfs_ms: float | None = None
 
 
 @dataclass
 class TurnRun:
+    """Mutable state for one Fish websocket turn."""
+
     spec: TurnSpec
     sink: PlaybackSink
     cancel: threading.Event
@@ -88,6 +118,24 @@ async def text_events(
     cancel: threading.Event,
     partial_chars: int,
 ) -> AsyncIterator[Any]:
+    """Yield Fish text events for a whole reply, then one flush.
+
+    Parameters
+    ----------
+    prepared : str
+        Already scrubbed text.
+    cancel : threading.Event
+        Stops before the next piece. A cancel after zero pieces yields no flush.
+    partial_chars : int
+        Passed to ``split_tts_piece``. ``flush_rest`` is True, so the tail
+        is not left buffered.
+
+    Yields
+    ------
+    TextEvent or FlushEvent
+        Empty pieces are skipped. ``FlushEvent`` is yielded only after at
+        least one ``TextEvent``. A bare flush on an empty turn is invalid.
+    """
     buf = prepared
     sent = 0
     while buf:
@@ -107,12 +155,27 @@ async def text_events(
 
 
 def flush_if_sent(sent: int, cancel: threading.Event) -> FlushEvent | None:
+    """Return a flush only when text was sent and the turn was not cancelled.
+
+    Parameters
+    ----------
+    sent : int
+        How many ``TextEvent`` values were yielded.
+    cancel : threading.Event
+        When set, return None so Fish is not asked to flush a dead turn.
+
+    Returns
+    -------
+    FlushEvent or None
+        None when ``sent`` is 0. An empty turn plus a bare flush is invalid.
+    """
     if sent and not cancel.is_set():
         return FlushEvent()
     return None
 
 
 async def as_async(deltas: Iterable[str] | AsyncIterable[str]) -> AsyncIterator[str]:
+    """Yield text deltas from either an async or a plain iterable."""
     if isinstance(deltas, AsyncIterable):
         async for item in deltas:
             yield item
@@ -130,6 +193,19 @@ _CANCEL_NOISE = (
 
 
 def is_cancel_noise(exc: BaseException) -> bool:
+    """Return whether ``exc`` is a barge-in or Ctrl+C tear-down, not a Fish error.
+
+    Parameters
+    ----------
+    exc : BaseException
+        An error from the websocket task or a task group.
+
+    Returns
+    -------
+    bool
+        True for ``CancelledError``, ``GeneratorExit``, and a few anyio or
+        asyncio messages that show up when the client is closed mid-stream.
+    """
     if isinstance(exc, (asyncio.CancelledError, GeneratorExit)):
         return True
     msg = str(exc).lower()
@@ -143,6 +219,25 @@ async def send_turn(
     *,
     close_client: Callable[[], Awaitable[None]],
 ) -> None:
+    """Open one Fish realtime websocket and write audio to the sink.
+
+    Parameters
+    ----------
+    client : AsyncFishAudio
+        Client whose base URL and trace headers are already set.
+    events : AsyncIterator
+        Text events. Ignored when ``run.sent_text`` is set, because the turn
+        is replayed from that string.
+    run : TurnRun
+        Mutable turn state. First-audio time and flushed text land here.
+    close_client : Callable
+        Awaited on barge-in or Ctrl+C. This ends the socket. Do not also
+        ``aclose`` the stream iterator.
+
+    Notes
+    -----
+    ``TTSConfig`` has no ``features``. Quality-guard stays on the proxy HTTP path.
+    """
     spec = run.spec
     run.acc.flushed.clear()
     run.acc.ttfs_ms = None
@@ -233,13 +328,11 @@ async def _tee_text_events(
 
 
 def isolated_result(run: TurnRun) -> IsolatedResult:
+    """Build the result returned after an isolated speak finishes."""
     spec = run.spec
     audio = run.audio
     if not audio.got_audio and not run.cancel.is_set() and run.err_status is None:
-        print(
-            f"[tts] no audio voice={spec.voice_id} model={spec.model}",
-            file=sys.stderr,
-        )
+        warn(f"[tts] no audio voice={spec.voice_id} model={spec.model}")
     played = run.sink.bytes_played()
     full = run.sent_text or "".join(run.acc.flushed)
     spoken = _spoken_prefix(
@@ -307,12 +400,23 @@ async def _anext_chunk(it: AsyncIterator[Any]) -> Any:
 
 
 async def _wait_task(task: asyncio.Task[Any], wait_s: float) -> bool:
-    """True if task finished. Timeout does not cancel it (wait_for would kill Fish WS)."""
+    """Return whether the task finished.
+
+    A timeout must not cancel the task. ``asyncio.wait_for`` would kill the Fish websocket.
+    """
     done, _ = await asyncio.wait({task}, timeout=wait_s)
     return bool(done)
 
 
 async def quiet_shutdown(loop: asyncio.AbstractEventLoop) -> None:
+    """Cancel leftover tasks on a private loop before it is closed.
+
+    Parameters
+    ----------
+    loop : asyncio.AbstractEventLoop
+        The loop ``run_isolated`` created. The current task is left running
+        so this coroutine can finish the gather.
+    """
     current = asyncio.current_task()
     pending = [task for task in asyncio.all_tasks(loop) if task is not current]
     for task in pending:
@@ -336,6 +440,28 @@ def turn_failure(
     got_audio: bool,
     cancel: threading.Event,
 ) -> _TtsFailure:
+    """Decide whether a Fish exception can be retried.
+
+    Parameters
+    ----------
+    exc : BaseException
+        Error from one attempt. Exception groups are unwrapped to the root.
+    attempt : int
+        Zero-based attempt. The fifth is final.
+    sent_text : str
+        Text available to replay. Empty blocks a retry.
+    got_audio : bool
+        True after the first audio byte. Retries stop there so the listener
+        does not hear the sentence twice.
+    cancel : threading.Event
+        When set, the failure is a barge-in, not a retry.
+
+    Returns
+    -------
+    _TtsFailure
+        ``retry`` is True only for 429 or 5xx before audio, with text to replay,
+        and attempts left.
+    """
     root = _root_exc(exc)
     retry, status, message = _classify_fish_exc(root)
     if is_cancel_noise(root) or cancel.is_set():
@@ -343,16 +469,10 @@ def turn_failure(
     last = fish_attempt_exhausted(attempt)
     can_replay = bool(sent_text) and not got_audio
     if retry and not last and can_replay:
-        print(
-            f"[tts] retry status={status} attempt={attempt + 1}/{FISH_RETRY_ATTEMPTS}",
-            file=sys.stderr,
-        )
+        warn(f"[tts] retry status={status} attempt={attempt + 1}/{FISH_RETRY_ATTEMPTS}")
         return _TtsFailure(retry=True)
     err_message = message or str(root)
-    print(
-        f"[tts] {status} {err_message}" if status is not None else f"[tts] {err_message}",
-        file=sys.stderr,
-    )
+    warn(f"[tts] {status} {err_message}" if status is not None else f"[tts] {err_message}")
     return _TtsFailure(retry=False, err_status=status, err_message=err_message)
 
 
