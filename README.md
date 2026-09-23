@@ -126,7 +126,7 @@ Or export the same vars and `uv run --package fish-audio-suite-voice --extra cli
 | `FISH_BASE`                           | proxy, voice  | `https://api.fish.audio` (self-host: `http://127.0.0.1:8080`) |
 | `FISH_MODEL` / `FISH_TTS_MODEL`       | proxy / voice | `s2.1-pro`                      |
 | `FISH_LATENCY`                        | both          | `normal`                        |
-| `FISH_SPEED` / `FISH_SPEED_SCALE`     | voice / proxy | `1.05`                          |
+| `FISH_SPEED` / `FISH_SPEED_SCALE`     | voice / proxy | `1`                             |
 | `FISH_CHUNK_LENGTH`                   | both          | `200` (cloud max 300)           |
 | `FISH_FORMAT`                         | proxy         | `mp3` (voice live uses `pcm`)   |
 | `FISH_ASR_LANGUAGE`                   | proxy, duplex | omit (hint only; Fish may still return `zh` on noise) |
@@ -135,6 +135,7 @@ Or export the same vars and `uv run --package fish-audio-suite-voice --extra cli
 | `FISH_VOICE_SPEECH_FRAMES`            | duplex CLI    | `4` (~120 ms min speech)        |
 | `FISH_VOICE_MIN_RMS`                  | duplex CLI    | `200` (floor; may rise in noise) |
 | `FISH_VOICE_MIN_VOICED`               | duplex CLI    | `12` (~360 ms VAD-true; drops coughs) |
+| `FISH_VOICE_SILENCE_FRAMES`           | duplex CLI    | `40` (~1.2 s quiet ends the turn) |
 | `FISH_VOICE_VAD`                      | duplex CLI    | `1` (0–3; higher = pickier)     |
 | `FISH_VOICE_COOLDOWN`                 | duplex CLI    | `0.8` (seconds after TTS)       |
 | `FISH_VOICE_BLEED_DELAY`              | duplex CLI    | `0.9` (no AEC / AEC extra missing) |

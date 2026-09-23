@@ -12,7 +12,7 @@
 | `playback.py` | `SounddeviceSink` writes ~30 ms DAC slices and taps far-end **before** each blocking write so AEC matches playback. `FileSink`, `StdoutSink`, optional `MpvSink`. |
 | `aec.py` | Optional AEC3 (`pywebrtc-audio` extra). 44.1 kHz speaker PCM → 16 kHz; `process(near, far)` when far has energy. `FISH_VOICE_AEC=0` / missing extra / FileSink: mic passthrough. Bleed 0.3 s when loaded else 0.9. PipeWire echo-cancel is host-only. |
 | `barge.py` | `BargeGate` interrupt. Bleed: `effective_bleed_s` at arm (AEC short vs `FISH_VOICE_BLEED_DELAY` 0.9). Far-end ×2.2 barge floor only when AEC is off; with AEC3 the cleaned mic already dropped speaker bleed. Hits decay after 3 missed frames so a short gap in a phrase does not reset. |
-| `listen.py` | One utterance for ASR. Listen start: consecutive VAD+RMS at the newest pre-pad end; 4x peak needs this frame ≥ 50% of peak plus 10 trailing hits. Impulse reject if peak >= 4x floor and voiced hits <= 24. Hold ratio is post-start only. |
+| `listen.py` | One utterance for ASR. Listen start: consecutive VAD+RMS at the newest pre-pad end; 8x peak needs this frame ≥ 50% of peak plus 10 trailing hits. Impulse reject if peak >= 8x floor and voiced hits <= 24. A VAD-true frame holds the turn. Silence end is 40 frames (~1.2s). |
 | `llm.py` | Duplex chat stream. Both transports share one event consumer. `models.get_async` warns on 404 and does not exit. |
 | `transports.py` | OpenRouter SDK (`send_async`, `stream=True`) when the base is `openrouter.ai`; httpx SSE otherwise. `:nitro` + `provider.sort=throughput`. `max_completion_tokens`, one duplex `session_id`, `async with res` on the event stream. `openrouter` stays imported inside the helpers that need it. |
 | `cli.py` | Env files, `fish-voice` entry, smoke test. Process env, then `--env-file`, else `./.env`. A non-UTF-8 env file is skipped. Duplex exits 2 when playback is `file`, unknown, or `mpv` is not on PATH. `--debug` / `FISH_VOICE_DEBUG=1`. Second SIGINT is default terminate. |
@@ -20,7 +20,7 @@
 | `asr.py` | Fish ASR over httpx. No default voice. Omit ASR `language` unless `FISH_ASR_LANGUAGE`. Retry 429/5xx. |
 | `config.py` | `VoiceCliConfig` from the process environment. `FISH_LLM_BACKEND` is only the ready-line label. |
 | `signals.py` | `STOP_RECORD`, `TURN`, `request_quit`. |
-| `debug.py` | loguru DEBUG sink + Fish WS msgpack tap (audio as byte length). Off unless configured. |
+| `debug.py` | loguru DEBUG sink + Fish WS msgpack tap (audio as byte length). The sink writes to the current stderr. Off unless configured. A debug line closes an open reply before it writes. |
 
 | Task | Command |
 | --- | --- |
