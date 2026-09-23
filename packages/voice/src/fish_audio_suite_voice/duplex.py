@@ -49,6 +49,7 @@ class _Loop:
     or_client: Any | None
     history: list[dict[str, str]]
     llm_session: str
+    barge_prefix: bytes = b""
 
 
 async def _collect_reply(
@@ -154,6 +155,8 @@ async def _speak_reply(
     )
     loop.tts.trace_headers = {"traceparent": make_traceparent(trace_id=trace_id)}
     result = await asyncio.to_thread(loop.tts.speak_isolated, scrubbed, sink, cancel)
+    if result.cancelled and barge.captured:
+        loop.barge_prefix = barge.captured
     return _after_speech(loop, snapshot, result, started=started)
 
 
@@ -225,7 +228,9 @@ async def _hear_line(loop: _Loop, last_user: str) -> _HeardLine:
     print("listening…")
     debug("listen.waiting device={}", loop.device)
     try:
-        wav = await asyncio.to_thread(record_utterance, loop.device, STOP_RECORD)
+        prefix = loop.barge_prefix
+        loop.barge_prefix = b""
+        wav = await asyncio.to_thread(record_utterance, loop.device, STOP_RECORD, prefix=prefix)
     except PortAudioMissingError as e:
         print(e, file=sys.stderr)
         return _HeardLine("fatal", code=EXIT_FATAL)
@@ -276,7 +281,10 @@ async def _answer_line(loop: _Loop, heard: _HeardLine) -> int | None:
     print(f"  {snapshot.log_line()}", flush=True)
     TURN.fire()
     TURN.clear()
-    if STOP_RECORD.is_set() or await asyncio.to_thread(STOP_RECORD.wait, post_speak_cooldown_s()):
+    barged = bool(loop.barge_prefix)
+    if STOP_RECORD.is_set() or (
+        not barged and await asyncio.to_thread(STOP_RECORD.wait, post_speak_cooldown_s())
+    ):
         return bye()
     return None
 

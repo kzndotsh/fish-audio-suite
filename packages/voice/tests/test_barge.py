@@ -19,6 +19,7 @@ from fish_audio_suite_voice.listen import (
     _listen_tune,
     _ListenTune,
     listen_reject_reason,
+    prime_listen,
     spike_start_allowed,
     start_frames_needed,
     start_hit,
@@ -91,6 +92,29 @@ def test_barge_gate_explicit_kwargs_win(monkeypatch: pytest.MonkeyPatch) -> None
     assert gate.bleed_delay_s == 0.2
     assert gate.hit_frames == 3
     assert gate.min_rms == 10.0
+
+
+def test_barge_keeps_the_lookback_that_tripped() -> None:
+    gate = BargeGate()
+    frame = b"\x01\x00" * 480
+    for n in range(25):
+        gate._heard.append(frame[:-1] + bytes([n]))
+    gate.captured = b"".join(gate._heard)
+    assert len(gate._heard) == 20
+    assert gate.captured.startswith(frame[:-1] + bytes([5]))
+    assert gate.captured.endswith(frame[:-1] + bytes([24]))
+
+
+def test_prime_listen_counts_loud_prefix_frames() -> None:
+    tune = _ListenTune(1, 40, 4, 200.0, 20, 12)
+    heard = _Listen(tune, object())
+    loud = b"\x00\x10" * 480
+    quiet = b"\x01\x00" * 480
+    prime_listen(heard, quiet + loud)
+    assert heard.triggered
+    assert len(heard.voiced) == 2
+    assert heard.speech_hits == 1
+    assert heard.silence == 0
 
 
 def test_barge_defaults_without_env(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -11,6 +11,7 @@ from typing import Any
 from fish_audio_suite_kit import env_float, env_int
 from fish_audio_suite_voice.aec import AdaptiveFloor, pcm_rms
 from fish_audio_suite_voice.barge import (
+    FRAME_BYTES,
     FRAME_MS,
     LISTEN_HEARTBEAT_FRAMES,
     SAMPLE_RATE,
@@ -253,23 +254,39 @@ def _clip_wav(heard: _Listen, tune: _ListenTune) -> bytes | None:
     return _encode_wav(pcm)
 
 
+def prime_listen(heard: _Listen, pcm: bytes) -> None:
+    """Start a listen from barge audio. Those frames already passed the interrupt gate."""
+    frames = [pcm[i : i + FRAME_BYTES] for i in range(0, len(pcm) - FRAME_BYTES + 1, FRAME_BYTES)]
+    if not frames:
+        return
+    heard.triggered = True
+    heard.voiced.extend(frames)
+    heard.speech_hits = sum(1 for frame in frames if pcm_rms(frame) >= heard.min_speech_now)
+    heard.clip_peak = max(pcm_rms(frame) for frame in frames)
+    heard.silence = 0
+
+
 def record_utterance(
     device: str | int | None = None,
     stop: threading.Event | None = None,
+    *,
+    prefix: bytes = b"",
 ) -> bytes | None:
     """Block until one VAD utterance. Returns WAV bytes (16 kHz mono) or None."""
     import webrtcvad
 
     tune = _listen_tune()
     heard = _Listen(tune, webrtcvad.Vad(tune.vad_aggressiveness))
+    prime_listen(heard, prefix)
     debug(
-        "listen.open vad={} start_frames={} min_rms={} min_voiced={} pre_pad={} silence_end={}",
+        "listen.open vad={} start_frames={} min_rms={} min_voiced={} pre_pad={} silence_end={} prefix_frames={}",
         tune.vad_aggressiveness,
         tune.speech_frames_start,
         tune.min_speech_rms,
         tune.min_voiced,
         tune.pre_pad_frames,
         tune.silence_frames_end,
+        len(heard.voiced),
     )
 
     for idle_frames, frame in enumerate(mic_frames(device, stop, timeout=_MIC_POLL_S), start=1):

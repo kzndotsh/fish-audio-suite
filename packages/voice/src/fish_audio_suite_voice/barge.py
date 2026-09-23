@@ -6,6 +6,7 @@ import queue
 import sys
 import threading
 import time
+from collections import deque
 from collections.abc import Callable, Iterator
 from typing import Any
 
@@ -18,6 +19,7 @@ from fish_audio_suite_voice.aec import (
     effective_bleed_s,
     far_end_playing,
     pcm_rms,
+    tap_clear,
 )
 from fish_audio_suite_voice.debug import debug, heartbeat_due
 from fish_audio_suite_voice.playback import load_sounddevice, pcm_stream_kwargs
@@ -33,6 +35,7 @@ DEFAULT_BARGE_OVER = 2.2
 BARGE_MISS_DECAY_FRAMES = 3
 DEFAULT_BLEED_DELAY_S = 0.9
 DEFAULT_POST_SPEAK_COOLDOWN_S = 0.8
+BARGE_LOOKBACK_FRAMES = 20
 _BARGE_POLL_S = 0.2
 _BARGE_VAD = 3
 
@@ -138,6 +141,8 @@ class BargeGate:
         hits = _or_env(hit_frames, "FISH_VOICE_BARGE_FRAMES", DEFAULT_BARGE_HIT_FRAMES, env_int)
         self.hit_frames = hits if hits > 0 else DEFAULT_BARGE_HIT_FRAMES
         self.min_rms = _or_env(min_rms, "FISH_VOICE_BARGE_RMS", DEFAULT_BARGE_RMS, env_float)
+        self._heard: deque[bytes] = deque(maxlen=BARGE_LOOKBACK_FRAMES)
+        self.captured = b""
 
     def _bleed_wait(self) -> float:
         if self._bleed_override is not None:
@@ -182,6 +187,7 @@ class BargeGate:
                     hit=hit,
                     aec_on=aec_on,
                 )
+                self._heard.append(frame)
                 voiced = rms >= need and frame_is_speech(vad, frame)
                 hit, miss, tripped = _barge_step(
                     hit=hit,
@@ -193,6 +199,9 @@ class BargeGate:
                     want=self.hit_frames,
                 )
                 if tripped:
+                    self.captured = b"".join(self._heard)
+                    tap_clear()
+                    debug("barge.keep frames={} bytes={}", len(self._heard), len(self.captured))
                     cancel.set()
                     return
         except Exception as e:
