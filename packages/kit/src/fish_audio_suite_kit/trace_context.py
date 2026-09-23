@@ -6,13 +6,20 @@ import re
 import secrets
 from collections.abc import Mapping
 
+_TRACE_ID_BYTES = 16
+_SPAN_ID_BYTES = 8
+_TRACE_HEX = _TRACE_ID_BYTES * 2
+_SPAN_HEX = _SPAN_ID_BYTES * 2
 _TRACEPARENT_RE = re.compile(
-    r"^([0-9a-f]{2})-([0-9a-f]{32})-([0-9a-f]{16})-([0-9a-f]{2})$",
+    rf"^([0-9a-f]{{2}})-([0-9a-f]{{{_TRACE_HEX}}})-([0-9a-f]{{{_SPAN_HEX}}})-([0-9a-f]{{2}})$",
     re.IGNORECASE,
 )
-_ZERO_TRACE = "0" * 32
-_ZERO_SPAN = "0" * 16
+_HEX32_RE = re.compile(rf"^[0-9a-f]{{{_TRACE_HEX}}}$")
+_ZERO_TRACE = "0" * _TRACE_HEX
+_ZERO_SPAN = "0" * _SPAN_HEX
 _TRACESTATE_MAX = 512
+_TRACE_VERSION = "00"
+_SAMPLED_FLAGS = "01"
 
 
 def canonical_traceparent(value: str) -> str | None:
@@ -36,12 +43,20 @@ def trace_id_of(traceparent: str) -> str | None:
 def make_traceparent(*, trace_id: str | None = None) -> str:
     """Sampled `traceparent`. Reuse `trace_id` for sibling Fish calls in one workflow."""
     tid = (trace_id or "").strip().lower()
-    if len(tid) != 32 or any(c not in "0123456789abcdef" for c in tid) or tid == _ZERO_TRACE:
-        tid = secrets.token_hex(16)
-    span = secrets.token_hex(8)
+    if tid == _ZERO_TRACE or _HEX32_RE.fullmatch(tid) is None:
+        tid = secrets.token_hex(_TRACE_ID_BYTES)
+    span = secrets.token_hex(_SPAN_ID_BYTES)
     while span == _ZERO_SPAN:
-        span = secrets.token_hex(8)
-    return f"00-{tid}-{span}-01"
+        span = secrets.token_hex(_SPAN_ID_BYTES)
+    return f"{_TRACE_VERSION}-{tid}-{span}-{_SAMPLED_FLAGS}"
+
+
+def ensure_trace_headers(incoming: Mapping[str, str]) -> dict[str, str]:
+    """Forward a valid W3C header, or mint a sampled `traceparent`."""
+    found = w3c_trace_headers(incoming)
+    if found:
+        return found
+    return {"traceparent": make_traceparent()}
 
 
 def w3c_trace_headers(incoming: Mapping[str, str]) -> dict[str, str]:
@@ -51,9 +66,15 @@ def w3c_trace_headers(incoming: Mapping[str, str]) -> dict[str, str]:
         return {}
     out = {"traceparent": parent}
     state = _header(incoming, "tracestate")
-    if state and len(state) <= _TRACESTATE_MAX and "\n" not in state and "\r" not in state:
+    if _tracestate_ok(state):
         out["tracestate"] = state
     return out
+
+
+def _tracestate_ok(state: str) -> bool:
+    if not state or len(state) > _TRACESTATE_MAX:
+        return False
+    return "\n" not in state and "\r" not in state
 
 
 def _header(incoming: Mapping[str, str], name: str) -> str:
