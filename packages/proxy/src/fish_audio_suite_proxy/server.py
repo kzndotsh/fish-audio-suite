@@ -43,15 +43,26 @@ from fish_audio_suite_kit import (
     should_retry_fish_status,
     trace_id_of,
 )
-from fish_audio_suite_proxy import contract
-from fish_audio_suite_proxy.errors import read_json_object
+from fish_audio_suite_proxy.errors import json_error, json_from_upstream, read_json_object
 from fish_audio_suite_proxy.fields import (
+    SILENT_MP3,
+    catalog_ids,
     dialogue_only_env,
     explicit_bool,
     media_type,
+    prepare_tts_text,
     quality_guard_env,
+    resolve_asr_model,
+    runtime_defaults,
     strip_speakers_env,
     traced_model_headers,
+)
+from fish_audio_suite_proxy.speech import pack_tts, speech_controls
+from fish_audio_suite_proxy.transcribe import (
+    asr_upload,
+    caption_cues,
+    read_asr,
+    transcription_body,
 )
 
 log = logging.getLogger("fish-audio-suite-proxy")
@@ -70,7 +81,7 @@ logging.basicConfig(level=logging.INFO)
 async def _closed_error(upstream: httpx.Response) -> JSONResponse:
     body = await upstream.aread()
     await upstream.aclose()
-    return contract.json_from_upstream(upstream.status_code, body)
+    return json_from_upstream(upstream.status_code, body)
 
 
 class _FishHttp(Protocol):
@@ -102,7 +113,7 @@ async def _fish_send(
             upstream = await client.send(req, stream=stream)
         except httpx.RequestError as exc:
             status, message = fish_request_error(exc, httpx.TimeoutException)
-            last_error = contract.json_error(status, message)
+            last_error = json_error(status, message)
         else:
             if upstream.status_code < 400:
                 return upstream
@@ -118,12 +129,12 @@ async def _fish_send(
         if await fish_retry_pause(attempt):
             return last_error
     status, message = fish_unreachable()
-    return last_error or contract.json_error(status, message)
+    return last_error or json_error(status, message)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    defaults = contract.runtime_defaults()
+    defaults = runtime_defaults()
     key = env_text("FISH_API_KEY")
     headers: dict[str, str] = {}
     if key:
@@ -148,7 +159,7 @@ app = FastAPI(lifespan=lifespan, title="fish-audio-suite-proxy")
 def _spoken_line(body: dict[str, Any], defaults: SuiteDefaults) -> tuple[str, str]:
     raw_input = body.get("input", "") or ""
     dialogue_only = explicit_bool(body, "dialogue_only", default=dialogue_only_env())
-    spoken = contract.prepare_tts_text(raw_input, dialogue_only=dialogue_only)
+    spoken = prepare_tts_text(raw_input, dialogue_only=dialogue_only)
     preview = spoken.replace("\n", " ")[:_PREVIEW_CHARS]
     log.info(
         "tts scrub model=%s raw_len=%d spoken_len=%d preview=%r",
@@ -180,7 +191,7 @@ def _asr_text(
     if is_asr_hallucination(text):
         log.info("asr drop hallucination lang=%r chars=%d", detected_lang, len(text))
         return "", []
-    return text, contract.caption_cues(data, text, strip_speakers=strip_speakers)
+    return text, caption_cues(data, text, strip_speakers=strip_speakers)
 
 
 async def _iter_upstream(upstream: httpx.Response) -> AsyncIterator[bytes]:
@@ -197,7 +208,7 @@ def _defaults(request: Request) -> SuiteDefaults:
 
 def _fish_client(request: Request) -> httpx.AsyncClient | JSONResponse:
     if not request.app.state.fish_api_key:
-        return contract.json_error(401, "Invalid Token")
+        return json_error(401, "Invalid Token")
     return request.app.state.http
 
 
@@ -209,18 +220,18 @@ async def speech(request: Request):
         return body
     raw_input = body.get("input", "")
     if not isinstance(raw_input, str):
-        return contract.json_error(400, "input must be a string")
-    controls = contract.speech_controls(body, defaults)
+        return json_error(400, "input must be a string")
+    controls = speech_controls(body, defaults)
     spoken, preview = _spoken_line(body, defaults)
     if is_tts_junk(spoken):
         log.info("tts skip junk preview=%r", preview)
-        return Response(content=contract.SILENT_MP3, media_type=media_type("mp3"))
+        return Response(content=SILENT_MP3, media_type=media_type("mp3"))
 
     client = _fish_client(request)
     if isinstance(client, JSONResponse):
         return client
 
-    packed = contract.pack_tts(body, defaults, request.headers, controls, spoken)
+    packed = pack_tts(body, defaults, request.headers, controls, spoken)
     if isinstance(packed, JSONResponse):
         return packed
     log.info(
@@ -246,17 +257,17 @@ async def speech(request: Request):
 @app.post("/v1/audio/transcriptions")
 async def transcriptions(request: Request):
     defaults = _defaults(request)
-    inbound = await contract.read_asr(request)
+    inbound = await read_asr(request)
     if isinstance(inbound, JSONResponse):
         return inbound
-    asr_model = contract.resolve_asr_model(inbound.model, defaults.asr_model)
+    asr_model = resolve_asr_model(inbound.model, defaults.asr_model)
     client = _fish_client(request)
     if isinstance(client, JSONResponse):
         return client
 
     granularities = inbound.granularities
     fmt = (inbound.response_format or "json").lower().strip()
-    files, form, lang = contract.asr_upload(inbound, defaults, fmt, granularities)
+    files, form, lang = asr_upload(inbound, defaults, fmt, granularities)
 
     asr_headers = traced_model_headers(asr_model, request.headers)
     r = await _fish_send(
@@ -275,13 +286,13 @@ async def transcriptions(request: Request):
         raw = r.json()
     except (json.JSONDecodeError, UnicodeDecodeError):
         status, message = fish_non_json()
-        return contract.json_error(status, message)
+        return json_error(status, message)
     try:
         data, transcript = parse_asr_body(raw)
     except FishHttpError as exc:
-        return contract.json_error(exc.status, exc.message)
+        return json_error(exc.status, exc.message)
     text, cues = _asr_text(data, transcript, lang, asr_model, asr_headers["traceparent"])
-    return contract.transcription_body(
+    return transcription_body(
         fmt,
         text,
         cues,
@@ -295,7 +306,7 @@ async def transcriptions(request: Request):
 async def models():
     return {
         "object": "list",
-        "data": [{"id": m, "object": "model"} for m in contract.catalog_ids()],
+        "data": [{"id": m, "object": "model"} for m in catalog_ids()],
     }
 
 

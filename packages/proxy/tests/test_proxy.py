@@ -13,12 +13,10 @@ from fastapi.testclient import TestClient
 from starlette.datastructures import FormData
 
 from fish_audio_suite_kit import CaptionCue, SuiteDefaults, is_asr_hallucination, is_tts_junk
-from fish_audio_suite_proxy.contract import (
-    caption_cues,
+from fish_audio_suite_proxy.errors import json_from_upstream
+from fish_audio_suite_proxy.fields import (
     catalog_ids,
     chunk_length_hi,
-    form_strings,
-    json_from_upstream,
     pcm_sample_rate,
     pick_format,
     pick_reference_id,
@@ -26,8 +24,6 @@ from fish_audio_suite_proxy.contract import (
     resolve_asr_model,
     resolve_tts_model,
     runtime_defaults,
-    speech_controls,
-    transcription_body,
     upstream_trace_headers,
 )
 from fish_audio_suite_proxy.server import _fish_send, _uvicorn_run_kwargs, app
@@ -36,8 +32,14 @@ from fish_audio_suite_proxy.speech import (
     _scrub_pronunciation_dictionary,
     _seed,
     _SpeechControls,
+    speech_controls,
 )
-from fish_audio_suite_proxy.transcribe import _granularity_list
+from fish_audio_suite_proxy.transcribe import (
+    _granularity_list,
+    caption_cues,
+    form_strings,
+    transcription_body,
+)
 
 
 class _FakeUpstream:
