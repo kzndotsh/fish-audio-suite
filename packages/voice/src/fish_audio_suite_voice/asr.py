@@ -26,6 +26,7 @@ from fish_audio_suite_kit import (
 from fish_audio_suite_voice.debug import debug, header_meta, public_meta
 
 _ASR_TIMEOUT_S = 60.0
+_ASR_CONNECT_S = 10.0
 
 
 async def _pause_or_raise(
@@ -70,6 +71,37 @@ async def fish_asr(
     language: str = "",
     extra_headers: dict[str, str] | None = None,
 ) -> str:
+    """Transcribe one WAV with Fish ASR, retrying 429 and 5xx.
+
+    Parameters
+    ----------
+    audio_wav : bytes
+        A mono WAV of one utterance.
+    api_key : str
+        Fish key. Sent as ``Bearer``.
+    base : str
+        Fish origin without a trailing slash.
+    language : str, optional
+        Hint. Empty omits the field. Fish may still return ``zh`` on noise.
+    extra_headers : dict or None, optional
+        Usually a ``traceparent`` shared with the following TTS turn.
+
+    Returns
+    -------
+    str
+        Scrubbed transcript.
+
+    Raises
+    ------
+    FishHttpError
+        Non-retryable status, exhausted retries, or a body that is not a
+        JSON object with a string ``text``.
+
+    Notes
+    -----
+    Connect times out in 10 seconds. Read, write, and pool wait 60 seconds,
+    so a dead host fails before the read budget.
+    """
     headers = {
         "Authorization": bearer(api_key),
         "model": SuiteDefaults().asr_model,
@@ -79,7 +111,9 @@ async def fish_asr(
     data: dict[str, str] = {}
     if language:
         data["language"] = language
-    async with httpx.AsyncClient(timeout=_ASR_TIMEOUT_S) as client:
+    async with httpx.AsyncClient(
+        timeout=httpx.Timeout(_ASR_TIMEOUT_S, connect=_ASR_CONNECT_S),
+    ) as client:
         response = await _post_fish(
             client,
             f"{strip_base(base)}{FISH_ASR_PATH}",

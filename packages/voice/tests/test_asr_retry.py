@@ -56,6 +56,22 @@ def sleeps(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     return mock
 
 
+def test_asr_connect_timeout_is_shorter_than_read(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, Any] = {}
+
+    class _RecordingClient(_FakeAsrClient):
+        def __init__(self, **kwargs: Any) -> None:
+            super().__init__([_FakeAsrResponse(200, payload={"text": "hi"})])
+            seen.update(kwargs)
+
+    monkeypatch.setattr("fish_audio_suite_voice.asr.httpx.AsyncClient", _RecordingClient)
+    assert asyncio.run(fish_asr(b"wav", "key", base="https://api.fish.audio")) == "hi"
+    timeout = seen["timeout"]
+    assert isinstance(timeout, httpx.Timeout)
+    assert timeout.connect == 10.0
+    assert timeout.read == 60.0
+
+
 def _install_asr(
     monkeypatch: pytest.MonkeyPatch,
     outcomes: list[_FakeAsrResponse | Exception],
