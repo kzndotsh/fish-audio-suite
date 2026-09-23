@@ -4,12 +4,12 @@ import pytest
 
 from fish_audio_suite_voice.aec import (
     DEFAULT_AEC_BLEED_S,
-    AdaptiveFloor,
     FarEndTap,
     clean_mic_frame,
     effective_bleed_s,
     resample_int16,
 )
+from fish_audio_suite_voice.listen import AdaptiveFloor
 from fish_audio_suite_voice.playback import SounddeviceSink, dac_slice_bytes, iter_pcm_slices
 
 

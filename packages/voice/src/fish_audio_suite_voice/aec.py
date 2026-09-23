@@ -6,7 +6,6 @@ Bleed delay stays the fallback. PipeWire echo-cancel is a host trick, not this m
 
 from __future__ import annotations
 
-import collections
 import threading
 import time
 from typing import Any
@@ -26,12 +25,6 @@ FAR_SILENCE_RMS = 40.0
 DEFAULT_AEC_BLEED_S = 0.3
 DEFAULT_AEC_WET = 0.85
 _FULL_WET = 0.999
-_FLOOR_WINDOW = 80
-_FLOOR_FILL = 25
-_FLOOR_PERCENTILE = 20.0
-_FLOOR_GAIN = 2.5
-_FLOOR_LO = 80.0
-_FLOOR_HI = 450.0
 
 
 class _ProcHolder:
@@ -221,36 +214,3 @@ def clean_mic_frame(near: bytes) -> bytes:
         return _int16_bytes(clean)
     mixed = (1.0 - wet) * near_a.astype(np.float32) + wet * np.asarray(clean, dtype=np.float32)
     return _int16_bytes(mixed)
-
-
-class AdaptiveFloor:
-    """Quiet-percentile RMS gate. FISH_VOICE_MIN_RMS is the seed until the window fills."""
-
-    def __init__(
-        self,
-        default: float,
-        *,
-        window: int = _FLOOR_WINDOW,
-        percentile: float = _FLOOR_PERCENTILE,
-        gain: float = _FLOOR_GAIN,
-        lo: float = _FLOOR_LO,
-        hi: float = _FLOOR_HI,
-    ) -> None:
-        self.default = default
-        self.percentile = percentile
-        self.gain = gain
-        self.lo = lo
-        self.hi = hi
-        self.window: collections.deque[float] = collections.deque(maxlen=window)
-
-    def observe(self, rms: float, *, quiet: bool) -> None:
-        if quiet:
-            self.window.append(rms)
-
-    def value(self) -> float:
-        if len(self.window) < _FLOOR_FILL:
-            return self.default
-        quiet = np.fromiter(self.window, dtype=np.float64)
-        est = float(np.percentile(quiet, self.percentile) * self.gain)
-        # Never go below the seed. A quiet room must not open the gate for hiss.
-        return float(min(self.hi, max(self.default, self.lo, est)))

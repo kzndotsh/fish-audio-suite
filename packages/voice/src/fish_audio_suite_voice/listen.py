@@ -8,8 +8,10 @@ import threading
 from dataclasses import dataclass
 from typing import Any
 
+import numpy as np
+
 from fish_audio_suite_kit import env_float, env_int
-from fish_audio_suite_voice.aec import AdaptiveFloor, pcm_rms
+from fish_audio_suite_voice.aec import pcm_rms
 from fish_audio_suite_voice.barge import (
     FRAME_BYTES,
     FRAME_MS,
@@ -37,6 +39,12 @@ IMPULSE_PEAK_RATIO = 8.0
 IMPULSE_EXTRA_VOICED = 12
 IMPULSE_START_EXTRA = 6
 IMPULSE_NOW_RATIO = 0.5
+_FLOOR_WINDOW = 80
+_FLOOR_FILL = 25
+_FLOOR_PERCENTILE = 20.0
+_FLOOR_GAIN = 2.5
+_FLOOR_LO = 80.0
+_FLOOR_HI = 450.0
 
 
 def start_hit(rms: float, vad_speech: bool, min_rms: float) -> bool:
@@ -132,6 +140,39 @@ def _encode_wav(pcm: bytes) -> bytes:
     buf = io.BytesIO()
     write_mono_wav(buf, pcm, SAMPLE_RATE)
     return buf.getvalue()
+
+
+class AdaptiveFloor:
+    """Quiet-percentile RMS gate. FISH_VOICE_MIN_RMS is the seed until the window fills."""
+
+    def __init__(
+        self,
+        default: float,
+        *,
+        window: int = _FLOOR_WINDOW,
+        percentile: float = _FLOOR_PERCENTILE,
+        gain: float = _FLOOR_GAIN,
+        lo: float = _FLOOR_LO,
+        hi: float = _FLOOR_HI,
+    ) -> None:
+        self.default = default
+        self.percentile = percentile
+        self.gain = gain
+        self.lo = lo
+        self.hi = hi
+        self.window: collections.deque[float] = collections.deque(maxlen=window)
+
+    def observe(self, rms: float, *, quiet: bool) -> None:
+        if quiet:
+            self.window.append(rms)
+
+    def value(self) -> float:
+        if len(self.window) < _FLOOR_FILL:
+            return self.default
+        quiet = np.fromiter(self.window, dtype=np.float64)
+        est = float(np.percentile(quiet, self.percentile) * self.gain)
+        # Never go below the seed. A quiet room must not open the gate for hiss.
+        return float(min(self.hi, max(self.default, self.lo, est)))
 
 
 class _Listen:
