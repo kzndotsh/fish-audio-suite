@@ -100,7 +100,22 @@ def _want_quality_guard(body: dict[str, Any]) -> bool:
 
 
 class ClipError(Exception):
+    """A reference clip could not be decoded. The route returns 400.
+
+    Attributes
+    ----------
+    message : str
+        Shown in the OpenAI error envelope.
+    """
+
     def __init__(self, message: str) -> None:
+        """Store ``message`` as both the attribute and the exception text.
+
+        Parameters
+        ----------
+        message : str
+            Client-facing reason. No status code; the route maps this to 400.
+        """
         self.message = message
         super().__init__(message)
 
@@ -117,6 +132,23 @@ def _b64_audio(value: str) -> bytes:
 
 
 def decode_audio_b64(value: Any) -> bytes:
+    """Decode reference audio from raw bytes or base64, including a data URI.
+
+    Parameters
+    ----------
+    value : Any
+        ``bytes``, or a base64 string. Whitespace inside the string is removed.
+
+    Returns
+    -------
+    bytes
+        Decoded audio. Never empty.
+
+    Raises
+    ------
+    ClipError
+        When the value is empty or not valid base64.
+    """
     if isinstance(value, (bytes, bytearray)):
         audio = bytes(value)
     elif isinstance(value, str) and value.strip():
@@ -314,6 +346,21 @@ def _optional_tts(payload: dict[str, Any], body: dict[str, Any]) -> None:
 
 
 def speech_controls(body: dict[str, Any], defaults: SuiteDefaults) -> _SpeechControls:
+    """Clamp speed, format, latency, and chunk lengths for one speech call.
+
+    Parameters
+    ----------
+    body : dict
+        OpenAI speech JSON.
+    defaults : SuiteDefaults
+        Env-backed knobs. Request ``speed`` is multiplied by ``defaults.speed``.
+
+    Returns
+    -------
+    _SpeechControls
+        Values safe to put on the Fish payload. Cloud chunk length stays
+        within 100-300.
+    """
     raw_speed = _body_float(body, "speed", _REQUEST_SPEED) * defaults.speed
     return _SpeechControls(
         model=resolve_tts_model(body.get("model"), defaults.tts_model),
@@ -353,6 +400,30 @@ def pack_tts(
     controls: _SpeechControls,
     spoken: str,
 ) -> _PackedTts | JSONResponse:
+    """Build the Fish TTS request, JSON or MessagePack when clips are attached.
+
+    Parameters
+    ----------
+    body : dict
+        Original speech JSON, including ``references`` or ``input_references``.
+    defaults : SuiteDefaults
+        Runtime knobs.
+    incoming : Mapping
+        Client headers. A valid trace is forwarded; otherwise one is minted.
+    controls : _SpeechControls
+        Already clamped speech fields.
+    spoken : str
+        Scrubbed text. This is what Fish speaks, not the raw ``input``.
+
+    Returns
+    -------
+    _PackedTts or JSONResponse
+        Headers, body, and response media type, or a 400 when a clip fails.
+
+    Notes
+    -----
+    Fish's live websocket has no ``features`` field. Quality-guard is HTTP only.
+    """
     payload = _fish_tts_payload(body, defaults, controls, spoken)
     try:
         clips = _fish_reference_clips(body)

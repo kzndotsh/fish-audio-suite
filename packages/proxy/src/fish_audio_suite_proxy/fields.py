@@ -61,6 +61,19 @@ SILENT_MP3 = b"\xff\xfb\x90\x00" + b"\x00" * 64
 
 
 def runtime_defaults() -> SuiteDefaults:
+    """Build ``SuiteDefaults`` from the process environment.
+
+    Returns
+    -------
+    SuiteDefaults
+        Clamped chunk length, speed, latency, and format. ``FISH_API_KEY``
+        is not read here; the proxy lifespan reads it.
+
+    Notes
+    -----
+    ``FISH_BASE`` containing ``api.fish.audio`` caps ``chunk_length`` at 300.
+    Any other base allows up to 1000.
+    """
     stock = SuiteDefaults()
     fish_base = env_base("FISH_BASE", stock.fish_base)
     return SuiteDefaults(
@@ -99,18 +112,55 @@ def runtime_defaults() -> SuiteDefaults:
 
 
 def quality_guard_env() -> bool:
+    """Return whether ``FISH_QUALITY_GUARD`` is on.
+
+    Returns
+    -------
+    bool
+        False when unset. The flag is sent to Fish TTS when a caller does not
+        set ``quality_guard`` on the request.
+    """
     return env_bool("FISH_QUALITY_GUARD")
 
 
 def strip_speakers_env() -> bool:
+    """Return whether ASR speaker labels are stripped by default.
+
+    Returns
+    -------
+    bool
+        True only when ``FISH_ASR_STRIP_SPEAKERS`` is ``1``, ``true``, ``yes``,
+        or ``on``.
+    """
     return env_bool("FISH_ASR_STRIP_SPEAKERS")
 
 
 def dialogue_only_env() -> bool:
+    """Return whether TTS should keep quoted speech and drop stage notes.
+
+    Returns
+    -------
+    bool
+        True only when ``FISH_TTS_DIALOGUE_ONLY`` is an on-flag.
+    """
     return env_bool("FISH_TTS_DIALOGUE_ONLY")
 
 
 def pick_reference_id(body: dict[str, Any]) -> str | list[str] | None:
+    """Read a Fish voice id from ``reference_id`` or OpenAI ``voice``.
+
+    Parameters
+    ----------
+    body : dict
+        Speech request JSON.
+
+    Returns
+    -------
+    str or list of str or None
+        A single id, or a list for S2 multi-speaker. ``reference_id`` wins
+        when both keys are set because it is checked first. Blank values
+        are ignored.
+    """
     for key in ("reference_id", "voice"):
         value = body.get(key)
         if isinstance(value, list):
@@ -122,6 +172,22 @@ def pick_reference_id(body: dict[str, Any]) -> str | list[str] | None:
 
 
 def present_value(body: dict[str, Any], *keys: str) -> Any:
+    """Return the first key that exists, even when the value is false or empty.
+
+    Parameters
+    ----------
+    body : dict
+        Request object.
+    *keys : str
+        Field names in preference order.
+
+    Returns
+    -------
+    Any
+        The stored value, including ``False`` or ``""``. None when every key
+        is absent or when the first present value is None. Those two Nones
+        look the same; use ``key in body`` to tell them apart.
+    """
     for key in keys:
         if key in body:
             return body[key]
@@ -129,7 +195,7 @@ def present_value(body: dict[str, Any], *keys: str) -> Any:
 
 
 def explicit_bool(body: dict[str, Any], *keys: str, default: bool) -> bool:
-    """A key that is present wins, including false. Missing keys keep the default."""
+    """Prefer a present request flag, including false, over the default."""
     flag = present_value(body, *keys)
     if flag is None:
         return default
@@ -137,6 +203,27 @@ def explicit_bool(body: dict[str, Any], *keys: str, default: bool) -> bool:
 
 
 def first_choice(body: dict[str, Any], *keys: str, default: str) -> str:
+    """Return the first non-empty string field, lowercased.
+
+    Parameters
+    ----------
+    body : dict
+        Request object.
+    *keys : str
+        Field names. An empty string does not count.
+    default : str
+        Used when every key is missing or empty.
+
+    Returns
+    -------
+    str
+        Stripped, lowercased choice.
+
+    Notes
+    -----
+    Unlike ``present_value``, a present-but-empty string falls through.
+    Use ``present_value`` when false is a real answer.
+    """
     chosen: Any = default
     for key in keys:
         value = body.get(key)
@@ -147,6 +234,21 @@ def first_choice(body: dict[str, Any], *keys: str, default: str) -> str:
 
 
 def pick_format(body: dict[str, Any], default: str) -> str:
+    """Map an OpenAI ``response_format`` onto a Fish audio format.
+
+    Parameters
+    ----------
+    body : dict
+        Request object. ``format``, ``response_format``, then ``fish_format``.
+    default : str
+        Used when the name is unknown. An unknown default becomes ``mp3``.
+
+    Returns
+    -------
+    str
+        ``mp3``, ``opus``, ``pcm``, ``pcm16``, or ``wav``. ``aac`` and ``flac``
+        become ``mp3``.
+    """
     raw = first_choice(body, "format", "response_format", "fish_format", default=default)
     mapped = _FORMAT_ALIAS.get(raw)
     if mapped is not None:
@@ -155,6 +257,22 @@ def pick_format(body: dict[str, Any], default: str) -> str:
 
 
 def pcm_sample_rate(fmt: str, body: dict[str, Any], default: int) -> int:
+    """Choose the PCM rate. ``pcm16`` is 24 kHz unless the client sets one.
+
+    Parameters
+    ----------
+    fmt : str
+        Format from ``pick_format``.
+    body : dict
+        May contain ``sample_rate``.
+    default : int
+        Rate when the format is not ``pcm16`` and the body omits one.
+
+    Returns
+    -------
+    int
+        A positive rate. Non-positive or junk input keeps the fallback.
+    """
     fallback = _PCM16_RATE if fmt == "pcm16" else default
     raw = body.get("sample_rate")
     if raw is None:
@@ -164,6 +282,19 @@ def pcm_sample_rate(fmt: str, body: dict[str, Any], default: int) -> int:
 
 
 def media_type(fmt: str) -> str:
+    """Content-Type for a Fish audio format.
+
+    Parameters
+    ----------
+    fmt : str
+        ``mp3``, ``opus``, ``pcm``, ``pcm16``, or ``wav``.
+
+    Returns
+    -------
+    str
+        A MIME type. Unknown formats are ``audio/mpeg``. ``pcm16`` is
+        ``audio/pcm``.
+    """
     return _MEDIA.get(fmt, "audio/mpeg")
 
 
@@ -181,6 +312,23 @@ def _model_name(model: object, default: str) -> str:
 
 
 def resolve_tts_model(model: object, default: str) -> str:
+    """Map an OpenAI or prefixed model id onto a Fish TTS model.
+
+    Parameters
+    ----------
+    model : object
+        Client ``model``. Non-strings use ``default``.
+    default : str
+        Used when ``model`` is missing.
+
+    Returns
+    -------
+    str
+        ``tts-1``, ``tts-1-hd``, ``gpt-4o-mini-tts``, and ``playai-tts`` become
+        ``s2.1-pro``. A ``fish-audio/`` prefix is stripped. Catalog ids are
+        lowercased. ``s2.1-pro-free`` and ``drama-3-preview`` are not remapped.
+        Any other id is returned as written.
+    """
     raw = _native_model_id(_model_name(model, default))
     key = raw.lower()
     aliased = _TTS_MODEL_ALIASES.get(key)
@@ -193,6 +341,22 @@ _ASR_NATIVE = frozenset({"transcribe-1", "transcribe-1-pro"})
 
 
 def resolve_asr_model(model: object, default: str) -> str:
+    """Map a client ASR model onto a native Fish id.
+
+    Parameters
+    ----------
+    model : object
+        Client ``model``. ``whisper-1`` and other aliases are not native.
+    default : str
+        Used when ``model`` is not ``transcribe-1`` or ``transcribe-1-pro``.
+
+    Returns
+    -------
+    str
+        A native id when the client or the default names one. Otherwise
+        ``default`` unchanged, so an unknown alias still reaches Fish as the
+        configured default rather than the alias string.
+    """
     chosen = _native_model_id(_model_name(model, default)).lower()
     if chosen in _ASR_NATIVE:
         return chosen
@@ -203,11 +367,34 @@ def resolve_asr_model(model: object, default: str) -> str:
 
 
 def catalog_ids() -> list[str]:
+    """Model ids advertised on ``GET /v1/models``.
+
+    Returns
+    -------
+    list of str
+        Native Fish ids plus the same TTS and native ASR ids prefixed with
+        ``fish-audio/``. OpenAI aliases such as ``tts-1`` are not listed.
+    """
     prefixed = [f"fish-audio/{name}" for name in (*FISH_TTS_MODEL_IDS, *_ASR_NATIVE)]
     return [*_MODELS, *prefixed]
 
 
 def prepare_tts_text(raw_input: str, *, dialogue_only: bool) -> str:
+    """Scrub model text into what Fish should speak.
+
+    Parameters
+    ----------
+    raw_input : str
+        OpenAI ``input``.
+    dialogue_only : bool
+        When True, keep quoted speech and drop stage notes after scrubbing.
+
+    Returns
+    -------
+    str
+        ``normalize_cues(scrub_tts(...))``. Cue-only junk is detected later
+        by ``is_tts_junk``.
+    """
     cleaned = scrub_tts(raw_input)
     if dialogue_only:
         cleaned = extract_quoted_speech(cleaned)
@@ -215,8 +402,34 @@ def prepare_tts_text(raw_input: str, *, dialogue_only: bool) -> str:
 
 
 def upstream_trace_headers(headers: Mapping[str, str]) -> dict[str, str]:
+    """Forward a valid W3C trace header or mint one.
+
+    Parameters
+    ----------
+    headers : Mapping
+        Incoming request headers. Names are matched case-insensitively.
+
+    Returns
+    -------
+    dict
+        ``traceparent`` and, when valid, ``tracestate``. Never empty.
+    """
     return ensure_trace_headers(headers)
 
 
 def traced_model_headers(model: str, incoming: Mapping[str, str]) -> dict[str, str]:
+    """Fish ``model`` header plus the trace headers for this request.
+
+    Parameters
+    ----------
+    model : str
+        Already resolved Fish model id.
+    incoming : Mapping
+        Client headers.
+
+    Returns
+    -------
+    dict
+        Sent on TTS and ASR upstream calls.
+    """
     return {"model": model, **upstream_trace_headers(incoming)}

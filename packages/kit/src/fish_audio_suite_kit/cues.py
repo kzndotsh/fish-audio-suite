@@ -162,7 +162,27 @@ def _one_sentence(chunk: str) -> str:
 
 
 def normalize_cues(text: str) -> str:
-    """Lowercase [Tags]; keep stacked leads; map aliases; convert 'Excited, …' → '[excited] …'."""
+    """Rewrite third-party mood markup into Fish ``[cue]`` tags.
+
+    Parameters
+    ----------
+    text : str
+        Model text that may contain ``[Tags]``, S1 ``(happy)``, a mood lead
+        such as ``Excited, …``, or ``<whisper>…</whisper>``.
+
+    Returns
+    -------
+    str
+        The same words with cues lowercased. Stacked leads stay stacked.
+        ``laugh`` / ``sigh`` / ``chuckle`` / ``whisper`` / ``pause`` become
+        ``laughing`` / ``sighing`` / ``chuckling`` / ``whispering`` / ``break``.
+        ``[cough]`` is left as ``[cough]``.
+
+    Notes
+    -----
+    A mood word only becomes a cue when it leads a sentence (``Happy, hello``).
+    The same word mid-sentence is spoken text.
+    """
     if not text:
         return text
     text = _WHISPER_XML_RE.sub(lambda m: f"[whispering] {m.group(1).strip()}", text)
@@ -180,7 +200,26 @@ def normalize_cues(text: str) -> str:
 
 
 def ensure_lead_cue(text: str, *, default: str = "clear") -> str:
-    """If the model emitted no [cue] at all, prepend one. Does not tag every sentence."""
+    """Prepend one cue when the reply has none.
+
+    Parameters
+    ----------
+    text : str
+        Already scrubbed reply.
+    default : str, optional
+        Cue name without brackets. Blank becomes ``clear``.
+
+    Returns
+    -------
+    str
+        ``text`` unchanged when any ``[cue]`` is already present, including
+        one mid-reply. Empty or whitespace-only input is unchanged.
+
+    Notes
+    -----
+    This does not invent a tag on every sentence. Prosody sticks until the
+    next cue, so a second lead would reset the voice.
+    """
     if not text.strip():
         return text
     if _CUE_RE.search(text):

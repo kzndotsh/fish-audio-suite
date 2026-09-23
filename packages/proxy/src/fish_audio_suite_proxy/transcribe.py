@@ -96,6 +96,19 @@ def _empty_upload() -> JSONResponse:
 
 
 async def read_asr(request: Request) -> _InboundAsr | JSONResponse:
+    """Read multipart ``file`` or JSON ``input_audio`` into one upload.
+
+    Parameters
+    ----------
+    request : Request
+        Transcription request. JSON is chosen when ``Content-Type`` contains
+        ``application/json``.
+
+    Returns
+    -------
+    _InboundAsr or JSONResponse
+        Audio plus the fields that affect the Fish form, or a 400 response.
+    """
     content_type = request.headers.get("content-type", "")
     if "application/json" in content_type:
         parsed = await read_json_object(request)
@@ -117,6 +130,21 @@ async def read_asr(request: Request) -> _InboundAsr | JSONResponse:
 
 
 def form_strings(form: FormData, *names: str) -> list[str]:
+    """Collect repeated form fields, including the ``[]`` OpenAI spelling.
+
+    Parameters
+    ----------
+    form : FormData
+        Multipart body.
+    *names : str
+        Field names. Both ``timestamp_granularities`` and
+        ``timestamp_granularities[]`` are read by callers.
+
+    Returns
+    -------
+    list of str
+        One string per submitted value. Missing names contribute nothing.
+    """
     out: list[str] = []
     for name in names:
         out.extend(
@@ -149,6 +177,23 @@ def _segment_cue(seg: Any, *, strip_speakers: bool) -> CaptionCue | None:
 
 
 def caption_cues(data: dict[str, Any], text: str, *, strip_speakers: bool) -> list[CaptionCue]:
+    """Build timed cues from Fish segments, or one cue for the whole transcript.
+
+    Parameters
+    ----------
+    data : dict
+        Decoded Fish ASR JSON.
+    text : str
+        Scrubbed full transcript, used when ``segments`` is missing or empty.
+    strip_speakers : bool
+        Drop speaker labels inside each segment.
+
+    Returns
+    -------
+    list of CaptionCue
+        Segment cues when any segment has text. Otherwise one cue from 0 to
+        ``duration`` covering ``text``, or an empty list when ``text`` is empty.
+    """
     cues: list[CaptionCue] = []
     raw_segments = data.get("segments") or []
     if isinstance(raw_segments, list):
@@ -224,6 +269,29 @@ def transcription_body(
     language: str | None,
     granularities: list[str],
 ) -> PlainTextResponse | dict[str, Any]:
+    """Shape the Fish ASR result as JSON, verbose JSON, SRT, or VTT.
+
+    Parameters
+    ----------
+    fmt : str
+        ``response_format``. ``srt`` and ``vtt`` return caption files.
+    text : str
+        Scrubbed transcript.
+    cues : list of CaptionCue
+        Timed phrases. Word rows are added only for ``verbose_json`` when a
+        granularity is ``word``.
+    data : dict
+        Decoded Fish JSON, used for duration and language.
+    language : str or None
+        Client or env language hint.
+    granularities : list of str
+        ``timestamp_granularities`` values.
+
+    Returns
+    -------
+    PlainTextResponse or dict
+        Caption text, a verbose object, or ``{"text": ...}``.
+    """
     plain = _plain_transcript(fmt, text, cues)
     if plain is not None:
         return plain
@@ -247,6 +315,31 @@ def asr_upload(
     fmt: str,
     granularities: list[str],
 ) -> tuple[dict[str, tuple[str, bytes, str]], dict[str, str], str]:
+    """Build the Fish ASR multipart body.
+
+    Parameters
+    ----------
+    inbound : _InboundAsr
+        Parsed upload.
+    defaults : SuiteDefaults
+        Supplies the language hint when the client omitted one.
+    fmt : str
+        Response format. ``verbose_json``, ``srt``, and ``vtt`` ask Fish for
+        timestamps.
+    granularities : list of str
+        Any non-empty list also asks for timestamps.
+
+    Returns
+    -------
+    tuple
+        httpx ``files``, form fields, and the language sent upstream. The
+        language is ``""`` when both the client and ``FISH_ASR_LANGUAGE``
+        are blank, and that key is then left out of the form.
+
+    Notes
+    -----
+    Fish may still label noise as ``zh`` when language is omitted.
+    """
     want_ts = fmt in _TIMED_FORMATS or bool(granularities)
     form = {"ignore_timestamps": "false" if want_ts else "true"}
     lang = (inbound.language or defaults.asr_language or "").strip()

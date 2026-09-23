@@ -189,6 +189,11 @@ def _folded(text: str) -> str:
 
 
 def _gzip_repetitive(text: str) -> bool:
+    """Return whether gzip shrinkage looks like a stuck loop.
+
+    Short strings are never repetitive. ASR models sometimes emit the same
+    caption many times; the compression ratio catches that without a phrase list.
+    """
     raw = text.encode("utf-8")
     if len(raw) < _GZIP_MIN_BYTES:
         return False
@@ -322,6 +327,20 @@ def extract_quoted_speech(text: str) -> str:
 
 
 def is_tts_junk(text: str) -> bool:
+    """Return whether scrubbed text should not be sent to Fish TTS.
+
+    Parameters
+    ----------
+    text : str
+        Text after ``scrub_tts``. Cue-only text, an unmatched ``[``, narration
+        that is not speech, or fewer than three Latin letters counts as junk.
+        A real CJK sentence is not junk.
+
+    Returns
+    -------
+    bool
+        True when the proxy should return silence instead of calling Fish.
+    """
     s = (text or "").strip()
     if s.count("[") > s.count("]"):
         return True
@@ -335,10 +354,38 @@ def is_tts_junk(text: str) -> bool:
 
 
 def utf8_text(text: str) -> str:
+    """Replace characters that cannot be encoded as UTF-8.
+
+    Parameters
+    ----------
+    text : str
+        Any string, including one built from a surrogate.
+
+    Returns
+    -------
+    str
+        A UTF-8 round trip with ``errors="replace"``.
+    """
     return text.encode("utf-8", "replace").decode("utf-8")
 
 
 def scrub_asr(text: str, *, strip_speakers: bool = True) -> str:
+    """Strip ASR markup Fish and other engines leave in the transcript.
+
+    Parameters
+    ----------
+    text : str
+        Raw transcript.
+    strip_speakers : bool, optional
+        Drop ``Speaker 1:`` style labels. Default True. The proxy turns this
+        off unless ``FISH_ASR_STRIP_SPEAKERS`` or the client asks.
+
+    Returns
+    -------
+    str
+        Transcript without timestamps or ``<|…|>`` tokens. Fish ``[cue]`` tags
+        are not expected here and are not specially kept.
+    """
     if not text:
         return ""
     cleaned = text
@@ -366,6 +413,27 @@ def _without_marks(s: str) -> str | None:
 
 
 def is_asr_hallucination(text: str) -> bool:
+    """Return whether an ASR string is silence, a caption watermark, or too thin.
+
+    Parameters
+    ----------
+    text : str
+        Transcript, usually after ``scrub_asr``.
+
+    Returns
+    -------
+    bool
+        True for empty text, ``nospeech``, YouTube-caption boilerplate
+        (thanks-for-watching, Amara, 谢谢观看), gzip-repetitive text, emoji-only
+        or angle-token-only text, a single CJK character, or fewer than three
+        Latin letters. A longer CJK sentence is kept.
+
+    Notes
+    -----
+    Duplex uses this to drop the turn before the LLM. A false positive skips
+    real speech; the Latin floor is three letters so ``ok`` is not speech and
+    ``okay`` is.
+    """
     if not text or not text.strip():
         return True
     s = text.strip()
@@ -387,14 +455,43 @@ def _known_phrase(text: str, phrases: frozenset[str]) -> bool:
 
 
 def is_backchannel(text: str) -> bool:
+    """Return whether the utterance is only a listener noise.
+
+    Parameters
+    ----------
+    text : str
+        Short transcript such as ``yeah``, ``uh huh``, or ``嗯``.
+
+    Returns
+    -------
+    bool
+        True for a known backchannel after case-folding. Duplex then listens
+        again instead of answering.
+    """
     return _known_phrase(text, _BACKCHANNELS)
 
 
 def is_quit_utterance(text: str) -> bool:
+    """Return whether the utterance asks the duplex loop to stop.
+
+    Parameters
+    ----------
+    text : str
+        Transcript such as ``bye`` or ``quit``.
+
+    Returns
+    -------
+    bool
+        True for a known quit phrase after case-folding.
+    """
     return _known_phrase(text, _QUIT)
 
 
 def _skip_abbreviation(buf: str, end_start: int) -> bool:
+    """Return whether the period belongs to ``Dr.``, a one-letter initial, or ``1.``.
+
+    A sentence cut must not flush ``Dr.`` as its own TTS request.
+    """
     before = buf[:end_start]
     m = _TRAIL_WORD.search(before)
     if not m:
@@ -429,7 +526,27 @@ def _partial_cut(buf: str, partial_chars: int) -> int:
 
 
 def next_tts_cut(buf: str, *, partial_chars: int = _PARTIAL_CHARS) -> int:
-    """Index to flush into Fish TTS, or -1 to keep buffering."""
+    """Return how many leading characters are ready for one Fish TTS send.
+
+    Parameters
+    ----------
+    buf : str
+        Text buffered from the model so far.
+    partial_chars : int, optional
+        Flush near this length when no sentence end is in the buffer.
+        Default is about 40 characters.
+
+    Returns
+    -------
+    int
+        End index of the piece to send, or -1 to keep buffering.
+
+    Notes
+    -----
+    A sentence end wins, except ``Dr.``, a one-letter initial, and ``1.``.
+    Otherwise the cut is the last space before ``partial_chars``, or
+    ``partial_chars`` itself when there is no usable space.
+    """
     if not buf:
         return -1
     end = _sentence_cut(buf)
@@ -439,7 +556,23 @@ def next_tts_cut(buf: str, *, partial_chars: int = _PARTIAL_CHARS) -> int:
 
 
 def split_tts_piece(buf: str, partial_chars: int, *, flush_rest: bool) -> tuple[str, str] | None:
-    """One TTS piece and the unsent tail. None means keep buffering."""
+    """Split one ready TTS piece from the unsent tail.
+
+    Parameters
+    ----------
+    buf : str
+        Buffered model text.
+    partial_chars : int
+        Passed to ``next_tts_cut``.
+    flush_rest : bool
+        When True and no cut is ready, return the whole buffer as the piece.
+        When False, return None so the stream keeps buffering.
+
+    Returns
+    -------
+    tuple of str and str or None
+        ``(piece, tail)``, or None while the caller should wait.
+    """
     cut = next_tts_cut(buf, partial_chars=partial_chars)
     if cut < 0:
         if not flush_rest:
@@ -449,4 +582,17 @@ def split_tts_piece(buf: str, partial_chars: int, *, flush_rest: bool) -> tuple[
 
 
 def skip_empty_delta(piece: str) -> bool:
+    """Return whether a TTS delta has no speakable characters.
+
+    Parameters
+    ----------
+    piece : str
+        One split piece. Whitespace-only is empty.
+
+    Returns
+    -------
+    bool
+        True when the websocket sender should not emit a ``TextEvent``.
+        An empty turn must not be followed by a bare ``FlushEvent``.
+    """
     return not (piece or "").strip()

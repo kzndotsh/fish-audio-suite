@@ -81,7 +81,7 @@ def listen_reject_reason(
 
 
 def start_frames_needed(peak_rms: float, min_rms: float, speech_frames_start: int) -> int:
-    """An 8x spike in the pre-pad ring is a chair pop until more VAD hits pile up."""
+    """Require extra VAD hits before an 8x RMS spike counts as speech."""
     if _impulse(peak_rms, min_rms):
         return speech_frames_start + IMPULSE_START_EXTRA
     return speech_frames_start
@@ -163,10 +163,12 @@ class AdaptiveFloor:
         self.window: collections.deque[float] = collections.deque(maxlen=window)
 
     def observe(self, rms: float, *, quiet: bool) -> None:
+        """Record RMS while the room is quiet so the floor can track hiss."""
         if quiet:
             self.window.append(rms)
 
     def value(self) -> float:
+        """Return the raised noise floor, or the seed until the window fills."""
         if len(self.window) < _FLOOR_FILL:
             return self.default
         quiet = np.fromiter(self.window, dtype=np.float64)
@@ -313,7 +315,33 @@ def record_utterance(
     *,
     prefix: bytes = b"",
 ) -> bytes | None:
-    """Block until one VAD utterance. Returns WAV bytes (16 kHz mono) or None."""
+    """Block until one VAD utterance.
+
+    Parameters
+    ----------
+    device : str or int or None, optional
+        PortAudio input. None uses the host default.
+    stop : threading.Event or None, optional
+        Ctrl+C. When set, return None.
+    prefix : bytes, optional
+        PCM kept from the barge-in that interrupted the previous reply.
+        The next listen starts from this clip instead of a cooldown.
+
+    Returns
+    -------
+    bytes or None
+        16 kHz mono WAV, or None when the clip is too short, an impulse, or
+        ``stop`` is set.
+
+    Notes
+    -----
+    Speech must hold VAD and RMS at the newest pre-pad end. A peak at least
+    8 times the floor also needs this frame to be at least half the peak and
+    10 trailing hits. An impulse (peak >= 8 times the floor and at most 24
+    voiced hits) is dropped. Silence of about 1.2 seconds ends the turn.
+    ``webrtcvad`` is imported here so the voice package imports without the
+    ``vad`` extra.
+    """
     import webrtcvad
 
     tune = _listen_tune()

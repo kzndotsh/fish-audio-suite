@@ -34,6 +34,18 @@ def canonical_traceparent(value: str) -> str | None:
 
 
 def trace_id_of(traceparent: str) -> str | None:
+    """Return the 32-hex trace id from a valid ``traceparent``.
+
+    Parameters
+    ----------
+    traceparent : str
+        A W3C ``traceparent`` header value.
+
+    Returns
+    -------
+    str or None
+        The trace id, or None when the header is invalid or all-zero.
+    """
     parsed = canonical_traceparent(traceparent)
     if parsed is None:
         return None
@@ -41,7 +53,7 @@ def trace_id_of(traceparent: str) -> str | None:
 
 
 def make_traceparent(*, trace_id: str | None = None) -> str:
-    """Sampled `traceparent`. Reuse `trace_id` for sibling Fish calls in one workflow."""
+    """Build a sampled traceparent. Reuse `trace_id` for sibling Fish calls in one workflow."""
     tid = (trace_id or "").strip().lower()
     if tid == _ZERO_TRACE or _HEX32_RE.fullmatch(tid) is None:
         tid = secrets.token_hex(_TRACE_ID_BYTES)

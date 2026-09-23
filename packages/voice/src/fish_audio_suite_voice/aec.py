@@ -38,10 +38,12 @@ _PROC_LOCK = threading.Lock()
 
 
 def aec_wanted() -> bool:
+    """Return whether FISH_VOICE_AEC asks for in-process echo cancellation."""
     return env_bool("FISH_VOICE_AEC", default=True)
 
 
 def even_pcm(pcm: bytes) -> bytes:
+    """Drop a trailing odd byte so the buffer stays int16-aligned."""
     extra = len(pcm) % SAMPLE_BYTES
     return pcm if extra == 0 else pcm[:-extra]
 
@@ -61,6 +63,7 @@ def _int16_bytes(samples: Any) -> bytes:
 
 
 def resample_int16(pcm: bytes, src_rate: int, dst_rate: int) -> bytes:
+    """Linearly resample mono int16 PCM. Empty or non-positive rates return empty bytes."""
     if not pcm or src_rate <= 0 or dst_rate <= 0:
         return b""
     aligned = even_pcm(pcm)
@@ -85,6 +88,7 @@ class FarEndTap:
         self._playing_until = 0.0
 
     def clear(self) -> None:
+        """Drop stored far-end audio and the playing-until mark."""
         with self._lock:
             self._pcm.clear()
             self._playing_until = 0.0
@@ -94,10 +98,12 @@ class FarEndTap:
         self._playing_until = max(self._playing_until, end)
 
     def mark_playing(self, duration_s: float) -> None:
+        """Extend the playing-until mark by this chunk's duration."""
         with self._lock:
             self._note_playing(duration_s)
 
     def push(self, pcm: bytes, sample_rate: int) -> None:
+        """Append resampled far-end PCM and keep only the recent hold window."""
         chunk = resample_int16(pcm, sample_rate, AEC_RATE)
         if not chunk:
             return
@@ -116,6 +122,7 @@ class FarEndTap:
         return out
 
     def pop(self, n_bytes: int) -> bytes:
+        """Take ``n_bytes`` from the front, or empty bytes when the ring is shorter."""
         if n_bytes <= 0:
             return b""
         with self._lock:
@@ -124,6 +131,7 @@ class FarEndTap:
             return self._drop_front(n_bytes)
 
     def playing_recently(self, window_s: float = _FAR_RECENT_S) -> bool:
+        """Return whether playback ended inside the recent window."""
         return time.monotonic() < (self._playing_until + window_s)
 
 
@@ -131,20 +139,24 @@ TAP = FarEndTap()
 
 
 def tap_playback(pcm: bytes, sample_rate: int) -> None:
+    """Record speaker PCM as far-end when AEC is enabled."""
     if not aec_wanted():
         return
     TAP.push(pcm, sample_rate)
 
 
 def tap_clear() -> None:
+    """Clear the process-wide far-end ring."""
     TAP.clear()
 
 
 def far_end_playing(window_s: float = _FAR_RECENT_S) -> bool:
+    """Return whether the speaker was still playing inside ``window_s``."""
     return TAP.playing_recently(window_s)
 
 
 def pcm_rms(frame: bytes) -> float:
+    """Return RMS of an int16 frame, floored so silence is not zero."""
     if not frame:
         return 0.0
     samples = np.frombuffer(frame, dtype=np.int16).astype(np.float32)
@@ -152,6 +164,7 @@ def pcm_rms(frame: bytes) -> float:
 
 
 def load_processor() -> Any | None:
+    """Load the optional AEC3 processor once. Import failure returns None."""
     if not aec_wanted():
         return None
     with _PROC_LOCK:
@@ -181,10 +194,31 @@ def load_processor() -> Any | None:
 
 
 def aec_available() -> bool:
+    """Return whether AEC3 loaded.
+
+    Returns
+    -------
+    bool
+        False when ``FISH_VOICE_AEC=0``, the extra is missing, or the
+        processor failed to construct. The mic is then passed through.
+    """
     return load_processor() is not None
 
 
 def effective_bleed_s(fallback_s: float) -> float:
+    """Seconds to ignore the mic after TTS starts, so speaker bleed is not speech.
+
+    Parameters
+    ----------
+    fallback_s : float
+        ``FISH_VOICE_BLEED_DELAY`` (0.9 by default). Used when AEC is off.
+
+    Returns
+    -------
+    float
+        ``FISH_VOICE_AEC_BLEED`` (0.3 by default) when AEC3 is loaded.
+        Negative values are replaced with 0 or the AEC default.
+    """
     if not aec_available():
         return fallback_s if fallback_s >= 0 else 0.0
     bleed = env_float("FISH_VOICE_AEC_BLEED", DEFAULT_AEC_BLEED_S)

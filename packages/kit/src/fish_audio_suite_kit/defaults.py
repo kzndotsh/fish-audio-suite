@@ -31,6 +31,17 @@ _OPUS_AUTO = -1000
 
 @dataclass(frozen=True)
 class SuiteDefaults:
+    """Shared Fish TTS and ASR knobs. Callers still clamp before a request.
+
+    Notes
+    -----
+    ``chunk_length`` starts at 200. Cloud accepts 100-300; a self-hosted
+    base accepts up to 1000 (see ``chunk_length_hi``). ``opus_bitrate``
+    of -1000 asks Fish to pick the rate. ``tts_partial_chars`` is how far
+    ``next_tts_cut`` will flush without a sentence end. ``asr_language``
+    is empty unless the caller or env sets a hint.
+    """
+
     tts_model: str = "s2.1-pro"
     asr_model: str = "transcribe-1"
     asr_language: str = ""
@@ -69,6 +80,13 @@ class LatencySnapshot:
     trace_id: str | None = None
 
     def log_line(self) -> str:
+        """One stdout timing line. Missing times are omitted. No utterance text.
+
+        Returns
+        -------
+        str
+            ``[timing asr=…ms … trace=…]``. ``trace`` appears only when set.
+        """
         parts = [
             _timing_field("asr", self.asr_ms),
             _timing_field("llm_ttft", self.llm_ttft),
@@ -92,6 +110,18 @@ MS_PER_S = 1000
 
 
 def elapsed_ms(started: float) -> float:
+    """Milliseconds since a ``time.perf_counter`` reading.
+
+    Parameters
+    ----------
+    started : float
+        Value previously returned by ``time.perf_counter``.
+
+    Returns
+    -------
+    float
+        Elapsed milliseconds. Not rounded.
+    """
     return (time.perf_counter() - started) * MS_PER_S
 
 
@@ -117,7 +147,7 @@ _ON_WORDS = frozenset({"1", "true", "yes", "on"})
 
 
 def env_off(name: str) -> bool:
-    """True only for 0/false/no/off. Blank and any other value are not off."""
+    """Return true only for 0, false, no, or off. Blank is not off."""
     return _env_word(name) in _OFF_WORDS
 
 
@@ -230,6 +260,20 @@ def known_tts_model(name: str) -> str:
 
 
 def known_latency(name: str, default: str) -> str:
+    """Accept ``low``, ``balanced``, or ``normal``. Anything else keeps ``default``.
+
+    Parameters
+    ----------
+    name : str
+        Caller or env latency. Compared after strip and lowercase.
+    default : str
+        Value returned when ``name`` is not one of the three Fish modes.
+
+    Returns
+    -------
+    str
+        A known latency, or ``default``.
+    """
     key = name.strip().lower()
     if key in FISH_LATENCIES:
         return key
@@ -240,6 +284,18 @@ _MP3_BITRATES: dict[int, Literal[64, 128, 192]] = {64: 64, 192: 192}
 
 
 def known_mp3_bitrate(rate: int) -> Literal[64, 128, 192]:
+    """Keep 64 and 192. Every other rate snaps to 128.
+
+    Parameters
+    ----------
+    rate : int
+        Requested MP3 bitrate.
+
+    Returns
+    -------
+    Literal[64, 128, 192]
+        A Fish-accepted MP3 bitrate.
+    """
     return _MP3_BITRATES.get(rate, 128)
 
 
@@ -247,6 +303,18 @@ _OPUS_BITRATES = frozenset({_OPUS_AUTO, 24000, 32000, 48000, 64000})
 
 
 def known_opus_bitrate(rate: int) -> int:
+    """Keep -1000, 24000, 32000, 48000, or 64000. Anything else snaps to -1000.
+
+    Parameters
+    ----------
+    rate : int
+        Requested Opus bitrate. ``-1000`` means Fish chooses.
+
+    Returns
+    -------
+    int
+        A documented Opus bitrate, or ``-1000``.
+    """
     if rate in _OPUS_BITRATES:
         return rate
     return _OPUS_AUTO

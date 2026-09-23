@@ -83,7 +83,7 @@ class _Turn:
 
 
 async def _one_attempt(turn: _Turn, events: AsyncIterator[Any], attempt: int) -> bool:
-    """True when the turn should stop. A false result is a retry before any audio."""
+    """Return whether this attempt should stop the turn. False means retry before audio."""
     run = turn.run
     client = turn.held.open(run.spec, turn.headers)
     try:
@@ -137,6 +137,33 @@ async def run_turn(
     *,
     sent_text: str,
 ) -> IsolatedResult:
+    """Play one Fish turn, retrying 429 and 5xx only before the first audio byte.
+
+    Parameters
+    ----------
+    spec : TurnSpec
+        Voice, model, and format.
+    events : AsyncIterator
+        Text and flush events. Replayed from ``sent_text`` when that string
+        is non-empty.
+    sink : PlaybackSink
+        Started here and finished in ``finally``, including on cancel.
+    cancel : threading.Event
+        Barge-in or Ctrl+C.
+    sent_text : str
+        Full text to replay. Empty means the original ``events`` iterator is
+        the only source, so a failed attempt cannot be repeated.
+
+    Returns
+    -------
+    IsolatedResult
+        Spoken prefix derived from bytes actually played.
+
+    Notes
+    -----
+    The httpx client is closed here. The websocket iterator is not
+    ``aclose()``'d; closing the client ends the socket.
+    """
     run = TurnRun(
         spec=spec,
         sink=sink,
@@ -161,7 +188,24 @@ async def run_turn(
 
 
 def run_isolated(coro: Coroutine[Any, Any, IsolatedResult]) -> IsolatedResult:
-    """Fresh loop for Fish WS. Close the client on cancel; do not aclose the iterator."""
+    """Run ``coro`` on a new event loop and close that loop.
+
+    Parameters
+    ----------
+    coro : Coroutine
+        Usually ``IsolatedFishTts.speak``. It must close its own httpx client.
+
+    Returns
+    -------
+    IsolatedResult
+        Whatever ``coro`` returns.
+
+    Notes
+    -----
+    ``asyncio.wait_for`` must not wrap the websocket read. A timeout cancels
+    the generator, and ``aclose()`` on that iterator raises. Poll with
+    ``asyncio.wait`` and close the client instead.
+    """
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:

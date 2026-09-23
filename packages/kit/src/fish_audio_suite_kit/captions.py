@@ -10,6 +10,18 @@ from fish_audio_suite_kit.defaults import MS_PER_S
 
 
 class CaptionCue(NamedTuple):
+    """One timed ASR phrase for SubRip or WebVTT.
+
+    Attributes
+    ----------
+    start : float
+        Start in seconds. Non-finite values render as ``00:00:00``.
+    end : float
+        End in seconds. A value before ``start`` is raised to ``start``.
+    text : str
+        Spoken text. A blank cue is left out of the file.
+    """
+
     start: float
     end: float
     text: str
@@ -61,7 +73,18 @@ def _range(start: str, end: str) -> str:
 
 
 def format_as_srt(cues: list[CaptionCue]) -> str:
-    """SubRip. Empty input is an empty string."""
+    """Render timed cues as SubRip.
+
+    Parameters
+    ----------
+    cues : list of CaptionCue
+        Timed phrases. Blank text is skipped. Clocks use a comma before milliseconds.
+
+    Returns
+    -------
+    str
+        A trailing-newline SRT document, or ``""`` when nothing is speakable.
+    """
     spans = _spans(cues, ",")
     if not spans:
         return ""
@@ -73,7 +96,18 @@ def format_as_srt(cues: list[CaptionCue]) -> str:
 
 
 def format_as_vtt(cues: list[CaptionCue]) -> str:
-    """WebVTT. Empty input is a header-only file."""
+    """Render timed cues as WebVTT.
+
+    Parameters
+    ----------
+    cues : list of CaptionCue
+        Timed phrases. Blank text is skipped. Clocks use a period before milliseconds.
+
+    Returns
+    -------
+    str
+        A file that always starts with ``WEBVTT``, even when ``cues`` is empty.
+    """
     lines = ["WEBVTT", ""]
     for start, end, body in _spans(cues, "."):
         lines.append(_range(start, end))

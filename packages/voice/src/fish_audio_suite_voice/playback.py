@@ -28,6 +28,7 @@ class PortAudioMissingError(OSError):
 
 
 def missing_portaudio() -> PortAudioMissingError:
+    """Build the error raised when libportaudio is not loadable."""
     return PortAudioMissingError(PORTAUDIO_HINT)
 
 
@@ -36,6 +37,7 @@ _DEFAULT_RATE = SuiteDefaults().sample_rate
 
 
 def pcm_stream_kwargs(sample_rate: int, device: str | int | None) -> dict[str, Any]:
+    """Return RawStream kwargs for mono int16 PCM."""
     return {
         "samplerate": sample_rate,
         "channels": _MONO,
@@ -45,6 +47,7 @@ def pcm_stream_kwargs(sample_rate: int, device: str | int | None) -> dict[str, A
 
 
 def load_sounddevice() -> Any:
+    """Import sounddevice, mapping a missing library to PortAudioMissingError."""
     try:
         import sounddevice as sd
     except OSError as exc:
@@ -54,10 +57,44 @@ def load_sounddevice() -> Any:
 
 @runtime_checkable
 class PlaybackSink(Protocol):
-    def start(self) -> None: ...
-    def write(self, chunk: bytes) -> None: ...
-    def finish(self, *, kill: bool = False) -> None: ...
-    def bytes_played(self) -> int: ...
+    """Where one TTS turn writes audio.
+
+    ``start`` opens the device or file. ``write`` accepts encoded or PCM
+    chunks. ``finish`` closes them; ``kill=True`` means barge-in, so mpv
+    should stop instead of playing out the buffer. ``bytes_played`` is what
+    actually reached the device, which ``spoken_so_far`` is cut to.
+    """
+
+    def start(self) -> None:
+        """Open the sink. Called once per turn."""
+
+    def write(self, chunk: bytes) -> None:
+        """Append one audio chunk.
+
+        Parameters
+        ----------
+        chunk : bytes
+            PCM or encoded audio, depending on the sink.
+        """
+
+    def finish(self, *, kill: bool = False) -> None:
+        """Close the sink.
+
+        Parameters
+        ----------
+        kill : bool, optional
+            True on barge-in or Ctrl+C. The sink should drop unplayed audio.
+        """
+
+    def bytes_played(self) -> int:
+        """Return how many bytes were accepted for playback.
+
+        Returns
+        -------
+        int
+            Used to trim ``spoken_so_far`` when the turn was cancelled mid-word.
+        """
+        ...
 
 
 class _Played:
@@ -71,10 +108,12 @@ class _Played:
         self._played += len(chunk)
 
     def bytes_played(self) -> int:
+        """Return bytes accepted by this sink since the last start."""
         return self._played
 
 
 def write_mono_wav(target: Any, pcm: bytes, sample_rate: int) -> None:
+    """Write mono int16 PCM as a WAV file."""
     with wave.open(target, "wb") as wf:
         wf.setnchannels(_MONO)
         wf.setsampwidth(SAMPLE_BYTES)
@@ -83,6 +122,8 @@ def write_mono_wav(target: Any, pcm: bytes, sample_rate: int) -> None:
 
 
 class FileSink(_Played):
+    """Collect a turn and write it as WAV or raw PCM on finish."""
+
     def __init__(self, path: Path, *, sample_rate: int = _DEFAULT_RATE, wav: bool = True) -> None:
         super().__init__()
         self.path = path
@@ -91,16 +132,19 @@ class FileSink(_Played):
         self._buf = bytearray()
 
     def start(self) -> None:
+        """Clear the buffer for a new turn."""
         self._buf.clear()
         self._reset_played()
 
     def write(self, chunk: bytes) -> None:
+        """Append one encoded or PCM chunk."""
         if not chunk:
             return
         self._buf.extend(chunk)
         self._count(chunk)
 
     def finish(self, *, kill: bool = False) -> None:
+        """Write the buffer unless barge-in asked to drop it."""
         if kill:
             return
         if self.wav:
@@ -110,10 +154,14 @@ class FileSink(_Played):
 
 
 class StdoutSink(_Played):
+    """Write raw chunks to stdout."""
+
     def start(self) -> None:
+        """Reset the played-byte counter."""
         self._reset_played()
 
     def write(self, chunk: bytes) -> None:
+        """Write one chunk to stdout and count it."""
         if not chunk:
             return
         sys.stdout.buffer.write(chunk)
@@ -121,6 +169,7 @@ class StdoutSink(_Played):
         self._count(chunk)
 
     def finish(self, *, kill: bool = False) -> None:
+        """Stdout has nothing to close."""
         return
 
 
@@ -132,10 +181,12 @@ _SPEAKER_SINKS = frozenset({"sounddevice", "speakers", "pcm"})
 
 
 def dac_slice_bytes(sample_rate: int, frame_ms: int = DAC_SLICE_MS) -> int:
+    """Return an even int16 byte count for one DAC slice."""
     return max(1, sample_rate * frame_ms // MS_PER_S) * SAMPLE_BYTES
 
 
 def iter_pcm_slices(chunk: bytes, slice_bytes: int) -> Iterator[bytes]:
+    """Yield even PCM pieces of ``slice_bytes``, or the whole chunk when that is 0."""
     if slice_bytes <= 0:
         if chunk:
             yield chunk
@@ -147,6 +198,15 @@ def iter_pcm_slices(chunk: bytes, slice_bytes: int) -> Iterator[bytes]:
 
 
 class SounddeviceSink(_Played):
+    """Play PCM through PortAudio in about 30 ms slices.
+
+    Notes
+    -----
+    The far-end tap used by AEC is filled before each blocking write, so the
+    reference matches what is about to hit the speaker. Missing PortAudio
+    raises ``PortAudioMissingError`` when the stream opens, not at import.
+    """
+
     def __init__(
         self,
         *,
@@ -162,6 +222,7 @@ class SounddeviceSink(_Played):
         self._odd = b""
 
     def start(self) -> None:
+        """Open a PortAudio output stream and clear the far-end tap."""
         sd = load_sounddevice()
 
         self._reset_played()
@@ -171,6 +232,7 @@ class SounddeviceSink(_Played):
         self._stream.start()
 
     def write(self, chunk: bytes) -> None:
+        """Play PCM in short slices, tapping far-end before each blocking write."""
         if not chunk or self._stream is None:
             return
         data = self._odd + chunk
@@ -189,6 +251,7 @@ class SounddeviceSink(_Played):
             self._count(piece)
 
     def finish(self, *, kill: bool = False) -> None:
+        """Stop or abort the PortAudio stream and close it."""
         self._odd = b""
         stream = self._stream
         self._stream = None
@@ -219,6 +282,7 @@ class MpvSink(_Played):
         self.proc: subprocess.Popen[bytes] | None = None
 
     def start(self) -> None:
+        """Kill any previous mpv and start a new stdin player."""
         self.finish(kill=True)
         self._reset_played()
         self.proc = subprocess.Popen(
@@ -236,6 +300,7 @@ class MpvSink(_Played):
         )
 
     def write(self, chunk: bytes) -> None:
+        """Write one mp3 chunk to mpv stdin."""
         if not self.proc or not self.proc.stdin or not chunk:
             return
         try:
@@ -246,6 +311,7 @@ class MpvSink(_Played):
             pass
 
     def finish(self, *, kill: bool = False) -> None:
+        """Close mpv stdin, or kill the process on barge-in."""
         proc = self.proc
         if proc is None:
             return
@@ -266,6 +332,19 @@ DEFAULT_PLAYBACK = "sounddevice"
 
 
 def playback_key(name: str) -> str:
+    """Normalize a playback name.
+
+    Parameters
+    ----------
+    name : str
+        ``FISH_PLAYBACK`` or ``--playback``.
+
+    Returns
+    -------
+    str
+        Stripped, lowercased name. Unknown names are returned as written so
+        ``duplex_playback_problem`` can reject them.
+    """
     return name.strip().lower()
 
 
@@ -282,6 +361,18 @@ def duplex_playback_problem(name: str) -> str | None:
 
 
 def audio_format_for(playback: str) -> str:
+    """Fish format for a sink.
+
+    Parameters
+    ----------
+    playback : str
+        Sink name.
+
+    Returns
+    -------
+    str
+        ``mp3`` for mpv. ``pcm`` for sounddevice, file, and stdout.
+    """
     if playback_key(playback) == "mpv":
         return "mp3"
     return "pcm"
@@ -295,6 +386,31 @@ def make_sink(
     device: str | int | None = None,
     cancel: threading.Event | None = None,
 ) -> PlaybackSink:
+    """Build the sink named by ``FISH_PLAYBACK`` or ``--playback``.
+
+    Parameters
+    ----------
+    name : str
+        ``sounddevice``, ``file``, ``stdout``, or ``mpv``.
+    path : Path or None, optional
+        Required for ``file``.
+    sample_rate : int, optional
+        PCM rate. Ignored by mpv, which receives MP3.
+    device : str or int or None, optional
+        PortAudio device.
+    cancel : threading.Event or None, optional
+        Passed to the sounddevice sink so a barge-in can stop the stream.
+
+    Returns
+    -------
+    PlaybackSink
+        The concrete sink.
+
+    Raises
+    ------
+    ValueError
+        ``file`` without ``path``, or a name this function does not know.
+    """
     key = playback_key(name)
     if key == "file":
         if path is None:

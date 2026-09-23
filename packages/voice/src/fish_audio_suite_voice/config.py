@@ -32,6 +32,15 @@ OPENROUTER_API_BASE = "https://openrouter.ai/api/v1"
 
 @dataclass(frozen=True)
 class VoiceCliConfig:
+    """Duplex settings read from the process environment. No YAML.
+
+    Notes
+    -----
+    ``fish_api_key`` and ``fish_voice_id`` are empty unless the env sets them.
+    ``llm_backend`` is only the label printed on the ready line. The transport
+    is chosen from ``llm_base``. Process env wins over ``--env-file``.
+    """
+
     fish_api_key: str
     fish_base: str
     fish_voice_id: str
@@ -72,6 +81,19 @@ def _model_name(*names: str) -> str:
 
 
 def cfg() -> VoiceCliConfig:
+    """Read ``VoiceCliConfig`` from the current process environment.
+
+    Returns
+    -------
+    VoiceCliConfig
+        Clamped numeric knobs. A missing key keeps the ``SuiteDefaults`` value.
+        Call this after dotenv loading; an earlier call will not see those keys.
+
+    Notes
+    -----
+    ``FISH_API_KEY`` uses ``env_text``, so a blank value stays blank instead
+    of falling back to a default key. There is no default voice id.
+    """
     d = SuiteDefaults()
     fish_base = env_base("FISH_BASE", d.fish_base)
     sample_rate = env_int("FISH_SAMPLE_RATE", d.sample_rate)
