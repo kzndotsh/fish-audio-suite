@@ -15,7 +15,9 @@ from fish_audio_suite_voice.barge import (
 )
 from fish_audio_suite_voice.listen import (
     _encode_wav,
+    _Listen,
     _listen_tune,
+    _ListenTune,
     listen_reject_reason,
     spike_start_allowed,
     start_frames_needed,
@@ -120,7 +122,8 @@ def test_start_hit_requires_vad_and_full_floor() -> None:
 
 def test_start_frames_needed_raises_on_spike() -> None:
     assert start_frames_needed(200.0, 200.0, 4) == 4
-    assert start_frames_needed(964.0, 200.0, 4) == 10
+    assert start_frames_needed(1005.0, 200.0, 4) == 4
+    assert start_frames_needed(1600.0, 200.0, 4) == 10
 
 
 def test_trailing_start_hits_ignores_older_scored_frames() -> None:
@@ -136,6 +139,17 @@ def test_spike_start_blocks_decaying_bang() -> None:
     assert spike_start_allowed(1923.0, 1000.0, 200.0)
 
 
+def test_quiet_vad_frame_holds_the_turn() -> None:
+    tune = _ListenTune(1, 2, 4, 200.0, 20, 12)
+    heard = _Listen(tune, object())
+    assert heard._hold(b"\x00\x00", False, vad_speech=True) is False
+    assert heard.silence == 0
+    assert heard.speech_hits == 0
+    assert heard._hold(b"\x00\x00", False, vad_speech=False) is False
+    assert heard.silence == 1
+    assert heard._hold(b"\x00\x00", False, vad_speech=False) is True
+
+
 def test_listen_reject_cough_and_impulse() -> None:
     def reason(voiced: int, hits: int, peak: float) -> str | None:
         return listen_reject_reason(
@@ -148,7 +162,8 @@ def test_listen_reject_cough_and_impulse() -> None:
 
     assert reason(48, 8, 346.0) == "too_little_voice"
     assert reason(54, 14, 2220.0) == "impulse"
-    assert reason(80, 18, 1047.0) == "impulse"
+    assert reason(46, 16, 1005.0) is None
+    assert reason(80, 18, 1600.0) == "impulse"
     assert reason(80, 20, 400.0) is None
     assert reason(120, 68, 1486.0) is None
     assert reason(2, 2, 100.0) == "too_short"

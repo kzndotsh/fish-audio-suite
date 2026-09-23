@@ -22,7 +22,7 @@ from fish_audio_suite_voice.playback import write_mono_wav
 
 DEFAULT_VAD_AGGRESSIVENESS = 1
 _VAD_MODE_HI = 3
-DEFAULT_SILENCE_FRAMES_END = 22
+DEFAULT_SILENCE_FRAMES_END = 40
 DEFAULT_SPEECH_FRAMES_START = 4
 DEFAULT_MIN_SPEECH_RMS = 200.0
 DEFAULT_PRE_PAD_FRAMES = 20
@@ -32,7 +32,7 @@ MAX_UTTERANCE_FRAMES = 500
 _MIC_POLL_S = 0.25
 _WAV_HEADER_BYTES = 44
 DEFAULT_MIN_VOICED_FRAMES = 12
-IMPULSE_PEAK_RATIO = 4.0
+IMPULSE_PEAK_RATIO = 8.0
 IMPULSE_EXTRA_VOICED = 12
 IMPULSE_START_EXTRA = 6
 IMPULSE_NOW_RATIO = 0.5
@@ -72,7 +72,7 @@ def listen_reject_reason(
 
 
 def start_frames_needed(peak_rms: float, min_rms: float, speech_frames_start: int) -> int:
-    """A 4x spike in the pre-pad ring is a chair pop until more VAD hits pile up."""
+    """An 8x spike in the pre-pad ring is a chair pop until more VAD hits pile up."""
     if _impulse(peak_rms, min_rms):
         return speech_frames_start + IMPULSE_START_EXTRA
     return speech_frames_start
@@ -89,7 +89,7 @@ def trailing_start_hits(ring: collections.deque[tuple[bytes, bool]]) -> int:
 
 
 def spike_start_allowed(peak_rms: float, now_rms: float, min_rms: float) -> bool:
-    """Reject a decaying bang: 4x peak in the ring but this frame already dropped."""
+    """Reject a decaying bang: 8x peak in the ring but this frame already dropped."""
     if not _impulse(peak_rms, min_rms):
         return True
     return now_rms >= peak_rms * IMPULSE_NOW_RATIO
@@ -160,12 +160,14 @@ class _Listen:
             self.floor.observe(rms, quiet=True)
             return self._arm(frame, rms, vad_speech)
         is_speech = rms >= self.min_speech_now * HOLD_RMS_RATIO and vad_speech
-        return self._hold(frame, is_speech)
+        return self._hold(frame, is_speech, vad_speech=vad_speech)
 
-    def _hold(self, frame: bytes, is_speech: bool) -> bool:
+    def _hold(self, frame: bytes, is_speech: bool, *, vad_speech: bool) -> bool:
         self.voiced.append(frame)
         if is_speech:
             self.speech_hits += 1
+        # A quiet frame that VAD still calls speech is a hesitation, not the end.
+        if is_speech or vad_speech:
             self.silence = 0
             return False
         self.silence += 1
@@ -240,12 +242,12 @@ def _clip_wav(heard: _Listen, tune: _ListenTune) -> bytes | None:
         return None
     pcm = b"".join(heard.voiced)
     debug(
-        "listen.end frames={} wav_bytes={} silence={} voiced_hits={} peak_rms={:.0f} duration_ms={}",
+        "listen.end frames={} wav_bytes={} silence={} voiced_hits={} peak_rms={} duration_ms={}",
         len(heard.voiced),
         len(pcm) + _WAV_HEADER_BYTES,
         heard.silence,
         heard.speech_hits,
-        heard.clip_peak,
+        round(heard.clip_peak),
         len(heard.voiced) * FRAME_MS,
     )
     return _encode_wav(pcm)
