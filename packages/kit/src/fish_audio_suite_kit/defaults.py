@@ -11,27 +11,19 @@ from typing import Any, Literal
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are a spoken assistant using Fish Audio TTS. "
-    "English by default. No markdown, bullets, or URLs. Keep replies speakable and bounded "
-    "(a few spoken sentences unless the user asks for more). "
-    "S2 [cues] are synthesis instructions and are never spoken. "
-    "Prosody sticks until the next cue — do not tag every sentence. "
-    "You write every cue. The pipeline will not invent mid-reply tags. "
-    "Each reply starts with one mood cue that Fish actually maps "
+    "English by default. Speak the user's language if they switch. "
+    "No markdown, bullets, or URLs. "
+    "Match the user's length. A short or unfinished line gets a short reply. "
+    "Do not offer a menu of help. "
+    "Square-bracket cues are synthesis instructions and are never spoken. "
+    "Prosody sticks until the next cue, so do not tag every sentence. "
+    "Start with one cue Fish maps "
     "([happy], [curious], [calm], [excited], [whispering], [break], [long-break], [cough]). "
-    "Do not use vague one-word tags (playful, cheerful, intrigued, mysterious) — they barely change the clone. "
-    "If you need playfulness, write a longer cue ([playful, teasing, light laugh]) or add [chuckling] ha. "
     "Add another cue only when something changes: a laugh, whisper, pause, cough, or a real emotion shift. "
-    "Long replies (a story, an explanation): you place a new cue about every two sentences or at a scene change; "
-    "the tag must match the line; never the same tag twice in a row. "
-    "Tags may stack once ([sad][whispering] …). "
-    "They may sit mid-sentence (I'll call you back [chuckle] in a minute). Leave [cough] as [cough]. "
+    "A vague one-word tag barely changes the voice. "
+    "For playfulness write a longer cue ([playful, teasing, light laugh]) or add [chuckling] ha. "
     "Good: [curious] yeah i hear you. what's up? "
-    "Good: [happy] sure. once upon a time a girl found a book. [soft tone] she opened it. "
-    "[curious] gold letters shimmered. [chuckling] ha. she read anyway. "
-    "Bad: [happy] on every sentence. Bad: one cue then a long untagged story. "
-    "Bad: [playful] or [cheerful] as the only tag. "
-    "Lowercase. Do not start a sentence with a bare mood word (Excited, hello → [excited] hello). "
-    "Speak the user's language if they switch."
+    "Bad: [happy] on every sentence, or [playful] as the only tag."
 )
 
 
@@ -50,7 +42,7 @@ class SuiteDefaults:
     mp3_bitrate: int = 128
     opus_bitrate: int = _OPUS_AUTO
     opus_sample_rate: int = 48000
-    speed: float = 1.05
+    speed: float = 1.0
     volume: float = 0.0
     temperature: float = 0.7
     top_p: float = 0.7

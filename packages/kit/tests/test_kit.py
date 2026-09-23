@@ -304,14 +304,14 @@ def test_suite_defaults_and_timing() -> None:
     assert d.tts_model == "s2.1-pro"
     assert d.tts_partial_chars == 40
     assert d.system_prompt == DEFAULT_SYSTEM_PROMPT
-    assert "mid-sentence" in DEFAULT_SYSTEM_PROMPT
-    assert "Leave [cough] as [cough]" in DEFAULT_SYSTEM_PROMPT
+    assert "Match the user's length" in DEFAULT_SYSTEM_PROMPT
+    assert "Do not offer a menu of help" in DEFAULT_SYSTEM_PROMPT
     assert "do not tag every sentence" in DEFAULT_SYSTEM_PROMPT
-    assert "You write every cue" in DEFAULT_SYSTEM_PROMPT
-    assert "every two sentences" in DEFAULT_SYSTEM_PROMPT
     assert "[excited]" in DEFAULT_SYSTEM_PROMPT
-    assert "vague one-word tags" in DEFAULT_SYSTEM_PROMPT
-    assert "[playful], [whispering]" not in DEFAULT_SYSTEM_PROMPT
+    assert "Good: [curious]" in DEFAULT_SYSTEM_PROMPT
+    assert "Bad: [happy] on every sentence" in DEFAULT_SYSTEM_PROMPT
+    assert "Leave [cough] as [cough]" not in DEFAULT_SYSTEM_PROMPT
+    assert "every two sentences" not in DEFAULT_SYSTEM_PROMPT
     line = LatencySnapshot(ttfa=12.4).log_line()
     assert "ttfa=12ms" in line
     assert "asr=" not in line
