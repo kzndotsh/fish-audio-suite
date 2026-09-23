@@ -8,11 +8,12 @@ Three members under `packages/`. Usage: [`README.md`](README.md).
 
 | Task | Command |
 | --- | --- |
-| Sync | `uv sync --all-packages --extra cli --group dev` |
+| Sync | `uv sync --all-packages --extra cli --group dev --group test` |
 | Test | `uv run pytest` |
 | Lint | `uv run ruff check packages` · `uv run ruff format packages` |
+| Docstrings | `uv run pydoclint --config=pyproject.toml packages` |
 | Types | `uv run basedpyright` |
-| CI | GitHub Actions `.github/workflows/ci.yml` (ruff, basedpyright, pytest) |
+| CI | GitHub Actions `.github/workflows/ci.yml` (ruff, pydoclint, basedpyright, pytest) |
 | Wheels | `uv build --all` |
 | Proxy | `uv run --package fish-audio-suite-proxy fish-audio-suite-proxy` |
 | Voice smoke | `uv run --package fish-audio-suite-voice --extra cli fish-voice --smoke` · local: `./packages/voice/dev.sh --smoke` |
@@ -46,9 +47,11 @@ Proven from this tree (kit is the only text package; proxy import must work with
 | One `stream_websocket` per turn; one `FlushEvent` after sent text; TTS on a private loop (`speak_isolated` / `to_thread`) | Per-sentence flush; Fish WS on the LLM event loop |
 | Barge-in history = `spoken_so_far`, or omit if no audio | Full unplayed LLM reply |
 | Three dists only; CLI stays in voice; W3C parse in kit with no OTel | Fourth dist, OpenTelemetry SDK, or a VAD package |
+| NumPy docstrings on public modules, classes, and functions. Update them in the same change as the signature | Docstrings on tests. pydoclint skips one-line summaries and `**/tests/**` |
 
 ## Gotchas
 
 - Do not `aclose()` the fishaudio websocket iterator. Stop iterating; close the **client**. Empty turn + bare `FlushEvent` is invalid.
+- Docstrings are NumPy. First line is imperative. Parameters, Returns, Yields, and Raises match the signature. Ruff `D` runs inside `ruff check`. pydoclint is the separate gate. `/finalize` updates dirty ones and reruns both.
 - pytest: `--import-mode=importlib` (several `tests/` dirs).
 - `nixosModules.default`: `127.0.0.1:8849:8849`, `autoStart = false`. Voice derivation wraps PortAudio on `LD_LIBRARY_PATH`.

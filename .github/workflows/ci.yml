@@ -32,17 +32,19 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
           enable-cache: true
       - name: Sync
-        run: uv sync --frozen --all-packages --extra cli --group dev
+        run: uv sync --frozen --all-packages --extra cli --group dev --group test
       - name: Ruff check
         run: uv run ruff check packages
       - name: Ruff format
         run: uv run ruff format --check packages
+      - name: Docstrings
+        run: uv run pydoclint --config=pyproject.toml packages
       - name: Types
         run: uv run basedpyright
       - name: Tests
         env:
           PYTHONDONTWRITEBYTECODE: "1"
-        run: uv run pytest
+        run: uv run pytest --cov=fish_audio_suite_kit --cov=fish_audio_suite_proxy --cov=fish_audio_suite_voice --cov-branch --cov-report=term-missing --cov-fail-under=71
       - name: Prune uv cache for CI
         if: always()
         run: uv cache prune --ci

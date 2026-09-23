@@ -10,6 +10,7 @@ dependencies = []
 
 [tool.uv]
 package = false
+default-groups = ["dev", "test"]
 
 [tool.uv.workspace]
 members = ["packages/*"]
@@ -18,12 +19,47 @@ members = ["packages/*"]
 dev = [
     "pytest>=8.3",
     "ruff>=0.8",
-    "basedpyright>=1.29",
+    "basedpyright==1.40.1",
+    "pydoclint>=0.7.3",
+    "docstr-coverage>=2.3.2",
+]
+test = [
+    "pytest-cov>=7",
+    "pytest-socket>=0.7",
+    "pytest-timeout>=2.4",
 ]
 
 [tool.pytest.ini_options]
 testpaths = ["packages"]
-addopts = "--import-mode=importlib"
+strict = true
+timeout = 60
+addopts = [
+    "--import-mode=importlib",
+    "--disable-socket",
+    # asyncio's self-pipe is AF_UNIX. AF_INET stays blocked.
+    "--allow-unix-socket",
+    "--strict-markers",
+    "--durations=10",
+]
+
+[tool.coverage.run]
+source = [
+    "fish_audio_suite_kit",
+    "fish_audio_suite_proxy",
+    "fish_audio_suite_voice",
+]
+branch = true
+relative_files = true
+omit = ["*/tests/*"]
+
+[tool.coverage.report]
+show_missing = true
+skip_empty = true
+precision = 0
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+]
 
 [tool.ruff]
 target-version = "py312"
@@ -108,7 +144,11 @@ select = [
     "ICN",   # flake8-import-conventions
     "PT",    # flake8-pytest-style
     "RUF",   # ruff
+    "D",     # pydocstyle (numpy)
 ]
+
+[tool.ruff.lint.pydocstyle]
+convention = "numpy"
 
 [tool.ruff.lint.isort]
 known-first-party = [
@@ -118,7 +158,22 @@ known-first-party = [
 ]
 
 [tool.ruff.lint.per-file-ignores]
-"packages/*/tests/**" = ["INP001", "PLR2004"]
+"packages/*/tests/**" = ["INP001", "PLR2004", "D"]
+
+[tool.pydoclint]
+style = "numpy"
+exclude = [
+    ".venv",
+    "**/tests/**",
+]
+arg-type-hints-in-docstring = true
+arg-type-hints-in-signature = true
+check-return-types = true
+check-yield-types = true
+allow-init-docstring = true
+skip-checking-short-docstrings = true
+require-return-section-when-returning-nothing = false
+check-style-mismatch = true
 
 [tool.ruff.format]
 docstring-code-format = true

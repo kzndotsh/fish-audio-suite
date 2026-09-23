@@ -12,10 +12,10 @@ Three packages. Use one, or mix them.
 | voice   | `fish-audio-suite-voice` | One Fish websocket per turn, playback sinks, optional duplex CLI. |
 
 
-Python 3.12. MIT. CI is GitHub Actions (ruff, basedpyright, pytest), not `nix flake check`.
+Python 3.12. MIT. CI is GitHub Actions (ruff, pydoclint, basedpyright, pytest), not `nix flake check`.
 
 ```bash
-uv sync --all-packages --extra cli --group dev
+uv sync --all-packages --extra cli --group dev --group test
 ```
 
 Set `FISH_API_KEY` for anything that talks to Fish. Set `FISH_VOICE_ID` for live TTS. Neither has a default.

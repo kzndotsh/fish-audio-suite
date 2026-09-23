@@ -15,6 +15,23 @@ gaps, and scoped doc accuracy. Not a full-repo audit.
 - After gates pass, draft commits via [commit-plan.md](commit-plan.md);
   do not commit in the close-out turn.
 
+## Docstrings (dirty Python only)
+
+NumPy style. Ruff `D` and pydoclint both gate CI. When a public module,
+class, or function in the diff changes behavior, signature, or return:
+
+- Update the summary so the first line is imperative and matches what the
+  code does now.
+- Parameters, Returns, Yields, and Raises must name the same arguments,
+  types, and failures as the signature. Drop a section that no longer applies.
+- Notes only for non-obvious behavior. Do not restate the signature.
+- A one-line summary is enough when pydoclint's short-docstring skip applies.
+  Tests stay excluded.
+
+Then double-check: `uv run ruff check packages` and
+`uv run pydoclint --config=pyproject.toml packages`. A mismatch is a
+gate failure, not a follow-up.
+
 Kit-only text helpers stay in kit. Do not copy cue/scrub/cut/W3C/Fish-error
 regexes into proxy or voice. Do not read `FISH_API_KEY` at import.
 `FISH_VOICE_ID` has no default.

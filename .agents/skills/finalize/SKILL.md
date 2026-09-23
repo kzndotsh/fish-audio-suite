@@ -32,7 +32,7 @@ approves the posted plan. Does not push or change CI unless asked.
 ## Instructions
 
 1. List dirty paths (`git status --porcelain`; add `git diff --name-only` if needed).
-2. Load [close-out.md](references/close-out.md) and apply hygiene + test-gap on those paths.
+2. Load [close-out.md](references/close-out.md) and apply hygiene, docstring sync, and test-gap on those paths.
 3. Docs: patch root [`README.md`](../../../README.md) and the dirty package README if a public claim, env var, or command changed. Verify against the diff. No new docs unless asked.
 4. Touch a nested `AGENTS.md` only if Commands, Boundaries, or Gotchas actually changed. Read that tree's `AGENTS.md` before editing it.
 5. Load [gate-map.md](references/gate-map.md), union commands for the dirty set, run fastest first. On failure: read the error, fix, rerun that gate. Same gate still failing after one fix → **Blocked**.
@@ -42,7 +42,7 @@ approves the posted plan. Does not push or change CI unless asked.
 
 ## Gotchas
 
-- CI is GitHub Actions (ruff, basedpyright, pytest), not `nix flake check`.
+- CI is GitHub Actions (ruff, pydoclint, basedpyright, pytest), not `nix flake check`.
 - Format with `uv run ruff format packages` so `ruff format --check` in CI passes.
 - Pytest: `--import-mode=importlib`; prefer `uv run pytest packages/<member>` over the whole suite.
 - Dist names stay `fish-audio-suite-{kit,proxy,voice}` only.
