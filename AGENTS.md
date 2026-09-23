@@ -43,7 +43,7 @@ Proven from this tree (kit is the only text package; proxy import must work with
 | Shared cue/scrub/cut/W3C parse/Fish error shape/captions in kit | Copy those regexes into proxy or voice |
 | Read `FISH_API_KEY` in lifespan / CLI / `IsolatedFishTts(...)` | `os.environ["FISH_API_KEY"]` at import |
 | Empty `FISH_VOICE_ID` unless env sets it | Default voice id |
-| One `stream_websocket` per turn; one `FlushEvent` after sent text; TTS via `asyncio.run` | Per-sentence flush; Fish WS on the LLM event loop |
+| One `stream_websocket` per turn; one `FlushEvent` after sent text; TTS on a private loop (`speak_isolated` / `to_thread`) | Per-sentence flush; Fish WS on the LLM event loop |
 | Barge-in history = `spoken_so_far`, or omit if no audio | Full unplayed LLM reply |
 | Three dists only; CLI stays in voice; W3C parse in kit with no OTel | Fourth dist, OpenTelemetry SDK, or a VAD package |
 
