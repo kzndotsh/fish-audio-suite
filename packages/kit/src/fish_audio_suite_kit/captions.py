@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import math
+import re
 from typing import NamedTuple
+
+from fish_audio_suite_kit.defaults import MS_PER_S
 
 
 class CaptionCue(NamedTuple):
@@ -11,45 +15,68 @@ class CaptionCue(NamedTuple):
     text: str
 
 
+_MINUTE_MS = 60 * MS_PER_S
+_HOUR_MS = 60 * _MINUTE_MS
+_CUE_BLANK_RE = re.compile(r"\n(?:[ \t]*\n)+")
+
+
 def _clock(seconds: float, decimal: str) -> str:
-    ms = round(max(0.0, seconds) * 1000.0)
-    hours, ms = divmod(ms, 3_600_000)
-    minutes, ms = divmod(ms, 60_000)
-    secs, ms = divmod(ms, 1000)
+    if not math.isfinite(seconds):
+        seconds = 0.0
+    try:
+        ms = round(max(0.0, seconds) * MS_PER_S)
+    except OverflowError:
+        ms = 0
+    hours, ms = divmod(ms, _HOUR_MS)
+    minutes, ms = divmod(ms, _MINUTE_MS)
+    secs, ms = divmod(ms, MS_PER_S)
     return f"{hours:02d}:{minutes:02d}:{secs:02d}{decimal}{ms:03d}"
+
+
+def _cue_body(text: str) -> str:
+    flat = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+    return _CUE_BLANK_RE.sub("\n", flat)
+
+
+def _span(cue: CaptionCue, decimal: str) -> tuple[str, str, str] | None:
+    body = _cue_body(cue.text)
+    if not body:
+        return None
+    start = _clock(cue.start, decimal)
+    end = _clock(max(cue.end, cue.start), decimal)
+    return start, end, body
+
+
+def _spans(cues: list[CaptionCue], decimal: str) -> list[tuple[str, str, str]]:
+    spans: list[tuple[str, str, str]] = []
+    for cue in cues:
+        span = _span(cue, decimal)
+        if span is not None:
+            spans.append(span)
+    return spans
+
+
+def _range(start: str, end: str) -> str:
+    return f"{start} --> {end}"
 
 
 def format_as_srt(cues: list[CaptionCue]) -> str:
     """SubRip. Empty input is an empty string."""
-    if not cues:
+    spans = _spans(cues, ",")
+    if not spans:
         return ""
-    blocks: list[str] = []
-    numbered = 0
-    for cue in cues:
-        body = cue.text.strip()
-        if not body:
-            continue
-        numbered += 1
-        start = _clock(cue.start, ",")
-        end = _clock(max(cue.end, cue.start), ",")
-        blocks.append(f"{numbered}\n{start} --> {end}\n{body}")
-    if not blocks:
-        return ""
+    blocks = [
+        f"{index}\n{_range(start, end)}\n{body}"
+        for index, (start, end, body) in enumerate(spans, start=1)
+    ]
     return "\n\n".join(blocks) + "\n"
 
 
 def format_as_vtt(cues: list[CaptionCue]) -> str:
     """WebVTT. Empty input is a header-only file."""
     lines = ["WEBVTT", ""]
-    if not cues:
-        return "WEBVTT\n"
-    for cue in cues:
-        body = cue.text.strip()
-        if not body:
-            continue
-        start = _clock(cue.start, ".")
-        end = _clock(max(cue.end, cue.start), ".")
-        lines.append(f"{start} --> {end}")
+    for start, end, body in _spans(cues, "."):
+        lines.append(_range(start, end))
         lines.append(body)
         lines.append("")
     return "\n".join(lines)
