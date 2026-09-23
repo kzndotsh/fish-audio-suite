@@ -13,7 +13,8 @@ Three members under `packages/`. Usage: [`README.md`](README.md).
 | Lint | `uv run ruff check packages` · `uv run ruff format packages` |
 | Docstrings | `uv run pydoclint --config=pyproject.toml packages` |
 | Types | `uv run basedpyright` |
-| CI | GitHub Actions `.github/workflows/ci.yml` (ruff, pydoclint, basedpyright, pytest) |
+| CI | GitHub Actions `.github/workflows/ci.yml` (ruff, pydoclint, basedpyright, pytest). Coverage is CI-only: branch, `--cov-fail-under=71` |
+| Supply chain | `.github/workflows/dependency-submission.yml` on push to `main` when `uv.lock` or that workflow changes |
 | Wheels | `uv build --all` |
 | Proxy | `uv run --package fish-audio-suite-proxy fish-audio-suite-proxy` |
 | Voice smoke | `uv run --package fish-audio-suite-voice --extra cli fish-voice --smoke` · local: `./packages/voice/dev.sh --smoke` |
@@ -47,11 +48,11 @@ Proven from this tree (kit is the only text package; proxy import must work with
 | One `stream_websocket` per turn; one `FlushEvent` after sent text; TTS on a private loop (`speak_isolated` / `to_thread`) | Per-sentence flush; Fish WS on the LLM event loop |
 | Barge-in history = `spoken_so_far`, or omit if no audio | Full unplayed LLM reply |
 | Three dists only; CLI stays in voice; W3C parse in kit with no OTel | Fourth dist, OpenTelemetry SDK, or a VAD package |
-| NumPy docstrings on public modules, classes, and functions. Update them in the same change as the signature | Docstrings on tests. pydoclint skips one-line summaries and `**/tests/**` |
+| NumPy docstrings on public modules, classes, and functions, in the same change as the signature. First line is imperative. Parameters, Returns, Yields, and Raises match | Docstrings on tests. pydoclint skips one-line summaries and `**/tests/**` |
 
 ## Gotchas
 
 - Do not `aclose()` the fishaudio websocket iterator. Stop iterating; close the **client**. Empty turn + bare `FlushEvent` is invalid.
-- Docstrings are NumPy. First line is imperative. Parameters, Returns, Yields, and Raises match the signature. Ruff `D` runs inside `ruff check`. pydoclint is the separate gate. `/finalize` updates dirty ones and reruns both.
-- pytest: `--import-mode=importlib` (several `tests/` dirs).
-- `nixosModules.default`: `127.0.0.1:8849:8849`, `autoStart = false`. Voice derivation wraps PortAudio on `LD_LIBRARY_PATH`.
+- Ruff `D` runs inside `ruff check`. pydoclint is a separate CI step. `/finalize` updates dirty docstrings and reruns both.
+- pytest: `--import-mode=importlib`, `--disable-socket`, `--allow-unix-socket` (asyncio's self-pipe is AF_UNIX; AF_INET stays blocked), `--strict-markers`, timeout 60s. Do not put `--cov` in default addopts. `fail-under` compares the precise percent; 72 fails while the report still shows 71.
+- `nixosModules.default`: `127.0.0.1:8849:8849`, `autoStart = false`. Voice derivation wraps PortAudio and Pulse on `LD_LIBRARY_PATH`. Details in [`nix/AGENTS.md`](nix/AGENTS.md).
