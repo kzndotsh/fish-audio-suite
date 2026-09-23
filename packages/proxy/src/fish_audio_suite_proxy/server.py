@@ -14,6 +14,7 @@ import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from importlib.metadata import PackageNotFoundError, version
 from typing import Any, Protocol
 
 import httpx
@@ -69,6 +70,10 @@ log = logging.getLogger("fish-audio-suite-proxy")
 _TTS_CHUNK = 4096
 _FISH_TIMEOUT_S = 120.0
 _FISH_CONNECT_S = 10.0
+_FISH_POOL_S = 5.0
+_MAX_CONNECTIONS = 100
+_MAX_KEEPALIVE = 20
+_KEEPALIVE_EXPIRY_S = 30.0
 _PREVIEW_CHARS = 160
 _DEFAULT_PORT = 8849
 _PORT_MAX = 65535
@@ -76,6 +81,14 @@ _DEFAULT_KEEP_ALIVE_S = 5
 _DEFAULT_GRACEFUL_S = 120
 
 logging.basicConfig(level=logging.INFO)
+
+
+def _user_agent() -> str:
+    try:
+        pkg = version("fish-audio-suite-proxy")
+    except PackageNotFoundError:
+        pkg = "0.1.0"
+    return f"fish-audio-suite-proxy/{pkg}"
 
 
 async def _closed_error(upstream: httpx.Response) -> JSONResponse:
@@ -134,9 +147,22 @@ async def _fish_send(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Open one Fish httpx client for the process and close it on shutdown.
+
+    Parameters
+    ----------
+    app : FastAPI
+        Receives ``defaults``, ``fish_api_key``, and ``http`` on ``app.state``.
+
+    Notes
+    -----
+    ``FISH_API_KEY`` is read here, not at import, so ``GET /health`` works
+    with the key unset. Speech and transcription then return 401. The client
+    keeps HTTP/2 off, sends a User-Agent, and caps the connection pool.
+    """
     defaults = runtime_defaults()
     key = env_text("FISH_API_KEY")
-    headers: dict[str, str] = {}
+    headers: dict[str, str] = {"User-Agent": _user_agent()}
     if key:
         headers["Authorization"] = bearer(key)
     else:
@@ -145,7 +171,17 @@ async def lifespan(app: FastAPI):
     app.state.fish_api_key = key
     app.state.http = httpx.AsyncClient(
         base_url=defaults.fish_base,
-        timeout=httpx.Timeout(_FISH_TIMEOUT_S, connect=_FISH_CONNECT_S),
+        timeout=httpx.Timeout(
+            connect=_FISH_CONNECT_S,
+            read=_FISH_TIMEOUT_S,
+            write=_FISH_TIMEOUT_S,
+            pool=_FISH_POOL_S,
+        ),
+        limits=httpx.Limits(
+            max_connections=_MAX_CONNECTIONS,
+            max_keepalive_connections=_MAX_KEEPALIVE,
+            keepalive_expiry=_KEEPALIVE_EXPIRY_S,
+        ),
         headers=headers,
         http2=False,
     )
@@ -214,6 +250,24 @@ def _fish_client(request: Request) -> httpx.AsyncClient | JSONResponse:
 
 @app.post("/v1/audio/speech")
 async def speech(request: Request):
+    """OpenAI ``/v1/audio/speech`` forwarded to Fish ``POST /v1/tts``.
+
+    Parameters
+    ----------
+    request : Request
+        JSON body. ``input`` must be a string.
+
+    Returns
+    -------
+    Response
+        Audio bytes, a silent MP3 when the scrubbed text is junk, or an
+        OpenAI error JSON. Fish 429 and 5xx are retried. Other 4xx are not.
+
+    Notes
+    -----
+    Reference clips are MessagePack. A missing API key is 401 from this
+    route, not from import.
+    """
     defaults = _defaults(request)
     body = await read_json_object(request)
     if isinstance(body, JSONResponse):
@@ -256,6 +310,20 @@ async def speech(request: Request):
 
 @app.post("/v1/audio/transcriptions")
 async def transcriptions(request: Request):
+    """OpenAI ``/v1/audio/transcriptions`` forwarded to Fish ``POST /v1/asr``.
+
+    Parameters
+    ----------
+    request : Request
+        Multipart ``file`` or JSON ``input_audio``. ``srt`` and ``vtt``
+        response formats return caption files, not JSON.
+
+    Returns
+    -------
+    Response
+        Transcript JSON, caption text, or an OpenAI error. Language is omitted
+        upstream unless the client or ``FISH_ASR_LANGUAGE`` sets it.
+    """
     defaults = _defaults(request)
     inbound = await read_asr(request)
     if isinstance(inbound, JSONResponse):
@@ -304,6 +372,14 @@ async def transcriptions(request: Request):
 
 @app.get("/v1/models")
 async def models():
+    """List native Fish model ids and their ``fish-audio/`` prefixed copies.
+
+    Returns
+    -------
+    dict
+        OpenAI ``{object: list, data: [...]}``. Aliases such as ``tts-1``
+        are accepted on speech routes but not listed here.
+    """
     return {
         "object": "list",
         "data": [{"id": m, "object": "model"} for m in catalog_ids()],
@@ -312,6 +388,18 @@ async def models():
 
 @app.get("/health")
 async def health(request: Request):
+    """Liveness plus the clamped runtime defaults. Does not call Fish.
+
+    Parameters
+    ----------
+    request : Request
+        Used only to read defaults stored at startup.
+
+    Returns
+    -------
+    dict
+        ``status`` is ``ok`` even when ``FISH_API_KEY`` is unset.
+    """
     defaults = _defaults(request)
     return {
         "status": "ok",
@@ -364,6 +452,14 @@ def _uvicorn_run_kwargs() -> dict[str, Any]:
 
 
 def main() -> None:
+    """Run uvicorn on ``fish_audio_suite_proxy.server:app``.
+
+    Notes
+    -----
+    The import string is required so ``FISH_PROXY_WORKERS`` can spawn
+    processes. Websockets are disabled. ``forwarded-allow-ips`` is left
+    at uvicorn's default, not ``*``.
+    """
     # Import string so --workers / FISH_PROXY_WORKERS can spawn processes.
     uvicorn.run("fish_audio_suite_proxy.server:app", **_uvicorn_run_kwargs())
 

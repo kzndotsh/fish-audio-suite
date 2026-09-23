@@ -325,6 +325,18 @@ def test_speech_without_key_is_401(monkeypatch: pytest.MonkeyPatch) -> None:
         assert "message" in body["error"]
 
 
+def test_fish_client_timeout_and_user_agent() -> None:
+    with TestClient(app) as client:
+        assert client.get("/health").status_code == 200
+        http = app.state.http
+        assert isinstance(http, httpx.AsyncClient)
+        assert http.timeout.connect == 10.0
+        assert http.timeout.read == 120.0
+        assert http.timeout.write == 120.0
+        assert http.timeout.pool == 5.0
+        assert http.headers["User-Agent"].startswith("fish-audio-suite-proxy/")
+
+
 def test_health_without_api_key() -> None:
     with TestClient(app) as client:
         r = client.get("/health")
