@@ -25,7 +25,6 @@
 | Open WebUI, AIRI, or any OpenAI audio client | [Proxy](#proxy) |
 | One live TTS turn from Python | [Voice](#voice) |
 | Cue tags and sentence cuts in your own client | [Kit](#kit) |
-| To change this repo | [Commands](#commands) |
 
 ```bash
 git clone https://github.com/kzndotsh/fish-audio-suite
