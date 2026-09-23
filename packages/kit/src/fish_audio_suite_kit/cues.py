@@ -125,39 +125,39 @@ _S1_PAREN_RE = re.compile(
 )
 
 
-def _alias_cue(inner: str) -> str:
+_LEAD_STACK_RE = re.compile(r"^((?:\[[^\]]+\]\s*)+)(.*)$", re.DOTALL)
+_INNER_CUE_RE = re.compile(r"\[([^\]]+)\]")
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+")
+_LINE_SPLIT_RE = re.compile(r"(\n+)")
+
+
+def _bracket(inner: str) -> str:
     tag = inner.strip().lower()
-    return _CUE_ALIASES.get(tag, tag)
-
-
-def _rewrite_cues(text: str) -> str:
-    def repl(m: re.Match[str]) -> str:
-        return f"[{_alias_cue(m.group(1))}]"
-
-    return _CUE_RE.sub(repl, text)
+    return f"[{_CUE_ALIASES.get(tag, tag)}]"
 
 
 def rewrite_s1_parens(text: str) -> str:
     """`(happy)` / `(break)` → `[happy]` / `[break]`. Unknown `(asides)` left for scrubbers."""
-    return _S1_PAREN_RE.sub(lambda m: f"[{_alias_cue(m.group(1))}]", text)
+    return _S1_PAREN_RE.sub(lambda m: _bracket(m.group(1)), text)
+
+
+def _lead(tags: str, rest: str) -> str:
+    return f"{tags} {rest}" if rest else tags
 
 
 def _one_sentence(chunk: str) -> str:
     chunk = chunk.strip()
     if not chunk:
         return chunk
-    m = re.match(r"^((?:\[[^\]]+\]\s*)+)(.*)$", chunk, flags=re.DOTALL)
+    m = _LEAD_STACK_RE.match(chunk)
     if m:
-        cues = re.findall(r"\[([^\]]+)\]", m.group(1))
+        cues = _INNER_CUE_RE.findall(m.group(1))
         if cues:
-            tags = " ".join(f"[{_alias_cue(c)}]" for c in cues)
-            rest = m.group(2).lstrip()
-            return f"{tags} {rest}" if rest else tags
+            tags = " ".join(_bracket(c) for c in cues)
+            return _lead(tags, m.group(2).lstrip())
     m2 = _SPOKEN_MOOD_LEAD.match(chunk)
     if m2:
-        tag = _alias_cue(m2.group(1))
-        rest = chunk[m2.end() :].lstrip()
-        return f"[{tag}] {rest}" if rest else f"[{tag}]"
+        return _lead(_bracket(m2.group(1)), chunk[m2.end() :].lstrip())
     return chunk
 
 
@@ -167,14 +167,14 @@ def normalize_cues(text: str) -> str:
         return text
     text = _WHISPER_XML_RE.sub(lambda m: f"[whispering] {m.group(1).strip()}", text)
     text = rewrite_s1_parens(text)
-    text = _rewrite_cues(text)
-    parts = re.split(r"(\n+)", text)
+    text = _CUE_RE.sub(lambda m: _bracket(m.group(1)), text)
+    parts = _LINE_SPLIT_RE.split(text)
     out: list[str] = []
     for part in parts:
-        if not part or part.isspace() or set(part) <= {"\n"}:
+        if not part or part.isspace():
             out.append(part)
             continue
-        sents = re.split(r"(?<=[.!?…])\s+", part)
+        sents = _SENTENCE_SPLIT_RE.split(part)
         out.append(" ".join(_one_sentence(s) for s in sents if s.strip()))
     return "".join(out)
 
