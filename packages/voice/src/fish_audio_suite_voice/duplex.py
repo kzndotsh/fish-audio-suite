@@ -110,7 +110,7 @@ def _after_speech(
         print("  [tts cancelled before audio]", flush=True)
     elif not result.got_audio and result.error_status is None:
         print(
-            f"  [tts silent] voice={c.fish_voice_id} model={c.fish_tts_model}",
+            f"  [tts silent] voice={c.fish_voice_id} model={c.tts_model}",
             flush=True,
         )
     spoken = result.spoken_so_far
@@ -146,7 +146,7 @@ async def _speak_reply(
     sink = make_sink(
         c.playback,
         path=None,
-        sample_rate=c.fish_sample_rate,
+        sample_rate=c.sample_rate,
         device=loop.device,
         cancel=cancel,
     )
@@ -257,7 +257,7 @@ async def _answer_line(loop: _Loop, heard: _HeardLine) -> int | None:
         trace_id=heard.trace_id,
         started=time.perf_counter(),
     )
-    snapshot = LatencySnapshot(srt=heard.asr_ms, llm_ttft=ttft_ms, trace_id=heard.trace_id)
+    snapshot = LatencySnapshot(asr_ms=heard.asr_ms, llm_ttft=ttft_ms, trace_id=heard.trace_id)
     if STOP_RECORD.is_set():
         return bye()
     if reply:

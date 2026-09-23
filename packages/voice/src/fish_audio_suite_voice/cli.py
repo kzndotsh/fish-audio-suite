@@ -116,17 +116,17 @@ def _fish_tts(c: VoiceCliConfig, audio_format: str) -> IsolatedFishTts:
     return IsolatedFishTts(
         api_key=c.fish_api_key,
         voice_id=c.fish_voice_id,
-        model=c.fish_tts_model,
-        latency=c.fish_latency,
-        speed=c.fish_speed,
+        model=c.tts_model,
+        latency=c.latency,
+        speed=c.speed,
         audio_format=audio_format,
-        sample_rate=c.fish_sample_rate,
-        temperature=c.fish_temperature,
-        top_p=c.fish_top_p,
-        repetition_penalty=c.fish_rep_penalty,
-        chunk_length=c.fish_chunk,
-        min_chunk_length=c.fish_min_chunk,
-        volume=c.fish_volume,
+        sample_rate=c.sample_rate,
+        temperature=c.temperature,
+        top_p=c.top_p,
+        repetition_penalty=c.repetition_penalty,
+        chunk_length=c.chunk_length,
+        min_chunk_length=c.min_chunk_length,
+        volume=c.volume,
         base_url=c.fish_base,
     )
 
@@ -137,7 +137,7 @@ async def smoke_test(c: VoiceCliConfig) -> int:
         return missing
     out = Path(tempfile.gettempdir()) / "fish-audio-suite-smoke.wav"
     tts = _fish_tts(c, "pcm")
-    sink = FileSink(out, sample_rate=c.fish_sample_rate, wav=True)
+    sink = FileSink(out, sample_rate=c.sample_rate, wav=True)
     result = tts.speak_isolated("[clear] Hello there.", sink)
     if result.error_status is not None:
         print(
@@ -167,8 +167,8 @@ async def run_loop(c: VoiceCliConfig) -> int:
     device = _parse_device(c.device)
     playback = c.playback
     print(
-        f"fish-voice ready | tts={c.fish_tts_model} voice={c.fish_voice_id} "
-        f"asr_lang={c.fish_asr_language or 'auto'} latency={c.fish_latency} "
+        f"fish-voice ready | tts={c.tts_model} voice={c.fish_voice_id} "
+        f"asr_lang={c.fish_asr_language or 'auto'} latency={c.latency} "
         f"playback={playback} | "
         f"llm={c.llm_backend}:{c.llm_model} | Ctrl+C quit",
         flush=True,

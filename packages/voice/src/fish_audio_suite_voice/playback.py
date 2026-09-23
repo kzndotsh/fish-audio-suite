@@ -262,6 +262,9 @@ class MpvSink(_Played):
         self.proc = None
 
 
+DEFAULT_PLAYBACK = "sounddevice"
+
+
 def playback_key(name: str) -> str:
     return name.strip().lower()
 
