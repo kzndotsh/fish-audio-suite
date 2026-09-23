@@ -35,6 +35,9 @@ DEFAULT_SYSTEM_PROMPT = (
 )
 
 
+_OPUS_AUTO = -1000
+
+
 @dataclass(frozen=True)
 class SuiteDefaults:
     tts_model: str = "s2.1-pro"
@@ -45,11 +48,11 @@ class SuiteDefaults:
     min_chunk_length: int = 50
     audio_format: str = "mp3"
     mp3_bitrate: int = 128
-    opus_bitrate: int = -1000
+    opus_bitrate: int = _OPUS_AUTO
     opus_sample_rate: int = 48000
     speed: float = 1.05
     volume: float = 0.0
-    temperature: float = 0.70
+    temperature: float = 0.7
     top_p: float = 0.7
     repetition_penalty: float = 1.2
     max_new_tokens: int = 1024
@@ -67,7 +70,7 @@ class SuiteDefaults:
 class LatencySnapshot:
     """One cascade turn. Times are milliseconds. Never store utterance text."""
 
-    srt: float | None = None
+    asr_ms: float | None = None
     llm_ttft: float | None = None
     llm_ttfs: float | None = None
     ttfa: float | None = None
@@ -76,7 +79,7 @@ class LatencySnapshot:
 
     def log_line(self) -> str:
         parts = [
-            _timing_field("srt", self.srt),
+            _timing_field("asr", self.asr_ms),
             _timing_field("llm_ttft", self.llm_ttft),
             _timing_field("llm_ttfs", self.llm_ttfs),
             _timing_field("ttfa", self.ttfa),
@@ -84,15 +87,13 @@ class LatencySnapshot:
         ]
         if self.trace_id:
             parts.append(f"trace={self.trace_id}")
-        return "[timing " + " ".join(parts) + "]"
-
-
-_MISSING_MS = -1
+        shown = [part for part in parts if part]
+        return "[timing " + " ".join(shown) + "]"
 
 
 def _timing_field(name: str, value: float | None) -> str:
     if value is None:
-        return f"{name}={_MISSING_MS}"
+        return ""
     return f"{name}={value:.0f}ms"
 
 
@@ -186,6 +187,8 @@ MIN_CHUNK_LO = 0
 MIN_CHUNK_HI = 100
 TTS_SPEED_LO = 0.5
 TTS_SPEED_HI = 2.0
+UNIT_LO = 0.0
+UNIT_HI = 1.0
 
 
 def chunk_length_hi(fish_base: str) -> int:
@@ -249,8 +252,7 @@ def known_mp3_bitrate(rate: int) -> Literal[64, 128, 192]:
     return _MP3_BITRATES.get(rate, 128)
 
 
-_OPUS_BITRATES = frozenset({-1000, 24000, 32000, 48000, 64000})
-_OPUS_AUTO = -1000
+_OPUS_BITRATES = frozenset({_OPUS_AUTO, 24000, 32000, 48000, 64000})
 
 
 def known_opus_bitrate(rate: int) -> int:

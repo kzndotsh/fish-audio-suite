@@ -314,7 +314,9 @@ def test_suite_defaults_and_timing() -> None:
     assert "[playful], [whispering]" not in DEFAULT_SYSTEM_PROMPT
     line = LatencySnapshot(ttfa=12.4).log_line()
     assert "ttfa=12ms" in line
-    assert "srt=-1" in line
+    assert "asr=" not in line
+    heard = LatencySnapshot(asr_ms=40).log_line()
+    assert "asr=40ms" in heard
     assert "trace=" not in line
     traced = LatencySnapshot(ttfa=12.4, trace_id="4bf92f3577b34da6a3ce929d0e0e4736").log_line()
     assert "trace=4bf92f3577b34da6a3ce929d0e0e4736" in traced
