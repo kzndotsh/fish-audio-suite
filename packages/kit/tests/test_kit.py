@@ -199,6 +199,8 @@ def test_scrub_asr_keeps_speakers_when_asked() -> None:
 
 def test_backchannel() -> None:
     assert is_backchannel("yeah")
+    assert not is_backchannel("okay")
+    assert not is_backchannel("Okay.")
     assert is_backchannel("uh huh")
     assert is_backchannel("mm hmm")
     assert is_backchannel("嗯。")
@@ -304,7 +306,7 @@ def test_suite_defaults_and_timing() -> None:
     assert d.tts_model == "s2.1-pro"
     assert d.tts_partial_chars == 40
     assert d.system_prompt == DEFAULT_SYSTEM_PROMPT
-    assert "Match the user's length" in DEFAULT_SYSTEM_PROMPT
+    assert "Match the user's length" not in DEFAULT_SYSTEM_PROMPT
     assert "Do not offer a menu of help" in DEFAULT_SYSTEM_PROMPT
     assert "do not tag every sentence" in DEFAULT_SYSTEM_PROMPT
     assert "[excited]" in DEFAULT_SYSTEM_PROMPT
