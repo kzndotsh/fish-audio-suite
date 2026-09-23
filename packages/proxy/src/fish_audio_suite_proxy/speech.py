@@ -18,6 +18,8 @@ from fish_audio_suite_kit import (
     MIN_CHUNK_LO,
     TTS_SPEED_HI,
     TTS_SPEED_LO,
+    UNIT_HI,
+    UNIT_LO,
     SuiteDefaults,
     clamp_num,
     known_latency,
@@ -243,13 +245,13 @@ def _fish_tts_payload(
         "latency": controls.latency,
         "temperature": clamp_num(
             _body_float(body, "temperature", defaults.temperature),
-            0.0,
-            1.0,
+            UNIT_LO,
+            UNIT_HI,
             defaults.temperature,
             float,
         ),
         "top_p": clamp_num(
-            _body_float(body, "top_p", defaults.top_p), 0.0, 1.0, defaults.top_p, float
+            _body_float(body, "top_p", defaults.top_p), UNIT_LO, UNIT_HI, defaults.top_p, float
         ),
         "chunk_length": controls.chunk_length,
         "min_chunk_length": controls.min_chunk_length,
@@ -268,8 +270,8 @@ def _fish_tts_payload(
         ),
         "early_stop_threshold": clamp_num(
             _body_float(body, "early_stop_threshold", defaults.early_stop_threshold),
-            0.0,
-            1.0,
+            UNIT_LO,
+            UNIT_HI,
             defaults.early_stop_threshold,
             float,
         ),
