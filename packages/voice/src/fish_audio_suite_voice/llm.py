@@ -13,7 +13,7 @@ from fish_audio_suite_voice.debug import debug
 from fish_audio_suite_voice.live import is_cancel_noise
 from fish_audio_suite_voice.transports import ChatCall, chat_completions_url, chat_events
 
-_DEFAULT_MAX_TOKENS = 600
+_DEFAULT_MAX_TOKENS = 1200
 _MODEL_LOOKUP_S = 15
 _MODEL_LOOKUP_MS = _MODEL_LOOKUP_S * MS_PER_S
 _LOOKUP_BODY_CHARS = 200

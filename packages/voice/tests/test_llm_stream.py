@@ -127,7 +127,7 @@ def test_openrouter_stream_joins_tokens(fake_openrouter: type[_FakeOpenRouter]) 
     assert _FakeChat.last_kw["stream"] is True
     assert _FakeChat.last_kw["model"] == "org/model:nitro"
     assert _FakeChat.last_kw["provider"] == {"sort": "throughput"}
-    assert _FakeChat.last_kw["max_completion_tokens"] == 600
+    assert _FakeChat.last_kw["max_completion_tokens"] == 1200
     assert "max_tokens" not in _FakeChat.last_kw
     assert fake_openrouter.last_init["x_open_router_categories"] == "cli-agent"
 
@@ -143,10 +143,10 @@ def test_max_tokens_must_be_positive(
     monkeypatch.setenv("FISH_LLM_MAX_TOKENS", "0")
     asyncio.run(run())
     assert _FakeChat.last_kw is not None
-    assert _FakeChat.last_kw["max_completion_tokens"] == 600
+    assert _FakeChat.last_kw["max_completion_tokens"] == 1200
     monkeypatch.setenv("FISH_LLM_MAX_TOKENS", "-5")
     asyncio.run(run())
-    assert _FakeChat.last_kw["max_completion_tokens"] == 600
+    assert _FakeChat.last_kw["max_completion_tokens"] == 1200
     monkeypatch.setenv("FISH_LLM_MAX_TOKENS", "128")
     asyncio.run(run())
     assert _FakeChat.last_kw["max_completion_tokens"] == 128
