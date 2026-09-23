@@ -8,48 +8,71 @@ import zlib
 from fish_audio_suite_kit.cues import rewrite_s1_parens
 from fish_audio_suite_kit.defaults import SuiteDefaults
 
+# Flush a long clause when no sentence end has arrived. Default is 40.
 _PARTIAL_CHARS = SuiteDefaults().tts_partial_chars
+# A space cut shorter than this is a fragment, so the buffer waits or hard-cuts.
 _MIN_WORD_CUT = 12
+# A quote whose only content is a [cue] in this window is not speech.
 _CUE_LOOKAHEAD = 24
 
+# Chain-of-thought blocks. Speaking them reads the model's scratch work aloud.
 _THOUGHTS_RE = re.compile(
     r"<\s*(?:Thoughts?|thinking|reasoning|think)\s*>.*?"
     r"<\s*/\s*(?:Thoughts?|thinking|reasoning|think)\s*>",
     re.IGNORECASE | re.DOTALL,
 )
+# ASR diarization token. Not a phoneme, so the transcript drops it.
 _SPEAKER_RE = re.compile(r"<\|speaker:\d+\|>")
+# CosyVoice stage directions. Phoneme tokens use a different shape and stay.
 _STAGE_TOKEN_RE = re.compile(r"<\|(?:ACT|DELAY|CALL)\b[^|]*\|>", re.IGNORECASE)
+# Any <|...|> token. TTS keeps these (phonemes). ASR replaces them with a space.
 _ANGLE_TOKEN_RE = re.compile(r"<\|[^|>]*\|>")
+# MOSS duration pause. Fish [pause] has no number and is an alias, not this.
 _MOSS_PAUSE_RE = re.compile(r"\[pause\s+\d+(?:\.\d+)?s\]", re.IGNORECASE)
+# TTSD speaker labels [S1] through [S5]. A Fish [cue] is words, not S plus a digit.
 _TTSD_SPEAKER_RE = re.compile(r"\[S[1-5]\]")
+# Markdown the model copies from a chat reply. Headings and URLs are not speech.
 _MD_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+", re.MULTILINE)
 _MD_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
 _MD_WRAP_RE = re.compile(r"[*_`~]+")
+# Stage asides. Runs after S1 (happy) is rewritten, so a Fish paren tag survives.
 _PARENS_RE = re.compile(r"\([^)]*\)")
+# VibeVoice timestamp [0.00-1.23]. The hyphen class includes an en dash.
 _VIBEVOICE_TS_RE = re.compile(r"\[\d+(?:\.\d+)?\s*[-–]\s*\d+(?:\.\d+)?\]\s*")
+# "Speaker 1:" labels from engines that do not use <|speaker:N|>.
 _SPEAKER_N_RE = re.compile(r"\bSpeaker\s+\d+\s*:\s*", re.IGNORECASE)
+# Optional [cue] glued to a quote, so dialogue extraction does not drop the cue.
 _LEAD_CUE = r"\[[^\]\n]{1,80}\]\s*"
+# Cue with an empty body too, so "[ ]" alone still counts as no speech.
 _EMPTY_CUE_RE = re.compile(r"\[[^\]\n]{0,80}\]")
 _LEAD_CUE_RE = re.compile(rf"({_LEAD_CUE})")
+# Closed quotes, straight or curly. The cue in front is optional.
 _DIALOGUE_RE = re.compile(
     rf"(?:{_LEAD_CUE})?"
     r"[\"\u201c]([^\"\u201d\n]+)[\"\u201d]"
 )
+# A quote opened on this line and not closed yet. Streaming replies arrive this way.
 _OPEN_DIALOGUE_RE = re.compile(
     rf"(?:{_LEAD_CUE})?"
     r'["\u201c](.+)$',
     re.DOTALL,
 )
+# Unquoted stage direction: a pronoun or article plus a body verb. Quoted speech
+# is already kept, so this only drops narration that has no quotes.
 _NARRATION_RE = re.compile(r"^(She|He|They|Her|His|The|A|An)\b.*", re.IGNORECASE)
 _NARRATION_VERB_RE = re.compile(
     r"\b(shifts|leans|smiles|laughs|settles|tilts|watches|murmurs|"
     r"reaches|moves|looks|dropping|rustle|stretches)\b",
     re.IGNORECASE,
 )
+# Sentence end, including Arabic, Devanagari, and Urdu stops. Trailing quotes
+# stay on the sentence so the cut does not split "end." from the closer.
 _SENT_END = re.compile(r"[.!?؟।۔]+[\"'”’)]*\s")
+# The token immediately before a period: abbreviation, initial, or "1.".
 _TRAIL_WORD = re.compile(r"(\d+|[A-Za-z]+)\s*$")
 
+# Periods that are not sentence ends. A one-letter initial is handled separately.
 _ABBREVIATIONS = frozenset(
     {
         "dr",
@@ -74,6 +97,8 @@ _ABBREVIATIONS = frozenset(
     }
 )
 
+# Listener noises. Duplex hears one of these and keeps listening instead of answering.
+# English spellings plus the CJK, Japanese, and Korean fillers models actually emit.
 _BACKCHANNELS = frozenset(
     {
         "yeah",
@@ -124,8 +149,11 @@ _BACKCHANNELS = frozenset(
     }
 )
 
+# Whole utterance, after folding. "stop" mid-sentence is not a quit.
 _QUIT = frozenset({"quit", "exit", "stop", "goodbye", "good bye", "bye"})
 
+# Whisper and caption-tool watermarks on silence. Empty and "..." are in here
+# because a folded blank transcript is the same shape.
 _EN_HALLUCINATION_PHRASES = frozenset(
     {
         "",
@@ -143,22 +171,31 @@ _EN_HALLUCINATION_PHRASES = frozenset(
         "i hope you enjoyed the video",
     }
 )
+# Same watermarks in Chinese. Punctuation is stripped before this lookup.
 _CJK_HALLUCINATION_PHRASES = frozenset({"谢谢观看", "感谢观看", "请订阅", "字幕"})
+# Strip spaces and quotes too, so "谢谢观看。" matches the phrase with no marks.
 _ASR_PUNCT_RE = re.compile(r"[\s.。、，,!?！？…·・~～'\"“”‘’]+")
+# Fold for phrase lists. Spaces stay, so "uh huh" does not become "uhhuh".
 _FOLD_PUNCT_RE = re.compile(r"[.。、，,!?！？…·・~～]+")
 _SPACE_RE = re.compile(r"\s+")
+# Below this size, gzip ratio is noise. A stuck caption loop compresses past the ratio.
 _GZIP_MIN_BYTES = 48
 _GZIP_RATIO = 2.4
 
+# Emoji-only transcripts are not speech. Misc symbols, dingbats, and flags.
 _EMOJI_RE = re.compile(
     "[\U0001f300-\U0001faff\U00002700-\U000027bf\U0001f1e0-\U0001f1ff]+",
     flags=re.UNICODE,
 )
 
+# Straight and curly double quotes. Used to tell narration from dialogue.
 _QUOTE_RE = re.compile('["“”]')
+# Closers stripped from an unclosed quote before the speakable check.
 _CLOSE_QUOTES = '"”'
 
 
+# Hiragana/katakana, CJK ext A, unified ideographs, compatibility, Hangul.
+# A single CJK character is too thin; two or more count as a real sentence.
 _CJK_RANGES = (
     range(0x3040, 0x3100),
     range(0x3400, 0x4DC0),
@@ -225,16 +262,19 @@ def _looks_like_narration(text: str) -> bool:
 
 
 _Replacement = tuple[tuple[re.Pattern[str], str], ...]
+# TTS only. Fish [cue] and <|phoneme|> tokens are not in this list.
 _TTS_ERASE: _Replacement = (
     (_THOUGHTS_RE, ""),
     (_STAGE_TOKEN_RE, ""),
     (_MOSS_PAUSE_RE, ""),
     (_TTSD_SPEAKER_RE, ""),
 )
+# Optional. The proxy leaves speaker labels when the client asks to keep them.
 _ASR_SPEAKERS: _Replacement = (
     (_SPEAKER_RE, ""),
     (_SPEAKER_N_RE, ""),
 )
+# Link text is kept; the URL is not. Parens run after S1 tags are brackets.
 _MARKDOWN_SUBS: _Replacement = (
     (_MD_HEADING_RE, ""),
     (_MD_LINK_RE, r"\1"),
@@ -261,8 +301,10 @@ def _strip_markdownish(text: str) -> str:
     return "".join(parts)
 
 
+# Trailing spaces before a newline. Horizontal runs collapse; newlines stay.
 _TRAIL_SPACE_RE = re.compile(r"[ \t]+\n")
 _H_SPACE_RE = re.compile(r"[ \t]+")
+# Three or more blank lines become one paragraph break.
 _BREAKS_RE = re.compile(r"\n{3,}")
 
 
