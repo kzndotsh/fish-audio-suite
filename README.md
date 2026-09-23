@@ -11,14 +11,6 @@
     </p>
     <h1>fish-audio-suite</h1>
     <p><strong>Text, HTTP, and live speech for Fish Audio.</strong></p>
-    <p>
-        <a href="#quick-start">Quick start</a> •
-        <a href="#how-it-works">How it works</a> •
-        <a href="packages/proxy/README.md">Proxy</a> •
-        <a href="packages/voice/README.md">Voice</a> •
-        <a href="packages/kit/README.md">Kit</a> •
-        <a href="#commands">Commands</a>
-    </p>
 </div>
 
 > [!NOTE]
@@ -33,7 +25,7 @@
 | Open WebUI, AIRI, or any OpenAI audio client | [Proxy](#proxy) |
 | One live TTS turn from Python | [Voice](#voice) |
 | Cue tags and sentence cuts in your own client | [Kit](#kit) |
-| To change this repo | [Develop](#develop) |
+| To change this repo | [Commands](#commands) |
 
 ```bash
 git clone https://github.com/kzndotsh/fish-audio-suite
@@ -42,15 +34,7 @@ uv sync --all-packages --extra cli
 export FISH_API_KEY=...
 ```
 
-Python 3.12. [uv](https://docs.astral.sh/uv/) installs the workspace. `FISH_API_KEY` has no default. Live TTS also needs `FISH_VOICE_ID`.
-
 ## How it works
-
-Three packages. Use one, or stack them.
-
-1. **Kit** cleans text. Cue tags, scrubbing, sentence cuts. No network.
-2. **Proxy** turns OpenAI `/v1/audio/speech` and `/v1/audio/transcriptions` into Fish HTTP.
-3. **Voice** opens one Fish websocket per turn and plays it. The `fish-voice` CLI adds a mic, ASR, and an LLM.
 
 ```
 your app ──► kit ──► text you send to Fish
@@ -106,7 +90,6 @@ Exports: [packages/kit/README.md](packages/kit/README.md).
 
 | Component | Technology |
 | --- | --- |
-| **Runtime** | Python 3.12 |
 | **Packages** | `uv` workspace, three wheels |
 | **Kit** | Pure text. No dependencies |
 | **Proxy** | FastAPI, uvicorn, httpx |
@@ -114,7 +97,6 @@ Exports: [packages/kit/README.md](packages/kit/README.md).
 | **Types** | basedpyright, strict |
 | **Lint** | Ruff, NumPy docstrings via pydoclint |
 | **Tests** | pytest, branch coverage in CI |
-| **Nix** | Flake module for the proxy container, wrapped voice binary |
 
 ## Project structure
 
@@ -134,10 +116,6 @@ Exports: [packages/kit/README.md](packages/kit/README.md).
 
 ```bash
 uv sync --all-packages --extra cli --group dev --group test
-uv run --package fish-audio-suite-proxy fish-audio-suite-proxy
-uv run --package fish-audio-suite-voice --extra cli fish-voice --smoke
-./packages/voice/dev.sh
-
 uv run ruff format packages && uv run ruff check packages
 uv run pydoclint --config=pyproject.toml packages
 uv run basedpyright
@@ -168,10 +146,6 @@ inputs.fish-audio-suite.url = "github:kzndotsh/fish-audio-suite";
 `nixosModules.default` runs the proxy container on `127.0.0.1:8849:8849` with `autoStart = false`. Put `FISH_API_KEY` in `environmentFiles`.
 
 `nix run .#fish-audio-suite-voice` puts PortAudio on `LD_LIBRARY_PATH`. On NixOS, `./packages/voice/dev.sh` does the same. A bare `uv run` of the duplex CLI does not.
-
-## Develop
-
-CI is GitHub Actions: Ruff, pydoclint, basedpyright, and pytest. Public docstrings are NumPy style. Sync with `--group dev --group test` before the checks in [Commands](#commands).
 
 ## License
 
