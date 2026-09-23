@@ -28,7 +28,8 @@ def test_configure_voice_logging_replaces_library_handlers() -> None:
         assert httpx_log.level == logging.WARNING
         assert len(httpx_log.handlers) == 1
         configure_voice_logging(debug=True)
-        assert logging.getLogger("httpx").level == logging.DEBUG
+        assert logging.getLogger("httpx").level == logging.INFO
+        assert logging.getLogger("httpcore").level == logging.WARNING
         assert len(logging.getLogger("asyncio").handlers) == 1
     finally:
         configure_voice_logging(debug=False)

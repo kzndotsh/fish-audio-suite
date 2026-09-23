@@ -117,17 +117,22 @@ class _InterceptHandler(logging.Handler):
 
 
 _INTERCEPTED = ("httpx", "httpcore", "websockets", "asyncio")
+# httpcore DEBUG prints raw header bytes (b'...'), including Set-Cookie.
+# httpx INFO is the one-line "HTTP Request: METHOD url status" record.
+_HTTPX_DEBUG_LEVEL = logging.INFO
 
 
 def _intercept_libraries(*, debug: bool) -> None:
-    level = logging.DEBUG if debug else logging.WARNING
     handler = _InterceptHandler()
     for name in _INTERCEPTED:
         lib = logging.getLogger(name)
         lib.handlers.clear()
         lib.addHandler(handler)
-        lib.setLevel(level)
         lib.propagate = False
+        if name == "httpx" and debug:
+            lib.setLevel(_HTTPX_DEBUG_LEVEL)
+        else:
+            lib.setLevel(logging.WARNING)
 
 
 def _stderr_logger(level: str) -> None:
