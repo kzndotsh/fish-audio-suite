@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import collections
+import io
+import wave
 
 import pytest
 
@@ -9,13 +11,48 @@ from fish_audio_suite_voice.barge import (
     DEFAULT_BLEED_DELAY_S,
     BargeGate,
     barge_rms_need,
-    listen_reject_reason,
     post_speak_cooldown_s,
+)
+from fish_audio_suite_voice.listen import (
+    _encode_wav,
+    _listen_tune,
+    listen_reject_reason,
     spike_start_allowed,
     start_frames_needed,
     start_hit,
     trailing_start_hits,
 )
+
+
+def test_listen_tune_keeps_vad_and_pre_pad_in_range(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FISH_VOICE_VAD", "9")
+    monkeypatch.setenv("FISH_VOICE_PRE_PAD", "-1")
+    tune = _listen_tune()
+    assert tune.vad_aggressiveness == 1
+    assert tune.pre_pad_frames == 20
+    monkeypatch.setenv("FISH_VOICE_VAD", "3")
+    monkeypatch.setenv("FISH_VOICE_PRE_PAD", "0")
+    monkeypatch.setenv("FISH_VOICE_SPEECH_FRAMES", "0")
+    monkeypatch.setenv("FISH_VOICE_MIN_VOICED", "-1")
+    tune = _listen_tune()
+    assert tune.vad_aggressiveness == 3
+    assert tune.pre_pad_frames == 0
+    assert tune.speech_frames_start == 4
+    assert tune.min_voiced == 12
+    monkeypatch.setenv("FISH_VOICE_SPEECH_FRAMES", "2")
+    monkeypatch.setenv("FISH_VOICE_MIN_VOICED", "6")
+    tune = _listen_tune()
+    assert tune.speech_frames_start == 2
+    assert tune.min_voiced == 6
+
+
+def test_encode_wav_keeps_pcm_samples() -> None:
+    pcm = b"\x01\x00\x02\x00"
+    with wave.open(io.BytesIO(_encode_wav(pcm))) as wf:
+        assert wf.getnchannels() == 1
+        assert wf.getsampwidth() == 2
+        assert wf.getframerate() == 16_000
+        assert wf.readframes(wf.getnframes()) == pcm
 
 
 def test_barge_gate_reads_env_at_construct(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -26,6 +63,24 @@ def test_barge_gate_reads_env_at_construct(monkeypatch: pytest.MonkeyPatch) -> N
     assert gate.bleed_delay_s == 1.5
     assert gate.hit_frames == 9
     assert gate.min_rms == 500.0
+
+
+def test_barge_bleed_delay_cannot_be_negative(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FISH_VOICE_AEC", "0")
+    monkeypatch.setenv("FISH_VOICE_BLEED_DELAY", "-1")
+    gate = BargeGate()
+    assert gate.bleed_delay_s == DEFAULT_BLEED_DELAY_S
+    assert gate._bleed_wait() == DEFAULT_BLEED_DELAY_S
+    assert BargeGate(bleed_delay_s=-0.5)._bleed_wait() == DEFAULT_BLEED_DELAY_S
+    assert BargeGate(bleed_delay_s=0.0)._bleed_wait() == 0.0
+
+
+def test_barge_hit_frames_must_be_positive(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FISH_VOICE_BARGE_FRAMES", "0")
+    assert BargeGate().hit_frames == DEFAULT_BARGE_HIT_FRAMES
+    monkeypatch.setenv("FISH_VOICE_BARGE_FRAMES", "-2")
+    assert BargeGate().hit_frames == DEFAULT_BARGE_HIT_FRAMES
+    assert BargeGate(hit_frames=0).hit_frames == DEFAULT_BARGE_HIT_FRAMES
 
 
 def test_barge_gate_explicit_kwargs_win(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -82,63 +137,18 @@ def test_spike_start_blocks_decaying_bang() -> None:
 
 
 def test_listen_reject_cough_and_impulse() -> None:
-    assert (
-        listen_reject_reason(
-            voiced_frames=48,
-            speech_hits=8,
-            peak_rms=346.0,
+    def reason(voiced: int, hits: int, peak: float) -> str | None:
+        return listen_reject_reason(
+            voiced_frames=voiced,
+            speech_hits=hits,
+            peak_rms=peak,
             min_voiced=12,
             min_speech_rms=200.0,
         )
-        == "too_little_voice"
-    )
-    assert (
-        listen_reject_reason(
-            voiced_frames=54,
-            speech_hits=14,
-            peak_rms=2220.0,
-            min_voiced=12,
-            min_speech_rms=200.0,
-        )
-        == "impulse"
-    )
-    assert (
-        listen_reject_reason(
-            voiced_frames=80,
-            speech_hits=18,
-            peak_rms=1047.0,
-            min_voiced=12,
-            min_speech_rms=200.0,
-        )
-        == "impulse"
-    )
-    assert (
-        listen_reject_reason(
-            voiced_frames=80,
-            speech_hits=20,
-            peak_rms=400.0,
-            min_voiced=12,
-            min_speech_rms=200.0,
-        )
-        is None
-    )
-    assert (
-        listen_reject_reason(
-            voiced_frames=120,
-            speech_hits=68,
-            peak_rms=1486.0,
-            min_voiced=12,
-            min_speech_rms=200.0,
-        )
-        is None
-    )
-    assert (
-        listen_reject_reason(
-            voiced_frames=2,
-            speech_hits=2,
-            peak_rms=100.0,
-            min_voiced=12,
-            min_speech_rms=200.0,
-        )
-        == "too_short"
-    )
+
+    assert reason(48, 8, 346.0) == "too_little_voice"
+    assert reason(54, 14, 2220.0) == "impulse"
+    assert reason(80, 18, 1047.0) == "impulse"
+    assert reason(80, 20, 400.0) is None
+    assert reason(120, 68, 1486.0) is None
+    assert reason(2, 2, 100.0) == "too_short"

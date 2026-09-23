@@ -8,22 +8,23 @@ from pathlib import Path
 import pytest
 from fishaudio.exceptions import AuthenticationError, RateLimitError
 
-from fish_audio_suite_voice.live import (
-    IsolatedFishTts,
-    IsolatedResult,
-    _anext_chunk,
-    _classify_fish_exc,
-    _is_cancel_noise,
-    _spoken_prefix,
-    _wait_task,
-)
+from fish_audio_suite_voice.live import IsolatedFishTts, IsolatedResult, is_cancel_noise
 from fish_audio_suite_voice.playback import (
     FileSink,
+    MpvSink,
     PortAudioMissingError,
     SounddeviceSink,
     StdoutSink,
+    audio_format_for,
+    duplex_playback_problem,
     make_sink,
     missing_portaudio,
+)
+from fish_audio_suite_voice.wire import (
+    _anext_chunk,
+    _classify_fish_exc,
+    _spoken_prefix,
+    _wait_task,
 )
 
 
@@ -46,6 +47,22 @@ def test_file_sink_kill_skips_write(tmp_path: Path) -> None:
     sink.write(b"\x00\x00" * 10)
     sink.finish(kill=True)
     assert not path.exists()
+
+
+def test_duplex_playback_problem(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert duplex_playback_problem("sounddevice") is None
+    assert duplex_playback_problem("file") == "file playback needs a path"
+    assert duplex_playback_problem("nope") == "unknown playback sink 'nope'"
+    monkeypatch.setattr("fish_audio_suite_voice.playback.shutil.which", lambda _name: None)
+    assert duplex_playback_problem("mpv") == "mpv is not on PATH"
+    monkeypatch.setattr("fish_audio_suite_voice.playback.shutil.which", lambda _name: "/bin/mpv")
+    assert duplex_playback_problem("MPV") is None
+
+
+def test_mpv_playback_uses_mp3() -> None:
+    assert audio_format_for(" MPV ") == "mp3"
+    assert audio_format_for("speakers") == "pcm"
+    assert isinstance(make_sink("MPV"), MpvSink)
 
 
 def test_make_sink_file(tmp_path: Path) -> None:
@@ -109,11 +126,11 @@ def test_cancel_scope_runtime_error_is_noise() -> None:
     retry, status, _message = _classify_fish_exc(err)
     assert retry is False
     assert status is None
-    assert _is_cancel_noise(err)
+    assert is_cancel_noise(err)
 
 
 def test_missing_portaudio_hint() -> None:
-    err = missing_portaudio(OSError("PortAudio library not found"))
+    err = missing_portaudio()
     assert isinstance(err, PortAudioMissingError)
     assert "libportaudio2" in str(err)
     assert "nix run" in str(err)

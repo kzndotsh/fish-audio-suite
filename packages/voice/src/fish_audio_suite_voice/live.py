@@ -3,89 +3,78 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import sys
 import threading
-import time
-from collections.abc import AsyncIterable, AsyncIterator, Coroutine, Iterable
+from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass, field
 from typing import Any, cast
 
-import httpx
-from fishaudio import AsyncFishAudio, FlushEvent, TextEvent
-from fishaudio.exceptions import APIError, ValidationError, WebSocketError
-from fishaudio.types import AudioFormat, LatencyMode, Model, Prosody, TTSConfig
+from fishaudio import TextEvent
+from fishaudio.types import AudioFormat, LatencyMode, Prosody, TTSConfig
 
 from fish_audio_suite_kit import (
-    FISH_RETRY_ATTEMPTS,
     SuiteDefaults,
-    fish_backoff_seconds,
-    make_traceparent,
-    next_tts_cut,
+    known_mp3_bitrate,
     normalize_cues,
     scrub_tts,
-    should_retry_fish_status,
     skip_empty_delta,
-    w3c_trace_headers,
+    split_tts_piece,
+    strip_base,
 )
-from fish_audio_suite_voice.debug import env_debug, logger
 from fish_audio_suite_voice.playback import PlaybackSink
+from fish_audio_suite_voice.session import (
+    IsolatedResult,
+    TurnSpec,
+    as_async,
+    is_cancel_noise,
+    run_isolated,
+    run_turn,
+    text_events,
+)
+from fish_audio_suite_voice.wire import flush_if_sent
 
 _STOCK = SuiteDefaults()
-ANEXT_POLL_S = 0.25
 
 
-@dataclass(frozen=True)
-class IsolatedResult:
-    spoken_so_far: str
-    bytes_played: int
-    got_audio: bool
-    cancelled: bool
-    ttfa_ms: float | None
-    llm_ttfs_ms: float | None
-    error_status: int | None = None
-    error_message: str | None = None
+def _spoken(text: str) -> str:
+    return normalize_cues(scrub_tts(text))
 
 
+def _quiet_result(cancelled: bool) -> IsolatedResult:
+    return IsolatedResult(
+        spoken_so_far="",
+        bytes_played=0,
+        got_audio=False,
+        cancelled=cancelled,
+        ttfa_ms=None,
+        llm_ttfs_ms=None,
+    )
+
+
+@dataclass(kw_only=True, repr=False, eq=False)
 class IsolatedFishTts:
     """Fish `stream_websocket` on a fresh loop. Do not merge the LLM socket onto this WS."""
 
-    def __init__(
-        self,
-        *,
-        api_key: str,
-        voice_id: str,
-        model: str = _STOCK.tts_model,
-        latency: str = _STOCK.latency,
-        speed: float = _STOCK.speed,
-        audio_format: str = "pcm",
-        sample_rate: int = _STOCK.sample_rate,
-        temperature: float = _STOCK.temperature,
-        top_p: float = _STOCK.top_p,
-        repetition_penalty: float = _STOCK.repetition_penalty,
-        chunk_length: int = _STOCK.chunk_length,
-        min_chunk_length: int = _STOCK.min_chunk_length,
-        volume: float = 0.0,
-        partial_chars: int = _STOCK.tts_partial_chars,
-        base_url: str = _STOCK.fish_base,
-        trace_headers: dict[str, str] | None = None,
-    ) -> None:
-        self.api_key = api_key
-        self.voice_id = voice_id
-        self.model = model
-        self.latency = latency
-        self.speed = speed
-        self.audio_format = audio_format
-        self.sample_rate = sample_rate
-        self.temperature = temperature
-        self.top_p = top_p
-        self.repetition_penalty = repetition_penalty
-        self.chunk_length = chunk_length
-        self.min_chunk_length = min_chunk_length
-        self.volume = volume
-        self.partial_chars = partial_chars
-        self.base_url = base_url.rstrip("/")
-        self.trace_headers = dict(trace_headers or {})
+    api_key: str
+    voice_id: str
+    model: str = _STOCK.tts_model
+    latency: str = _STOCK.latency
+    speed: float = _STOCK.speed
+    audio_format: str = "pcm"
+    sample_rate: int = _STOCK.sample_rate
+    temperature: float = _STOCK.temperature
+    top_p: float = _STOCK.top_p
+    repetition_penalty: float = _STOCK.repetition_penalty
+    chunk_length: int = _STOCK.chunk_length
+    min_chunk_length: int = _STOCK.min_chunk_length
+    volume: float = _STOCK.volume
+    partial_chars: int = _STOCK.tts_partial_chars
+    base_url: str = _STOCK.fish_base
+    trace_headers: dict[str, str] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        self.base_url = strip_base(self.base_url)
+        self.trace_headers = dict(self.trace_headers)
 
     def speak_isolated(
         self,
@@ -95,25 +84,23 @@ class IsolatedFishTts:
     ) -> IsolatedResult:
         """Run Fish WS on a private thread and loop. Safe from asyncio.run / to_thread."""
         cancel = cancel or threading.Event()
-        box: list[IsolatedResult] = []
+        result: IsolatedResult | None = None
 
         def worker() -> None:
-            async def _run() -> IsolatedResult:
-                return await self.speak(text, sink, cancel)
-
+            nonlocal result
             try:
-                box.append(_isolated_run(_run()))
+                result = run_isolated(self.speak(text, sink, cancel))
             except (asyncio.CancelledError, BaseExceptionGroup, RuntimeError, GeneratorExit) as e:
-                if not _is_cancel_noise(e):
+                if not is_cancel_noise(e):
                     print(f"[tts] {e}", file=sys.stderr)
-                box.append(IsolatedResult("", 0, False, cancel.is_set(), None, None))
+                result = _quiet_result(cancel.is_set())
 
         thread = threading.Thread(target=worker, name="fish-tts", daemon=True)
         thread.start()
         thread.join()
-        if box:
-            return box[0]
-        return IsolatedResult("", 0, False, cancel.is_set(), None, None)
+        if result is None:
+            return _quiet_result(cancel.is_set())
+        return result
 
     async def speak(
         self,
@@ -121,9 +108,10 @@ class IsolatedFishTts:
         sink: PlaybackSink,
         cancel: threading.Event,
     ) -> IsolatedResult:
-        prepared = normalize_cues(scrub_tts(text))
-        return await self._stream(
-            _text_events(prepared, cancel, self.partial_chars),
+        prepared = _spoken(text)
+        return await run_turn(
+            self._spec(),
+            text_events(prepared, cancel, self.partial_chars),
             sink,
             cancel,
             sent_text=prepared,
@@ -135,377 +123,90 @@ class IsolatedFishTts:
         sink: PlaybackSink,
         cancel: threading.Event,
     ) -> IsolatedResult:
-        async def events() -> AsyncIterator[Any]:
-            buf = ""
-            sent = 0
-            async for tok in _as_async(deltas):
-                if cancel.is_set():
-                    break
-                if skip_empty_delta(tok):
-                    continue
-                buf += tok
-                while True:
-                    cut = next_tts_cut(buf, partial_chars=self.partial_chars)
-                    if cut < 0:
-                        break
-                    piece = buf[:cut]
-                    buf = buf[cut:]
-                    if skip_empty_delta(piece):
-                        continue
-                    yield TextEvent(text=normalize_cues(scrub_tts(piece)))
-                    sent += 1
-            if buf.strip() and not cancel.is_set():
-                yield TextEvent(text=normalize_cues(scrub_tts(buf)))
-                sent += 1
-            if sent and not cancel.is_set():
-                yield FlushEvent()
+        return await run_turn(
+            self._spec(),
+            self._delta_events(deltas, cancel),
+            sink,
+            cancel,
+            sent_text="",
+        )
 
-        return await self._stream(events(), sink, cancel, sent_text="")
-
-    async def _stream(
+    async def _delta_events(
         self,
-        events: AsyncIterator[Any],
-        sink: PlaybackSink,
+        deltas: Iterable[str] | AsyncIterator[str],
         cancel: threading.Event,
-        *,
-        sent_text: str,
-    ) -> IsolatedResult:
-        extra = w3c_trace_headers(self.trace_headers)
-        if not extra:
-            extra = {"traceparent": make_traceparent()}
-        if env_debug():
-            logger.debug(
-                "tts.start voice={} model={} format={} sr={} latency={} speed={} chars={} trace={}",
-                self.voice_id,
-                self.model,
-                self.audio_format,
-                self.sample_rate,
-                self.latency,
-                self.speed,
-                len(sent_text),
-                extra.get("traceparent", ""),
-            )
-        got_audio = False
-        ttfa_ms: float | None = None
-        err_status: int | None = None
-        err_message: str | None = None
-        acc = _EventAcc()
-        t0 = time.perf_counter()
-        sink.start()
-        client: AsyncFishAudio | None = None
+    ) -> AsyncIterator[Any]:
+        buf = ""
+        sent = 0
 
-        async def close_client() -> None:
-            nonlocal client
-            if client is None:
-                return
-            try:
-                close = getattr(client, "aclose", None) or client.close
-                res = close()
-                if hasattr(res, "__await__"):
-                    await res
-            except Exception:
-                pass
-            client = None
+        def counted(piece: str) -> TextEvent | None:
+            nonlocal sent
+            event = self._text_event(piece)
+            if event is None:
+                return None
+            sent += 1
+            return event
 
-        try:
-            for attempt in range(FISH_RETRY_ATTEMPTS):
-                http = httpx.AsyncClient(
-                    base_url=self.base_url,
-                    headers=extra,
-                    timeout=httpx.Timeout(240.0),
-                    http2=False,
-                )
-                client = AsyncFishAudio(
-                    api_key=self.api_key,
-                    base_url=self.base_url,
-                    httpx_client=http,
-                )
-                try:
-                    cfg = TTSConfig(
-                        format=cast(AudioFormat, self.audio_format),
-                        mp3_bitrate=128,
-                        sample_rate=self.sample_rate,
-                        latency=cast(LatencyMode, self.latency),
-                        normalize=True,
-                        chunk_length=self.chunk_length,
-                        min_chunk_length=self.min_chunk_length,
-                        temperature=self.temperature,
-                        top_p=self.top_p,
-                        repetition_penalty=self.repetition_penalty,
-                        max_new_tokens=1024,
-                        condition_on_previous_chunks=True,
-                        prosody=Prosody(speed=self.speed, volume=self.volume),
-                    )
-                    acc.flushed.clear()
-                    acc.ttfs_ms = None
-                    replay = (
-                        _text_events(sent_text, cancel, self.partial_chars) if sent_text else events
-                    )
-                    logged_events = _tee_text_events(replay, t0, acc)
-                    stream = client.tts.stream_websocket(
-                        logged_events,
-                        reference_id=self.voice_id,
-                        format=cast(AudioFormat, self.audio_format),
-                        latency=cast(LatencyMode, self.latency),
-                        speed=self.speed,
-                        config=cfg,
-                        model=cast(Model, self.model),
-                    )
-                    it = aiter(stream)
-                    pending: asyncio.Task[Any] = asyncio.create_task(_anext_chunk(it))
-                    try:
-                        while True:
-                            if cancel.is_set():
-                                if env_debug():
-                                    logger.debug("tts.cancel before/during stream")
-                                await close_client()
-                                break
-                            if not await _wait_task(pending, ANEXT_POLL_S):
-                                continue
-                            try:
-                                chunk = pending.result()
-                            except StopAsyncIteration:
-                                break
-                            pending = asyncio.create_task(_anext_chunk(it))
-                            if chunk:
-                                if not got_audio:
-                                    got_audio = True
-                                    ttfa_ms = (time.perf_counter() - t0) * 1000
-                                    print("  [tts first audio ttfa]", flush=True)
-                                    if env_debug():
-                                        logger.debug(
-                                            "tts.first_audio ttfa_ms={:.0f} chunk={}",
-                                            ttfa_ms,
-                                            len(chunk),
-                                        )
-                                if cancel.is_set():
-                                    await close_client()
-                                    break
-                                sink.write(chunk)
-                    finally:
-                        if not pending.done():
-                            pending.cancel()
-                            with contextlib.suppress(BaseException):
-                                await pending
+        async for tok in as_async(deltas):
+            if cancel.is_set():
+                break
+            if skip_empty_delta(tok):
+                continue
+            buf += tok
+            while True:
+                split = split_tts_piece(buf, self.partial_chars, flush_rest=False)
+                if split is None:
                     break
-                except (asyncio.CancelledError, GeneratorExit) as exc:
-                    await close_client()
-                    if cancel.is_set() or _is_cancel_noise(exc):
-                        break
-                    raise
-                except BaseException as exc:
-                    if isinstance(exc, (KeyboardInterrupt, SystemExit)):
-                        raise
-                    root = _root_exc(exc)
-                    retry, status, message = _classify_fish_exc(root)
-                    if _is_cancel_noise(root) or cancel.is_set():
-                        await close_client()
-                        break
-                    last = attempt + 1 >= FISH_RETRY_ATTEMPTS
-                    can_replay = bool(sent_text) and not got_audio
-                    if got_audio or not retry or last or not can_replay:
-                        err_status = status
-                        err_message = message or str(root)
-                        print(
-                            f"[tts] {err_status} {err_message}"
-                            if err_status is not None
-                            else f"[tts] {err_message}",
-                            file=sys.stderr,
-                        )
-                        await close_client()
-                        break
-                    print(
-                        f"[tts] retry status={status} attempt={attempt + 1}/{FISH_RETRY_ATTEMPTS}",
-                        file=sys.stderr,
-                    )
-                    await close_client()
-                    await asyncio.sleep(fish_backoff_seconds(attempt))
-        finally:
-            sink.finish(kill=cancel.is_set())
-            await close_client()
+                piece, buf = split
+                event = counted(piece)
+                if event is not None:
+                    yield event
+        tail = split_tts_piece(buf, self.partial_chars, flush_rest=True)
+        if tail is not None and not cancel.is_set():
+            event = counted(tail[0])
+            if event is not None:
+                yield event
+        flush = flush_if_sent(sent, cancel)
+        if flush is not None:
+            yield flush
 
-        if not got_audio and not cancel.is_set() and err_status is None:
-            print(
-                f"[tts] no audio voice={self.voice_id} model={self.model}",
-                file=sys.stderr,
-            )
-
-        full = sent_text or "".join(acc.flushed)
-        spoken = _spoken_prefix(
-            full,
-            bytes_played=sink.bytes_played(),
-            sample_rate=self.sample_rate,
-            audio_format=self.audio_format,
-            got_audio=got_audio,
-            cancelled=cancel.is_set(),
-        )
-        return IsolatedResult(
-            spoken_so_far=spoken,
-            bytes_played=sink.bytes_played(),
-            got_audio=got_audio,
-            cancelled=cancel.is_set(),
-            ttfa_ms=ttfa_ms,
-            llm_ttfs_ms=acc.ttfs_ms,
-            error_status=err_status,
-            error_message=err_message,
-        )
-
-
-@dataclass
-class _EventAcc:
-    flushed: list[str] = field(default_factory=list)
-    ttfs_ms: float | None = None
-
-
-async def _text_events(
-    prepared: str,
-    cancel: threading.Event,
-    partial_chars: int,
-) -> AsyncIterator[Any]:
-    buf = prepared
-    sent = 0
-    while buf:
-        if cancel.is_set():
-            break
-        cut = next_tts_cut(buf, partial_chars=partial_chars)
-        if cut < 0:
-            piece = buf
-            buf = ""
-        else:
-            piece = buf[:cut]
-            buf = buf[cut:]
+    def _text_event(self, piece: str) -> TextEvent | None:
         if skip_empty_delta(piece):
-            continue
-        yield TextEvent(text=piece)
-        sent += 1
-    if sent and not cancel.is_set():
-        yield FlushEvent()
+            return None
+        return TextEvent(text=_spoken(piece))
+
+    def _spec(self) -> TurnSpec:
+        return TurnSpec(
+            api_key=self.api_key,
+            base_url=self.base_url,
+            voice_id=self.voice_id,
+            model=self.model,
+            audio_format=self.audio_format,
+            latency=self.latency,
+            speed=self.speed,
+            sample_rate=self.sample_rate,
+            partial_chars=self.partial_chars,
+            trace_headers=self.trace_headers,
+            config=self._tts_config(),
+        )
+
+    def _tts_config(self) -> TTSConfig:
+        return TTSConfig(
+            format=cast(AudioFormat, self.audio_format),
+            mp3_bitrate=known_mp3_bitrate(_STOCK.mp3_bitrate),
+            sample_rate=self.sample_rate,
+            latency=cast(LatencyMode, self.latency),
+            normalize=_STOCK.normalize,
+            chunk_length=self.chunk_length,
+            min_chunk_length=self.min_chunk_length,
+            temperature=self.temperature,
+            top_p=self.top_p,
+            repetition_penalty=self.repetition_penalty,
+            max_new_tokens=_STOCK.max_new_tokens,
+            condition_on_previous_chunks=_STOCK.condition_on_previous_chunks,
+            early_stop_threshold=_STOCK.early_stop_threshold,
+            prosody=Prosody(speed=self.speed, volume=self.volume),
+        )
 
 
-def _tee_text_events(
-    events: AsyncIterator[Any],
-    t0: float,
-    acc: _EventAcc,
-) -> AsyncIterator[Any]:
-    async def gen() -> AsyncIterator[Any]:
-        async for ev in events:
-            if isinstance(ev, TextEvent) and getattr(ev, "text", None):
-                acc.flushed.append(ev.text)
-                if acc.ttfs_ms is None:
-                    acc.ttfs_ms = (time.perf_counter() - t0) * 1000
-                    if env_debug():
-                        logger.debug(
-                            "tts.text_event chars={} ttfs_ms={:.0f}",
-                            len(ev.text),
-                            acc.ttfs_ms,
-                        )
-            elif isinstance(ev, FlushEvent) and env_debug():
-                logger.debug("tts.flush")
-            yield ev
-
-    return gen()
-
-
-def _spoken_prefix(
-    sent_text: str,
-    *,
-    bytes_played: int,
-    sample_rate: int,
-    audio_format: str,
-    got_audio: bool,
-    cancelled: bool,
-) -> str:
-    if not sent_text.strip():
-        return ""
-    if not got_audio:
-        return ""
-    if not cancelled:
-        return sent_text.strip()
-    if bytes_played <= 0:
-        return ""
-    if audio_format == "pcm":
-        secs = bytes_played / max(sample_rate * 2, 1)
-        n = max(1, int(secs * 16))
-        cut = sent_text[:n]
-        if " " in cut:
-            cut = cut.rsplit(" ", 1)[0]
-        return cut.strip()
-    return sent_text.strip()
-
-
-async def _as_async(deltas: Iterable[str] | AsyncIterable[str]) -> AsyncIterator[str]:
-    if isinstance(deltas, AsyncIterable):
-        async for item in deltas:
-            yield item
-        return
-    for item in deltas:
-        yield item
-
-
-def _root_exc(exc: BaseException) -> BaseException:
-    cur = exc
-    while isinstance(cur, BaseExceptionGroup) and cur.exceptions:
-        cur = cur.exceptions[0]
-    return cur
-
-
-async def _anext_chunk(it: AsyncIterator[Any]) -> Any:
-    return await anext(it)
-
-
-async def _wait_task(task: asyncio.Task[Any], wait_s: float) -> bool:
-    """True if task finished. Timeout does not cancel it (wait_for would kill Fish WS)."""
-    done, _ = await asyncio.wait({task}, timeout=wait_s)
-    return bool(done)
-
-
-def _isolated_run(coro: Coroutine[Any, Any, IsolatedResult]) -> IsolatedResult:
-    """Fresh loop for Fish WS. Close the client on cancel; do not aclose the iterator."""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        if not loop.is_closed() and not loop.is_running():
-            with contextlib.suppress(BaseException):
-                loop.run_until_complete(_quiet_shutdown(loop))
-        if not loop.is_closed():
-            loop.close()
-        asyncio.set_event_loop(None)
-
-
-async def _quiet_shutdown(loop: asyncio.AbstractEventLoop) -> None:
-    current = asyncio.current_task()
-    pending = [task for task in asyncio.all_tasks(loop) if task is not current]
-    for task in pending:
-        task.cancel()
-    if pending:
-        await asyncio.gather(*pending, return_exceptions=True)
-
-
-def _is_cancel_noise(exc: BaseException) -> bool:
-    if isinstance(exc, (asyncio.CancelledError, GeneratorExit)):
-        return True
-    msg = str(exc).lower()
-    return (
-        "athrow" in msg
-        or "cancel scope" in msg
-        or "generator didn't stop" in msg
-        or "different task than it was entered" in msg
-    )
-
-
-def _classify_fish_exc(exc: BaseException) -> tuple[bool, int | None, str]:
-    if _is_cancel_noise(exc):
-        return False, None, ""
-    if isinstance(exc, APIError):
-        return should_retry_fish_status(exc.status), exc.status, exc.message
-    if isinstance(exc, ValidationError):
-        return False, 400, str(exc)
-    if isinstance(exc, WebSocketError):
-        return True, None, str(exc)
-    if isinstance(exc, httpx.TimeoutException):
-        return True, 504, "Fish request timed out"
-    if isinstance(exc, httpx.RequestError):
-        return True, 502, str(exc) or "Fish upstream unreachable"
-    return False, None, str(exc)
+__all__ = ["IsolatedFishTts", "IsolatedResult", "is_cancel_noise"]

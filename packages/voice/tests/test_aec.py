@@ -39,6 +39,7 @@ def test_clean_mic_passthrough_when_aec_off(monkeypatch: pytest.MonkeyPatch) -> 
 def test_effective_bleed_without_processor(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FISH_VOICE_AEC", "0")
     assert effective_bleed_s(0.9) == 0.9
+    assert effective_bleed_s(-1) == 0.0
     monkeypatch.setenv("FISH_VOICE_AEC", "1")
 
     def fake_proc() -> object:
@@ -46,6 +47,8 @@ def test_effective_bleed_without_processor(monkeypatch: pytest.MonkeyPatch) -> N
 
     monkeypatch.setattr("fish_audio_suite_voice.aec.load_processor", fake_proc)
     monkeypatch.setenv("FISH_VOICE_AEC_BLEED", str(DEFAULT_AEC_BLEED_S))
+    assert effective_bleed_s(0.9) == DEFAULT_AEC_BLEED_S
+    monkeypatch.setenv("FISH_VOICE_AEC_BLEED", "-1")
     assert effective_bleed_s(0.9) == DEFAULT_AEC_BLEED_S
 
 
@@ -110,3 +113,20 @@ def test_sounddevice_sink_taps_and_clears(monkeypatch: pytest.MonkeyPatch) -> No
     assert sum(len(p) for p, _sr in taps) == len(pcm)
     sink.finish()
     assert cleared["n"] == 1
+
+
+def test_sounddevice_sink_rejoins_odd_pcm_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
+    written: list[bytes] = []
+    monkeypatch.setattr("fish_audio_suite_voice.playback.tap_playback", lambda *_a: None)
+    monkeypatch.setattr("fish_audio_suite_voice.playback.tap_clear", lambda: None)
+    sink = SounddeviceSink()
+
+    class Fake:
+        def write(self, chunk: bytes) -> None:
+            written.append(chunk)
+
+    sink._stream = Fake()
+    sink.write(b"\x01\x02\x03")
+    sink.write(b"\x04\x05\x06")
+    assert b"".join(written) == b"\x01\x02\x03\x04\x05\x06"
+    assert sink.bytes_played() == 6

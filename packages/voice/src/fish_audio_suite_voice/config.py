@@ -1,0 +1,126 @@
+"""Voice CLI settings from the process environment."""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass
+
+from fish_audio_suite_kit import (
+    CHUNK_LENGTH_LO,
+    MIN_CHUNK_HI,
+    MIN_CHUNK_LO,
+    TTS_SPEED_HI,
+    TTS_SPEED_LO,
+    SuiteDefaults,
+    chunk_length_hi,
+    clamp_num,
+    env_base,
+    env_float,
+    env_int,
+    env_text,
+    env_token,
+    known_latency,
+    known_tts_model,
+    strip_base,
+)
+from fish_audio_suite_voice.playback import playback_key
+
+
+@dataclass(frozen=True)
+class VoiceCliConfig:
+    fish_api_key: str
+    fish_base: str
+    fish_voice_id: str
+    fish_asr_language: str
+    fish_tts_model: str
+    fish_latency: str
+    fish_speed: float
+    fish_temperature: float
+    fish_top_p: float
+    fish_rep_penalty: float
+    fish_chunk: int
+    fish_min_chunk: int
+    fish_volume: float
+    fish_sample_rate: int
+    playback: str
+    system_prompt: str
+    device: str | None
+    llm_backend: str
+    llm_base: str
+    llm_key: str
+    llm_model: str
+
+
+def _existing(default: str, *names: str) -> str:
+    """First key that exists wins, including a blank value. Surrounding space is removed."""
+    for name in names:
+        if name in os.environ:
+            return os.environ[name].strip()
+    return default
+
+
+def _model_name(*names: str) -> str:
+    for name in names:
+        raw = env_token(name, "")
+        if raw:
+            return raw
+    return ""
+
+
+def cfg() -> VoiceCliConfig:
+    d = SuiteDefaults()
+    fish_base = env_base("FISH_BASE", d.fish_base)
+    sample_rate = env_int("FISH_SAMPLE_RATE", d.sample_rate)
+    return VoiceCliConfig(
+        fish_api_key=env_text("FISH_API_KEY"),
+        fish_base=fish_base,
+        fish_voice_id=env_text("FISH_VOICE_ID"),
+        fish_asr_language=env_text("FISH_ASR_LANGUAGE", d.asr_language),
+        fish_tts_model=known_tts_model(env_token("FISH_TTS_MODEL", d.tts_model)),
+        fish_latency=known_latency(env_token("FISH_LATENCY", d.latency), d.latency),
+        fish_speed=clamp_num(
+            env_float("FISH_SPEED", d.speed),
+            TTS_SPEED_LO,
+            TTS_SPEED_HI,
+            d.speed,
+            float,
+        ),
+        fish_temperature=clamp_num(
+            env_float("FISH_TEMPERATURE", d.temperature),
+            0.0,
+            1.0,
+            d.temperature,
+            float,
+        ),
+        fish_top_p=clamp_num(env_float("FISH_TOP_P", d.top_p), 0.0, 1.0, d.top_p, float),
+        fish_rep_penalty=env_float("FISH_REPETITION_PENALTY", d.repetition_penalty),
+        fish_chunk=clamp_num(
+            env_int("FISH_CHUNK_LENGTH", d.chunk_length),
+            CHUNK_LENGTH_LO,
+            chunk_length_hi(fish_base),
+            d.chunk_length,
+            int,
+        ),
+        fish_min_chunk=clamp_num(
+            env_int("FISH_MIN_CHUNK_LENGTH", d.min_chunk_length),
+            MIN_CHUNK_LO,
+            MIN_CHUNK_HI,
+            d.min_chunk_length,
+            int,
+        ),
+        fish_volume=env_float("FISH_VOLUME", d.volume),
+        fish_sample_rate=sample_rate if sample_rate > 0 else d.sample_rate,
+        playback=playback_key(env_token("FISH_PLAYBACK", "sounddevice")),
+        system_prompt=os.environ.get("FISH_SYSTEM_PROMPT", d.system_prompt),
+        device=os.environ.get("FISH_VOICE_DEVICE"),
+        llm_backend=env_token("FISH_LLM_BACKEND", "openrouter"),
+        llm_base=strip_base(
+            _existing(
+                "https://openrouter.ai/api/v1",
+                "FISH_LLM_BASE",
+                "OPENROUTER_BASE_URL",
+            )
+        ),
+        llm_key=_existing("", "FISH_LLM_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY"),
+        llm_model=_model_name("FISH_LLM_MODEL", "OPENROUTER_MODEL"),
+    )

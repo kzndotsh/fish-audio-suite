@@ -8,7 +8,7 @@ import httpx
 import pytest
 from openrouter.errors import OpenRouterError
 
-from fish_audio_suite_voice.cli import (
+from fish_audio_suite_voice.llm import (
     _model_author_slug,
     _want_nitro,
     check_openrouter_model,
@@ -16,6 +16,16 @@ from fish_audio_suite_voice.cli import (
 )
 
 OR_BASE = "https://openrouter.ai/api/v1"
+
+
+def _tokens(**extra: Any):
+    return llm_token_stream(
+        [{"role": "user", "content": "hi"}],
+        base=OR_BASE,
+        key="sk-test",
+        model="org/model",
+        **extra,
+    )
 
 
 def test_want_nitro_slash_model_on_openrouter() -> None:
@@ -106,15 +116,7 @@ def fake_openrouter(monkeypatch: pytest.MonkeyPatch) -> type[_FakeOpenRouter]:
 
 def test_openrouter_stream_joins_tokens(fake_openrouter: type[_FakeOpenRouter]) -> None:
     async def run() -> list[str]:
-        return [
-            tok
-            async for tok in llm_token_stream(
-                [{"role": "user", "content": "hi"}],
-                base=OR_BASE,
-                key="sk-test",
-                model="org/model",
-            )
-        ]
+        return [tok async for tok in _tokens()]
 
     pieces = asyncio.run(run())
     assert "".join(pieces) == "Hello world"
@@ -130,6 +132,53 @@ def test_openrouter_stream_joins_tokens(fake_openrouter: type[_FakeOpenRouter]) 
     assert fake_openrouter.last_init["x_open_router_categories"] == "cli-agent"
 
 
+def test_max_tokens_must_be_positive(
+    fake_openrouter: type[_FakeOpenRouter],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def run() -> None:
+        async for _tok in _tokens():
+            pass
+
+    monkeypatch.setenv("FISH_LLM_MAX_TOKENS", "0")
+    asyncio.run(run())
+    assert _FakeChat.last_kw is not None
+    assert _FakeChat.last_kw["max_completion_tokens"] == 600
+    monkeypatch.setenv("FISH_LLM_MAX_TOKENS", "-5")
+    asyncio.run(run())
+    assert _FakeChat.last_kw["max_completion_tokens"] == 600
+    monkeypatch.setenv("FISH_LLM_MAX_TOKENS", "128")
+    asyncio.run(run())
+    assert _FakeChat.last_kw["max_completion_tokens"] == 128
+    assert fake_openrouter.last_init is not None
+
+
+def test_openrouter_message_content_when_delta_empty(
+    fake_openrouter: type[_FakeOpenRouter],
+) -> None:
+    fake_openrouter.chunks = [
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(content=None),
+                    message=SimpleNamespace(content="from-message"),
+                    finish_reason="stop",
+                )
+            ],
+            usage=None,
+            id="gen-1",
+            model="org/model",
+            error=None,
+            provider=None,
+        )
+    ]
+
+    async def run() -> list[str]:
+        return [tok async for tok in _tokens()]
+
+    assert asyncio.run(run()) == ["from-message"]
+
+
 def test_openrouter_cancel_stops_after_chunk(
     fake_openrouter: type[_FakeOpenRouter],
 ) -> None:
@@ -138,13 +187,7 @@ def test_openrouter_cancel_stops_after_chunk(
     async def run() -> list[str]:
         cancel = asyncio.Event()
         pieces: list[str] = []
-        async for tok in llm_token_stream(
-            [{"role": "user", "content": "hi"}],
-            base=OR_BASE,
-            key="sk-test",
-            model="org/model",
-            cancel=cancel,
-        ):
+        async for tok in _tokens(cancel=cancel):
             pieces.append(tok)
             cancel.set()
         return pieces
@@ -170,11 +213,7 @@ def test_passed_client_skips_openrouter_constructor(
     async def run() -> list[str]:
         return [
             tok
-            async for tok in llm_token_stream(
-                [{"role": "user", "content": "hi"}],
-                base=OR_BASE,
-                key="sk-test",
-                model="org/model",
+            async for tok in _tokens(
                 client=passed,
                 session_id="sess-1",
                 trace_id="trace-abc",

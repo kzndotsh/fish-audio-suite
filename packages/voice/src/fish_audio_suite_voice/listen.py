@@ -1,0 +1,278 @@
+"""One microphone utterance: VAD start, silence end, WAV for Fish ASR."""
+
+from __future__ import annotations
+
+import collections
+import io
+import threading
+from dataclasses import dataclass
+from typing import Any
+
+from fish_audio_suite_kit import env_float, env_int
+from fish_audio_suite_voice.aec import AdaptiveFloor, pcm_rms
+from fish_audio_suite_voice.barge import (
+    FRAME_MS,
+    LISTEN_HEARTBEAT_FRAMES,
+    SAMPLE_RATE,
+    frame_is_speech,
+    mic_frames,
+)
+from fish_audio_suite_voice.debug import debug, heartbeat_due
+from fish_audio_suite_voice.playback import write_mono_wav
+
+DEFAULT_VAD_AGGRESSIVENESS = 1
+_VAD_MODE_HI = 3
+DEFAULT_SILENCE_FRAMES_END = 22
+DEFAULT_SPEECH_FRAMES_START = 4
+DEFAULT_MIN_SPEECH_RMS = 200.0
+DEFAULT_PRE_PAD_FRAMES = 20
+HOLD_RMS_RATIO = 0.55
+MIN_UTTERANCE_FRAMES = 4
+MAX_UTTERANCE_FRAMES = 500
+_MIC_POLL_S = 0.25
+_WAV_HEADER_BYTES = 44
+DEFAULT_MIN_VOICED_FRAMES = 12
+IMPULSE_PEAK_RATIO = 4.0
+IMPULSE_EXTRA_VOICED = 12
+IMPULSE_START_EXTRA = 6
+IMPULSE_NOW_RATIO = 0.5
+
+
+def start_hit(rms: float, vad_speech: bool, min_rms: float) -> bool:
+    """Count a listen-start frame. Score VAD once per capture; do not replay the ring.
+
+    Require VAD and full min RMS. The hold ratio is only for staying in an
+    utterance after it has already started.
+    """
+    if not vad_speech:
+        return False
+    return rms >= min_rms
+
+
+def _impulse(peak_rms: float, min_rms: float) -> bool:
+    return peak_rms >= min_rms * IMPULSE_PEAK_RATIO
+
+
+def listen_reject_reason(
+    *,
+    voiced_frames: int,
+    speech_hits: int,
+    peak_rms: float,
+    min_voiced: int,
+    min_speech_rms: float,
+) -> str | None:
+    """Drop coughs and spikes. None means send the clip to ASR."""
+    if voiced_frames < MIN_UTTERANCE_FRAMES:
+        return "too_short"
+    if speech_hits < min_voiced:
+        return "too_little_voice"
+    if _impulse(peak_rms, min_speech_rms) and speech_hits <= min_voiced + IMPULSE_EXTRA_VOICED:
+        return "impulse"
+    return None
+
+
+def start_frames_needed(peak_rms: float, min_rms: float, speech_frames_start: int) -> int:
+    """A 4x spike in the pre-pad ring is a chair pop until more VAD hits pile up."""
+    if _impulse(peak_rms, min_rms):
+        return speech_frames_start + IMPULSE_START_EXTRA
+    return speech_frames_start
+
+
+def trailing_start_hits(ring: collections.deque[tuple[bytes, bool]]) -> int:
+    """Count scored frames at the newest end of the pre-pad. Gaps do not count."""
+    n = 0
+    for _, counted in reversed(ring):
+        if not counted:
+            break
+        n += 1
+    return n
+
+
+def spike_start_allowed(peak_rms: float, now_rms: float, min_rms: float) -> bool:
+    """Reject a decaying bang: 4x peak in the ring but this frame already dropped."""
+    if not _impulse(peak_rms, min_rms):
+        return True
+    return now_rms >= peak_rms * IMPULSE_NOW_RATIO
+
+
+@dataclass(frozen=True)
+class _ListenTune:
+    vad_aggressiveness: int
+    silence_frames_end: int
+    speech_frames_start: int
+    min_speech_rms: float
+    pre_pad_frames: int
+    min_voiced: int
+
+
+def _bounded_int(name: str, default: int, lo: int, hi: int | None = None) -> int:
+    value = env_int(name, default)
+    if value < lo or (hi is not None and value > hi):
+        return default
+    return value
+
+
+def _listen_tune() -> _ListenTune:
+    return _ListenTune(
+        vad_aggressiveness=_bounded_int(
+            "FISH_VOICE_VAD", DEFAULT_VAD_AGGRESSIVENESS, 0, _VAD_MODE_HI
+        ),
+        silence_frames_end=env_int("FISH_VOICE_SILENCE_FRAMES", DEFAULT_SILENCE_FRAMES_END),
+        speech_frames_start=_bounded_int(
+            "FISH_VOICE_SPEECH_FRAMES", DEFAULT_SPEECH_FRAMES_START, 1
+        ),
+        min_speech_rms=env_float("FISH_VOICE_MIN_RMS", DEFAULT_MIN_SPEECH_RMS),
+        pre_pad_frames=_bounded_int("FISH_VOICE_PRE_PAD", DEFAULT_PRE_PAD_FRAMES, 0),
+        min_voiced=_bounded_int("FISH_VOICE_MIN_VOICED", DEFAULT_MIN_VOICED_FRAMES, 1),
+    )
+
+
+def _encode_wav(pcm: bytes) -> bytes:
+    buf = io.BytesIO()
+    write_mono_wav(buf, pcm, SAMPLE_RATE)
+    return buf.getvalue()
+
+
+class _Listen:
+    def __init__(self, tune: _ListenTune, vad: Any) -> None:
+        self.tune = tune
+        self.vad = vad
+        self.voiced: list[bytes] = []
+        self.ring: collections.deque[tuple[bytes, bool]] = collections.deque(
+            maxlen=tune.pre_pad_frames
+        )
+        self.triggered = False
+        self.silence = 0
+        self.window_peak = 0.0
+        self.clip_peak = 0.0
+        self.speech_hits = 0
+        self.floor = AdaptiveFloor(tune.min_speech_rms)
+        self.min_speech_now = tune.min_speech_rms
+
+    def take(self, frame: bytes, idle_frames: int) -> bool:
+        rms = pcm_rms(frame)
+        vad_speech = frame_is_speech(self.vad, frame)
+        self.min_speech_now = self.floor.value()
+        self.window_peak = max(self.window_peak, rms)
+        self.clip_peak = max(self.clip_peak, rms)
+        self._heartbeat(idle_frames, rms, vad_speech)
+        if not self.triggered:
+            self.floor.observe(rms, quiet=True)
+            return self._arm(frame, rms, vad_speech)
+        is_speech = rms >= self.min_speech_now * HOLD_RMS_RATIO and vad_speech
+        return self._hold(frame, is_speech)
+
+    def _hold(self, frame: bytes, is_speech: bool) -> bool:
+        self.voiced.append(frame)
+        if is_speech:
+            self.speech_hits += 1
+            self.silence = 0
+            return False
+        self.silence += 1
+        return (
+            self.silence >= self.tune.silence_frames_end or len(self.voiced) >= MAX_UTTERANCE_FRAMES
+        )
+
+    def _heartbeat(self, idle_frames: int, rms: float, vad_speech: bool) -> None:
+        if not heartbeat_due(idle_frames, LISTEN_HEARTBEAT_FRAMES):
+            return
+        hits = (
+            sum(1 for _, counted in self.ring if counted)
+            if not self.triggered
+            else self.speech_hits
+        )
+        debug(
+            "listen.mic frames={} peak_rms={:.0f} last_rms={:.0f} floor={:.0f} vad={} triggered={} hits={}",
+            idle_frames,
+            self.window_peak,
+            rms,
+            self.min_speech_now,
+            vad_speech,
+            self.triggered,
+            hits,
+        )
+        self.window_peak = 0.0
+
+    def _arm(self, frame: bytes, rms: float, vad_speech: bool) -> bool:
+        self.ring.append((frame, start_hit(rms, vad_speech, self.min_speech_now)))
+        peak_ring = max((pcm_rms(pcm) for pcm, _ in self.ring), default=0.0)
+        need_start = start_frames_needed(
+            peak_ring, self.min_speech_now, self.tune.speech_frames_start
+        )
+        hits_now = trailing_start_hits(self.ring)
+        if hits_now < need_start or not spike_start_allowed(peak_ring, rms, self.min_speech_now):
+            return False
+        self.triggered = True
+        self.voiced.extend(pcm for pcm, _ in self.ring)
+        self.speech_hits = hits_now
+        debug(
+            "listen.speech_start rms={rms:.0f} vad={vad} prepad={prepad} "
+            "hits={hits} start_need={start_need} peak={peak:.0f}",
+            rms=rms,
+            vad=vad_speech,
+            prepad=len(self.voiced),
+            hits=self.speech_hits,
+            start_need=need_start,
+            peak=peak_ring,
+        )
+        self.ring.clear()
+        self.silence = 0
+        return False
+
+
+def _clip_wav(heard: _Listen, tune: _ListenTune) -> bytes | None:
+    why = listen_reject_reason(
+        voiced_frames=len(heard.voiced),
+        speech_hits=heard.speech_hits,
+        peak_rms=heard.clip_peak,
+        min_voiced=tune.min_voiced,
+        min_speech_rms=heard.min_speech_now if heard.triggered else tune.min_speech_rms,
+    )
+    if why is not None:
+        debug(
+            "listen.reject {} frames={} voiced_hits={} peak_rms={:.0f} min_voiced={}",
+            why,
+            len(heard.voiced),
+            heard.speech_hits,
+            heard.clip_peak,
+            tune.min_voiced,
+        )
+        return None
+    pcm = b"".join(heard.voiced)
+    debug(
+        "listen.end frames={} wav_bytes={} silence={} voiced_hits={} peak_rms={:.0f} duration_ms={}",
+        len(heard.voiced),
+        len(pcm) + _WAV_HEADER_BYTES,
+        heard.silence,
+        heard.speech_hits,
+        heard.clip_peak,
+        len(heard.voiced) * FRAME_MS,
+    )
+    return _encode_wav(pcm)
+
+
+def record_utterance(
+    device: str | int | None = None,
+    stop: threading.Event | None = None,
+) -> bytes | None:
+    """Block until one VAD utterance. Returns WAV bytes (16 kHz mono) or None."""
+    import webrtcvad
+
+    tune = _listen_tune()
+    heard = _Listen(tune, webrtcvad.Vad(tune.vad_aggressiveness))
+    debug(
+        "listen.open vad={} start_frames={} min_rms={} min_voiced={} pre_pad={} silence_end={}",
+        tune.vad_aggressiveness,
+        tune.speech_frames_start,
+        tune.min_speech_rms,
+        tune.min_voiced,
+        tune.pre_pad_frames,
+        tune.silence_frames_end,
+    )
+
+    for idle_frames, frame in enumerate(mic_frames(device, stop, timeout=_MIC_POLL_S), start=1):
+        if heard.take(frame, idle_frames):
+            break
+    if stop is not None and stop.is_set():
+        return None
+    return _clip_wav(heard, tune)
