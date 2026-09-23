@@ -4,55 +4,11 @@ from __future__ import annotations
 
 import re
 
-_SPOKEN_MOOD_LEAD = re.compile(
-    r"^\s*("
-    r"seductive|playful|excited|happy|delighted|calm|relaxed|confident|"
-    r"curious|surprised|sad|empathetic|nervous|sarcastic|hopeful|"
-    r"determined|embarrassed|jealous|lonely|nostalgic|whispering|"
-    r"soft|warm|intimate|flirty|teasing|breathless|angry|scared|"
-    r"worried|grateful|proud|shy"
-    r")\s*[,:!\-–—]+\s*",
-    re.IGNORECASE,
-)
-
-_CUE_RE = re.compile(r"\[([^\]\n]+)\]")
-_WHISPER_XML_RE = re.compile(
-    r"<\s*whisper\s*>(.*?)<\s*/\s*whisper\s*>",
-    re.IGNORECASE | re.DOTALL,
-)
-
-_CUE_ALIASES = {
-    "laugh": "laughing",
-    "laughs": "laughing",
-    "whisper": "whispering",
-    "whispers": "whispering",
-    "pause": "break",
-    "sigh": "sighing",
-    "chuckle": "chuckling",
-}
-
-# S1 / V1.6 used parentheses. Rewrite known tags to S2 [brackets] before asides are stripped.
-_S1_PAREN_TAGS = frozenset(
+# Official single-word emotions (basic + advanced). Both the sentence-lead
+# pattern and the S1 parenthesis rewriter use this set, so the lists cannot drift.
+# https://docs.fish.audio/api-reference/emotion-reference.md
+_FISH_EMOTIONS = frozenset(
     {
-        "break",
-        "long-break",
-        "breath",
-        "cough",
-        "lip-smacking",
-        "pause",
-        "laugh",
-        "laughs",
-        "laughing",
-        "chuckle",
-        "chuckling",
-        "sigh",
-        "sighing",
-        "whisper",
-        "whispers",
-        "whispering",
-        "emphasis",
-        "shouting",
-        "screaming",
         "happy",
         "sad",
         "angry",
@@ -102,21 +58,86 @@ _S1_PAREN_TAGS = frozenset(
         "compassionate",
         "determined",
         "resigned",
-        "in a hurry tone",
-        "soft tone",
-        "crying loudly",
-        "clear throat",
-        "audience laughing",
-        "background laughter",
-        "crowd laughing",
-        "sobbing",
-        "panting",
-        "gasping",
-        "yawning",
-        "snoring",
-        "groaning",
     }
 )
+# The only Fish tone tags that are one word and open a sentence
+# ("Whispering, come here"). "in a hurry tone" and "soft tone" are phrases.
+# "emphasis" marks a word mid-sentence. Sound effects are not leads: "Pause, wait"
+# is speech.
+_SPOKEN_TONE = frozenset({"whispering", "shouting", "screaming"})
+# "Excited, hello" -> [excited] hello. Longest word first so a shorter emotion
+# cannot take a prefix. Punctuation is required, so "I am anxious today" stays speech.
+_SPOKEN_MOOD_LEAD = re.compile(
+    r"^\s*("
+    + "|".join(
+        re.escape(word) for word in sorted(_FISH_EMOTIONS | _SPOKEN_TONE, key=len, reverse=True)
+    )
+    + r")\s*[,:!\-–—]+\s*",
+    re.IGNORECASE,
+)
+
+# Any [cue], including free-form S2 text. A newline ends the tag.
+_CUE_RE = re.compile(r"\[([^\]\n]+)\]")
+# Some models write <whisper>...</whisper> instead of a Fish cue.
+_WHISPER_XML_RE = re.compile(
+    r"<\s*whisper\s*>(.*?)<\s*/\s*whisper\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+
+# Spellings models write that are not the Fish tag. [cough] is not aliased.
+_CUE_ALIASES = {
+    "laugh": "laughing",
+    "laughs": "laughing",
+    "whisper": "whispering",
+    "whispers": "whispering",
+    "pause": "break",
+    "sigh": "sighing",
+    "chuckle": "chuckling",
+}
+
+# (happy) from the old S1 model. Emotions and the three sentence tones are
+# unioned above. Unknown (asides) are left for the scrubber.
+_S1_PAREN_TAGS = (
+    _FISH_EMOTIONS
+    | _SPOKEN_TONE
+    | frozenset(
+        {
+            # Tone tags that do not fit the one-word sentence lead.
+            "emphasis",
+            "in a hurry tone",
+            "soft tone",
+            # Official sound effects, plus breath/cough/lip-smacking from older prompts.
+            "break",
+            "long-break",
+            "laughing",
+            "chuckling",
+            "sighing",
+            "sobbing",
+            "crying loudly",
+            "groaning",
+            "panting",
+            "gasping",
+            "yawning",
+            "snoring",
+            "clear throat",
+            "audience laughing",
+            "background laughter",
+            "crowd laughing",
+            "breath",
+            "cough",
+            "lip-smacking",
+            # Alias spellings, so (laugh) and (pause) match before the alias map.
+            "pause",
+            "laugh",
+            "laughs",
+            "chuckle",
+            "sigh",
+            "whisper",
+            "whispers",
+        }
+    )
+)
+# Longest tag first, so "laughing" wins over "laugh".
 _S1_PAREN_RE = re.compile(
     r"\(\s*("
     + "|".join(re.escape(t) for t in sorted(_S1_PAREN_TAGS, key=len, reverse=True))
@@ -125,9 +146,13 @@ _S1_PAREN_RE = re.compile(
 )
 
 
+# One or more [cues] already at the start of a sentence. Group 2 is the spoken rest.
 _LEAD_STACK_RE = re.compile(r"^((?:\[[^\]]+\]\s*)+)(.*)$", re.DOTALL)
+# Each cue inside that stack, so [sad][whispering] stays two tags.
 _INNER_CUE_RE = re.compile(r"\[([^\]]+)\]")
+# Split after a sentence ender and keep the ender on the sentence.
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?…])\s+")
+# Keep the newlines, so a blank line is not folded into the next sentence.
 _LINE_SPLIT_RE = re.compile(r"(\n+)")
 
 
@@ -181,7 +206,9 @@ def normalize_cues(text: str) -> str:
     Notes
     -----
     A mood word only becomes a cue when it leads a sentence (``Happy, hello``).
-    The same word mid-sentence is spoken text.
+    The lead list is Fish's single-word emotions, plus whispering, shouting,
+    and screaming. The same word mid-sentence is spoken text. Sound effects
+    such as ``Pause, wait`` stay spoken.
     """
     if not text:
         return text

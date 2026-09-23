@@ -10,7 +10,7 @@ Import: `fish_audio_suite_kit`. Tests: `uv run pytest packages/kit`.
 
 | Name | Role |
 | --- | --- |
-| `normalize_cues` | Lowercase `[Tags]`; keep stacked leads; S1 `(happy)` → `[happy]`; mood-lead → cue; aliases (`laugh`/`sigh`/`chuckle`/`whisper`/`pause` → `laughing`/`sighing`/`chuckling`/`whispering`/`break`). Inline `[chuckle]` aliases too. Leave `[cough]` |
+| `normalize_cues` | Lowercase `[Tags]`; keep stacked leads; S1 `(happy)` → `[happy]`; a Fish emotion at the start of a sentence (`Anxious, …`) becomes that cue. whispering, shouting, and screaming do too. Sound-effect words do not. Aliases (`laugh`/`sigh`/`chuckle`/`whisper`/`pause` → `laughing`/`sighing`/`chuckling`/`whispering`/`break`). Inline `[chuckle]` aliases too. Leave `[cough]` |
 | `ensure_lead_cue` | If a reply has no `[cue]` at all, prepend `[clear]`. Does not invent mid-reply tags |
 | `scrub_tts` / `is_tts_junk` | Strip markdown, thoughts, `[pause Xs]`, `[S1]`; keep Fish `[cue]`, S1 parens rewritten to brackets, speaker/phoneme `<|…|>` tokens |
 | `extract_quoted_speech` | Keep quoted dialogue (optional `[cue]`); drop stage notes |

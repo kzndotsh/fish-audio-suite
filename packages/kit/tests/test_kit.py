@@ -51,6 +51,23 @@ def test_mood_lead_becomes_cue() -> None:
     assert normalize_cues("Excited, hello") == "[excited] hello"
 
 
+def test_official_emotion_lead_only_at_sentence_start() -> None:
+    assert normalize_cues("Anxious: wait") == "[anxious] wait"
+    assert normalize_cues("I am anxious today") == "I am anxious today"
+
+
+def test_tone_lead_becomes_cue() -> None:
+    assert normalize_cues("Shouting, hey") == "[shouting] hey"
+
+
+def test_sound_effect_lead_stays_spoken() -> None:
+    assert normalize_cues("Pause, wait") == "Pause, wait"
+
+
+def test_unlisted_lead_stays_spoken() -> None:
+    assert normalize_cues("Soft, hello") == "Soft, hello"
+
+
 def test_cue_lowercase() -> None:
     assert normalize_cues("[Excited] Hello.") == "[excited] Hello."
 
