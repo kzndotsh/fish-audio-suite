@@ -19,6 +19,7 @@ from typing import Any
 from fish_audio_suite_voice.config import VoiceCliConfig, cfg
 from fish_audio_suite_voice.debug import (
     configure_voice_logging,
+    end_reply_line,
     env_debug,
 )
 from fish_audio_suite_voice.duplex import EXIT_FATAL, EXIT_OK, bye, duplex_turns
@@ -224,6 +225,9 @@ def main(argv: list[str] | None = None) -> int:
         c = replace(c, playback=playback_key(args.playback))
 
     def _sigint(*_a: Any) -> None:
+        end_reply_line()
+        sys.stderr.write("\n")
+        sys.stderr.flush()
         request_quit()
         signal.signal(signal.SIGINT, signal.SIG_DFL)
 

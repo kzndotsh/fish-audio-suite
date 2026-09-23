@@ -38,12 +38,35 @@ class _WsTap:
 _WS_TAP = _WsTap()
 
 
+class _ReplyLine:
+    open: bool = False
+
+
+_REPLY = _ReplyLine()
+
+
+def write_reply_token(text: str) -> None:
+    """Stream one LLM token. The line stays open until a debug log or the turn ends."""
+    sys.stdout.write(text)
+    sys.stdout.flush()
+    _REPLY.open = True
+
+
+def end_reply_line() -> None:
+    if not _REPLY.open:
+        return
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+    _REPLY.open = False
+
+
 def env_debug() -> bool:
     return env_bool("FISH_VOICE_DEBUG")
 
 
 def debug(message: str, *args: Any, **fields: Any) -> None:
     if env_debug():
+        end_reply_line()
         logger.debug(message, *args, **fields)
 
 
@@ -51,10 +74,15 @@ def heartbeat_due(idle_frames: int, every: int) -> bool:
     return env_debug() and idle_frames % every == 0
 
 
+def _write_stderr(message: str) -> None:
+    """Write at emit time so a wrapped stderr (pytest, a later redirect) is the one used."""
+    sys.stderr.write(message)
+
+
 def _stderr_logger(level: str) -> None:
     logger.remove()
     logger.add(
-        sys.stderr,
+        _write_stderr,
         level=level,
         format="{time:HH:mm:ss.SSS} | {level:<5} | {message}",
         colorize=False,

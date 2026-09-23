@@ -27,7 +27,7 @@ from fish_audio_suite_kit import (
 from fish_audio_suite_voice.asr import fish_asr
 from fish_audio_suite_voice.barge import BargeGate, post_speak_cooldown_s
 from fish_audio_suite_voice.config import VoiceCliConfig
-from fish_audio_suite_voice.debug import debug
+from fish_audio_suite_voice.debug import debug, end_reply_line, write_reply_token
 from fish_audio_suite_voice.listen import record_utterance
 from fish_audio_suite_voice.live import IsolatedFishTts, IsolatedResult, is_cancel_noise
 from fish_audio_suite_voice.llm import llm_token_stream
@@ -75,12 +75,14 @@ async def _collect_reply(
             if ttft_ms is None:
                 ttft_ms = elapsed_ms(started)
                 print(f"  [llm ttft {ttft_ms:.0f}ms]", flush=True)
+                write_reply_token("llm: ")
             parts.append(tok)
-            print(tok, end="", flush=True)
-        print()
+            write_reply_token(tok)
     except (asyncio.CancelledError, BaseExceptionGroup, RuntimeError) as e:
         if not is_cancel_noise(e):
             print(f"[llm] {e}", file=sys.stderr)
+    finally:
+        end_reply_line()
     reply = "".join(parts).strip()
     print(f"  [got {len(reply)} chars]", flush=True)
     return reply, ttft_ms

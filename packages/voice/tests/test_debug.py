@@ -1,8 +1,41 @@
 from __future__ import annotations
 
+import io
+import sys
+
 import pytest
 
-from fish_audio_suite_voice.debug import env_debug, header_meta, public_meta, ws_event_view
+from fish_audio_suite_voice.debug import (
+    configure_voice_logging,
+    debug,
+    env_debug,
+    header_meta,
+    public_meta,
+    write_reply_token,
+    ws_event_view,
+)
+
+
+def test_debug_follows_a_replaced_stderr(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    configure_voice_logging(debug=True)
+    caught = io.StringIO()
+    monkeypatch.setattr(sys, "stderr", caught)
+    debug("after-redirect")
+    assert "after-redirect" in caught.getvalue()
+
+
+def test_debug_closes_reply_before_the_log(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    configure_voice_logging(debug=True)
+    write_reply_token("[calm] hey")
+    debug("llm.done")
+    captured = capsys.readouterr()
+    assert captured.out == "[calm] hey\n"
+    assert "llm.done" in captured.err
+    assert not captured.err.startswith("[calm]")
 
 
 def test_env_debug_truthy(monkeypatch: pytest.MonkeyPatch) -> None:
