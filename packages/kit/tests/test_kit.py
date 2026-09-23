@@ -1,12 +1,25 @@
 from __future__ import annotations
 
+import pytest
+
 from fish_audio_suite_kit import (
     DEFAULT_SYSTEM_PROMPT,
     CaptionCue,
+    FishHttpError,
     LatencySnapshot,
     SuiteDefaults,
     canonical_traceparent,
+    chunk_length_hi,
+    clamp_num,
     ensure_lead_cue,
+    ensure_trace_headers,
+    env_base,
+    env_bool,
+    env_float,
+    env_int,
+    env_off,
+    env_text,
+    env_token,
     extract_quoted_speech,
     fish_backoff_seconds,
     fish_error_body,
@@ -16,9 +29,14 @@ from fish_audio_suite_kit import (
     is_backchannel,
     is_quit_utterance,
     is_tts_junk,
+    known_latency,
+    known_mp3_bitrate,
+    known_opus_bitrate,
+    known_tts_model,
     make_traceparent,
     next_tts_cut,
     normalize_cues,
+    parse_asr_body,
     parse_fish_error,
     scrub_asr,
     scrub_tts,
@@ -157,6 +175,22 @@ def test_speaker_and_timestamp_asr() -> None:
     assert "hello there" in out
 
 
+def test_fish_error_message_is_utf8() -> None:
+    body = fish_error_body(502, "bad \ud800 byte")
+    assert "\ud800" not in str(body["message"])
+    str(body["message"]).encode("utf-8")
+    err = FishHttpError(502, "bad \ud800 byte")
+    err.message.encode("utf-8")
+
+
+def test_scrub_asr_replaces_lone_surrogates() -> None:
+    out = scrub_asr("hello \ud800 there")
+    out.encode("utf-8")
+    assert out.startswith("hello ")
+    assert "\ud800" not in out
+    assert "there" in out
+
+
 def test_scrub_asr_keeps_speakers_when_asked() -> None:
     out = scrub_asr("Speaker 1: hello there", strip_speakers=False)
     assert "Speaker 1" in out
@@ -226,6 +260,45 @@ def test_skip_empty_delta() -> None:
     assert not skip_empty_delta("hi")
 
 
+def test_bitrate_snaps_to_documented_values() -> None:
+    assert known_mp3_bitrate(64) == 64
+    assert known_mp3_bitrate(96) == 128
+    assert known_mp3_bitrate(192) == 192
+    assert known_opus_bitrate(24000) == 24000
+    assert known_opus_bitrate(1) == -1000
+
+
+def test_clamp_num_keeps_fish_ranges() -> None:
+    assert clamp_num(900, 100, chunk_length_hi("https://api.fish.audio"), 200, int) == 300
+    assert clamp_num(800, 100, chunk_length_hi("http://127.0.0.1:8080"), 200, int) == 800
+    assert clamp_num("nope", 0.5, 2.0, 1.05, float) == 1.05
+    assert clamp_num(float("nan"), 0.5, 2.0, 1.05, float) == 1.05
+    assert clamp_num(float("inf"), 0.5, 2.0, 1.05, float) == 1.05
+    assert clamp_num(float("inf"), 100, 300, 200, int) == 200
+    assert clamp_num(9, 0.5, 2.0, 1.05, float) == 2.0
+
+
+def test_parse_asr_body_text_or_502() -> None:
+    data, text = parse_asr_body({"text": "hello"})
+    assert data["text"] == "hello"
+    assert text == "hello"
+    assert parse_asr_body({})[1] == ""
+    assert parse_asr_body({"text": None})[1] == ""
+    with pytest.raises(FishHttpError) as missing:
+        parse_asr_body(["hello"])
+    assert missing.value.status == 502
+    with pytest.raises(FishHttpError) as bad_text:
+        parse_asr_body({"text": ["hello"]})
+    assert bad_text.value.message == "Fish returned a non-object body"
+
+
+def test_known_model_and_latency() -> None:
+    assert known_tts_model(" S2.1-PRO ") == "s2.1-pro"
+    assert known_tts_model("MyModel") == "MyModel"
+    assert known_latency(" Normal ", "balanced") == "normal"
+    assert known_latency("turbo", "balanced") == "balanced"
+
+
 def test_suite_defaults_and_timing() -> None:
     d = SuiteDefaults()
     assert d.tts_model == "s2.1-pro"
@@ -262,6 +335,10 @@ def test_w3c_trace_headers_and_mint() -> None:
     assert headers["traceparent"] == _SAMPLE_PARENT
     assert headers["tracestate"] == "congo=t61rcWkgMzE"
     assert w3c_trace_headers({}) == {}
+    forwarded = ensure_trace_headers({"traceparent": _SAMPLE_PARENT})
+    assert forwarded["traceparent"] == _SAMPLE_PARENT
+    minted_out = ensure_trace_headers({})
+    assert canonical_traceparent(minted_out["traceparent"]) == minted_out["traceparent"]
     minted = make_traceparent()
     assert canonical_traceparent(minted) == minted
     child = make_traceparent(trace_id="4bf92f3577b34da6a3ce929d0e0e4736")
@@ -303,3 +380,62 @@ def test_format_as_srt_and_vtt() -> None:
     assert format_as_srt([CaptionCue(0.0, 2.0, "  hello  ")]) == (
         "1\n00:00:00,000 --> 00:00:02,000\nhello\n"
     )
+    assert format_as_srt([CaptionCue(float("nan"), float("inf"), "hello")]) == (
+        "1\n00:00:00,000 --> 00:00:00,000\nhello\n"
+    )
+    assert format_as_srt([CaptionCue(0.0, 1e308, "hello")]) == (
+        "1\n00:00:00,000 --> 00:00:00,000\nhello\n"
+    )
+    assert format_as_srt([CaptionCue(0.0, 1.0, "hello\n\nthere")]) == (
+        "1\n00:00:00,000 --> 00:00:01,000\nhello\nthere\n"
+    )
+    assert format_as_srt([CaptionCue(0.0, 1.0, "hello\r\n\r\nthere")]) == (
+        "1\n00:00:00,000 --> 00:00:01,000\nhello\nthere\n"
+    )
+    assert "hello\n\nthere" not in format_as_vtt([CaptionCue(0.0, 1.0, "hello\n\nthere")])
+
+
+def test_env_number_keeps_default_when_blank_or_junk(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FISH_TEST_NUM", "12")
+    assert env_int("FISH_TEST_NUM", 3) == 12
+    assert env_float("FISH_TEST_NUM", 0.5) == 12.0
+    monkeypatch.setenv("FISH_TEST_NUM", "1.5")
+    assert env_float("FISH_TEST_NUM", 0.5) == 1.5
+    assert env_int("FISH_TEST_NUM", 3) == 3
+    monkeypatch.setenv("FISH_TEST_NUM", "nope")
+    assert env_int("FISH_TEST_NUM", 3) == 3
+    assert env_float("FISH_TEST_NUM", 0.5) == 0.5
+    monkeypatch.setenv("FISH_TEST_NUM", "nan")
+    assert env_float("FISH_TEST_NUM", 0.5) == 0.5
+    monkeypatch.setenv("FISH_TEST_NUM", "inf")
+    assert env_float("FISH_TEST_NUM", 0.5) == 0.5
+    monkeypatch.setenv("FISH_TEST_NUM", "  ")
+    assert env_int("FISH_TEST_NUM", 3) == 3
+    assert env_int("FISH_TEST_MISSING", 3) == 3
+    monkeypatch.setenv("FISH_TEST_FLAG", " YES ")
+    assert env_bool("FISH_TEST_FLAG") is True
+    monkeypatch.setenv("FISH_TEST_FLAG", "0")
+    assert env_bool("FISH_TEST_FLAG", default=True) is False
+    monkeypatch.setenv("FISH_TEST_FLAG", "   ")
+    assert env_bool("FISH_TEST_FLAG", default=True) is True
+    assert env_bool("FISH_TEST_FLAG_MISSING") is False
+    assert env_off("FISH_TEST_OFF_MISSING") is False
+    monkeypatch.setenv("FISH_TEST_OFF", " maybe ")
+    assert env_off("FISH_TEST_OFF") is False
+    monkeypatch.setenv("FISH_TEST_OFF", " OFF ")
+    assert env_off("FISH_TEST_OFF") is True
+    assert env_base("FISH_TEST_BASE_MISSING", "https://api.fish.audio/") == "https://api.fish.audio"
+    assert env_text("FISH_TEST_TEXT_MISSING", "plain") == "plain"
+    monkeypatch.setenv("FISH_TEST_TEXT", "  kept  ")
+    assert env_text("FISH_TEST_TEXT") == "kept"
+    monkeypatch.setenv("FISH_TEST_TOKEN", "  ")
+    assert env_token("FISH_TEST_TOKEN", "normal") == "normal"
+    monkeypatch.setenv("FISH_TEST_TOKEN", " low ")
+    assert env_token("FISH_TEST_TOKEN", "normal") == "low"
+    monkeypatch.setenv("FISH_TEST_BASE", "https://example.test/v1/")
+    assert env_base("FISH_TEST_BASE", "https://api.fish.audio") == "https://example.test/v1"
+    monkeypatch.setenv("FISH_TEST_BASE", "")
+    assert env_base("FISH_TEST_BASE", "https://api.fish.audio") == ""
+    monkeypatch.setenv("FISH_TEST_BASE", "  https://example.test/v1/  ")
+    assert env_base("FISH_TEST_BASE", "https://api.fish.audio") == "https://example.test/v1"
+    assert env_bool("FISH_TEST_FLAG_MISSING", default=True) is True
