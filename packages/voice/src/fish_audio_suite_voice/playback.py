@@ -112,12 +112,24 @@ class _Played:
         return self._played
 
 
+# wave stores the rate as an unsigned 32-bit field. Larger values raise while
+# the samples are already in memory, so the file is never written.
+_WAV_RATE_HI = 2**32 - 1
+
+
+def _positive_rate(sample_rate: int) -> int:
+    # 0 and negative rates raise "sampling rate not specified".
+    if sample_rate < 1 or sample_rate > _WAV_RATE_HI:
+        return _DEFAULT_RATE
+    return sample_rate
+
+
 def write_mono_wav(target: Any, pcm: bytes, sample_rate: int) -> None:
     """Write mono int16 PCM as a WAV file."""
     with wave.open(target, "wb") as wf:
         wf.setnchannels(_MONO)
         wf.setsampwidth(SAMPLE_BYTES)
-        wf.setframerate(sample_rate)
+        wf.setframerate(_positive_rate(sample_rate))
         wf.writeframes(pcm)
 
 
@@ -127,7 +139,7 @@ class FileSink(_Played):
     def __init__(self, path: Path, *, sample_rate: int = _DEFAULT_RATE, wav: bool = True) -> None:
         super().__init__()
         self.path = path
-        self.sample_rate = sample_rate
+        self.sample_rate = _positive_rate(sample_rate)
         self.wav = wav
         self._buf = bytearray()
 
@@ -137,40 +149,64 @@ class FileSink(_Played):
         self._reset_played()
 
     def write(self, chunk: bytes) -> None:
-        """Append one encoded or PCM chunk."""
+        """Append one encoded or PCM chunk. It is not played until finish."""
         if not chunk:
             return
         self._buf.extend(chunk)
-        self._count(chunk)
 
     def finish(self, *, kill: bool = False) -> None:
-        """Write the buffer unless barge-in asked to drop it."""
-        if kill:
+        """Write the buffer unless it is empty or barge-in asked to drop it."""
+        # An empty or cancelled turn must not replace the last file, and
+        # history must not record audio the file never received.
+        if kill or not self._buf:
             return
+        # A trailing odd byte is half an int16 sample. The data chunk would
+        # not match the block align, and a strict reader rejects the file.
+        pcm = even_pcm(bytes(self._buf))
+        if not pcm:
+            return
+        # Count only after the file is on disk. A full disk used to report
+        # the whole reply as played, then raise, so history said the user
+        # heard audio the file never received.
         if self.wav:
-            write_mono_wav(str(self.path), bytes(self._buf), self.sample_rate)
+            write_mono_wav(str(self.path), pcm, self.sample_rate)
         else:
-            self.path.write_bytes(bytes(self._buf))
+            self.path.write_bytes(pcm)
+        self._played = len(pcm)
 
 
 class StdoutSink(_Played):
-    """Write raw chunks to stdout."""
+    """Write raw PCM chunks to stdout."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._odd = b""
 
     def start(self) -> None:
-        """Reset the played-byte counter."""
+        """Reset the played-byte counter and any held half-sample."""
         self._reset_played()
+        self._odd = b""
 
     def write(self, chunk: bytes) -> None:
-        """Write one chunk to stdout and count it."""
+        """Write aligned PCM, holding a trailing odd byte for the next chunk."""
         if not chunk:
             return
-        sys.stdout.buffer.write(chunk)
+        # An odd chunk shifts every later int16 sample by one byte.
+        data = self._odd + chunk
+        self._odd = b""
+        if len(data) % SAMPLE_BYTES:
+            self._odd = data[-1:]
+            data = data[:-1]
+        if not data:
+            return
+        sys.stdout.buffer.write(data)
         sys.stdout.buffer.flush()
-        self._count(chunk)
+        self._count(data)
 
     def finish(self, *, kill: bool = False) -> None:
-        """Stdout has nothing to close."""
-        return
+        """Drop a held half-sample. It is not a complete int16."""
+        del kill
+        self._odd = b""
 
 
 DAC_SLICE_MS = 30
@@ -215,7 +251,7 @@ class SounddeviceSink(_Played):
         cancel: threading.Event | None = None,
     ) -> None:
         super().__init__()
-        self.sample_rate = sample_rate
+        self.sample_rate = _positive_rate(sample_rate)
         self.device = device
         self._cancel = cancel
         self._stream: Any = None
@@ -315,16 +351,19 @@ class MpvSink(_Played):
         proc = self.proc
         if proc is None:
             return
+        # Closing stdin is EOF. mpv would play the buffered mp3 before exit.
+        # Barge-in has to kill the process while the pipe is still open.
+        if kill:
+            _reap(proc, timeout=_MPV_KILL_S)
+            self.proc = None
+            return
         with contextlib.suppress(Exception):
             if proc.stdin and not proc.stdin.closed:
                 proc.stdin.close()
-        if kill:
+        try:
+            proc.wait(timeout=_MPV_WAIT_S)
+        except subprocess.TimeoutExpired:
             _reap(proc, timeout=_MPV_KILL_S)
-        else:
-            try:
-                proc.wait(timeout=_MPV_WAIT_S)
-            except subprocess.TimeoutExpired:
-                _reap(proc, timeout=_MPV_KILL_S)
         self.proc = None
 
 
