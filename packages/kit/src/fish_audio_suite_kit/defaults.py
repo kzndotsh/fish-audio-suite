@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 DEFAULT_SYSTEM_PROMPT = (
     "You are a spoken assistant using Fish Audio TTS. "
@@ -127,12 +128,21 @@ def elapsed_ms(started: float) -> float:
 
 def strip_base(url: str) -> str:
     """Drop surrounding space and trailing slashes so a joined path is not `//`."""
-    return url.strip().rstrip("/")
+    text = url.strip()
+    # A newline in the base makes httpx raise InvalidURL when the client
+    # is built, so the turn never starts.
+    cut = next((index for index, ch in enumerate(text) if ord(ch) < 32), None)
+    if cut is not None:
+        text = text[:cut].strip()
+    return text.rstrip("/")
 
 
 def env_base(name: str, default: str) -> str:
-    """Process env URL. A missing key keeps the default. Space and trailing slashes are removed."""
-    return strip_base(os.environ.get(name, default))
+    """Process env URL. Missing or blank keeps the default. Space and trailing slashes are removed."""
+    raw = os.environ.get(name)
+    if raw is None or not raw.strip():
+        return strip_base(default)
+    return strip_base(raw) or strip_base(default)
 
 
 def _env_word(name: str) -> str | None:
@@ -173,10 +183,41 @@ def env_text(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
 
+def _whole_int(value: Any) -> int:
+    # int("16000.0") raises, so a decimal string fell back to another rate
+    # and the speaker played the buffer at the wrong speed.
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError
+        return int(value)
+    if isinstance(value, str):
+        text = value.strip()
+        # "16,000" is a thousands separator. float() rejects the comma, so
+        # a 16 kHz buffer was played at the default rate.
+        if re.fullmatch(r"[+-]?\d{1,3}(?:,\d{3})+(?:\.0+)?", text):
+            text = text.replace(",", "")
+        parsed = float(text)
+        if not math.isfinite(parsed) or not parsed.is_integer():
+            raise ValueError
+        return int(parsed)
+    return int(value)
+
+
+def _parsed[T: int | float](value: Any, parse: Callable[[Any], T]) -> T:
+    if parse is int:
+        return cast(T, _whole_int(value))
+    return parse(value)
+
+
 def number_or[T: int | float](value: Any, default: T, parse: Callable[[Any], T]) -> T:
-    """Parse a number. Junk keeps the default."""
+    """Parse a number. Junk, including a JSON boolean, keeps the default."""
+    # bool is an int subclass. True would parse as 1.
+    if isinstance(value, bool):
+        return default
     try:
-        parsed = parse(value)
+        parsed = _parsed(value, parse)
     except (TypeError, ValueError, OverflowError):
         return default
     if isinstance(parsed, float) and not math.isfinite(parsed):
@@ -227,8 +268,11 @@ def clamp_num[T: int | float](
     parse: Callable[[Any], T],
 ) -> T:
     """Parse a Fish numeric knob and keep it inside the documented range."""
+    # bool is an int subclass. True would clamp to 1.
+    if isinstance(value, bool):
+        return default
     try:
-        n = parse(value)
+        n = _parsed(value, parse)
     except (TypeError, ValueError, OverflowError):
         n = default
     if isinstance(n, float) and not math.isfinite(n):
@@ -251,12 +295,16 @@ FISH_LATENCIES = frozenset({"low", "balanced", "normal"})
 
 
 def known_tts_model(name: str) -> str:
-    """Catalog ids are lowercase. Any other id is returned stripped."""
+    """Catalog ids are lowercase. Any other single-token id is returned stripped."""
     text = name.strip()
-    key = text.lower()
-    if key in FISH_TTS_MODEL_IDS:
-        return key
-    return text
+    # The id is a request header. A newline would split that header, and a
+    # non-ASCII character makes the client refuse to send it.
+    if text and all(32 < ord(ch) < 127 and not ch.isspace() for ch in text):
+        key = text.lower()
+        if key in FISH_TTS_MODEL_IDS:
+            return key
+        return text
+    return SuiteDefaults().tts_model
 
 
 def known_latency(name: str, default: str) -> str:
