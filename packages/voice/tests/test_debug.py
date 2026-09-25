@@ -105,3 +105,9 @@ def test_header_meta_keeps_x_headers() -> None:
     assert got["x-request-id"] == "abc"
     assert "Authorization" not in got
     assert got["Content-Type"] == "application/json"
+    hidden = header_meta({"x-api-key": "sk-secret", "x-request-id": "abc"})
+    assert "x-api-key" not in hidden
+    assert hidden["x-request-id"] == "abc"
+    body = public_meta({"api_key": "sk-secret", "language": "en"})
+    assert "api_key" not in body
+    assert body["language"] == "en"

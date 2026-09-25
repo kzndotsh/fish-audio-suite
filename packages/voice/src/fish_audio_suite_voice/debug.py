@@ -26,7 +26,11 @@ _PUBLIC_HEADERS = frozenset(
 
 
 def _is_secret(key: object) -> bool:
-    return str(key).lower() in _SECRET_HEADER
+    low = str(key).lower().replace("_", "-")
+    if low in _SECRET_HEADER:
+        return True
+    # x-api-key still starts with x-, which the header copy would otherwise keep.
+    return any(part in low for part in ("authorization", "api-key", "apikey", "cookie"))
 
 
 _fish_realtime: Any = _fish_rt
@@ -46,10 +50,21 @@ class _ReplyLine:
 _REPLY = _ReplyLine()
 
 
+def console_print(*args: object, **kwargs: Any) -> None:
+    """Print a status line. A closed stdout must not drop the spoken reply."""
+    try:
+        print(*args, **kwargs)
+    except BrokenPipeError:
+        return
+
+
 def write_reply_token(text: str) -> None:
     """Stream one LLM token. The line stays open until a debug log or the turn ends."""
-    sys.stdout.write(text)
-    sys.stdout.flush()
+    try:
+        sys.stdout.write(text)
+        sys.stdout.flush()
+    except BrokenPipeError:
+        return
     _REPLY.open = True
 
 
@@ -57,8 +72,11 @@ def end_reply_line() -> None:
     """Close the open token line with a newline."""
     if not _REPLY.open:
         return
-    sys.stdout.write("\n")
-    sys.stdout.flush()
+    try:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+    except BrokenPipeError:
+        pass
     _REPLY.open = False
 
 
