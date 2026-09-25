@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
@@ -104,12 +105,46 @@ def _event_field(event: object, name: str) -> Any:
     return value
 
 
+_TEXT_PARTS = frozenset({"text", "output_text"})
+
+
+def _part_text(part: object) -> str:
+    if isinstance(part, str):
+        return part
+    kind = _event_field(part, "type")
+    # Reasoning and image parts are not speech.
+    if isinstance(kind, str) and kind not in _TEXT_PARTS:
+        return ""
+    text = _event_field(part, "text")
+    return text if isinstance(text, str) else ""
+
+
+def _content_text(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(_part_text(part) for part in content)
+    # One part object is the same payload as a one-item list. Dropping it
+    # speaks nothing for that token.
+    if content is None:
+        return ""
+    return _part_text(content)
+
+
 def _message_text(choice: object) -> str:
     msg = _event_field(choice, "message")
     if msg is None:
         return ""
-    piece = _event_field(msg, "content")
-    return piece if isinstance(piece, str) else ""
+    return _content_text(_event_field(msg, "content"))
+
+
+def _refusal_text(obj: object | None) -> str:
+    # A refusal is the reply. Content is null, so reading only content
+    # speaks nothing and the next turn has no record of what was said.
+    if obj is None:
+        return ""
+    refusal = _event_field(obj, "refusal")
+    return refusal if isinstance(refusal, str) else ""
 
 
 def _first_choice(event: object) -> object | None:
@@ -119,15 +154,33 @@ def _first_choice(event: object) -> object | None:
     return None
 
 
-def _delta_content(chunk: object) -> str:
+def _delta_content(chunk: object, *, already: bool = False) -> str:
     ch0 = _first_choice(chunk)
     if ch0 is None:
         return ""
     delta = _event_field(ch0, "delta")
     content = _event_field(delta, "content") if delta is not None else None
-    if isinstance(content, str) and content:
-        return content
-    return _message_text(ch0)
+    refused = _refusal_text(delta)
+    # An empty delta is the end of a streamed reply. Falling through would
+    # speak message.content again when the provider also sends the full text.
+    if content is not None:
+        text = _content_text(content)
+        # A first chunk often sets content to "" with the role. That is not
+        # the end of the reply. The words can still be on message or refusal.
+        if text:
+            return text
+        if already:
+            return refused
+    elif already:
+        return refused
+    if refused:
+        return refused
+    # A null content on the first event is the whole reply. After tokens
+    # have already been spoken, the same null is a second copy.
+    text = _message_text(ch0)
+    if text:
+        return text
+    return _refusal_text(_event_field(ch0, "message"))
 
 
 @dataclass
@@ -200,10 +253,14 @@ def _note_chat_event(event: object, stats: _ChatStats) -> str:
     choice = _first_choice(event)
     if choice is not None:
         _note_choice(choice, stats)
-    piece = _delta_content(event)
+    piece = _delta_content(event, already=stats.yielded > 0)
     if piece:
         stats.yielded += 1
     return utf8_text(piece)
+
+
+async def _next_chat_event(events: AsyncIterator[object]) -> object:
+    return await anext(events)
 
 
 async def _consume_chat_events(
@@ -211,14 +268,50 @@ async def _consume_chat_events(
     cancel: asyncio.Event | None,
     stats: _ChatStats,
 ) -> AsyncIterator[str]:
-    async for event in events:
-        if cancel is not None and cancel.is_set():
-            return
-        piece = _note_chat_event(event, stats)
-        if stats.aborted:
-            return
-        if piece:
-            yield piece
+    # async for only notices cancel after the next token. Ctrl+C during a
+    # stalled reply would wait until the provider sends something.
+    incoming = aiter(events)
+    pending: asyncio.Task[object] = asyncio.create_task(_next_chat_event(incoming))
+    try:
+        while True:
+            if not await _event_or_cancel(pending, cancel):
+                return
+            try:
+                event = pending.result()
+            except StopAsyncIteration:
+                return
+            pending = asyncio.create_task(_next_chat_event(incoming))
+            piece = _note_chat_event(event, stats)
+            if stats.aborted:
+                return
+            if piece:
+                yield piece
+    finally:
+        if not pending.done():
+            pending.cancel()
+            with contextlib.suppress(BaseException):
+                await pending
+
+
+async def _event_or_cancel(pending: asyncio.Task[object], cancel: asyncio.Event | None) -> bool:
+    """Return whether ``pending`` finished. False means cancel won."""
+    if cancel is None:
+        await asyncio.wait({pending})
+        return True
+    if cancel.is_set():
+        return False
+    stopped = asyncio.create_task(cancel.wait())
+    try:
+        done, _pending = await asyncio.wait(
+            {pending, stopped},
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+    finally:
+        if not stopped.done():
+            stopped.cancel()
+            with contextlib.suppress(BaseException):
+                await stopped
+    return pending in done
 
 
 def _finish_llm(stats: _ChatStats, route_model: str) -> None:
@@ -236,6 +329,23 @@ def _finish_llm(stats: _ChatStats, route_model: str) -> None:
     )
     if stats.yielded == 0:
         warn(f"[llm] empty reply (model={route_model} finish={stats.last_finish!r})")
+
+
+def _cancel_group(exc: BaseException) -> bool:
+    # A task group on barge-in is only cancel noise. A group that holds a
+    # provider error was swallowed, so the reply stopped and nothing was logged.
+    if isinstance(exc, BaseExceptionGroup):
+        return bool(exc.exceptions) and all(_cancel_group(item) for item in exc.exceptions)
+    return is_cancel_noise(exc)
+
+
+def _group_text(exc: BaseException) -> str:
+    # str(ExceptionGroup) is "llm (1 sub-exception)". The provider message
+    # is on the nested error, so the log never said why the reply stopped.
+    if isinstance(exc, BaseExceptionGroup):
+        inner = "; ".join(_group_text(item) for item in exc.exceptions)
+        return inner or str(exc)
+    return str(exc)
 
 
 async def llm_token_stream(
@@ -312,8 +422,12 @@ async def llm_token_stream(
         )
         async for piece in _consume_chat_events(events, cancel, stats):
             yield piece
-    except (asyncio.CancelledError, GeneratorExit, BaseExceptionGroup):
+    except (asyncio.CancelledError, GeneratorExit):
         return
+    except BaseExceptionGroup as exc:
+        if _cancel_group(exc):
+            return
+        warn(f"[llm] {_group_text(exc)}")
     except Exception as e:
         if is_cancel_noise(e):
             return
