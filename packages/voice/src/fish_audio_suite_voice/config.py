@@ -72,6 +72,17 @@ def _existing(default: str, *names: str) -> str:
     return default
 
 
+def _base_url(default: str, *names: str) -> str:
+    """First non-blank URL. A blank value is not a host, so the next key is used."""
+    for name in names:
+        if name not in os.environ:
+            continue
+        text = strip_base(os.environ[name])
+        if text:
+            return text
+    return strip_base(default)
+
+
 def _model_name(*names: str) -> str:
     for name in names:
         raw = env_token(name, "")
@@ -140,12 +151,10 @@ def cfg() -> VoiceCliConfig:
         system_prompt=os.environ.get("FISH_SYSTEM_PROMPT", d.system_prompt),
         device=os.environ.get("FISH_VOICE_DEVICE"),
         llm_backend=env_token("FISH_LLM_BACKEND", "openrouter"),
-        llm_base=strip_base(
-            _existing(
-                OPENROUTER_API_BASE,
-                "FISH_LLM_BASE",
-                "OPENROUTER_BASE_URL",
-            )
+        llm_base=_base_url(
+            OPENROUTER_API_BASE,
+            "FISH_LLM_BASE",
+            "OPENROUTER_BASE_URL",
         ),
         llm_key=_existing("", "FISH_LLM_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY"),
         llm_model=_model_name("FISH_LLM_MODEL", "OPENROUTER_MODEL"),
