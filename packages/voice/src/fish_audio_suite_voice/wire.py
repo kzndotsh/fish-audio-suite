@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import re
 import threading
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
@@ -23,6 +24,7 @@ from fish_audio_suite_kit import (
     skip_empty_delta,
     split_tts_piece,
 )
+from fish_audio_suite_kit.cues import paren_cue_names
 from fish_audio_suite_voice.aec import SAMPLE_BYTES
 from fish_audio_suite_voice.debug import debug, warn
 from fish_audio_suite_voice.playback import PlaybackSink
@@ -259,7 +261,6 @@ def _note_first_audio(audio: Heard, chunk: bytes, t0: float) -> None:
         return
     audio.got_audio = True
     audio.ttfa_ms = elapsed_ms(t0)
-    print("  [tts first audio ttfa]", flush=True)
     debug(
         "tts.first_audio ttfa_ms={:.0f} chunk={}",
         audio.ttfa_ms,
@@ -331,7 +332,12 @@ def isolated_result(run: TurnRun) -> IsolatedResult:
     """Build the result returned after an isolated speak finishes."""
     spec = run.spec
     audio = run.audio
-    if not audio.got_audio and not run.cancel.is_set() and run.err_status is None:
+    if (
+        not audio.got_audio
+        and not run.cancel.is_set()
+        and run.err_status is None
+        and not run.err_message
+    ):
         warn(f"[tts] no audio voice={spec.voice_id} model={spec.model}")
     played = run.sink.bytes_played()
     full = run.sent_text or "".join(run.acc.flushed)
@@ -342,6 +348,8 @@ def isolated_result(run: TurnRun) -> IsolatedResult:
         audio_format=spec.audio_format,
         got_audio=audio.got_audio,
         cancelled=run.cancel.is_set(),
+        # A socket drop has no HTTP status. The message is still a failed turn.
+        failed=run.err_status is not None or bool(run.err_message),
     )
     return IsolatedResult(
         spoken_so_far=spoken,
@@ -358,16 +366,131 @@ def isolated_result(run: TurnRun) -> IsolatedResult:
 _CHARS_PER_S = 16
 
 
+# Fish does not speak a lead tag. Counting "[clear] " as audio spent the
+# barge budget on silence, so the heard word was missing from history.
+# "a[i][j]" is an index the speaker did say. Stripping every bracket
+# forgot it, and the next turn said the index again.
+_UNSPOKEN_CUES = paren_cue_names()
+# The default lead is on every finished line. Fish does not say it, and
+# leaving it in history makes the next reply start with the tag.
+_CLEAR_TAG_RE = re.compile(r"\[clear\]", re.IGNORECASE)
+_CUE_TOKEN_RE = re.compile(
+    r"\[(?:"
+    + "|".join(re.escape(tag) for tag in sorted(_UNSPOKEN_CUES, key=len, reverse=True))
+    + r")\]",
+    re.IGNORECASE,
+)
+
+
+def _audible_text(text: str) -> str:
+    return " ".join(_CUE_TOKEN_RE.sub(" ", text).split())
+
+
 def _pcm_chars(bytes_played: int, sample_rate: int) -> int:
     secs = bytes_played / max(sample_rate * SAMPLE_BYTES, 1)
     return max(1, int(secs * _CHARS_PER_S))
 
 
+def _cjk_char(ch: str) -> bool:
+    code = ord(ch)
+    return (
+        0x3040 <= code < 0x3100
+        or 0x3400 <= code < 0x4DC0
+        or 0x4E00 <= code < 0xA000
+        or 0xF900 <= code < 0xFB00
+        or 0xAC00 <= code < 0xD7B0
+    )
+
+
+def _word_char(ch: str) -> bool:
+    return ch.isalnum() and not _cjk_char(ch)
+
+
+def _extends_tail(tail: str, nxt: str) -> bool:
+    # "there" is finished when the next character is "." or a space.
+    # "ther" is not finished when the next character is "e". A Cyrillic
+    # letter continues the word too. "there.Friend" has finished "there":
+    # the period is not part of the next word. Keeping only "Hello" made
+    # the next turn say "there" again.
+    if not tail or _cjk_char(nxt):
+        return False
+    last = tail[-1]
+    if nxt.isalnum():
+        if _word_char(last):
+            return True
+        # "3.14" is one number. "there.Friend" is two words.
+        if last == "." and nxt.isdigit() and len(tail) > 1 and tail[-2].isdigit():
+            return True
+        return last in "'’-" and len(tail) > 1 and _word_char(tail[-2])
+    return nxt in "'’-" and _word_char(last)
+
+
+def _boundary_finished(prefix: str, nxt: str) -> bool:
+    if not prefix or _extends_tail(prefix, nxt):
+        return False
+    # "3" before "." is the start of "3.14", not a finished word.
+    return not (nxt == "." and prefix[-1].isdigit())
+
+
+def _finished_prefix(text: str, nxt: str) -> str:
+    if _boundary_finished(text, nxt):
+        return text
+    for index in range(len(text) - 1, 0, -1):
+        if _boundary_finished(text[:index], text[index]):
+            return text[:index]
+    return ""
+
+
 def _word_prefix(text: str, n: int) -> str:
+    if n >= len(text):
+        return text.strip()
     cut = text[:n]
-    if " " in cut:
-        cut = cut.rsplit(" ", 1)[0]
-    return cut.strip()
+    # A newline or a non-breaking space is a word boundary. Splitting on
+    # ASCII space only kept "Hello there" and dropped "friend." once the
+    # next line had started. "Hello\u00a0there" has no ASCII space, so a
+    # cut in "there" forgot "Hello" and the next turn said it again.
+    last = -1
+    for index, ch in enumerate(cut):
+        if ch.isspace():
+            last = index
+    if last < 0:
+        # A cut with no space is the middle of the first English word. History
+        # should not record that fragment. CJK has no spaces, including after
+        # an English word ("Hello你好"). Dropping that cut forgot speech the
+        # speaker had already played, so the next turn said it again.
+        stripped = cut.strip()
+        if any(_cjk_char(ch) for ch in stripped):
+            return stripped
+        # "Hello there" cut on the last letter of "Hello" has no space yet.
+        # The next character is the space, so that word was played. Dropping
+        # it made the next turn say "Hello" again.
+        if stripped and not _extends_tail(stripped, text[n]):
+            return stripped
+        # "Hello.Friend" has no space yet. The cut is inside "Friend",
+        # so the finished "Hello." was dropped and the next turn said it again.
+        return _finished_prefix(stripped, text[n])
+    head = cut[:last].strip()
+    tail = cut[last + 1 :]
+    if not tail:
+        return head
+    # "Hello there" has finished "there" when the next character is a space
+    # or a period. Stopping at the space before it made the next turn say
+    # "there" again. "Hello 你" has finished "你" even when "好" is still coming.
+    if not _extends_tail(tail, text[n]):
+        return f"{head} {tail}".strip()
+    # "there.Frien" still extends into "d", but "there." was already played.
+    # Returning only "Hello" made the next turn say "there" again.
+    for index in range(len(tail) - 1, 0, -1):
+        if not _extends_tail(tail[:index], tail[index]):
+            return f"{head} {tail[:index]}".strip()
+    extra = []
+    for ch in tail:
+        if not _cjk_char(ch):
+            break
+        extra.append(ch)
+    if extra:
+        return f"{head} {''.join(extra)}".strip()
+    return head
 
 
 def _spoken_prefix(
@@ -378,21 +501,29 @@ def _spoken_prefix(
     audio_format: str,
     got_audio: bool,
     cancelled: bool,
+    failed: bool = False,
 ) -> str:
-    if not sent_text.strip() or not got_audio:
+    if not sent_text.strip() or not got_audio or bytes_played <= 0:
+        # Fish can deliver a chunk the sink then drops, such as a dead mpv
+        # pipe. History should not record a reply the speaker never played.
         return ""
-    if cancelled and bytes_played <= 0:
-        return ""
-    if cancelled and audio_format == "pcm":
-        return _word_prefix(sent_text, _pcm_chars(bytes_played, sample_rate))
-    return sent_text.strip()
+    # A disconnect after the first audio byte is not a finished sentence.
+    # Recording the unplayed tail makes the next turn assume the user heard it.
+    if audio_format == "pcm" and (cancelled or failed):
+        return _word_prefix(_audible_text(sent_text), _pcm_chars(bytes_played, sample_rate))
+    return " ".join(_CLEAR_TAG_RE.sub(" ", sent_text).split())
 
 
 def _root_exc(exc: BaseException) -> BaseException:
-    cur = exc
-    while isinstance(cur, BaseExceptionGroup) and cur.exceptions:
-        cur = cur.exceptions[0]
-    return cur
+    # The first entry is often the cancel from a sibling task. Stopping there
+    # hid a 503, so a turn with no audio was not retried.
+    if isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+        for item in exc.exceptions:
+            found = _root_exc(item)
+            if not is_cancel_noise(found):
+                return found
+        return _root_exc(exc.exceptions[0])
+    return exc
 
 
 async def _anext_chunk(it: AsyncIterator[Any]) -> Any:
@@ -464,8 +595,14 @@ def turn_failure(
     """
     root = _root_exc(exc)
     retry, status, message = _classify_fish_exc(root)
-    if is_cancel_noise(root) or cancel.is_set():
+    if cancel.is_set() or (is_cancel_noise(root) and not got_audio):
         return _TtsFailure(retry=False)
+    # The socket died after audio started, and the turn was not cancelled.
+    # Recording the unplayed tail makes the next turn assume it was heard.
+    if is_cancel_noise(root):
+        err_message = str(root)
+        warn(f"[tts] {err_message}")
+        return _TtsFailure(retry=False, err_message=err_message)
     last = fish_attempt_exhausted(attempt)
     can_replay = bool(sent_text) and not got_audio
     if retry and not last and can_replay:
