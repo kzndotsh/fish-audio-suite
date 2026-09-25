@@ -309,10 +309,13 @@ def _remember_event(ev: Any, acc: EventAcc, t0: float) -> None:
         if acc.ttfs_ms is None:
             acc.ttfs_ms = elapsed_ms(t0)
             debug(
-                "tts.text_event chars={} ttfs_ms={:.0f}",
+                "tts.text_event chars={} ttfs_ms={:.0f} text={}",
                 len(text),
                 acc.ttfs_ms,
+                text,
             )
+            return
+        debug("tts.text_event chars={} text={}", len(text), text)
         return
     if isinstance(ev, FlushEvent):
         debug("tts.flush")

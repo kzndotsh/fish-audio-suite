@@ -142,7 +142,7 @@ async def _one_attempt(turn: _Turn, events: AsyncIterator[Any], attempt: int) ->
 def _turn_headers(spec: TurnSpec, sent_text: str) -> dict[str, str]:
     extra = ensure_trace_headers(spec.trace_headers)
     debug(
-        "tts.start voice={} model={} format={} sr={} latency={} speed={} chars={} trace={}",
+        "tts.start voice={} model={} format={} sr={} latency={} speed={} chars={} trace={} text={}",
         spec.voice_id,
         spec.model,
         spec.audio_format,
@@ -151,6 +151,7 @@ def _turn_headers(spec: TurnSpec, sent_text: str) -> dict[str, str]:
         spec.speed,
         len(sent_text),
         extra.get("traceparent", ""),
+        sent_text,
     )
     return extra
 
