@@ -89,7 +89,10 @@ async def read_json_object(request: Request) -> dict[str, Any] | JSONResponse:
         the type before treating the result as fields.
     """
     try:
-        parsed = await request.json()
+        # utf-8-sig drops a leading BOM. json.loads rejects that byte and the
+        # request would 400 before Fish saw the text.
+        raw = await request.body()
+        parsed = json.loads(raw.decode("utf-8-sig"))
     except (json.JSONDecodeError, UnicodeDecodeError):
         return json_error(400, "invalid JSON body")
     if not isinstance(parsed, dict):
