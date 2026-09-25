@@ -20,13 +20,20 @@ from fish_audio_suite_kit import (
     is_tts_junk,
     make_traceparent,
     normalize_cues,
+    same_utterance,
     scrub_tts,
     trace_id_of,
 )
 from fish_audio_suite_voice.asr import fish_asr
 from fish_audio_suite_voice.barge import BargeGate, post_speak_cooldown_s
 from fish_audio_suite_voice.config import VoiceCliConfig
-from fish_audio_suite_voice.debug import debug, end_reply_line, warn, write_reply_token
+from fish_audio_suite_voice.debug import (
+    console_print,
+    debug,
+    end_reply_line,
+    warn,
+    write_reply_token,
+)
 from fish_audio_suite_voice.listen import record_utterance
 from fish_audio_suite_voice.live import IsolatedFishTts, IsolatedResult, is_cancel_noise
 from fish_audio_suite_voice.llm import llm_token_stream
@@ -38,6 +45,9 @@ EXIT_FATAL = 2
 _KEEP_SYSTEM = 1
 _ROLES_PER_TURN = 2
 _FATAL_FISH = frozenset({401, 402, 403})
+# watch() polls the mic for 0.2 s. The join has to cover that poll so the
+# stream is closed before the next listen opens the device.
+_BARGE_JOIN_S = 1.0
 
 
 @dataclass
@@ -74,7 +84,7 @@ async def _collect_reply(
         ):
             if ttft_ms is None:
                 ttft_ms = elapsed_ms(started)
-                print(f"  [llm ttft {ttft_ms:.0f}ms]", flush=True)
+                console_print(f"  [llm ttft {ttft_ms:.0f}ms]", flush=True)
                 write_reply_token("llm: ")
             parts.append(tok)
             write_reply_token(tok)
@@ -84,7 +94,7 @@ async def _collect_reply(
     finally:
         end_reply_line()
     reply = "".join(parts).strip()
-    print(f"  [got {len(reply)} chars]", flush=True)
+    console_print(f"  [got {len(reply)} chars]", flush=True)
     return reply, ttft_ms
 
 
@@ -109,9 +119,9 @@ def _after_speech(
     if result.error_status in _FATAL_FISH:
         return snapshot, EXIT_FATAL
     if not result.got_audio and result.cancelled:
-        print("  [tts cancelled before audio]", flush=True)
-    elif not result.got_audio and result.error_status is None:
-        print(
+        console_print("  [tts cancelled before audio]", flush=True)
+    elif not result.got_audio and result.error_status is None and not result.error_message:
+        console_print(
             f"  [tts silent] voice={c.fish_voice_id} model={c.tts_model}",
             flush=True,
         )
@@ -140,11 +150,11 @@ async def _speak_reply(
 ) -> tuple[LatencySnapshot, int | None]:
     scrubbed = ensure_lead_cue(normalize_cues(scrub_tts(reply)))
     if is_tts_junk(scrubbed):
-        print("  (skip junk TTS)", flush=True)
+        console_print("  (skip junk TTS)", flush=True)
         return snapshot, None
     c = loop.config
     barge = BargeGate(device=loop.device)
-    barge.start_after_bleed(cancel)
+    thread = barge.start_after_bleed(cancel)
     sink = make_sink(
         c.playback,
         path=None,
@@ -153,10 +163,20 @@ async def _speak_reply(
         cancel=cancel,
     )
     loop.tts.trace_headers = {"traceparent": make_traceparent(trace_id=trace_id)}
-    result = await asyncio.to_thread(loop.tts.speak_isolated, scrubbed, sink, cancel)
-    if result.cancelled and barge.captured:
-        loop.barge_prefix = barge.captured
-    return _after_speech(loop, snapshot, result, started=started)
+    try:
+        try:
+            result = await asyncio.to_thread(loop.tts.speak_isolated, scrubbed, sink, cancel)
+        except PortAudioMissingError as exc:
+            warn(str(exc))
+            return snapshot, EXIT_FATAL
+        if result.cancelled and barge.captured:
+            loop.barge_prefix = barge.captured
+        return _after_speech(loop, snapshot, result, started=started)
+    finally:
+        # watch() holds the mic until this event is set. The next listen
+        # opens the same device as soon as this function returns.
+        cancel.set()
+        thread.join(timeout=_BARGE_JOIN_S)
 
 
 def _skip_asr(reason: str, text: str) -> Literal["skip"]:
@@ -172,7 +192,7 @@ def _accept_asr(text: str, last_user: str) -> Literal["skip", "quit", "ok"]:
         return _skip_asr("hallucination", text)
     if is_quit_utterance(text):
         return "quit"
-    if text.strip() == last_user.strip():
+    if same_utterance(text, last_user):
         return "skip"
     return "ok"
 
@@ -200,20 +220,26 @@ async def _recognize(loop: _Loop, wav: bytes, last_user: str) -> _HeardLine:
             extra_headers={"traceparent": asr_parent},
         )
     except FishHttpError as e:
+        if STOP_RECORD.is_set():
+            return _HeardLine("bye")
         warn(f"[asr] {e.status} {e.message}")
         if e.status in _FATAL_FISH:
             return _HeardLine("fatal", code=EXIT_FATAL)
         return _HeardLine("again")
     except Exception as e:
+        if STOP_RECORD.is_set():
+            return _HeardLine("bye")
         warn(f"[asr] {e}")
         return _HeardLine("again")
+    if STOP_RECORD.is_set():
+        return _HeardLine("bye")
     asr_ms = elapsed_ms(started)
     decision = _accept_asr(text, last_user)
     if decision == "quit":
         return _HeardLine("bye")
     if decision == "skip":
         return _HeardLine("again")
-    print(f"you: {text}  [asr {asr_ms:.0f}ms]")
+    console_print(f"you: {text}  [asr {asr_ms:.0f}ms]")
     return _HeardLine(
         "line",
         text=text,
@@ -224,7 +250,7 @@ async def _recognize(loop: _Loop, wav: bytes, last_user: str) -> _HeardLine:
 
 
 async def _hear_line(loop: _Loop, last_user: str) -> _HeardLine:
-    print("listening…")
+    console_print("listening…")
     debug("listen.waiting device={}", loop.device)
     try:
         prefix = loop.barge_prefix
@@ -239,7 +265,12 @@ async def _hear_line(loop: _Loop, last_user: str) -> _HeardLine:
         debug("listen.dropped (too short or none)")
         return _HeardLine("again")
     debug("listen.wav bytes={}", len(wav))
-    return await _recognize(loop, wav, last_user)
+    heard = await _recognize(loop, wav, last_user)
+    # Quit during the Fish request used to come back as a normal line, so
+    # the LLM still answered after Ctrl+C.
+    if STOP_RECORD.is_set():
+        return _HeardLine("bye")
+    return heard
 
 
 def bye() -> int:
@@ -250,14 +281,29 @@ def bye() -> int:
     int
         ``EXIT_OK`` (0). Fatal Fish and PortAudio failures use 2 instead.
     """
-    print("\nbye")
+    console_print("\nbye")
     return EXIT_OK
+
+
+def _trim_history(history: list[dict[str, str]]) -> None:
+    cap = _KEEP_SYSTEM + HISTORY_TURNS * _ROLES_PER_TURN
+    while len(history) > cap:
+        # Drop the oldest user and assistant together. Popping one message
+        # leaves that assistant answering the next user.
+        paired = (
+            len(history) > _KEEP_SYSTEM + 1
+            and history[_KEEP_SYSTEM]["role"] == "user"
+            and history[_KEEP_SYSTEM + 1]["role"] == "assistant"
+        )
+        if paired:
+            del history[_KEEP_SYSTEM : _KEEP_SYSTEM + _ROLES_PER_TURN]
+            continue
+        del history[_KEEP_SYSTEM]
 
 
 def _remember_user(history: list[dict[str, str]], text: str) -> None:
     history.append({"role": "user", "content": text})
-    while len(history) > _KEEP_SYSTEM + HISTORY_TURNS * _ROLES_PER_TURN:
-        history.pop(_KEEP_SYSTEM)
+    _trim_history(history)
 
 
 async def _answer_line(loop: _Loop, heard: _HeardLine) -> int | None:
@@ -284,7 +330,7 @@ async def _answer_line(loop: _Loop, heard: _HeardLine) -> int | None:
         )
         if fatal is not None:
             return fatal
-    print(f"  {snapshot.log_line()}", flush=True)
+    console_print(f"  {snapshot.log_line()}", flush=True)
     TURN.fire()
     TURN.clear()
     barged = bool(loop.barge_prefix)
