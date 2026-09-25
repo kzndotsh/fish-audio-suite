@@ -99,7 +99,12 @@ def bearer(key: str) -> str:
     str
         ``Bearer`` plus the key.
     """
-    return f"Bearer {key}"
+    token = key.strip()
+    # A newline would split the header. A non-ASCII character cannot be
+    # encoded into it, so the client raises before the request is sent.
+    if any(ord(ch) < 32 or ord(ch) >= 127 for ch in token):
+        token = ""
+    return f"Bearer {token}"
 
 
 def fish_unreachable() -> tuple[int, str]:
@@ -221,18 +226,53 @@ def _nested_message(value: Any) -> Any:
     return data.get("message")
 
 
+def _read_message(value: Any) -> tuple[str | None, bool]:
+    # A blank string and a dict with no text are not the error. Stopping
+    # on them hid detail, so the client saw "error" or "HTTP 400".
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None, False
+    if isinstance(value, str):
+        return value.strip(), False
+    if isinstance(value, dict):
+        inner = _nested_message(value)
+        # A nested list is the same 422 payload. Returning the dict as
+        # "error" hid "field required". A string list joined the same way.
+        if inner is not None and inner is not value:
+            found, _saw = _read_message(inner)
+            if found:
+                return found, True
+        # One validation object is the same payload as a one-item list.
+        # str(dict) is the Python repr, so the field message never showed.
+        summary = _validation_msgs([value])
+        if summary:
+            return summary, True
+        return None, True
+    if isinstance(value, list):
+        items = cast(list[Any], value)
+        summary = _validation_msgs(items)
+        if summary:
+            return summary, True
+        parts = [item.strip() for item in items if isinstance(item, str) and item.strip()]
+        if parts:
+            return "; ".join(parts), True
+        return None, True
+    text = str(value).strip()
+    return (text or None), False
+
+
 def _message_of(data: dict[str, Any]) -> Any:
-    msg: Any = None
+    saw_object = False
     for key in ("message", "detail"):
-        if data.get(key) is not None:
-            msg = data[key]
-            break
-    if msg is None:
-        msg = _nested_message(data.get("error"))
-    if isinstance(msg, dict):
-        inner = _nested_message(msg)
-        return inner if inner is not None else "error"
-    return msg
+        found, saw = _read_message(data.get(key))
+        saw_object = saw_object or saw
+        if found:
+            return found
+    found, saw = _read_message(_nested_message(data.get("error")))
+    if found:
+        return found
+    if saw_object or saw:
+        return "error"
+    return None
 
 
 def _decoded(raw: Any) -> str:
@@ -247,6 +287,27 @@ def _fallback_message(text: str, status: int) -> str:
     return text or f"HTTP {status}"
 
 
+def _validation_msgs(items: list[Any]) -> str | None:
+    # Fish 422 is a list of {loc, msg}. The client should see the messages,
+    # not the whole validation array.
+    parts: list[str] = []
+    for item in items:
+        # One entry without a message used to hide the rest of the 422.
+        if not isinstance(item, dict):
+            continue
+        entry = cast(dict[str, Any], item)
+        msg = entry.get("msg")
+        if not isinstance(msg, str) or not msg.strip():
+            # Some 422 objects use message instead of msg. Stopping on the
+            # missing msg hid the field text and the client saw "error".
+            msg = entry.get("message")
+        if isinstance(msg, str) and msg.strip():
+            parts.append(msg.strip())
+    if not parts:
+        return None
+    return "; ".join(parts)
+
+
 def parse_fish_error(status: int, raw: Any) -> dict[str, str | int]:
     """Normalize Fish `{message, status}` or a plain-text parse error."""
     data = _as_dict(raw)
@@ -254,7 +315,15 @@ def parse_fish_error(status: int, raw: Any) -> dict[str, str | int]:
         msg = _message_of(data)
         text = str(msg).strip() if msg is not None else ""
         code = number_or(data.get("status", status), status, int)
+        # 200 or 0 in the body must not turn an HTTP 500 into a success.
+        if code < 400 or code > 599:
+            code = status
         return fish_error_body(code, _fallback_message(text, status))
+
+    if isinstance(raw, list):
+        summary = _validation_msgs(cast(list[Any], raw))
+        if summary:
+            return fish_error_body(status, summary)
 
     stripped = _decoded(raw).strip()
     if stripped:
@@ -262,6 +331,10 @@ def parse_fish_error(status: int, raw: Any) -> dict[str, str | int]:
             loaded = json.loads(stripped)
         except json.JSONDecodeError:
             return fish_error_body(status, stripped)
-        if _as_dict(loaded) is not None:
+        if isinstance(loaded, list):
+            summary = _validation_msgs(cast(list[Any], loaded))
+            if summary:
+                return fish_error_body(status, summary)
+        elif _as_dict(loaded) is not None:
             return parse_fish_error(status, loaded)
     return fish_error_body(status, _fallback_message(stripped, status))
