@@ -1409,6 +1409,13 @@ def test_suite_defaults_and_timing() -> None:
     assert "do not tag every sentence" in DEFAULT_SYSTEM_PROMPT
     assert "[excited]" in DEFAULT_SYSTEM_PROMPT
     assert "Good: [curious]" in DEFAULT_SYSTEM_PROMPT
+    assert "Do not repeat their sentence" in DEFAULT_SYSTEM_PROMPT
+    assert "spoken partner for an adult" in DEFAULT_SYSTEM_PROMPT
+    assert "Say only words that should be heard" in DEFAULT_SYSTEM_PROMPT
+    assert "speak only as that character" in DEFAULT_SYSTEM_PROMPT
+    assert "Do not step outside the scene" in DEFAULT_SYSTEM_PROMPT
+    assert "lecture, apologize, or decline" not in DEFAULT_SYSTEM_PROMPT
+    assert "yeah i hear you" not in DEFAULT_SYSTEM_PROMPT
     assert "Bad: [happy] on every sentence" in DEFAULT_SYSTEM_PROMPT
     assert "Leave [cough] as [cough]" not in DEFAULT_SYSTEM_PROMPT
     assert "every two sentences" not in DEFAULT_SYSTEM_PROMPT
