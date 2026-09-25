@@ -10,7 +10,7 @@ from typing import Any, Protocol
 
 import httpx
 
-from fish_audio_suite_kit import MS_PER_S, bearer, strip_base
+from fish_audio_suite_kit import MS_PER_S, bearer, strip_base, utf8_text
 from fish_audio_suite_voice.debug import debug, env_debug, header_meta, warn
 
 LLM_REFERER = "https://github.com/kzndotsh/fish-audio-suite"
@@ -72,8 +72,10 @@ async def openrouter_client(key: str, base: str) -> AsyncGenerator[Any, None]:
     """
     from openrouter import OpenRouter
 
+    # The SDK writes the key into Authorization and adds Bearer itself.
+    # A newline raises before the request is sent, so the reply is empty.
     async with OpenRouter(
-        api_key=key,
+        api_key=bearer(key).removeprefix("Bearer "),
         http_referer=LLM_REFERER,
         x_open_router_title=LLM_TITLE,
         x_open_router_categories="cli-agent",
@@ -91,19 +93,37 @@ async def _or_client_ctx(key: str, base: str, client: Any | None) -> AsyncGenera
         yield owned
 
 
+def _json_ready(value: Any) -> Any:
+    # A lone surrogate cannot be encoded as UTF-8. httpx then raises and the
+    # duplex turn speaks nothing, including when the character is only in the
+    # system prompt.
+    if isinstance(value, str):
+        return utf8_text(value)
+    if isinstance(value, list):
+        return [_json_ready(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            utf8_text(key) if isinstance(key, str) else key: _json_ready(item)
+            for key, item in value.items()
+        }
+    return value
+
+
 def _chat_body(
     messages: list[dict[str, str]],
     route_model: str,
     max_tokens: int,
     token_field: str,
 ) -> dict[str, Any]:
-    return {
-        "messages": messages,
-        "model": route_model,
-        "stream": True,
-        "temperature": LLM_TEMPERATURE,
-        token_field: max_tokens,
-    }
+    return _json_ready(
+        {
+            "messages": messages,
+            "model": route_model,
+            "stream": True,
+            "temperature": LLM_TEMPERATURE,
+            token_field: max_tokens,
+        }
+    )
 
 
 def _send_kwargs(call: ChatCall) -> dict[str, Any]:
@@ -118,7 +138,7 @@ def _send_kwargs(call: ChatCall) -> dict[str, Any]:
     if env_debug():
         _note_usage(send_kw)
         send_kw["x_open_router_metadata"] = "enabled"
-    return send_kw
+    return _json_ready(send_kw)
 
 
 async def _iter_openrouter_events(call: ChatCall) -> AsyncIterator[object]:
@@ -158,9 +178,34 @@ def _sse_object(data: str) -> dict[str, Any] | None:
 
 
 def _data_line(line: str) -> str | None:
+    # A leading BOM is not part of the field name. The first token was
+    # ignored, so a one-event reply never started.
+    if line.startswith("\ufeff"):
+        line = line.removeprefix("\ufeff")
     if not line or line.startswith(":") or not line.startswith(_SSE_DATA):
         return None
     return line.removeprefix(_SSE_DATA).strip()
+
+
+def _feed_sse(buf: str, line: str) -> tuple[str, dict[str, Any] | None, bool]:
+    # One JSON object may be split across data lines. Parsing each line alone
+    # drops the token. A line that is already JSON is returned at once.
+    if line == "":
+        parsed = _sse_object(buf) if buf else None
+        return "", parsed, False
+    data = _data_line(line)
+    if data is None:
+        return buf, None, False
+    if data == "[DONE]":
+        return "", None, True
+    alone = _sse_object(data)
+    if alone is not None:
+        return "", alone, False
+    piece = f"{buf}\n{data}" if buf else data
+    parsed = _sse_object(piece)
+    if parsed is not None:
+        return "", parsed, False
+    return piece, None, False
 
 
 def chat_completions_url(base: str) -> str:
@@ -192,15 +237,13 @@ async def _iter_httpx_sse_events(call: ChatCall) -> AsyncIterator[object]:
             resp.status_code,
             header_meta(resp.headers),
         )
+        buf = ""
         async for line in resp.aiter_lines():
-            data = _data_line(line)
-            if data is None:
-                continue
-            if data == "[DONE]":
-                return
-            parsed = _sse_object(data)
+            buf, parsed, stop = _feed_sse(buf, line)
             if parsed is not None:
                 yield parsed
+            if stop:
+                return
 
 
 def chat_events(call: ChatCall) -> AsyncIterator[object]:
