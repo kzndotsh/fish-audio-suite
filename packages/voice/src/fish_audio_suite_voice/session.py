@@ -12,6 +12,7 @@ from typing import Any
 
 import httpx
 from fishaudio import AsyncFishAudio
+from fishaudio.exceptions import AuthenticationError
 
 from fish_audio_suite_kit import (
     FISH_RETRY_ATTEMPTS,
@@ -36,6 +37,7 @@ from fish_audio_suite_voice.wire import (
 )
 
 _WS_TIMEOUT_S = 240.0
+_RETRY_POLL_S = 0.05
 
 __all__ = [
     "IsolatedResult",
@@ -53,6 +55,12 @@ class _HeldClient:
         self.client: AsyncFishAudio | None = None
 
     def open(self, spec: TurnSpec, headers: dict[str, str]) -> AsyncFishAudio:
+        # The SDK copies the key into Authorization. A newline makes the
+        # websocket client raise before Fish can answer, so every later
+        # turn fails the same way instead of stopping on 401.
+        token = spec.api_key.strip()
+        if not token or any(ord(ch) < 32 or ord(ch) >= 127 for ch in token):
+            raise AuthenticationError(401, "Invalid Token")
         http = httpx.AsyncClient(
             base_url=spec.base_url,
             headers=headers,
@@ -60,7 +68,7 @@ class _HeldClient:
             http2=False,
         )
         self.client = AsyncFishAudio(
-            api_key=spec.api_key,
+            api_key=token,
             base_url=spec.base_url,
             httpx_client=http,
         )
@@ -71,7 +79,10 @@ class _HeldClient:
         if client is None:
             return
         self.client = None
-        with contextlib.suppress(Exception):
+        # A task group of CancelledError is a BaseException, so Exception
+        # does not catch it. That used to escape after the audio had already
+        # played, and the next turn repeated the line.
+        with contextlib.suppress(Exception, BaseExceptionGroup):
             await client.close()
 
 
@@ -82,11 +93,27 @@ class _Turn:
     headers: dict[str, str]
 
 
+async def _retry_pause(cancel: threading.Event, seconds: float) -> bool:
+    """Wait out a Fish backoff. True means the turn was cancelled."""
+    # One sleep ignores barge-in. The next attempt would speak after the
+    # user already interrupted, or Ctrl+C would wait out the full backoff.
+    left = seconds
+    while left > 0:
+        if cancel.is_set():
+            return True
+        step = min(_RETRY_POLL_S, left)
+        await asyncio.sleep(step)
+        left -= step
+    return cancel.is_set()
+
+
 async def _one_attempt(turn: _Turn, events: AsyncIterator[Any], attempt: int) -> bool:
     """Return whether this attempt should stop the turn. False means retry before audio."""
     run = turn.run
-    client = turn.held.open(run.spec, turn.headers)
+    if run.cancel.is_set():
+        return True
     try:
+        client = turn.held.open(run.spec, turn.headers)
         await send_turn(client, events, run, close_client=turn.held.close)
     except (asyncio.CancelledError, GeneratorExit) as exc:
         await turn.held.close()
@@ -108,8 +135,7 @@ async def _one_attempt(turn: _Turn, events: AsyncIterator[Any], attempt: int) ->
             run.err_status = fate.err_status
             run.err_message = fate.err_message
             return True
-        await asyncio.sleep(fish_backoff_seconds(attempt))
-        return False
+        return await _retry_pause(run.cancel, fish_backoff_seconds(attempt))
     return True
 
 
@@ -174,15 +200,21 @@ async def run_turn(
         audio=Heard(),
     )
     turn = _Turn(run=run, held=_HeldClient(), headers=_turn_headers(spec, sent_text))
-    sink.start()
 
     try:
+        # start() can open the DAC and then raise. finish() still has to
+        # close that stream, or the device stays busy for the next turn.
+        sink.start()
         for attempt in range(FISH_RETRY_ATTEMPTS):
             if await _one_attempt(turn, events, attempt):
                 break
     finally:
-        sink.finish(kill=cancel.is_set())
-        await turn.held.close()
+        try:
+            sink.finish(kill=cancel.is_set())
+        finally:
+            # A failed file write must not skip the client close. The socket
+            # would stay open until the process exits.
+            await turn.held.close()
 
     return isolated_result(run)
 
