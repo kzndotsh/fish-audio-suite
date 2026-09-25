@@ -13,6 +13,7 @@ import numpy as np
 from fish_audio_suite_kit import env_float, env_int
 from fish_audio_suite_voice.aec import pcm_rms
 from fish_audio_suite_voice.barge import (
+    DEFAULT_BARGE_RMS,
     FRAME_BYTES,
     FRAME_MS,
     LISTEN_HEARTBEAT_FRAMES,
@@ -32,6 +33,9 @@ DEFAULT_PRE_PAD_FRAMES = 20
 HOLD_RMS_RATIO = 0.55
 MIN_UTTERANCE_FRAMES = 4
 MAX_UTTERANCE_FRAMES = 500
+# One quiet frame is 30 ms, a normal dip inside a word. Ending on that dip
+# after the cap sends a cut-off sentence to ASR.
+_CAP_QUIET_FRAMES = 4
 _MIC_POLL_S = 0.25
 _WAV_HEADER_BYTES = 44
 DEFAULT_MIN_VOICED_FRAMES = 12
@@ -69,13 +73,23 @@ def listen_reject_reason(
     peak_rms: float,
     min_voiced: int,
     min_speech_rms: float,
+    credited_hits: int = 0,
 ) -> str | None:
     """Drop coughs and spikes. None means send the clip to ASR."""
     if voiced_frames < MIN_UTTERANCE_FRAMES:
         return "too_short"
-    if speech_hits < min_voiced:
+    # Barge trips at 10 frames. The listen minimum is 12, so the same
+    # interrupt was discarded when the user stopped talking.
+    need_voice = min(min_voiced, credited_hits) if credited_hits > 0 else min_voiced
+    if speech_hits < need_voice:
         return "too_little_voice"
-    if _impulse(peak_rms, min_speech_rms) and speech_hits <= min_voiced + IMPULSE_EXTRA_VOICED:
+    # A barge run is already several loud frames. The impulse gate is for a
+    # short spike that never passed that gate, so it must not drop the interrupt.
+    if (
+        credited_hits <= 0
+        and _impulse(peak_rms, min_speech_rms)
+        and speech_hits <= min_voiced + IMPULSE_EXTRA_VOICED
+    ):
         return "impulse"
     return None
 
@@ -122,17 +136,34 @@ def _bounded_int(name: str, default: int, lo: int, hi: int | None = None) -> int
 
 
 def _listen_tune() -> _ListenTune:
+    min_rms = env_float("FISH_VOICE_MIN_RMS", DEFAULT_MIN_SPEECH_RMS)
+    if min_rms <= 0:
+        min_rms = DEFAULT_MIN_SPEECH_RMS
+    speech_frames_start = _bounded_int("FISH_VOICE_SPEECH_FRAMES", DEFAULT_SPEECH_FRAMES_START, 1)
+    silence_frames_end = env_int("FISH_VOICE_SILENCE_FRAMES", DEFAULT_SILENCE_FRAMES_END)
+    # 0 and negative match every quiet frame, so the first pause ends the clip.
+    if silence_frames_end < 1:
+        silence_frames_end = DEFAULT_SILENCE_FRAMES_END
+    # Start hits are stored in the pre-pad ring. A shorter ring never fills,
+    # so the mic would stay closed for the whole session.
+    pre_pad = max(
+        _bounded_int("FISH_VOICE_PRE_PAD", DEFAULT_PRE_PAD_FRAMES, 0),
+        speech_frames_start + IMPULSE_START_EXTRA,
+    )
     return _ListenTune(
         vad_aggressiveness=_bounded_int(
             "FISH_VOICE_VAD", DEFAULT_VAD_AGGRESSIVENESS, 0, _VAD_MODE_HI
         ),
-        silence_frames_end=env_int("FISH_VOICE_SILENCE_FRAMES", DEFAULT_SILENCE_FRAMES_END),
-        speech_frames_start=_bounded_int(
-            "FISH_VOICE_SPEECH_FRAMES", DEFAULT_SPEECH_FRAMES_START, 1
+        silence_frames_end=silence_frames_end,
+        speech_frames_start=speech_frames_start,
+        min_speech_rms=min_rms,
+        pre_pad_frames=pre_pad,
+        min_voiced=_bounded_int(
+            "FISH_VOICE_MIN_VOICED",
+            DEFAULT_MIN_VOICED_FRAMES,
+            1,
+            MAX_UTTERANCE_FRAMES,
         ),
-        min_speech_rms=env_float("FISH_VOICE_MIN_RMS", DEFAULT_MIN_SPEECH_RMS),
-        pre_pad_frames=_bounded_int("FISH_VOICE_PRE_PAD", DEFAULT_PRE_PAD_FRAMES, 0),
-        min_voiced=_bounded_int("FISH_VOICE_MIN_VOICED", DEFAULT_MIN_VOICED_FRAMES, 1),
     )
 
 
@@ -173,8 +204,10 @@ class AdaptiveFloor:
             return self.default
         quiet = np.fromiter(self.window, dtype=np.float64)
         est = float(np.percentile(quiet, self.percentile) * self.gain)
-        # Never go below the seed. A quiet room must not open the gate for hiss.
-        return float(min(self.hi, max(self.default, self.lo, est)))
+        # The high cap limits the estimate. It must not undercut the seed,
+        # or a loud FISH_VOICE_MIN_RMS starts accepting quieter frames.
+        capped = min(self.hi, max(self.lo, est))
+        return float(max(self.default, capped))
 
 
 class _Listen:
@@ -190,6 +223,8 @@ class _Listen:
         self.window_peak = 0.0
         self.clip_peak = 0.0
         self.speech_hits = 0
+        self.speech_flags: list[bool] = []
+        self.primed_hits = 0
         self.floor = AdaptiveFloor(tune.min_speech_rms)
         self.min_speech_now = tune.min_speech_rms
 
@@ -201,23 +236,46 @@ class _Listen:
         self.clip_peak = max(self.clip_peak, rms)
         self._heartbeat(idle_frames, rms, vad_speech)
         if not self.triggered:
-            self.floor.observe(rms, quiet=True)
+            # A frame already at the floor is not room hiss. Counting it raises
+            # the floor until the same voice can never start the clip.
+            self.floor.observe(rms, quiet=rms < self.min_speech_now)
             return self._arm(frame, rms, vad_speech)
         is_speech = rms >= self.min_speech_now * HOLD_RMS_RATIO and vad_speech
         return self._hold(frame, is_speech, vad_speech=vad_speech)
 
-    def _hold(self, frame: bytes, is_speech: bool, *, vad_speech: bool) -> bool:
+    def remember(self, frame: bytes, hit: bool) -> None:
+        """Store one frame and whether it counted as speech.
+
+        Parameters
+        ----------
+        frame : bytes
+            One PCM frame.
+        hit : bool
+            True when this frame is speech.
+        """
         self.voiced.append(frame)
-        if is_speech:
-            self.speech_hits += 1
+        self.speech_flags.append(hit)
+        # A talker who never pauses used to keep every frame. The cap is the
+        # last 15 seconds, and the hit count has to match those frames.
+        extra = len(self.voiced) - MAX_UTTERANCE_FRAMES
+        if extra > 0:
+            del self.voiced[:extra]
+            del self.speech_flags[:extra]
+        self.speech_hits = sum(self.speech_flags)
+        # primed_hits is credit for frames still in this clip. After the cap
+        # drops the barge prefix, that credit must not keep a short tail.
+        self.primed_hits = min(self.primed_hits, self.speech_hits)
+
+    def _hold(self, frame: bytes, is_speech: bool, *, vad_speech: bool) -> bool:
+        self.remember(frame, is_speech)
         # A quiet frame that VAD still calls speech is a hesitation, not the end.
         if is_speech or vad_speech:
             self.silence = 0
             return False
         self.silence += 1
-        return (
-            self.silence >= self.tune.silence_frames_end or len(self.voiced) >= MAX_UTTERANCE_FRAMES
-        )
+        if self.silence >= self.tune.silence_frames_end:
+            return True
+        return len(self.voiced) >= MAX_UTTERANCE_FRAMES and self.silence >= _CAP_QUIET_FRAMES
 
     def _heartbeat(self, idle_frames: int, rms: float, vad_speech: bool) -> None:
         if not heartbeat_due(idle_frames, LISTEN_HEARTBEAT_FRAMES):
@@ -249,8 +307,11 @@ class _Listen:
         if hits_now < need_start or not spike_start_allowed(peak_ring, rms, self.min_speech_now):
             return False
         self.triggered = True
-        self.voiced.extend(pcm for pcm, _ in self.ring)
-        self.speech_hits = hits_now
+        # The trailing run only decides that speech started. Earlier scored
+        # frames in the pre-pad are part of the clip; leaving them out makes
+        # a short hesitation look like too little voice and drops the utterance.
+        for pcm, counted in self.ring:
+            self.remember(pcm, counted)
         debug(
             "listen.speech_start rms={rms:.0f} vad={vad} prepad={prepad} "
             "hits={hits} start_need={start_need} peak={peak:.0f}",
@@ -273,6 +334,7 @@ def _clip_wav(heard: _Listen, tune: _ListenTune) -> bytes | None:
         peak_rms=heard.clip_peak,
         min_voiced=tune.min_voiced,
         min_speech_rms=heard.min_speech_now if heard.triggered else tune.min_speech_rms,
+        credited_hits=heard.primed_hits,
     )
     if why is not None:
         debug(
@@ -303,8 +365,12 @@ def prime_listen(heard: _Listen, pcm: bytes) -> None:
     if not frames:
         return
     heard.triggered = True
-    heard.voiced.extend(frames)
-    heard.speech_hits = sum(1 for frame in frames if pcm_rms(frame) >= heard.min_speech_now)
+    # The interrupt gate already accepted this clip. A higher listen floor
+    # used to score every frame as silence, so the utterance never reached ASR.
+    floor = min(heard.min_speech_now, DEFAULT_BARGE_RMS)
+    for frame in frames:
+        heard.remember(frame, pcm_rms(frame) >= floor)
+    heard.primed_hits = heard.speech_hits
     heard.clip_peak = max(pcm_rms(frame) for frame in frames)
     heard.silence = 0
 
