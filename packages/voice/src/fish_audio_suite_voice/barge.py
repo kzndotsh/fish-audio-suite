@@ -35,7 +35,8 @@ DEFAULT_BLEED_DELAY_S = 0.9
 DEFAULT_POST_SPEAK_COOLDOWN_S = 0.8
 BARGE_LOOKBACK_FRAMES = 20
 _BARGE_POLL_S = 0.2
-_BARGE_VAD = 3
+# Mode 3 dropped frames listen already accepted (RMS above the floor, hit stayed 0).
+_BARGE_VAD = 1
 
 
 def _barge_step(
@@ -137,8 +138,8 @@ class BargeGate:
     so the speaker's own voice is not treated as the user. The barge floor is
     raised while audio is playing only when AEC is off. A trip keeps the last
     20 frames; the next listen starts from that clip and skips the post-speak
-    cooldown. Hits decay after 3 missed frames so a short gap does not reset
-    the phrase.
+    cooldown. Speech is scored with the same VAD mode as listen. Hits decay
+    after 3 missed frames so a short gap does not reset the phrase.
     """
 
     def __init__(

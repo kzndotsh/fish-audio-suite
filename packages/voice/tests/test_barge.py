@@ -10,6 +10,7 @@ import wave
 import pytest
 
 from fish_audio_suite_voice.barge import (
+    _BARGE_VAD,
     BARGE_MISS_DECAY_FRAMES,
     DEFAULT_BARGE_HIT_FRAMES,
     DEFAULT_BARGE_OVER,
@@ -28,6 +29,7 @@ from fish_audio_suite_voice.listen import (
     DEFAULT_MIN_SPEECH_RMS,
     DEFAULT_MIN_VOICED_FRAMES,
     DEFAULT_SILENCE_FRAMES_END,
+    DEFAULT_VAD_AGGRESSIVENESS,
     IMPULSE_START_EXTRA,
     MAX_UTTERANCE_FRAMES,
     _clip_wav,
@@ -221,6 +223,10 @@ def test_bleed_wait_ends_when_the_turn_is_cancelled() -> None:
     thread.join(timeout=1)
     assert thread.is_alive() is False
     assert time.monotonic() - started < 1
+
+
+def test_barge_vad_matches_listen() -> None:
+    assert _BARGE_VAD == DEFAULT_VAD_AGGRESSIVENESS
 
 
 def test_barge_gate_reads_env_at_construct(monkeypatch: pytest.MonkeyPatch) -> None:
