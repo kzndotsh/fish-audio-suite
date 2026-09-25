@@ -36,9 +36,124 @@ from fish_audio_suite_voice.signals import STOP_RECORD, request_quit
 from fish_audio_suite_voice.transports import openrouter_client
 
 DEFAULT_ENV_FILE = Path(".env")
-_EXPORT_PREFIX = "export "
+_EXPORT_WORD = "export"
 _SMOKE_MIN_BYTES = 1000
 _SMOKE_FAIL = 1
+
+
+def _quoted_span(val: str) -> tuple[str, str] | None:
+    # The closer is the next unescaped quote, not the last character.
+    # "sk" # "old" used to keep the comment because the line also ended
+    # on a quote. \" inside the value is not that closer.
+    if not val or val[0] not in {'"', "'"}:
+        return None
+    quote = val[0]
+    index = 1
+    while index < len(val):
+        # A single-quoted value is literal. "C:\temp\" used to skip the
+        # closer, so the next key was swallowed and the voice id was empty.
+        if quote == '"' and val[index] == "\\" and index + 1 < len(val):
+            index += 2
+            continue
+        if val[index] == quote:
+            return val[1:index], val[index + 1 :]
+        index += 1
+    return None
+
+
+def _unescape_double(inner: str) -> str:
+    # "Say \"hi\"\nthere" is a prompt, not the letters backslash and n.
+    out: list[str] = []
+    index = 0
+    while index < len(inner):
+        if inner[index] == "\\" and index + 1 < len(inner):
+            nxt = inner[index + 1]
+            if nxt == "n":
+                out.append("\n")
+            elif nxt == "t":
+                out.append("\t")
+            elif nxt == '"':
+                out.append('"')
+            elif nxt == "\\":
+                out.append("\\")
+            else:
+                out.append(inner[index : index + 2])
+            index += 2
+            continue
+        out.append(inner[index])
+        index += 1
+    return "".join(out)
+
+
+def _env_value(raw: str) -> str:
+    """Unquote a dotenv value. An unquoted ` #` starts a comment."""
+    val = raw.strip()
+    span = _quoted_span(val)
+    if span is not None:
+        inner, rest = span
+        rest = rest.lstrip()
+        if not rest or rest.startswith("#"):
+            if val[0] == '"':
+                return _unescape_double(inner)
+            return inner
+    if len(val) >= 2 and val[0] == val[-1] and val[0] in {"'", '"'}:
+        return val[1:-1]
+    hashed = val.find(" #")
+    if hashed >= 0:
+        val = val[:hashed].rstrip()
+    if len(val) >= 2 and val[0] == val[-1] and val[0] in {"'", '"'}:
+        return val[1:-1]
+    return val
+
+
+def _without_export(line: str) -> str:
+    # `export KEY=value` is a shell prefix. A tab after export is legal and
+    # must not become part of the key name.
+    if (
+        line.startswith(_EXPORT_WORD)
+        and len(line) > len(_EXPORT_WORD)
+        and line[len(_EXPORT_WORD)].isspace()
+    ):
+        return line[len(_EXPORT_WORD) :].strip()
+    return line
+
+
+def _unclosed_quote(stripped: str) -> str | None:
+    # "You are helpful. keeps going on the next line. A one-line "key" is
+    # already balanced, including "key # not a comment".
+    if not stripped or stripped.startswith("#") or "=" not in stripped:
+        return None
+    _, _, val = _without_export(stripped).partition("=")
+    val = val.lstrip()
+    if val[:1] not in {'"', "'"}:
+        return None
+    if _quoted_span(val) is None:
+        return val[0]
+    return None
+
+
+def _logical_lines(text: str) -> list[str]:
+    raw_lines = text.splitlines()
+    folded: list[str] = []
+    index = 0
+    while index < len(raw_lines):
+        line = raw_lines[index]
+        quote = _unclosed_quote(line.strip())
+        if quote is None:
+            folded.append(line)
+            index += 1
+            continue
+        parts = [line]
+        index += 1
+        while index < len(raw_lines):
+            parts.append(raw_lines[index])
+            index += 1
+            # \" counts as a quote character, so a raw count closes too early
+            # and the next line of the prompt is dropped.
+            if _unclosed_quote("\n".join(parts).strip()) is None:
+                break
+        folded.append("\n".join(parts))
+    return folded
 
 
 def _load_dotenv(path: Path) -> bool:
@@ -46,22 +161,22 @@ def _load_dotenv(path: Path) -> bool:
     if not path.is_file():
         return False
     try:
-        text = path.read_text(encoding="utf-8")
+        # utf-8-sig drops a leading BOM. Left in place it sticks to the first key.
+        text = path.read_text(encoding="utf-8-sig")
     except UnicodeDecodeError:
         warn(f"fish-voice: env file is not utf-8: {path}")
         return False
     except OSError as exc:
         warn(f"fish-voice: could not read env file {path}: {exc.strerror}")
         return False
-    for raw in text.splitlines():
+    for raw in _logical_lines(text):
         line = raw.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
-        if line.startswith(_EXPORT_PREFIX):
-            line = line.removeprefix(_EXPORT_PREFIX).strip()
+        line = _without_export(line)
         key, _, val = line.partition("=")
         key = key.strip()
-        val = val.strip().strip("'").strip('"')
+        val = _env_value(val)
         if key and key not in os.environ:
             os.environ[key] = val
     return True
@@ -93,11 +208,24 @@ def _parse_device(raw: str | None) -> str | int | None:
     if raw is None:
         return None
     text = raw.strip()
+    # A newline is not part of a PortAudio name. The mic open then fails
+    # and the duplex loop stops.
+    cut = next((index for index, ch in enumerate(text) if ord(ch) < 32), None)
+    if cut is not None:
+        text = text[:cut].strip()
     if not text:
         return None
     try:
         return int(text)
     except ValueError:
+        # "1.0" is device 1. Leaving it as a name made the mic open fail
+        # and the duplex loop stop.
+        try:
+            value = float(text)
+        except ValueError:
+            return text
+        if value.is_integer():
+            return int(value)
         return text
 
 

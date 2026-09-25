@@ -8,9 +8,10 @@ from pathlib import Path
 import pytest
 
 from fish_audio_suite_voice import signals
-from fish_audio_suite_voice.cli import _parse_device, apply_cli_env_files, cfg, run_loop
+from fish_audio_suite_voice.cli import _parse_device, apply_cli_env_files, cfg, main, run_loop
+from fish_audio_suite_voice.config import OPENROUTER_API_BASE
 from fish_audio_suite_voice.duplex import EXIT_FATAL
-from fish_audio_suite_voice.signals import request_quit
+from fish_audio_suite_voice.signals import _TurnSignals, request_quit
 
 
 def test_env_file_fills_missing_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -26,6 +27,98 @@ def test_env_file_fills_missing_keys(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert not missing.exists()
     assert cfg().fish_voice_id == "vid-from-file"
     assert cfg().fish_api_key == "key-from-file"
+
+
+def test_export_tab_and_bom_still_set_the_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("FISH_VOICE_ID", raising=False)
+    path = tmp_path / "voice.env"
+    path.write_bytes(b"\xef\xbb\xbfexport\tFISH_VOICE_ID=vid-from-file\n")
+    apply_cli_env_files([path], required=True)
+    assert cfg().fish_voice_id == "vid-from-file"
+    glued = tmp_path / "glued.env"
+    glued.write_text("exportFISH_VOICE_ID=vid-glued\n", encoding="utf-8")
+    monkeypatch.delenv("FISH_VOICE_ID", raising=False)
+    apply_cli_env_files([glued], required=True)
+    assert cfg().fish_voice_id == ""
+
+
+def test_env_file_drops_an_unquoted_inline_comment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("FISH_VOICE_ID", raising=False)
+    monkeypatch.delenv("FISH_API_KEY", raising=False)
+    path = tmp_path / "voice.env"
+    path.write_text(
+        'FISH_VOICE_ID=vid-from-file # speaker\nFISH_API_KEY="key # not a comment"\n',
+        encoding="utf-8",
+    )
+    apply_cli_env_files([path], required=True)
+    assert cfg().fish_voice_id == "vid-from-file"
+    assert cfg().fish_api_key == "key # not a comment"
+    commented = tmp_path / "commented.env"
+    commented.write_text(
+        'FISH_API_KEY="sk-real" # rotated "yesterday"\nFISH_VOICE_ID=vid\n',
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("FISH_API_KEY", raising=False)
+    monkeypatch.delenv("FISH_VOICE_ID", raising=False)
+    apply_cli_env_files([commented], required=True)
+    assert cfg().fish_api_key == "sk-real"
+    assert cfg().fish_voice_id == "vid"
+
+
+def test_quoted_prompt_keeps_the_following_line(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("FISH_SYSTEM_PROMPT", raising=False)
+    monkeypatch.delenv("FISH_VOICE_ID", raising=False)
+    path = tmp_path / "voice.env"
+    path.write_text(
+        'FISH_SYSTEM_PROMPT="You are helpful.\nBe brief."\nFISH_VOICE_ID=vid\n',
+        encoding="utf-8",
+    )
+    apply_cli_env_files([path], required=True)
+    assert cfg().system_prompt == "You are helpful.\nBe brief."
+    assert cfg().fish_voice_id == "vid"
+
+
+def test_single_quoted_backslash_does_not_swallow_the_next_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("FISH_SYSTEM_PROMPT", raising=False)
+    monkeypatch.delenv("FISH_VOICE_ID", raising=False)
+    path = tmp_path / "voice.env"
+    path.write_text("FISH_SYSTEM_PROMPT='C:\\\\temp\\\\'\nFISH_VOICE_ID=vid\n", encoding="utf-8")
+    apply_cli_env_files([path], required=True)
+    assert cfg().fish_voice_id == "vid"
+    assert cfg().system_prompt == "C:\\\\temp\\\\"
+
+
+def test_escaped_quote_and_newline_stay_in_the_prompt(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("FISH_SYSTEM_PROMPT", raising=False)
+    monkeypatch.delenv("FISH_VOICE_ID", raising=False)
+    path = tmp_path / "voice.env"
+    path.write_text(
+        'FISH_SYSTEM_PROMPT="Say \\"hi\\"\\nthere."\nFISH_VOICE_ID=vid\n',
+        encoding="utf-8",
+    )
+    apply_cli_env_files([path], required=True)
+    assert cfg().system_prompt == 'Say "hi"\nthere.'
+    assert cfg().fish_voice_id == "vid"
+    monkeypatch.delenv("FISH_SYSTEM_PROMPT", raising=False)
+    monkeypatch.delenv("FISH_VOICE_ID", raising=False)
+    split = tmp_path / "split.env"
+    split.write_text(
+        'FISH_SYSTEM_PROMPT="Say \\"hi\nthere."\nFISH_VOICE_ID=vid\n',
+        encoding="utf-8",
+    )
+    apply_cli_env_files([split], required=True)
+    assert cfg().system_prompt == 'Say "hi\nthere.'
+    assert cfg().fish_voice_id == "vid"
 
 
 def test_process_env_wins_over_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -85,12 +178,16 @@ def test_llm_env_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FISH_LLM_KEY", "  fish-key  ")
     monkeypatch.setenv("FISH_LLM_MODEL", "   ")
     c = cfg()
-    assert c.llm_base == ""
+    assert c.llm_base == "https://example.test/v1"
     assert c.llm_key == "fish-key"
     assert c.llm_model == "vendor/fallback"
     monkeypatch.setenv("FISH_LLM_BASE", "  ")
-    assert cfg().llm_base == ""
+    assert cfg().llm_base == "https://example.test/v1"
+    monkeypatch.setenv("OPENROUTER_BASE_URL", "  ")
+    assert cfg().llm_base == OPENROUTER_API_BASE
     monkeypatch.setenv("FISH_LLM_BASE", "https://example.test/v1/")
+    assert cfg().llm_base == "https://example.test/v1"
+    monkeypatch.setenv("FISH_LLM_BASE", "https://example.test/v1\nbad")
     assert cfg().llm_base == "https://example.test/v1"
     monkeypatch.setenv("FISH_LLM_MODEL", " kept/model ")
     assert cfg().llm_model == "kept/model"
@@ -123,6 +220,10 @@ def test_sample_rate_must_be_positive(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FISH_SAMPLE_RATE", "-1")
     assert cfg().sample_rate == 44100
     monkeypatch.setenv("FISH_SAMPLE_RATE", "16000")
+    assert cfg().sample_rate == 16000
+    monkeypatch.setenv("FISH_SAMPLE_RATE", "16000.0")
+    assert cfg().sample_rate == 16000
+    monkeypatch.setenv("FISH_SAMPLE_RATE", "16,000")
     assert cfg().sample_rate == 16000
 
 
@@ -161,7 +262,80 @@ def test_parse_device_strips_index_and_blank() -> None:
     assert _parse_device("") is None
     assert _parse_device("  ") is None
     assert _parse_device(" 3 ") == 3
+    assert _parse_device("1.0") == 1
+    assert _parse_device("0.0") == 0
+    assert _parse_device("1.5") == "1.5"
     assert _parse_device(" hw:0 ") == "hw:0"
+    assert _parse_device("3\nbad") == 3
+    assert _parse_device("hw:0\nbad") == "hw:0"
+
+
+def test_cleared_turn_does_not_cancel_the_old_events() -> None:
+    turn = threading.Event()
+    llm = asyncio.Event()
+    signals_ = _TurnSignals()
+    signals_.fire()
+    signals_.bind(turn, llm)
+    signals_.clear()
+    signals_.fire()
+    assert not turn.is_set()
+    assert not llm.is_set()
+
+
+def _no_env(*_args: object, **_kwargs: object) -> list[Path]:
+    return []
+
+
+def _no_log(**_kwargs: object) -> None:
+    return None
+
+
+def _fake_cfg() -> object:
+    return object()
+
+
+def _ignore_signal(*_args: object, **_kwargs: object) -> None:
+    return None
+
+
+def _stub_main(monkeypatch: pytest.MonkeyPatch, run: object) -> None:
+    monkeypatch.setattr("fish_audio_suite_voice.cli.apply_cli_env_files", _no_env)
+    monkeypatch.setattr("fish_audio_suite_voice.cli.configure_voice_logging", _no_log)
+    monkeypatch.setattr("fish_audio_suite_voice.cli.cfg", _fake_cfg)
+    monkeypatch.setattr("fish_audio_suite_voice.cli.signal.signal", _ignore_signal)
+    monkeypatch.setattr("fish_audio_suite_voice.cli.run_loop", run)
+
+
+def test_main_restarts_a_cancelled_loop_until_quit(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"n": 0}
+
+    async def run(_config: object) -> int:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise asyncio.CancelledError
+        return 7
+
+    stop = threading.Event()
+    monkeypatch.setattr("fish_audio_suite_voice.cli.STOP_RECORD", stop)
+    _stub_main(monkeypatch, run)
+    assert main([]) == 7
+    assert calls["n"] == 2
+    assert not stop.is_set()
+
+
+def test_main_does_not_restart_after_ctrl_c(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"n": 0}
+
+    async def run(_config: object) -> int:
+        calls["n"] += 1
+        raise asyncio.CancelledError
+
+    stop = threading.Event()
+    stop.set()
+    monkeypatch.setattr("fish_audio_suite_voice.cli.STOP_RECORD", stop)
+    _stub_main(monkeypatch, run)
+    assert main([]) == 0
+    assert calls["n"] == 1
 
 
 def test_request_quit_sets_mic_and_turn_cancel(monkeypatch: pytest.MonkeyPatch) -> None:
