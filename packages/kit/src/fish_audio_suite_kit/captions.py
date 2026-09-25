@@ -45,24 +45,40 @@ def _clock(seconds: float, decimal: str) -> str:
     return f"{hours:02d}:{minutes:02d}:{secs:02d}{decimal}{ms:03d}"
 
 
-def _cue_body(text: str) -> str:
+def _cue_body(text: str, *, escape: bool) -> str:
     flat = text.replace("\r\n", "\n").replace("\r", "\n").strip()
-    return _CUE_BLANK_RE.sub("\n", flat)
+    flat = _CUE_BLANK_RE.sub("\n", flat)
+    # "-->" inside the transcript is a second timing line. Players then
+    # drop or retimes the words after it.
+    flat = flat.replace("-->", "->")
+    # "&" and "<" start a WebVTT escape or tag. The words after them drop.
+    # SubRip shows those entities as the letters amp and lt.
+    if not escape:
+        return flat
+    return flat.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 
-def _span(cue: CaptionCue, decimal: str) -> tuple[str, str, str] | None:
-    body = _cue_body(cue.text)
+def _span(cue: CaptionCue, decimal: str, *, escape: bool) -> tuple[str, str, str] | None:
+    body = _cue_body(cue.text, escape=escape)
     if not body:
         return None
-    start = _clock(cue.start, decimal)
-    end = _clock(max(cue.end, cue.start), decimal)
+    start_s = cue.start if math.isfinite(cue.start) else 0.0
+    end_s = cue.end if math.isfinite(cue.end) else start_s
+    end_s = max(end_s, start_s)
+    start = _clock(start_s, decimal)
+    end = _clock(end_s, decimal)
+    # WebVTT drops a cue whose end is not later than its start. An inverted
+    # segment, a zero-length one, and a clock that overflowed all rendered
+    # as the same timestamp twice, so the words never appeared.
+    if end <= start:
+        end = _clock(start_s + 0.001, decimal)
     return start, end, body
 
 
-def _spans(cues: list[CaptionCue], decimal: str) -> list[tuple[str, str, str]]:
+def _spans(cues: list[CaptionCue], decimal: str, *, escape: bool) -> list[tuple[str, str, str]]:
     spans: list[tuple[str, str, str]] = []
     for cue in cues:
-        span = _span(cue, decimal)
+        span = _span(cue, decimal, escape=escape)
         if span is not None:
             spans.append(span)
     return spans
@@ -85,7 +101,7 @@ def format_as_srt(cues: list[CaptionCue]) -> str:
     str
         A trailing-newline SRT document, or ``""`` when nothing is speakable.
     """
-    spans = _spans(cues, ",")
+    spans = _spans(cues, ",", escape=False)
     if not spans:
         return ""
     blocks = [
@@ -109,7 +125,7 @@ def format_as_vtt(cues: list[CaptionCue]) -> str:
         A file that always starts with ``WEBVTT``, even when ``cues`` is empty.
     """
     lines = ["WEBVTT", ""]
-    for start, end, body in _spans(cues, "."):
+    for start, end, body in _spans(cues, ".", escape=True):
         lines.append(_range(start, end))
         lines.append(body)
         lines.append("")
