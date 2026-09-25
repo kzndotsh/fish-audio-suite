@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
 from fish_audio_suite_voice.aec import (
@@ -63,6 +64,14 @@ def test_adaptive_floor_stays_default_until_window() -> None:
     for _ in range(30):
         floor.observe(200.0, quiet=True)
     assert floor.value() >= 200.0
+    loud_seed = AdaptiveFloor(600.0, window=30)
+    for _ in range(25):
+        loud_seed.observe(10.0, quiet=True)
+    assert loud_seed.value() == 600.0
+    capped = AdaptiveFloor(200.0, window=30)
+    for _ in range(25):
+        capped.observe(400.0, quiet=True)
+    assert capped.value() == 450.0
 
 
 def test_far_end_playing_covers_marked_duration() -> None:
@@ -113,6 +122,59 @@ def test_sounddevice_sink_taps_and_clears(monkeypatch: pytest.MonkeyPatch) -> No
     assert sum(len(p) for p, _sr in taps) == len(pcm)
     sink.finish()
     assert cleared["n"] == 1
+
+
+def _loud(n_samples: int) -> bytes:
+    return (2_000).to_bytes(2, "little", signed=True) * n_samples
+
+
+def test_clean_mic_ignores_a_bad_processor(monkeypatch: pytest.MonkeyPatch) -> None:
+    near = _loud(8)
+    calls: list[str] = []
+
+    class Processor:
+        def process(self, near_a: np.ndarray, far_a: np.ndarray) -> np.ndarray:
+            calls.append("process")
+            if len(calls) == 1:
+                raise RuntimeError("aec down")
+            return near_a[:2]
+
+    monkeypatch.setattr("fish_audio_suite_voice.aec.load_processor", Processor)
+    monkeypatch.setattr("fish_audio_suite_voice.aec.TAP.pop", lambda _n: _loud(8))
+    assert clean_mic_frame(near) == near
+    assert clean_mic_frame(near) == near
+    assert calls == ["process", "process"]
+
+
+def test_clean_mic_mixes_when_the_processor_returns_silence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    near = _loud(8)
+    monkeypatch.setenv("FISH_VOICE_AEC_WET", "0.5")
+
+    class Processor:
+        def process(self, near_a: np.ndarray, far_a: np.ndarray) -> np.ndarray:
+            return np.zeros_like(near_a)
+
+    monkeypatch.setattr("fish_audio_suite_voice.aec.load_processor", Processor)
+    monkeypatch.setattr("fish_audio_suite_voice.aec.TAP.pop", lambda _n: _loud(8))
+    mixed = np.frombuffer(clean_mic_frame(near), dtype=np.int16)
+    assert mixed.tolist() == [1_000] * 8
+
+
+def test_clean_mic_skips_a_quiet_far_end(monkeypatch: pytest.MonkeyPatch) -> None:
+    near = _loud(8)
+    called = {"n": 0}
+
+    class Processor:
+        def process(self, near_a: np.ndarray, far_a: np.ndarray) -> np.ndarray:
+            called["n"] += 1
+            return np.zeros_like(near_a)
+
+    monkeypatch.setattr("fish_audio_suite_voice.aec.load_processor", Processor)
+    monkeypatch.setattr("fish_audio_suite_voice.aec.TAP.pop", lambda _n: b"\x00\x00" * 8)
+    assert clean_mic_frame(near) == near
+    assert called["n"] == 0
 
 
 def test_sounddevice_sink_rejoins_odd_pcm_chunks(monkeypatch: pytest.MonkeyPatch) -> None:

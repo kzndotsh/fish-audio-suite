@@ -244,7 +244,12 @@ def clean_mic_frame(near: bytes) -> bytes:
     except Exception as exc:
         debug("aec.fail {}", exc)
         return near
+    clean_a = np.asarray(clean)
+    # A short or wide result would change the mic frame size and break VAD.
+    if clean_a.shape != near_a.shape:
+        debug("aec.fail shape {} != {}", clean_a.shape, near_a.shape)
+        return near
     if wet >= _FULL_WET:
-        return _int16_bytes(clean)
-    mixed = (1.0 - wet) * near_a.astype(np.float32) + wet * np.asarray(clean, dtype=np.float32)
+        return _int16_bytes(clean_a)
+    mixed = (1.0 - wet) * near_a.astype(np.float32) + wet * clean_a.astype(np.float32)
     return _int16_bytes(mixed)
