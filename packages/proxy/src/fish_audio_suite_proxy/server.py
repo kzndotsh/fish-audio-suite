@@ -38,28 +38,31 @@ from fish_audio_suite_kit import (
     fish_retry_pause,
     fish_unreachable,
     is_asr_hallucination,
+    is_caption_watermark,
     is_tts_junk,
     parse_asr_body,
     scrub_asr,
     should_retry_fish_status,
     trace_id_of,
+    without_watermark_segments,
 )
 from fish_audio_suite_proxy.errors import json_error, json_from_upstream, read_json_object
 from fish_audio_suite_proxy.fields import (
-    SILENT_MP3,
     catalog_ids,
     dialogue_only_env,
     explicit_bool,
-    media_type,
+    pcm_sample_rate,
     prepare_tts_text,
     quality_guard_env,
     resolve_asr_model,
     runtime_defaults,
+    silent_speech,
     strip_speakers_env,
     traced_model_headers,
 )
 from fish_audio_suite_proxy.speech import pack_tts, speech_controls
 from fish_audio_suite_proxy.transcribe import (
+    asr_response_format,
     asr_upload,
     caption_cues,
     read_asr,
@@ -128,7 +131,9 @@ async def _fish_send(
             status, message = fish_request_error(exc, httpx.TimeoutException)
             last_error = json_error(status, message)
         else:
-            if upstream.status_code < 400:
+            # 3xx is not audio. A redirect body was streamed to the client
+            # as a 200 file, so the reply was never spoken.
+            if 200 <= upstream.status_code < 300:
                 return upstream
             last_error = await _closed_error(upstream)
             if not should_retry_fish_status(upstream.status_code):
@@ -225,9 +230,30 @@ def _asr_text(
     )
     detected_lang = data.get("language") or data.get("language_code") or lang
     if is_asr_hallucination(text):
+        # A watermark or blank text still drops words that Fish put only in
+        # segments. A watermark segment next to real speech is left out, or
+        # the caption line is spoken with the sentence.
+        cues = [
+            cue
+            for cue in caption_cues(data, "", strip_speakers=strip_speakers)
+            if not is_caption_watermark(cue.text)
+        ]
+        joined = " ".join(cue.text for cue in cues).strip()
+        if joined and not is_asr_hallucination(joined):
+            return joined, cues
         log.info("asr drop hallucination lang=%r chars=%d", detected_lang, len(text))
         return "", []
-    return text, caption_cues(data, text, strip_speakers=strip_speakers)
+    cues = caption_cues(data, text, strip_speakers=strip_speakers)
+    # A watermark segment is omitted from the captions. The top-level text
+    # still contains that phrase, so JSON says "thanks for watching" and
+    # the SRT file does not.
+    trimmed = without_watermark_segments(text, data.get("segments"), strip_speakers=strip_speakers)
+    if trimmed != text and trimmed and not is_asr_hallucination(trimmed):
+        # Segment cues already omit the watermark. When every segment was
+        # one, the fallback cue was the untrimmed text, so the SRT file
+        # still said "thanks for watching".
+        return trimmed, caption_cues(data, trimmed, strip_speakers=strip_speakers)
+    return text, cues
 
 
 async def _iter_upstream(upstream: httpx.Response) -> AsyncIterator[bytes]:
@@ -260,8 +286,9 @@ async def speech(request: Request):
     Returns
     -------
     Response
-        Audio bytes, a silent MP3 when the scrubbed text is junk, or an
-        OpenAI error JSON. Fish 429 and 5xx are retried. Other 4xx are not.
+        Audio bytes, silence in the requested format when the scrubbed text
+        is junk, or an OpenAI error JSON. Fish 429 and 5xx are retried.
+        Other 4xx are not.
 
     Notes
     -----
@@ -279,7 +306,9 @@ async def speech(request: Request):
     spoken, preview = _spoken_line(body, defaults)
     if is_tts_junk(spoken):
         log.info("tts skip junk preview=%r", preview)
-        return Response(content=SILENT_MP3, media_type=media_type("mp3"))
+        rate = pcm_sample_rate(controls.fmt, body, defaults.sample_rate)
+        audio, mime = silent_speech(controls.fmt, rate)
+        return Response(content=audio, media_type=mime)
 
     client = _fish_client(request)
     if isinstance(client, JSONResponse):
@@ -334,7 +363,7 @@ async def transcriptions(request: Request):
         return client
 
     granularities = inbound.granularities
-    fmt = (inbound.response_format or "json").lower().strip()
+    fmt = asr_response_format(inbound.response_format or "json")
     files, form, lang = asr_upload(inbound, defaults, fmt, granularities)
 
     asr_headers = traced_model_headers(asr_model, request.headers)
