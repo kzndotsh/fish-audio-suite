@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import queue
 import threading
-import time
 from collections import deque
 from collections.abc import Callable, Iterator
 from typing import Any
@@ -82,13 +81,19 @@ def barge_rms_need(
     AEC3 already subtracts far-end. Stacking over-gain on cleaned RMS blocks real speech.
     """
     if far_playing and not aec_on:
-        return min_rms * over
+        # Below 1 the floor drops while the speaker is on, so bleed trips barge-in.
+        gain = over if over >= 1 else DEFAULT_BARGE_OVER
+        return min_rms * gain
     return min_rms
 
 
 def post_speak_cooldown_s() -> float:
     """Return the post-playback cooldown from FISH_VOICE_COOLDOWN."""
-    return env_float("FISH_VOICE_COOLDOWN", DEFAULT_POST_SPEAK_COOLDOWN_S)
+    delay = env_float("FISH_VOICE_COOLDOWN", DEFAULT_POST_SPEAK_COOLDOWN_S)
+    # A negative wait returns immediately, so the mic opens on the playback tail.
+    if delay < 0:
+        return DEFAULT_POST_SPEAK_COOLDOWN_S
+    return delay
 
 
 def _or_env[T: int | float](
@@ -150,7 +155,9 @@ class BargeGate:
         self.bleed_delay_s = delay if delay >= 0 else DEFAULT_BLEED_DELAY_S
         hits = _or_env(hit_frames, "FISH_VOICE_BARGE_FRAMES", DEFAULT_BARGE_HIT_FRAMES, env_int)
         self.hit_frames = hits if hits > 0 else DEFAULT_BARGE_HIT_FRAMES
-        self.min_rms = _or_env(min_rms, "FISH_VOICE_BARGE_RMS", DEFAULT_BARGE_RMS, env_float)
+        rms = _or_env(min_rms, "FISH_VOICE_BARGE_RMS", DEFAULT_BARGE_RMS, env_float)
+        # A non-positive floor matches every frame and trips on quiet VAD noise.
+        self.min_rms = rms if rms > 0 else DEFAULT_BARGE_RMS
         self._heard: deque[bytes] = deque(maxlen=BARGE_LOOKBACK_FRAMES)
         self.captured = b""
 
@@ -225,8 +232,9 @@ class BargeGate:
             delay = self._bleed_wait()
             self.bleed_delay_s = delay
             debug("barge.bleed sleep_s={}", delay)
-            time.sleep(delay)
-            if cancel.is_set():
+            # sleep() ignores cancel. A finished turn would wait out the rest
+            # of the bleed, or the next listen would open the mic twice.
+            if cancel.wait(timeout=delay):
                 debug("barge.bleed skipped (already cancelled)")
                 return
             self.watch(cancel)
@@ -239,6 +247,20 @@ class BargeGate:
 def frame_is_speech(vad: Any, frame: bytes) -> bool:
     """Return whether WebRTC VAD scores this 16 kHz frame as speech."""
     return bool(vad.is_speech(frame, SAMPLE_RATE))
+
+
+def _take_full_frames(pending: bytearray, chunk: bytes, frame_bytes: int) -> list[bytes]:
+    # PortAudio may deliver a short buffer or more than one block. A short
+    # buffer has to wait for the next callback, and the tail of a long buffer
+    # has to be kept. Dropping either cuts a hole in the utterance.
+    if frame_bytes < 1:
+        return []
+    pending.extend(chunk)
+    frames: list[bytes] = []
+    while len(pending) >= frame_bytes:
+        frames.append(bytes(pending[:frame_bytes]))
+        del pending[:frame_bytes]
+    return frames
 
 
 def mic_frames(
@@ -260,11 +282,11 @@ def mic_frames(
         blocksize=FRAME_SAMPLES,
         callback=callback,
     ):
+        pending = bytearray()
         while stop is None or not stop.is_set():
             try:
-                frame = audio.get(timeout=timeout)
+                chunk = audio.get(timeout=timeout)
             except queue.Empty:
                 continue
-            if len(frame) < FRAME_BYTES:
-                continue
-            yield clean_mic_frame(frame[:FRAME_BYTES])
+            for frame in _take_full_frames(pending, chunk, FRAME_BYTES):
+                yield clean_mic_frame(frame)
