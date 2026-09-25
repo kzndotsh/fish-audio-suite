@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import threading
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import dataclass, field
@@ -12,13 +13,24 @@ from fishaudio import TextEvent
 from fishaudio.types import AudioFormat, LatencyMode, Prosody, TTSConfig
 
 from fish_audio_suite_kit import (
+    CHUNK_LENGTH_LO,
+    CLOUD_CHUNK_HI,
+    TTS_SPEED_HI,
+    TTS_SPEED_LO,
+    UNIT_HI,
+    UNIT_LO,
     SuiteDefaults,
+    clamp_num,
+    ends_sentence,
+    hold_tts,
     known_mp3_bitrate,
+    known_tts_model,
     normalize_cues,
     scrub_tts,
     skip_empty_delta,
     split_tts_piece,
     strip_base,
+    utf8_text,
 )
 from fish_audio_suite_voice.debug import warn
 from fish_audio_suite_voice.playback import PlaybackSink
@@ -34,10 +46,176 @@ from fish_audio_suite_voice.session import (
 from fish_audio_suite_voice.wire import flush_if_sent
 
 _STOCK = SuiteDefaults()
+# The installed SDK Prosody model rejects anything outside this range.
+_SDK_VOLUME_LO = -20.0
+_SDK_VOLUME_HI = 20.0
 
 
-def _spoken(text: str) -> str:
-    return normalize_cues(scrub_tts(text))
+_SDK_FORMATS = frozenset({"wav", "pcm", "mp3", "opus"})
+
+
+def _sdk_format(fmt: str) -> AudioFormat:
+    key = fmt.strip().lower()
+    # pcm16 is this suite's raw PCM name. aac and flac are the proxy's MP3
+    # aliases. The SDK rejects every other spelling before the socket opens.
+    if key == "pcm16":
+        key = "pcm"
+    elif key in {"aac", "flac"}:
+        key = "mp3"
+    if key not in _SDK_FORMATS:
+        key = "pcm"
+    return cast(AudioFormat, key)
+
+
+def _sdk_latency(latency: str) -> LatencyMode:
+    # low is a Fish HTTP mode. This SDK only accepts normal and balanced, and
+    # building the config with low raises before any audio is sent.
+    # "LOW" used to miss both comparisons and go out as normal.
+    key = latency.strip().lower()
+    if key == "low":
+        return "balanced"
+    if key == "balanced":
+        return "balanced"
+    return "normal"
+
+
+def _sdk_chunk_length(chunk_length: int) -> int:
+    # Self-hosted HTTP allows 1000. The SDK model rejects anything above 300.
+    return min(CLOUD_CHUNK_HI, max(CHUNK_LENGTH_LO, chunk_length))
+
+
+def _sdk_sample_rate(sample_rate: int) -> int:
+    # The SDK accepts 0 and rates past the WAV header. The writer then raises
+    # and the collected audio is lost.
+    if sample_rate < 1 or sample_rate > 2**32 - 1:
+        return _STOCK.sample_rate
+    return sample_rate
+
+
+def _sdk_speed(speed: float) -> float:
+    return clamp_num(speed, TTS_SPEED_LO, TTS_SPEED_HI, _STOCK.speed, float)
+
+
+def _sdk_volume(volume: float) -> float:
+    return min(_SDK_VOLUME_HI, max(_SDK_VOLUME_LO, volume))
+
+
+def _spoken(text: str, *, lead: bool = True) -> str:
+    return normalize_cues(scrub_tts(text), lead=lead)
+
+
+def _hold_at(text: str, *, line_start: bool, sentence_start: bool, before: str = "") -> int:
+    return hold_tts(
+        text,
+        line_start=line_start,
+        sentence_start=sentence_start,
+        before=before,
+    )
+
+
+def _at_line_start(ready: str) -> bool:
+    text = ready.rstrip(" \t")
+    return not text or text.endswith("\n")
+
+
+def _stable_prefix(
+    text: str, *, line_start: bool, sentence_start: bool, before: str = ""
+) -> tuple[str, str]:
+    cut = _hold_at(text, line_start=line_start, sentence_start=sentence_start, before=before)
+    return text[:cut], text[cut:]
+
+
+# A closer split from its word ("words" then "** ") is not an operator.
+# " * " still is: the mark does not start the chunk.
+_ORPHAN_CLOSER_RE = re.compile(r"^[*_`~]+(?=\s)")
+
+
+def _fold_stream_breaks(text: str) -> str:
+    # A carriage return or a Unicode line separator is a newline only after
+    # scrub. Until then the next mood looks mid-sentence and is spoken.
+    return (
+        text.replace("\r\n", "\n")
+        .replace("\r", "\n")
+        .replace("\u2028", "\n")
+        .replace("\u2029", "\n")
+    )
+
+
+def _glue_sentence_stop(ready: str, piece: str) -> str:
+    # "(https://example.com)" is removed after "door " was already buffered.
+    # The period arrives next, and Fish says "door" and then "dot".
+    if (
+        piece
+        and piece[0] in ".!?…。！？,;:，；："
+        and ready[-1:].isspace()
+        and ready[-1:] not in "\n\r"
+    ):
+        ready = ready[:-1]
+    return ready + piece
+
+
+def _drop_orphan_closer(stable: str, ready: str) -> str:
+    if not ready or not ready[-1].isalnum():
+        return stable
+    # "~~~" then a newline is a code fence, not a leftover closer.
+    # Stripping it spoke the code.
+    if stable.startswith(("~~~", "```")):
+        return stable
+    return _ORPHAN_CLOSER_RE.sub("", stable)
+
+
+def _continues_sentence(ready: str, incoming: str = "") -> bool:
+    if not ready.rstrip():
+        return False
+    # A new line is its own sentence, even when the previous line has no stop.
+    # "List\nExcited," is a cue. The newline was already sent, so the next
+    # token would otherwise look mid-sentence and the mood would be spoken.
+    if ready.rstrip(" \t").endswith("\n"):
+        return False
+    if ends_sentence(ready):
+        return False
+    # "Hello؟" + " Excited" — the space is still in this token, not in ready.
+    # "Dr." + " Happy" is not a new sentence.
+    return not (incoming[:1].isspace() and ends_sentence(ready + incoming[:1]))
+
+
+def _scrub_chunk(
+    text: str,
+    *,
+    lead: bool = True,
+    line_start: bool = True,
+    before: str = "",
+    after: str = "",
+    continued: bool = False,
+) -> str:
+    """Scrub one stable stream chunk with the text already accepted around it."""
+    if not text:
+        return ""
+    # A chunk edge is the middle of the reply. Whole-string scrub strips
+    # that space, and cue rewrite strips it again. The newline is how the
+    # next chunk knows it starts a line.
+    lead_space = text[0] == " "
+    trail_space = text[-1] == " "
+    body = text.lstrip(" \t")
+    lead_breaks = min(len(body) - len(body.lstrip("\n")), 2)
+    ended_line = text.rstrip(" \t").endswith("\n")
+    cleaned = scrub_tts(
+        text,
+        line_start=line_start,
+        continued=continued,
+        before=before[-1:],
+        after=after[:1],
+    )
+    spoken = normalize_cues(cleaned, lead=lead)
+    if (lead_space or cleaned[:1] == " ") and spoken[:1] != " ":
+        spoken = f" {spoken}"
+    if (trail_space or cleaned[-1:] == " ") and spoken[-1:] != " ":
+        spoken = f"{spoken} "
+    if lead_breaks and not spoken.startswith("\n"):
+        spoken = ("\n" * lead_breaks) + spoken.lstrip(" ")
+    elif ended_line and not spoken.endswith("\n"):
+        spoken = f"{spoken.rstrip(' ')}\n"
+    return spoken
 
 
 def _quiet_result(cancelled: bool) -> IsolatedResult:
@@ -100,6 +278,12 @@ class IsolatedFishTts:
             How much was spoken. ``spoken_so_far`` is the played prefix, not
             the full unplayed reply.
 
+        Raises
+        ------
+        Exception
+            Re-raised from the private thread. A sink that fails to open,
+            including ``PortAudioMissingError``, must not look like silence.
+
         Notes
         -----
         Safe to call from ``asyncio.run`` or ``to_thread``. The Fish websocket
@@ -108,19 +292,26 @@ class IsolatedFishTts:
         """
         cancel = cancel or threading.Event()
         result: IsolatedResult | None = None
+        # thread.join does not re-raise. A sink that fails to open would
+        # otherwise look like a silent turn.
+        error: Exception | None = None
 
         def worker() -> None:
-            nonlocal result
+            nonlocal result, error
             try:
                 result = run_isolated(self.speak(text, sink, cancel))
             except (asyncio.CancelledError, BaseExceptionGroup, RuntimeError, GeneratorExit) as e:
                 if not is_cancel_noise(e):
                     warn(f"[tts] {e}")
                 result = _quiet_result(cancel.is_set())
+            except Exception as exc:
+                error = exc
 
         thread = threading.Thread(target=worker, name="fish-tts", daemon=True)
         thread.start()
         thread.join()
+        if error is not None:
+            raise error
         if result is None:
             return _quiet_result(cancel.is_set())
         return result
@@ -188,7 +379,9 @@ class IsolatedFishTts:
         Notes
         -----
         The duplex loop does not call this. It waits for the full reply and
-        uses ``speak_isolated``, which can replay on 429 or 5xx.
+        uses ``speak_isolated``, which can replay on 429 or 5xx. A thought,
+        parenthesis, bracket, or URL stays buffered until it closes, so a
+        cut cannot speak the inside of a span the closer would remove.
         """
         return await run_turn(
             self._spec(),
@@ -203,8 +396,15 @@ class IsolatedFishTts:
         deltas: Iterable[str] | AsyncIterator[str],
         cancel: threading.Event,
     ) -> AsyncIterator[Any]:
-        buf = ""
+        raw = ""
+        ready = ""
+        # The last accepted character. ready is empty once that text is sent,
+        # and the next span still needs the neighbor so its gap survives.
+        last = ""
         sent = 0
+        # Text already sent on this line. An empty ready buffer is not a new
+        # line, so a star after "Hello." must not be stripped as a bullet.
+        sent_line = ""
 
         def counted(piece: str) -> TextEvent | None:
             nonlocal sent
@@ -214,23 +414,71 @@ class IsolatedFishTts:
             sent += 1
             return event
 
+        def take_ready() -> str | None:
+            nonlocal ready
+            split = split_tts_piece(ready, self.partial_chars, flush_rest=False)
+            if split is None:
+                return None
+            piece, ready = split
+            return piece
+
         async for tok in as_async(deltas):
             if cancel.is_set():
                 break
-            if skip_empty_delta(tok):
-                continue
-            buf += tok
+            # A space-only token is not a TextEvent, but it is the boundary
+            # between words. Dropping it here joins those words.
+            raw = _fold_stream_breaks(raw + tok)
+            sentence_start = not _continues_sentence(ready, raw)
+            stable, raw = _stable_prefix(
+                raw,
+                line_start=_at_line_start(sent_line + ready),
+                sentence_start=sentence_start,
+                before=ready,
+            )
+            if stable:
+                stable = _drop_orphan_closer(stable, ready)
+                ready = _glue_sentence_stop(
+                    ready,
+                    _scrub_chunk(
+                        stable,
+                        lead=sentence_start,
+                        line_start=_at_line_start(sent_line + ready),
+                        before=ready[-1:] or last,
+                        after=raw[:1],
+                        continued=bool((sent_line + ready).strip()),
+                    ),
+                )
+                if ready:
+                    last = ready[-1]
             while True:
-                split = split_tts_piece(buf, self.partial_chars, flush_rest=False)
-                if split is None:
+                piece = take_ready()
+                if piece is None:
                     break
-                piece, buf = split
+                sent_line = (sent_line + piece).rsplit("\n", 1)[-1]
                 event = counted(piece)
                 if event is not None:
                     yield event
-        tail = split_tts_piece(buf, self.partial_chars, flush_rest=True)
-        if tail is not None and not cancel.is_set():
-            event = counted(tail[0])
+        if not cancel.is_set() and raw:
+            lead = not _continues_sentence(ready, raw)
+            raw = _drop_orphan_closer(raw, ready)
+            ready = _glue_sentence_stop(
+                ready,
+                _scrub_chunk(
+                    raw,
+                    lead=lead,
+                    line_start=_at_line_start(sent_line + ready),
+                    before=ready[-1:] or last,
+                    continued=bool((sent_line + ready).strip()),
+                ),
+            )
+        # A span held until the end can be longer than the send window.
+        # One cut would speak the first words and drop the rest.
+        while ready and not cancel.is_set():
+            split = split_tts_piece(ready, self.partial_chars, flush_rest=True)
+            if split is None:
+                break
+            piece, ready = split
+            event = counted(piece)
             if event is not None:
                 yield event
         flush = flush_if_sent(sent, cancel)
@@ -238,20 +486,24 @@ class IsolatedFishTts:
             yield flush
 
     def _text_event(self, piece: str) -> TextEvent | None:
+        # The piece was already scrubbed, including one edge space. Scrubbing
+        # again strips that space and the next cut is spoken as one word.
         if skip_empty_delta(piece):
             return None
-        return TextEvent(text=_spoken(piece))
+        return TextEvent(text=piece)
 
     def _spec(self) -> TurnSpec:
         return TurnSpec(
             api_key=self.api_key,
             base_url=self.base_url,
-            voice_id=self.voice_id,
-            model=self.model,
-            audio_format=self.audio_format,
-            latency=self.latency,
-            speed=self.speed,
-            sample_rate=self.sample_rate,
+            # The id is MessagePacked into the start event. A surrogate makes
+            # that pack fail and the socket never opens. The model is a header.
+            voice_id=utf8_text(self.voice_id),
+            model=known_tts_model(self.model),
+            audio_format=_sdk_format(self.audio_format),
+            latency=_sdk_latency(self.latency),
+            speed=_sdk_speed(self.speed),
+            sample_rate=_sdk_sample_rate(self.sample_rate),
             partial_chars=self.partial_chars,
             trace_headers=self.trace_headers,
             config=self._tts_config(),
@@ -259,20 +511,20 @@ class IsolatedFishTts:
 
     def _tts_config(self) -> TTSConfig:
         return TTSConfig(
-            format=cast(AudioFormat, self.audio_format),
+            format=_sdk_format(self.audio_format),
             mp3_bitrate=known_mp3_bitrate(_STOCK.mp3_bitrate),
-            sample_rate=self.sample_rate,
-            latency=cast(LatencyMode, self.latency),
+            sample_rate=_sdk_sample_rate(self.sample_rate),
+            latency=_sdk_latency(self.latency),
             normalize=_STOCK.normalize,
-            chunk_length=self.chunk_length,
+            chunk_length=_sdk_chunk_length(self.chunk_length),
             min_chunk_length=self.min_chunk_length,
-            temperature=self.temperature,
-            top_p=self.top_p,
+            temperature=clamp_num(self.temperature, UNIT_LO, UNIT_HI, _STOCK.temperature, float),
+            top_p=clamp_num(self.top_p, UNIT_LO, UNIT_HI, _STOCK.top_p, float),
             repetition_penalty=self.repetition_penalty,
             max_new_tokens=_STOCK.max_new_tokens,
             condition_on_previous_chunks=_STOCK.condition_on_previous_chunks,
             early_stop_threshold=_STOCK.early_stop_threshold,
-            prosody=Prosody(speed=self.speed, volume=self.volume),
+            prosody=Prosody(speed=_sdk_speed(self.speed), volume=_sdk_volume(self.volume)),
         )
 
 
