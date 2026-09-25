@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -23,6 +24,8 @@ _SSE_DATA = "data:"
 
 class _AbortStats(Protocol):
     aborted: bool
+    http_status: int | None
+    retry_after_s: float | None
 
 
 @dataclass
@@ -151,22 +154,91 @@ async def _iter_openrouter_events(call: ChatCall) -> AsyncIterator[object]:
                 async for event in event_stream:
                     yield event
     except OpenRouterError as e:
-        _abort_http(call.stats, e.status_code, call.route_model, _abort_preview(e.body))
+        _abort_http(
+            call.stats,
+            e.status_code,
+            call.route_model,
+            _abort_text(e.body),
+            e.headers,
+        )
 
 
 def _note_usage(payload: dict[str, Any]) -> None:
     payload["stream_options"] = {"include_usage": True}
 
 
-def _abort_preview(body: object) -> str:
+def _abort_text(body: object) -> str:
     if isinstance(body, (bytes, bytearray)):
-        return bytes(body)[:_ABORT_CHARS].decode("utf-8", "replace")
-    return str(body)[:_ABORT_CHARS]
+        return bytes(body).decode("utf-8", "replace")
+    return str(body)
 
 
-def _abort_http(stats: _AbortStats, status: object, model: str, body: str) -> None:
-    warn(f"[llm] HTTP {status} model={model}: {body}")
+def _abort_http(
+    stats: _AbortStats,
+    status: object,
+    model: str,
+    body: str,
+    headers: httpx.Headers | None = None,
+) -> None:
+    warn(f"[llm] HTTP {status} model={model}: {body[:_ABORT_CHARS]}")
     stats.aborted = True
+    stats.http_status = status if isinstance(status, int) else None
+    if stats.http_status == 429:
+        stats.retry_after_s = _retry_after_seconds(headers, body)
+
+
+def _retry_after_seconds(headers: httpx.Headers | None, body: str) -> float | None:
+    if headers is not None:
+        raw = headers.get("retry-after")
+        if raw is not None:
+            found = _seconds_value(raw)
+            if found is not None:
+                return found
+    return _seconds_in_json(body)
+
+
+def _seconds_value(raw: object) -> float | None:
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        value = float(raw)
+    elif isinstance(raw, str):
+        try:
+            value = float(raw.strip())
+        except ValueError:
+            return None
+    else:
+        return None
+    if math.isfinite(value) and value >= 0:
+        return value
+    return None
+
+
+def _seconds_in_json(body: str) -> float | None:
+    try:
+        parsed: object = json.loads(body)
+    except json.JSONDecodeError:
+        return None
+    return _find_retry_seconds(parsed)
+
+
+def _find_retry_seconds(value: object) -> float | None:
+    if isinstance(value, dict):
+        for key in ("retry_after_seconds", "Retry-After", "retry-after"):
+            if key in value:
+                found = _seconds_value(value[key])
+                if found is not None:
+                    return found
+        for item in value.values():
+            found = _find_retry_seconds(item)
+            if found is not None:
+                return found
+    elif isinstance(value, list):
+        for item in value:
+            found = _find_retry_seconds(item)
+            if found is not None:
+                return found
+    return None
 
 
 def _sse_object(data: str) -> dict[str, Any] | None:
@@ -229,8 +301,8 @@ async def _iter_httpx_sse_events(call: ChatCall) -> AsyncIterator[object]:
         http.stream("POST", url, headers=headers, json=payload) as resp,
     ):
         if resp.status_code >= 400:
-            body = _abort_preview(await resp.aread())
-            _abort_http(call.stats, resp.status_code, call.route_model, body)
+            body = _abort_text(await resp.aread())
+            _abort_http(call.stats, resp.status_code, call.route_model, body, resp.headers)
             return
         debug(
             "llm.response status={} headers={}",

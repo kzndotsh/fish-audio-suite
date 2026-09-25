@@ -4,16 +4,25 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import math
+import re
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Any
 
-from fish_audio_suite_kit import MS_PER_S, env_int, env_off, utf8_text
-from fish_audio_suite_voice.debug import debug, warn
+from fish_audio_suite_kit import MS_PER_S, ends_sentence, env_int, env_off, utf8_text
+from fish_audio_suite_voice.debug import console_print, debug, warn
 from fish_audio_suite_voice.live import is_cancel_noise
 from fish_audio_suite_voice.transports import ChatCall, chat_completions_url, chat_events
 
 _DEFAULT_MAX_TOKENS = 1200
+_LLM_429_CAP_S = 15.0
+_RETRY_POLL_S = 0.05
+# A cue after a finished sentence is not a cut-off. "Hello. [break]" is done.
+_TRAIL_CUE_RE = re.compile(r"(?:\s*\[[^\[\]]{0,80}\])+\s*$")
+# A follow-up with no sentence end past this is a runaway, not the missing words.
+_CONT_SCAN = 240
+_CONT_BARE = 80
 _MODEL_LOOKUP_S = 15
 _MODEL_LOOKUP_MS = _MODEL_LOOKUP_S * MS_PER_S
 _LOOKUP_BODY_CHARS = 200
@@ -193,6 +202,14 @@ class _ChatStats:
     last_provider: str = ""
     last_native: str = ""
     aborted: bool = False
+    http_status: int | None = None
+    retry_after_s: float | None = None
+
+
+class _HeldStats:
+    def __init__(self) -> None:
+        self.stats = _ChatStats()
+        self.stopped = ""
 
 
 def _usage_dict(usage: object) -> dict[str, Any] | None:
@@ -388,14 +405,104 @@ async def llm_token_stream(
 
     Notes
     -----
-    ``models.get`` 404 warns and does not abort. A stream error is logged and
-    ends the iterator. Both transports share one event consumer.
+    ``models.get`` 404 warns and does not abort. A 429 waits for ``Retry-After``
+    and tries once more when that wait is at most 15 seconds. A longer wait, a
+    missing wait, or cancel ends the iterator. Any other stream error is logged
+    and ends the iterator. A ``stop`` before a sentence end sends one more
+    request with that text as the assistant line. Only a suffix that continues
+    that sentence is yielded. OpenRouter requests do not set ``reasoning``. A
+    ``reasoning`` field on a stream event is not spoken. Both transports share
+    one event consumer.
     """
     nitro = _want_nitro(model, base)
     route_model = _nitro_route(model, nitro=nitro)
     max_tokens = env_int("FISH_LLM_MAX_TOKENS", _DEFAULT_MAX_TOKENS)
     if max_tokens <= 0:
         max_tokens = _DEFAULT_MAX_TOKENS
+    batch = messages
+    spoken: list[str] = []
+    for generation in (1, 2):
+        if generation == 2:
+            console_print("  [llm cut off, continuing]", flush=True)
+        held = _HeldStats()
+        extra: list[str] = []
+        async for piece in _stream_generation(
+            batch,
+            base=base,
+            key=key,
+            route_model=route_model,
+            max_tokens=max_tokens,
+            nitro=nitro,
+            cancel=cancel,
+            client=client,
+            session_id=session_id,
+            trace_id=trace_id,
+            held=held,
+        ):
+            if generation == 1:
+                spoken.append(piece)
+                yield piece
+            else:
+                extra.append(piece)
+        if held.stopped != "done" or generation == 2:
+            suffix = _continuation_suffix("".join(spoken), "".join(extra))
+            if suffix:
+                yield suffix
+            return
+        text = "".join(spoken)
+        if not _cut_off(text, held.stats, cancel):
+            return
+        batch = [*messages, {"role": "assistant", "content": text}]
+
+
+def _cut_off(text: str, stats: _ChatStats, cancel: asyncio.Event | None) -> bool:
+    # finish=length used the cap. Another call would spend the cap again.
+    if stats.aborted or stats.last_finish != "stop":
+        return False
+    if cancel is not None and cancel.is_set():
+        return False
+    body = _TRAIL_CUE_RE.sub("", text.strip()).strip()
+    if not body:
+        return False
+    return not ends_sentence(body)
+
+
+def _continuation_suffix(partial: str, more: str) -> str:
+    # A prefill reply sometimes repeats the line it was given. A capital after
+    # "You can" is a new document, not the missing words.
+    more = more.removeprefix(partial)
+    lead = more.lstrip()
+    if not lead or lead[0].isupper():
+        return ""
+    if partial and not partial[-1].isspace() and not more[0].isspace() and more[0].isalnum():
+        more = " " + more
+    return _first_sentence(more)
+
+
+def _first_sentence(text: str) -> str:
+    window = text[:_CONT_SCAN]
+    for index in range(1, len(window) + 1):
+        if ends_sentence(window[:index]):
+            return window[:index]
+    if len(text) <= _CONT_BARE:
+        return text
+    return ""
+
+
+async def _stream_generation(
+    messages: list[dict[str, str]],
+    *,
+    base: str,
+    key: str,
+    route_model: str,
+    max_tokens: int,
+    nitro: bool,
+    cancel: asyncio.Event | None,
+    client: Any | None,
+    session_id: str | None,
+    trace_id: str | None,
+    held: _HeldStats,
+) -> AsyncIterator[str]:
     debug(
         "llm.request url={} model={} nitro={} msgs={}",
         chat_completions_url(base),
@@ -403,33 +510,78 @@ async def llm_token_stream(
         nitro,
         len(messages),
     )
-    stats = _ChatStats()
-    try:
-        events = chat_events(
-            ChatCall(
-                messages=messages,
-                base=base,
-                key=key,
-                route_model=route_model,
-                max_tokens=max_tokens,
-                nitro=nitro,
-                client=client,
-                session_id=session_id,
-                trace_id=trace_id,
-                stats=stats,
-                use_openrouter=openrouter_base(base),
+    for attempt in (1, 2):
+        stats = _ChatStats()
+        held.stats = stats
+        try:
+            events = chat_events(
+                ChatCall(
+                    messages=messages,
+                    base=base,
+                    key=key,
+                    route_model=route_model,
+                    max_tokens=max_tokens,
+                    nitro=nitro,
+                    client=client,
+                    session_id=session_id,
+                    trace_id=trace_id,
+                    stats=stats,
+                    use_openrouter=openrouter_base(base),
+                )
             )
-        )
-        async for piece in _consume_chat_events(events, cancel, stats):
-            yield piece
-    except (asyncio.CancelledError, GeneratorExit):
+            async for piece in _consume_chat_events(events, cancel, stats):
+                yield piece
+        except (asyncio.CancelledError, GeneratorExit):
+            held.stopped = "cancel"
+            return
+        except BaseExceptionGroup as exc:
+            if _cancel_group(exc):
+                held.stopped = "cancel"
+                return
+            warn(f"[llm] {_group_text(exc)}")
+        except Exception as e:
+            if is_cancel_noise(e):
+                held.stopped = "cancel"
+                return
+            warn(f"[llm] {e}")
+        if attempt == 1 and await _maybe_retry_429(stats, cancel):
+            continue
+        _finish_llm(stats, route_model)
+        held.stopped = "done"
         return
-    except BaseExceptionGroup as exc:
-        if _cancel_group(exc):
-            return
-        warn(f"[llm] {_group_text(exc)}")
-    except Exception as e:
-        if is_cancel_noise(e):
-            return
-        warn(f"[llm] {e}")
-    _finish_llm(stats, route_model)
+
+
+def _retry_wait(stats: _ChatStats, cancel: asyncio.Event | None) -> float | None:
+    wait = stats.retry_after_s
+    if stats.http_status != 429 or stats.yielded or wait is None:
+        return None
+    if not math.isfinite(wait) or wait < 0 or wait > _LLM_429_CAP_S:
+        return None
+    if cancel is not None and cancel.is_set():
+        return None
+    return wait
+
+
+def _wait_label(seconds: float) -> str:
+    if seconds == int(seconds):
+        return str(int(seconds))
+    return f"{seconds:.1f}"
+
+
+async def _pause_for_retry(cancel: asyncio.Event | None, seconds: float) -> bool:
+    left = seconds
+    while left > 0:
+        if cancel is not None and cancel.is_set():
+            return True
+        step = min(_RETRY_POLL_S, left)
+        await asyncio.sleep(step)
+        left -= step
+    return cancel is not None and cancel.is_set()
+
+
+async def _maybe_retry_429(stats: _ChatStats, cancel: asyncio.Event | None) -> bool:
+    wait = _retry_wait(stats, cancel)
+    if wait is None:
+        return False
+    console_print(f"  [llm 429, retrying in {_wait_label(wait)}s]", flush=True)
+    return not await _pause_for_retry(cancel, wait)

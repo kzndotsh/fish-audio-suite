@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from typing import Any, ClassVar
 
 import httpx
+import openrouter
 import pytest
 from openrouter.errors import OpenRouterError
 
@@ -17,7 +18,12 @@ from fish_audio_suite_voice.llm import (
     check_openrouter_model,
     llm_token_stream,
 )
-from fish_audio_suite_voice.transports import _chat_body, _feed_sse, openrouter_client
+from fish_audio_suite_voice.transports import (
+    _abort_http,
+    _chat_body,
+    _feed_sse,
+    openrouter_client,
+)
 
 OR_BASE = "https://openrouter.ai/api/v1"
 
@@ -220,13 +226,21 @@ class _FakeStream:
 
 class _FakeChat:
     last_kw: dict[str, Any] | None = None
+    calls: ClassVar[list[dict[str, Any]]] = []
+    rounds: ClassVar[list[list[object]] | None] = None
 
     def __init__(self, chunks: list[object]) -> None:
         self._chunks = chunks
 
     async def send_async(self, **kwargs: Any) -> Any:
         _FakeChat.last_kw = kwargs
-        return _FakeStream(self._chunks)
+        _FakeChat.calls.append(kwargs)
+        chunks = self._chunks
+        if _FakeChat.rounds is not None:
+            index = len(_FakeChat.calls) - 1
+            if index < len(_FakeChat.rounds):
+                chunks = _FakeChat.rounds[index]
+        return _FakeStream(chunks)
 
 
 class _FakeOpenRouter:
@@ -252,6 +266,8 @@ def fake_openrouter(monkeypatch: pytest.MonkeyPatch) -> type[_FakeOpenRouter]:
     _FakeOpenRouter.chunks = [_chunk("Hello"), _chunk(" world")]
     _FakeOpenRouter.last_init = None
     _FakeChat.last_kw = None
+    _FakeChat.calls = []
+    _FakeChat.rounds = None
     return _FakeOpenRouter
 
 
@@ -269,6 +285,7 @@ def test_openrouter_stream_joins_tokens(fake_openrouter: type[_FakeOpenRouter]) 
     assert _FakeChat.last_kw["model"] == "org/model:nitro"
     assert _FakeChat.last_kw["provider"] == {"sort": "throughput"}
     assert _FakeChat.last_kw["max_completion_tokens"] == 1200
+    assert "reasoning" not in _FakeChat.last_kw
     assert "max_tokens" not in _FakeChat.last_kw
     assert fake_openrouter.last_init["x_open_router_categories"] == "cli-agent"
 
@@ -325,6 +342,49 @@ def test_content_parts_keep_text_and_skip_reasoning(
     assert asyncio.run(run()) == ["Hello there"]
 
 
+def test_reasoning_field_is_not_spoken(
+    fake_openrouter: type[_FakeOpenRouter],
+) -> None:
+    fake_openrouter.chunks = [
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(
+                        content=None,
+                        reasoning="secret plan",
+                        reasoning_details=[{"type": "reasoning.text", "text": "more secret"}],
+                    ),
+                    message=SimpleNamespace(content=None, reasoning="message secret"),
+                    finish_reason=None,
+                )
+            ],
+            usage=None,
+            id="gen-1",
+            model="org/model",
+            error=None,
+            provider=None,
+        ),
+        SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    delta=SimpleNamespace(content="Hello", reasoning="still secret"),
+                    finish_reason=None,
+                )
+            ],
+            usage=None,
+            id="gen-1",
+            model="org/model",
+            error=None,
+            provider=None,
+        ),
+    ]
+
+    async def run() -> list[str]:
+        return [tok async for tok in _tokens()]
+
+    assert asyncio.run(run()) == ["Hello"]
+
+
 def test_one_content_object_is_spoken(fake_openrouter: type[_FakeOpenRouter]) -> None:
     fake_openrouter.chunks = [
         SimpleNamespace(
@@ -369,7 +429,7 @@ def test_openrouter_message_content_when_delta_empty(
             choices=[
                 SimpleNamespace(
                     delta=SimpleNamespace(content=None),
-                    message=SimpleNamespace(content="from-message"),
+                    message=SimpleNamespace(content="from-message."),
                     finish_reason="stop",
                 )
             ],
@@ -384,7 +444,8 @@ def test_openrouter_message_content_when_delta_empty(
     async def run() -> list[str]:
         return [tok async for tok in _tokens()]
 
-    assert asyncio.run(run()) == ["from-message"]
+    assert asyncio.run(run()) == ["from-message."]
+    assert len(_FakeChat.calls) == 1
 
 
 def test_refusal_is_spoken_when_content_is_empty(
@@ -459,12 +520,12 @@ def test_empty_delta_does_not_repeat_the_full_message(
     fake_openrouter: type[_FakeOpenRouter],
 ) -> None:
     fake_openrouter.chunks = [
-        _chunk("Hello"),
+        _chunk("Hello."),
         SimpleNamespace(
             choices=[
                 SimpleNamespace(
                     delta=SimpleNamespace(content=""),
-                    message=SimpleNamespace(content="Hello"),
+                    message=SimpleNamespace(content="Hello."),
                     finish_reason="stop",
                 )
             ],
@@ -479,19 +540,20 @@ def test_empty_delta_does_not_repeat_the_full_message(
     async def run() -> list[str]:
         return [tok async for tok in _tokens()]
 
-    assert asyncio.run(run()) == ["Hello"]
+    assert asyncio.run(run()) == ["Hello."]
+    assert len(_FakeChat.calls) == 1
 
 
 def test_null_delta_after_tokens_does_not_repeat_the_message(
     fake_openrouter: type[_FakeOpenRouter],
 ) -> None:
     fake_openrouter.chunks = [
-        _chunk("Hello"),
+        _chunk("Hello."),
         SimpleNamespace(
             choices=[
                 SimpleNamespace(
                     delta=SimpleNamespace(content=None),
-                    message=SimpleNamespace(content="Hello"),
+                    message=SimpleNamespace(content="Hello."),
                     finish_reason="stop",
                 )
             ],
@@ -506,7 +568,81 @@ def test_null_delta_after_tokens_does_not_repeat_the_message(
     async def run() -> list[str]:
         return [tok async for tok in _tokens()]
 
-    assert asyncio.run(run()) == ["Hello"]
+    assert asyncio.run(run()) == ["Hello."]
+    assert len(_FakeChat.calls) == 1
+
+
+def _stopped(text: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                delta=SimpleNamespace(content=text),
+                finish_reason="stop",
+            )
+        ],
+        usage=None,
+        id="gen-1",
+        model="org/model",
+        error=None,
+        provider=None,
+    )
+
+
+def test_unfinished_stop_continues_once(fake_openrouter: type[_FakeOpenRouter]) -> None:
+    _FakeChat.rounds = [
+        [_stopped("Thank you for")],
+        [_stopped(" listening.")],
+    ]
+
+    async def run() -> list[str]:
+        return [tok async for tok in _tokens()]
+
+    assert asyncio.run(run()) == ["Thank you for", " listening."]
+    assert len(_FakeChat.calls) == 2
+    assert _FakeChat.calls[1]["messages"][-1] == {
+        "role": "assistant",
+        "content": "Thank you for",
+    }
+
+
+def test_echoed_prefill_is_not_spoken_twice(fake_openrouter: type[_FakeOpenRouter]) -> None:
+    _FakeChat.rounds = [
+        [_stopped("Thank you for")],
+        [_stopped("Thank you for listening.")],
+    ]
+
+    async def run() -> str:
+        return "".join([tok async for tok in _tokens()])
+
+    assert asyncio.run(run()) == "Thank you for listening."
+    assert len(_FakeChat.calls) == 2
+
+
+def test_a_new_document_is_not_appended(fake_openrouter: type[_FakeOpenRouter]) -> None:
+    essay = "Révolution industrielle et transformations sociales. " * 4
+    _FakeChat.rounds = [
+        [_stopped("Alright, honey. You can")],
+        [_stopped(essay)],
+    ]
+
+    async def run() -> str:
+        return "".join([tok async for tok in _tokens()])
+
+    assert asyncio.run(run()) == "Alright, honey. You can"
+
+
+def test_continuation_stops_at_the_first_sentence(
+    fake_openrouter: type[_FakeOpenRouter],
+) -> None:
+    _FakeChat.rounds = [
+        [_stopped("Thank you for")],
+        [_stopped(" listening. Then a second sentence that must not be spoken.")],
+    ]
+
+    async def run() -> str:
+        return "".join([tok async for tok in _tokens()])
+
+    assert asyncio.run(run()) == "Thank you for listening."
 
 
 def test_cancel_returns_while_the_next_token_is_still_pending() -> None:
@@ -609,3 +745,215 @@ def test_check_openrouter_model_skips_unsplit_slug() -> None:
 
     client = SimpleNamespace(models=SimpleNamespace(get_async=get_async))
     asyncio.run(check_openrouter_model(client, "norgslash", OR_BASE))
+
+
+def _events_once_429(wait: float | None, then: list[str]):
+    calls = {"n": 0}
+
+    def events(call: Any) -> Any:
+        async def gen() -> Any:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                call.stats.aborted = True
+                call.stats.http_status = 429
+                call.stats.retry_after_s = wait
+            else:
+                for text in then:
+                    yield _chunk(text)
+
+        return gen()
+
+    return calls, events
+
+
+def test_429_within_cap_retries_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls, events = _events_once_429(4.0, ["back"])
+    waits: list[float] = []
+    printed: list[str] = []
+
+    async def pause(_cancel: asyncio.Event | None, seconds: float) -> bool:
+        waits.append(seconds)
+        return False
+
+    monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", events)
+    monkeypatch.setattr("fish_audio_suite_voice.llm._pause_for_retry", pause)
+    monkeypatch.setattr(
+        "fish_audio_suite_voice.llm.console_print",
+        lambda *args, **_kwargs: printed.append(" ".join(str(arg) for arg in args)),
+    )
+
+    async def collect() -> list[str]:
+        return [
+            tok
+            async for tok in llm_token_stream(
+                [{"role": "user", "content": "hi"}],
+                base="https://api.example.com/v1",
+                key="sk-test",
+                model="org/model",
+            )
+        ]
+
+    assert asyncio.run(collect()) == ["back"]
+    assert calls["n"] == 2
+    assert waits == [4.0]
+    assert printed == ["  [llm 429, retrying in 4s]"]
+
+
+def test_429_over_cap_returns_to_listening(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls, events = _events_once_429(31.0, ["back"])
+    monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", events)
+
+    async def collect() -> list[str]:
+        return [
+            tok
+            async for tok in llm_token_stream(
+                [{"role": "user", "content": "hi"}],
+                base="https://api.example.com/v1",
+                key="sk-test",
+                model="org/model",
+            )
+        ]
+
+    assert asyncio.run(collect()) == []
+    assert calls["n"] == 1
+
+
+def test_429_without_retry_after_does_not_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls, events = _events_once_429(None, ["back"])
+    monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", events)
+
+    async def collect() -> list[str]:
+        return [
+            tok
+            async for tok in llm_token_stream(
+                [{"role": "user", "content": "hi"}],
+                base="https://api.example.com/v1",
+                key="sk-test",
+                model="org/model",
+            )
+        ]
+
+    assert asyncio.run(collect()) == []
+    assert calls["n"] == 1
+
+
+def test_cancel_during_429_wait_does_not_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls, events = _events_once_429(4.0, ["back"])
+
+    async def pause(cancel: asyncio.Event | None, _seconds: float) -> bool:
+        if cancel is not None:
+            cancel.set()
+        return True
+
+    monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", events)
+    monkeypatch.setattr("fish_audio_suite_voice.llm._pause_for_retry", pause)
+
+    async def collect() -> list[str]:
+        return [
+            tok
+            async for tok in llm_token_stream(
+                [{"role": "user", "content": "hi"}],
+                base="https://api.example.com/v1",
+                key="sk-test",
+                model="org/model",
+                cancel=asyncio.Event(),
+            )
+        ]
+
+    assert asyncio.run(collect()) == []
+    assert calls["n"] == 1
+
+
+def test_429_after_a_token_does_not_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"n": 0}
+
+    def events(call: Any) -> Any:
+        async def gen() -> Any:
+            calls["n"] += 1
+            yield _chunk("partial")
+            call.stats.aborted = True
+            call.stats.http_status = 429
+            call.stats.retry_after_s = 2.0
+
+        return gen()
+
+    monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", events)
+
+    async def collect() -> list[str]:
+        return [
+            tok
+            async for tok in llm_token_stream(
+                [{"role": "user", "content": "hi"}],
+                base="https://api.example.com/v1",
+                key="sk-test",
+                model="org/model",
+            )
+        ]
+
+    assert asyncio.run(collect()) == ["partial"]
+    assert calls["n"] == 1
+
+
+def test_abort_http_reads_retry_after_header() -> None:
+    stats = _ChatStats()
+    req = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+    headers = httpx.Response(429, headers={"Retry-After": "12"}, request=req).headers
+    body = '{"error":{"metadata":{"retry_after_seconds":2}}}'
+    _abort_http(stats, 429, "org/model", body, headers)
+    assert stats.http_status == 429
+    assert stats.aborted is True
+    assert stats.retry_after_s == 12.0
+
+
+def test_abort_http_reads_retry_after_from_body() -> None:
+    stats = _ChatStats()
+    body = '{"error":{"metadata":{"retry_after_seconds":8}}}'
+    _abort_http(stats, 429, "org/model", body, None)
+    assert stats.retry_after_s == 8.0
+
+
+def test_openrouter_429_header_retries_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    req = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
+    err = OpenRouterError(
+        "slow",
+        httpx.Response(429, headers={"Retry-After": "3"}, request=req),
+        body="{}",
+    )
+    calls = {"n": 0}
+
+    class _Chat:
+        async def send_async(self, **_kwargs: Any) -> Any:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise err
+            return _FakeStream([_chunk("ok")])
+
+    class _Client:
+        def __init__(self, **_kwargs: Any) -> None:
+            self.chat = _Chat()
+
+        async def __aenter__(self) -> _Client:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+    async def pause(_cancel: asyncio.Event | None, seconds: float) -> bool:
+        assert seconds == 3.0
+        return False
+
+    monkeypatch.setattr(openrouter, "OpenRouter", _Client)
+    monkeypatch.setattr("fish_audio_suite_voice.llm._pause_for_retry", pause)
+
+    async def collect() -> list[str]:
+        return [tok async for tok in _tokens()]
+
+    assert asyncio.run(collect()) == ["ok"]
+    assert calls["n"] == 2
+
+
+def test_abort_http_ignores_retry_after_on_other_status() -> None:
+    stats = _ChatStats()
+    _abort_http(stats, 500, "org/model", '{"retry_after_seconds":2}', None)
+    assert stats.http_status == 500
+    assert stats.retry_after_s is None
