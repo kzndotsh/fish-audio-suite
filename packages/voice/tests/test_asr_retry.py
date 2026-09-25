@@ -56,6 +56,28 @@ def sleeps(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     return mock
 
 
+def test_asr_language_cannot_inject_a_form_part(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: dict[str, Any] = {}
+
+    class _RecordingClient(_FakeAsrClient):
+        async def post(self, *_args: object, **kwargs: object) -> _FakeAsrResponse:
+            seen.update(kwargs)
+            return await super().post(*_args, **kwargs)
+
+    client = _RecordingClient([_FakeAsrResponse(200, payload={"text": "hello there"})])
+    monkeypatch.setattr("fish_audio_suite_voice.asr.httpx.AsyncClient", lambda **_kwargs: client)
+    heard = asyncio.run(
+        fish_asr(
+            b"wav",
+            "key",
+            base="https://api.fish.audio",
+            language='en\r\nContent-Disposition: form-data; name="hack"',
+        )
+    )
+    assert heard == "hello there"
+    assert seen["data"] == {"language": "en"}
+
+
 def test_asr_connect_timeout_is_shorter_than_read(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict[str, Any] = {}
 
@@ -91,6 +113,117 @@ def _run_asr(
     client = _install_asr(monkeypatch, outcomes)
     text = asyncio.run(fish_asr(b"wav", "key", base="https://api.fish.audio"))
     return text, client
+
+
+def test_fish_asr_blank_text_keeps_segments(monkeypatch: pytest.MonkeyPatch) -> None:
+    text, client = _run_asr(
+        monkeypatch,
+        [
+            _FakeAsrResponse(
+                200,
+                payload={
+                    "text": "",
+                    "segments": [
+                        {"text": "hello", "start": 0, "end": 0.4},
+                        {"text": "there", "start": 0.4, "end": 1},
+                    ],
+                },
+            )
+        ],
+    )
+    assert text == "hello there"
+    assert client.posts == 1
+
+
+def test_fish_asr_watermark_keeps_real_segments(monkeypatch: pytest.MonkeyPatch) -> None:
+    text, client = _run_asr(
+        monkeypatch,
+        [
+            _FakeAsrResponse(
+                200,
+                payload={
+                    "text": "Thanks for watching.",
+                    "segments": [
+                        {"text": "hello", "start": 0, "end": 0.4},
+                        {"text": "there", "start": 0.4, "end": 1},
+                    ],
+                },
+            )
+        ],
+    )
+    assert text == "hello there"
+    assert client.posts == 1
+
+
+def test_fish_asr_drops_a_watermark_segment_beside_real_speech(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text, client = _run_asr(
+        monkeypatch,
+        [
+            _FakeAsrResponse(
+                200,
+                payload={
+                    "text": "Thanks for watching.",
+                    "segments": [
+                        {"text": "Thanks for watching.", "start": 0, "end": 0.4},
+                        {"text": "ok", "start": 0.4, "end": 0.6},
+                        {"text": "hello there friend", "start": 0.6, "end": 1.4},
+                    ],
+                },
+            )
+        ],
+    )
+    assert text == "ok hello there friend"
+    assert "watching" not in text
+    assert client.posts == 1
+
+
+def test_fish_asr_drops_a_watermark_glued_to_real_speech(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    text, client = _run_asr(
+        monkeypatch,
+        [
+            _FakeAsrResponse(
+                200,
+                payload={
+                    "text": "hello there friend. Thanks for watching.",
+                    "segments": [
+                        {"text": "hello there friend.", "start": 0, "end": 1.2},
+                        {"text": "Thanks for watching.", "start": 1.2, "end": 2.0},
+                    ],
+                },
+            )
+        ],
+    )
+    assert text == "hello there friend."
+    assert "watching" not in text
+    assert client.posts == 1
+
+
+def test_asr_retry_does_not_post_again_after_quit(monkeypatch: pytest.MonkeyPatch) -> None:
+    from fish_audio_suite_voice.signals import STOP_RECORD
+
+    STOP_RECORD.clear()
+
+    async def fake_sleep(_seconds: float) -> None:
+        STOP_RECORD.set()
+
+    monkeypatch.setattr("fish_audio_suite_kit.http_errors.asyncio.sleep", fake_sleep)
+    client = _install_asr(
+        monkeypatch,
+        [
+            _FakeAsrResponse(429, text='{"message": "slow down", "status": 429}'),
+            _FakeAsrResponse(200, payload={"text": "should not run"}),
+        ],
+    )
+    try:
+        heard = asyncio.run(fish_asr(b"wav", "key", base="https://api.fish.audio"))
+    finally:
+        STOP_RECORD.clear()
+    assert heard == ""
+    assert client.posts == 1
 
 
 def test_fish_asr_retries_429_then_ok(monkeypatch: pytest.MonkeyPatch, sleeps: AsyncMock) -> None:
