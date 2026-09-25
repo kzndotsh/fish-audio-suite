@@ -131,6 +131,23 @@ def test_after_speech_records_only_audio_that_was_played() -> None:
     assert loop.history[-1] == {"role": "assistant", "content": "hello"}
     assert updated.ttfa == 12.0
 
+    loop = _loop()
+    loop.history.append({"role": "user", "content": "Hey! Can you hear me?"})
+    _after_speech(
+        loop,
+        snapshot,
+        IsolatedResult("Hey! Can you hear me?", 8, True, False, 12.0, 4.0),
+        started=0.0,
+    )
+    assert loop.history[-1]["role"] == "user"
+    _after_speech(
+        loop,
+        snapshot,
+        IsolatedResult("Yeah. What's up?", 8, True, False, 12.0, 4.0),
+        started=0.0,
+    )
+    assert loop.history[-1] == {"role": "assistant", "content": "Yeah. What's up?"}
+
 
 def test_recognize_fatal_again_and_quit(monkeypatch: pytest.MonkeyPatch) -> None:
     loop = _loop()

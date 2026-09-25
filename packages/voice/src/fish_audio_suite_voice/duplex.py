@@ -126,7 +126,14 @@ def _after_speech(
             flush=True,
         )
     spoken = result.spoken_so_far
-    if spoken and (result.got_audio or not result.cancelled):
+    # The last history row is the user line this reply answers. Saving an
+    # exact copy teaches the next turn to repeat them again.
+    last_user = history[-1]["content"] if history and history[-1]["role"] == "user" else ""
+    if (
+        spoken
+        and (result.got_audio or not result.cancelled)
+        and not same_utterance(spoken, last_user)
+    ):
         history.append({"role": "assistant", "content": spoken})
     return (
         replace(
