@@ -28,7 +28,8 @@ def canonical_traceparent(value: str) -> str | None:
     if m is None:
         return None
     ver, trace, span, flags = (g.lower() for g in m.groups())
-    if trace == _ZERO_TRACE or span == _ZERO_SPAN:
+    # W3C forbids version ff. All-zero ids are not a real trace.
+    if ver == "ff" or trace == _ZERO_TRACE or span == _ZERO_SPAN:
         return None
     return f"{ver}-{trace}-{span}-{flags}"
 
@@ -86,7 +87,9 @@ def w3c_trace_headers(incoming: Mapping[str, str]) -> dict[str, str]:
 def _tracestate_ok(state: str) -> bool:
     if not state or len(state) > _TRACESTATE_MAX:
         return False
-    return "\n" not in state and "\r" not in state
+    # Header values are ASCII. A control character splits the line, and a
+    # surrogate makes the HTTP client refuse the request.
+    return all(32 <= ord(ch) < 127 for ch in state)
 
 
 def _header(incoming: Mapping[str, str], name: str) -> str:
