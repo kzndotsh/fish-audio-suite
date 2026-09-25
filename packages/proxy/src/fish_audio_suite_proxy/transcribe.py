@@ -16,8 +16,10 @@ from fish_audio_suite_kit import (
     SuiteDefaults,
     format_as_srt,
     format_as_vtt,
+    is_caption_watermark,
     number_or,
     scrub_asr,
+    utf8_text,
 )
 from fish_audio_suite_proxy.errors import json_error, read_json_object
 from fish_audio_suite_proxy.speech import ClipError, decode_audio_b64
@@ -55,7 +57,7 @@ def _asr_from_json(parsed: dict[str, Any]) -> _InboundAsr | JSONResponse:
     inner = parsed.get("input_audio")
     audio_obj = inner if isinstance(inner, dict) else {}
     data = audio_obj.get("data")
-    fmt = _form_text(audio_obj.get("format"), "wav").strip() or "wav"
+    fmt = _single_line(_form_text(audio_obj.get("format"), "wav"), "wav")
     try:
         audio = decode_audio_b64(data)
     except ClipError as exc:
@@ -78,12 +80,27 @@ def _form_text(value: Any, default: str) -> str:
     return default
 
 
+def asr_response_format(raw: str) -> str:
+    """Return one response-format token. A newline is not part of the name."""
+    # "srt\\nbad" is not the srt branch, so a caption client receives JSON.
+    return _single_line(raw.lower(), "json")
+
+
+def _single_line(value: str, default: str) -> str:
+    # A control character in a multipart Content-Type becomes another header.
+    text = value.strip()
+    cut = next((i for i, ch in enumerate(text) if ord(ch) < 32), None)
+    if cut is not None:
+        text = text[:cut].strip()
+    return text or default
+
+
 def _asr_from_form(form: FormData, audio: bytes, upload: UploadFile) -> _InboundAsr:
     model = form.get("model")
     return _InboundAsr(
         audio,
         upload.filename or "audio.webm",
-        upload.content_type or "application/octet-stream",
+        _single_line(upload.content_type or "", "application/octet-stream"),
         model if isinstance(model, str) else None,
         _form_text(form.get("language"), ""),
         _form_text(form.get("response_format"), "json"),
@@ -158,10 +175,12 @@ def _seconds(value: Any) -> float:
 
 
 def _duration_s(value: Any) -> float:
-    """Fish `duration` is a number. A string is not a caption length."""
-    if isinstance(value, (int, float)) and math.isfinite(value):
-        return float(value)
-    return 0.0
+    """Fish `duration` is a number. A string or boolean is not a caption length."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0.0
+    if not math.isfinite(value):
+        return 0.0
+    return float(value)
 
 
 def _segment_cue(seg: Any, *, strip_speakers: bool) -> CaptionCue | None:
@@ -173,7 +192,9 @@ def _segment_cue(seg: Any, *, strip_speakers: bool) -> CaptionCue | None:
     body = scrub_asr(raw_text, strip_speakers=strip_speakers)
     if not body:
         return None
-    return CaptionCue(_seconds(seg.get("start", 0)), _seconds(seg.get("end", 0)), body)
+    start = max(0.0, _seconds(seg.get("start", 0)))
+    end = max(start, _seconds(seg.get("end", 0)))
+    return CaptionCue(start, end, body)
 
 
 def caption_cues(data: dict[str, Any], text: str, *, strip_speakers: bool) -> list[CaptionCue]:
@@ -191,21 +212,22 @@ def caption_cues(data: dict[str, Any], text: str, *, strip_speakers: bool) -> li
     Returns
     -------
     list of CaptionCue
-        Segment cues when any segment has text. Otherwise one cue from 0 to
-        ``duration`` covering ``text``, or an empty list when ``text`` is empty.
+        Segment cues when any segment has text. A known caption watermark
+        segment is omitted. Otherwise one cue from 0 to ``duration`` covering
+        ``text``, or an empty list when ``text`` is empty.
     """
     cues: list[CaptionCue] = []
     raw_segments = data.get("segments") or []
     if isinstance(raw_segments, list):
         for seg in raw_segments:
             cue = _segment_cue(seg, strip_speakers=strip_speakers)
-            if cue is not None:
+            if cue is not None and not is_caption_watermark(cue.text):
                 cues.append(cue)
     if cues:
         return cues
     if not text:
         return []
-    return [CaptionCue(0.0, _duration_s(data.get("duration")), text)]
+    return [CaptionCue(0.0, max(0.0, _duration_s(data.get("duration"))), text)]
 
 
 def _cue_rows(cues: list[CaptionCue], key: str) -> list[dict[str, Any]]:
@@ -226,8 +248,11 @@ def _plain_transcript(
     return None
 
 
-def _json_number(value: Any) -> Any:
-    if isinstance(value, (int, float)) and not math.isfinite(value):
+def _json_number(value: Any) -> int | float | None:
+    # bool is an int subclass. True is not a duration.
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if not math.isfinite(value):
         return None
     return value
 
@@ -246,11 +271,13 @@ def _verbose_body(
     language: str | None,
     granularities: list[str],
 ) -> dict[str, Any]:
+    raw_lang = _json_text(data.get("language_code")) or _json_text(data.get("language")) or language
+    # A surrogate in the language tag makes the JSON response fail to encode,
+    # so the client never receives the transcript.
+    spoken_lang = utf8_text(raw_lang) if isinstance(raw_lang, str) else raw_lang
     body: dict[str, Any] = {
         "task": "transcribe",
-        "language": (
-            _json_text(data.get("language_code")) or _json_text(data.get("language")) or language
-        ),
+        "language": spoken_lang,
         "duration": _json_number(data.get("duration")),
         "text": text,
         "segments": _cue_rows(cues, "text"),
@@ -342,7 +369,9 @@ def asr_upload(
     """
     want_ts = fmt in _TIMED_FORMATS or bool(granularities)
     form = {"ignore_timestamps": "false" if want_ts else "true"}
-    lang = (inbound.language or defaults.asr_language or "").strip()
+    # A newline in a form value starts another part. "en\r\n..." was sent
+    # to Fish as a second field, and the language itself was only "en".
+    lang = _single_line(inbound.language or defaults.asr_language or "", "")
     if lang:
         form["language"] = lang
     files = {"audio": (inbound.filename, inbound.audio, inbound.content_type)}
