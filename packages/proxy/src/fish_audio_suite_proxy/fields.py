@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+import wave
 from collections.abc import Mapping
 from typing import Any
 
@@ -40,6 +42,9 @@ _MEDIA = {
 }
 
 _PCM16_RATE = 24_000
+# wave stores the rate as an unsigned 32-bit field. A larger junk-WAV rate
+# raises before the silence response is sent.
+_WAV_RATE_HI = 2**32 - 1
 _FORMAT_ALIAS = {fmt: fmt for fmt in _MEDIA} | {"aac": "mp3", "flac": "mp3"}
 
 _TTS_MODEL_ALIASES = {
@@ -58,6 +63,35 @@ _ASR_MODELS = [
 _MODELS = [*FISH_TTS_MODEL_IDS, *_ASR_MODELS]
 
 SILENT_MP3 = b"\xff\xfb\x90\x00" + b"\x00" * 64
+_SILENT_PCM = b"\x00\x00"
+# One 20 ms mono Opus page (peak sample 1 after decode). An MP3 frame with
+# an audio/opus type is not silence; an Opus decoder plays it as noise.
+_SILENT_OPUS = bytes.fromhex(
+    "4f6767530002000000000000000032e6b27d00000000b1d60b1101134f707573486561"
+    "640101380180bb00000000004f6767530000000000000000000032e6b27d0100000002"
+    "f38868013c4f707573546167730c0000004c61766636332e312e313031010000001c00"
+    "0000656e636f6465723d4c61766336332e312e313031206c69626f7075734f67675300"
+    "04f80400000000000032e6b27d02000000f4decf11020706080be63b23ab600808acb3"
+    "0ec6"
+)
+
+
+def silent_speech(fmt: str, sample_rate: int) -> tuple[bytes, str]:
+    """Return one silent buffer in the format the client asked to play."""
+    # An MP3 frame played as PCM is loud garbage, and it is not a WAV or Opus file.
+    if fmt in {"pcm", "pcm16"}:
+        return _SILENT_PCM, media_type(fmt)
+    if fmt == "opus":
+        return _SILENT_OPUS, media_type("opus")
+    if fmt == "wav":
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as wf:
+            wf.setnchannels(1)
+            wf.setsampwidth(2)
+            wf.setframerate(sample_rate if 0 < sample_rate <= _WAV_RATE_HI else _PCM16_RATE)
+            wf.writeframes(_SILENT_PCM)
+        return buf.getvalue(), media_type("wav")
+    return SILENT_MP3, media_type("mp3")
 
 
 def runtime_defaults() -> SuiteDefaults:
@@ -165,7 +199,10 @@ def pick_reference_id(body: dict[str, Any]) -> str | list[str] | None:
         value = body.get(key)
         if isinstance(value, list):
             ids = [item.strip() for item in value if isinstance(item, str) and item.strip()]
-            return ids or None
+            # An empty list is blank, same as "". Keep looking at voice.
+            if ids:
+                return ids
+            continue
         if isinstance(value, str) and value.strip():
             return value.strip()
     return None
@@ -194,10 +231,22 @@ def present_value(body: dict[str, Any], *keys: str) -> Any:
     return None
 
 
+_TRUE_WORDS = frozenset({"1", "true", "yes", "on"})
+_FALSE_WORDS = frozenset({"0", "false", "no", "off"})
+
+
 def explicit_bool(body: dict[str, Any], *keys: str, default: bool) -> bool:
     """Prefer a present request flag, including false, over the default."""
     flag = present_value(body, *keys)
     if flag is None:
+        return default
+    if isinstance(flag, str):
+        word = flag.strip().lower()
+        # bool("false") is True, so a string flag would turn the feature on.
+        if word in _TRUE_WORDS:
+            return True
+        if word in _FALSE_WORDS:
+            return False
         return default
     return bool(flag)
 
@@ -327,17 +376,29 @@ def resolve_tts_model(model: object, default: str) -> str:
         ``tts-1``, ``tts-1-hd``, ``gpt-4o-mini-tts``, and ``playai-tts`` become
         ``s2.1-pro``. A ``fish-audio/`` prefix is stripped. Catalog ids are
         lowercased. ``s2.1-pro-free`` and ``drama-3-preview`` are not remapped.
-        Any other id is returned as written.
+        Any other single-token id is returned as written. An id with
+        whitespace or a control character uses ``default``.
     """
     raw = _native_model_id(_model_name(model, default))
     key = raw.lower()
     aliased = _TTS_MODEL_ALIASES.get(key)
     if aliased is not None:
         return aliased
+    if any(ch.isspace() or ord(ch) < 32 for ch in raw):
+        return known_tts_model(default)
     return known_tts_model(raw)
 
 
 _ASR_NATIVE = frozenset({"transcribe-1", "transcribe-1-pro"})
+
+
+def _header_model(text: str) -> str:
+    # A newline in the model header is illegal. h11 raises and the
+    # transcription request never leaves.
+    token = text.strip()
+    if token and all(32 < ord(ch) < 127 and not ch.isspace() for ch in token):
+        return token
+    return ""
 
 
 def resolve_asr_model(model: object, default: str) -> str:
@@ -353,17 +414,20 @@ def resolve_asr_model(model: object, default: str) -> str:
     Returns
     -------
     str
-        A native id when the client or the default names one. Otherwise
-        ``default`` unchanged, so an unknown alias still reaches Fish as the
-        configured default rather than the alias string.
+        A native id when the client or the default names one. Otherwise the
+        default when it is a single header token, so an unknown alias still
+        reaches Fish as that id. A blank or illegal default is ``transcribe-1``.
     """
-    chosen = _native_model_id(_model_name(model, default)).lower()
+    chosen = _header_model(_native_model_id(_model_name(model, default))).lower()
     if chosen in _ASR_NATIVE:
         return chosen
-    fallback = _native_model_id(default).lower()
+    fallback = _header_model(_native_model_id(default)).lower()
     if fallback in _ASR_NATIVE:
         return fallback
-    return default
+    custom = _header_model(default)
+    if custom:
+        return custom
+    return "transcribe-1"
 
 
 def catalog_ids() -> list[str]:
