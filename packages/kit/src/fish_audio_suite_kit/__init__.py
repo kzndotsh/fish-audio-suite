@@ -1,7 +1,17 @@
 """Unofficial Fish Audio text helpers. Not affiliated with Fish Audio."""
 
+from fish_audio_suite_kit.asr_text import (
+    is_asr_hallucination,
+    is_backchannel,
+    is_caption_watermark,
+    is_quit_utterance,
+    same_utterance,
+    scrub_asr,
+    without_watermark_segments,
+)
 from fish_audio_suite_kit.captions import CaptionCue, format_as_srt, format_as_vtt
-from fish_audio_suite_kit.cues import ensure_lead_cue, normalize_cues
+from fish_audio_suite_kit.cues import ensure_lead_cue, mood_lead_hold_at, normalize_cues
+from fish_audio_suite_kit.cuts import ends_sentence, next_tts_cut, split_tts_piece
 from fish_audio_suite_kit.defaults import (
     CHUNK_LENGTH_LO,
     CLOUD_CHUNK_HI,
@@ -56,15 +66,11 @@ from fish_audio_suite_kit.http_errors import (
 )
 from fish_audio_suite_kit.text_filters import (
     extract_quoted_speech,
-    is_asr_hallucination,
-    is_backchannel,
-    is_quit_utterance,
+    hold_tts,
     is_tts_junk,
-    next_tts_cut,
-    scrub_asr,
     scrub_tts,
+    sentence_closer_hold_at,
     skip_empty_delta,
-    split_tts_piece,
     utf8_text,
 )
 from fish_audio_suite_kit.trace_context import (
@@ -101,6 +107,7 @@ __all__ = [
     "chunk_length_hi",
     "clamp_num",
     "elapsed_ms",
+    "ends_sentence",
     "ensure_lead_cue",
     "ensure_trace_headers",
     "env_base",
@@ -122,8 +129,10 @@ __all__ = [
     "fish_unreachable",
     "format_as_srt",
     "format_as_vtt",
+    "hold_tts",
     "is_asr_hallucination",
     "is_backchannel",
+    "is_caption_watermark",
     "is_quit_utterance",
     "is_tts_junk",
     "known_latency",
@@ -131,13 +140,16 @@ __all__ = [
     "known_opus_bitrate",
     "known_tts_model",
     "make_traceparent",
+    "mood_lead_hold_at",
     "next_tts_cut",
     "normalize_cues",
     "number_or",
     "parse_asr_body",
     "parse_fish_error",
+    "same_utterance",
     "scrub_asr",
     "scrub_tts",
+    "sentence_closer_hold_at",
     "should_retry_fish_status",
     "skip_empty_delta",
     "split_tts_piece",
@@ -145,4 +157,5 @@ __all__ = [
     "trace_id_of",
     "utf8_text",
     "w3c_trace_headers",
+    "without_watermark_segments",
 ]
