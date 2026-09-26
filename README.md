@@ -62,7 +62,7 @@ from pathlib import Path
 from fish_audio_suite_voice import IsolatedFishTts, FileSink
 
 tts = IsolatedFishTts(api_key=key, voice_id=voice_id)
-result = tts.speak_isolated("[clear] Hello there.", FileSink(Path("turn.wav")))
+result = tts.speak_isolated("Hello there.", FileSink(Path("turn.wav")))
 ```
 
 `speak_isolated` runs the websocket on a private thread, so it is safe under `asyncio.run`. Speakers and the microphone need PortAudio. `uv` does not install it. `--smoke` writes a WAV and skips the device.

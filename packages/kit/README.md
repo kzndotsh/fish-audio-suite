@@ -29,7 +29,7 @@ Stacked leads stay stacked (`[sad][whispering] …`). A mid-sentence `[chuckle]`
 
 | Group | Names | What they do |
 | --- | --- | --- |
-| Cues | `normalize_cues`, `ensure_lead_cue` | Lowercase tags, rewrite S1 `(happy)` to `[happy]`, alias `laugh` / `sigh` / `whisper` / `pause`. `ensure_lead_cue` prepends `[clear]` only when the reply has no cue at all |
+| Cues | `normalize_cues`, `ensure_lead_cue` | Lowercase tags, rewrite S1 `(happy)` to `[happy]`, alias `laugh` / `sigh` / `whisper` / `pause`. `ensure_lead_cue` prepends a cue only when the caller passes a name and the reply has none |
 | TTS text | `scrub_tts`, `is_tts_junk`, `extract_quoted_speech` | Strip markdown, thoughts, and stage directions. Keep Fish cue tags. `is_tts_junk` means return silence instead of calling Fish |
 | ASR text | `scrub_asr`, `is_asr_hallucination`, `is_backchannel`, `is_quit_utterance` | Drop timestamps, speaker labels, nospeech, and caption boilerplate |
 | Cuts | `next_tts_cut`, `split_tts_piece` | Flush index, or `(piece, tail)` for a stream |

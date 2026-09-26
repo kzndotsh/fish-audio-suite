@@ -213,7 +213,8 @@ def test_inline_chuckle_and_cough() -> None:
 def test_ensure_lead_cue_only_when_missing() -> None:
     assert ensure_lead_cue("[curious] yeah") == "[curious] yeah"
     assert ensure_lead_cue("I'll call you back [chuckle] in a minute").startswith("I'll")
-    assert ensure_lead_cue("yeah i hear you") == "[clear] yeah i hear you"
+    assert ensure_lead_cue("yeah i hear you") == "yeah i hear you"
+    assert ensure_lead_cue("yeah i hear you", default="calm") == "[calm] yeah i hear you"
     assert ensure_lead_cue("  ") == "  "
 
 
@@ -1192,7 +1193,7 @@ def test_blank_caption_is_omitted_and_end_cannot_precede_start() -> None:
 def test_mood_lead_with_no_remainder_is_only_the_cue() -> None:
     assert normalize_cues("") == ""
     assert normalize_cues("Excited, ") == "[excited]"
-    assert ensure_lead_cue("hello", default="  ") == "[clear] hello"
+    assert ensure_lead_cue("hello", default="  ") == "hello"
 
 
 def test_watermark_punctuation_does_not_keep_the_phrase() -> None:

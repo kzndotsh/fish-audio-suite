@@ -374,8 +374,8 @@ _CHARS_PER_S = 16
 # "a[i][j]" is an index the speaker did say. Stripping every bracket
 # forgot it, and the next turn said the index again.
 _UNSPOKEN_CUES = paren_cue_names()
-# The default lead is on every finished line. Fish does not say it, and
-# leaving it in history makes the next reply start with the tag.
+# A model can still write [clear]. That is a throat-clear, not words, so it
+# stays out of the next turn's history.
 _CLEAR_TAG_RE = re.compile(r"\[clear\]", re.IGNORECASE)
 _CUE_TOKEN_RE = re.compile(
     r"\[(?:"

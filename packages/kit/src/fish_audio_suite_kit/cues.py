@@ -394,30 +394,33 @@ def normalize_cues(text: str, *, lead: bool = True) -> str:
     return "".join(out)
 
 
-def ensure_lead_cue(text: str, *, default: str = "clear") -> str:
+def ensure_lead_cue(text: str, *, default: str | None = None) -> str:
     """Prepend one cue when the reply has none.
 
     Parameters
     ----------
     text : str
         Already scrubbed reply.
-    default : str, optional
-        Cue name without brackets. Blank becomes ``clear``.
+    default : str or None, optional
+        Cue name without brackets. None or blank leaves the reply unchanged.
 
     Returns
     -------
     str
         ``text`` unchanged when any ``[cue]`` is already present, including
-        one mid-reply. Empty or whitespace-only input is unchanged.
+        one mid-reply, or when no default cue is set. Empty or whitespace-only
+        input is unchanged.
 
     Notes
     -----
-    This does not invent a tag on every sentence. Prosody sticks until the
-    next cue, so a second lead would reset the voice.
+    Fish speaks ``[clear throat]`` as ahem, and a short ``[clear]`` tag does
+    the same. A missing cue stays as written words.
     """
     if not text.strip():
         return text
     if _CUE_RE.search(text):
         return text
-    tag = default.strip().lower() or "clear"
+    tag = (default or "").strip().lower()
+    if not tag:
+        return text
     return f"[{tag}] {text.lstrip()}"

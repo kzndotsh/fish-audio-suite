@@ -281,7 +281,7 @@ async def smoke_test(c: VoiceCliConfig) -> int:
     out = Path(tempfile.gettempdir()) / "fish-audio-suite-smoke.wav"
     tts = _fish_tts(c, "pcm")
     sink = FileSink(out, sample_rate=c.sample_rate, wav=True)
-    result = tts.speak_isolated("[clear] Hello there.", sink)
+    result = tts.speak_isolated("Hello there.", sink)
     if result.error_status is not None:
         warn(f"smoke: FAIL {result.error_status} {result.error_message}")
         return _SMOKE_FAIL

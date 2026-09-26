@@ -321,7 +321,7 @@ def test_cancelled_speak_keeps_the_audio_that_tripped_barge(
         sink: Sink,
         cancel: threading.Event | None = None,
     ) -> IsolatedResult:
-        assert text.startswith("[")
+        assert text == "Hello there friend"
         return IsolatedResult("hello", 4, True, True, 3.0, 2.0)
 
     loop.tts.speak_isolated = speak

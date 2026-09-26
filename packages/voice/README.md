@@ -13,7 +13,7 @@ from pathlib import Path
 from fish_audio_suite_voice import IsolatedFishTts, FileSink
 
 tts = IsolatedFishTts(api_key=key, voice_id=voice_id)
-result = tts.speak_isolated("[clear] Hello there.", FileSink(Path("turn.wav")))
+result = tts.speak_isolated("Hello there.", FileSink(Path("turn.wav")))
 ```
 
 `speak_isolated` runs the websocket on a private thread and event loop, so it is safe under `asyncio.run` or `to_thread`. Retry of 429 and 5xx happens only before the first audio byte. There is no default `voice_id`.
