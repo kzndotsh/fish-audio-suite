@@ -3,7 +3,7 @@
         <a href="https://github.com/kzndotsh/fish-audio-suite/actions/workflows/ci.yml">
             <img alt="CI" src="https://github.com/kzndotsh/fish-audio-suite/actions/workflows/ci.yml/badge.svg"></a>
         <a href="https://www.python.org/downloads/">
-            <img alt="Python" src="https://img.shields.io/badge/python-3.12-3776AB?logo=python&logoColor=white"></a>
+            <img alt="Python" src="https://img.shields.io/badge/python-3.12%20%7C%203.13-3776AB?logo=python&logoColor=white"></a>
         <a href="https://docs.astral.sh/uv/">
             <img alt="uv" src="https://img.shields.io/badge/uv-package%20manager-DE5FE9?logo=uv&logoColor=white"></a>
         <a href="LICENSE">
@@ -22,7 +22,7 @@
 
 | You want | Start here |
 | --- | --- |
-| Open WebUI, AIRI, or any OpenAI audio client | [Proxy](#proxy) |
+| Open WebUI or any OpenAI audio client | [Proxy](#proxy) |
 | One live TTS turn from Python | [Voice](#voice) |
 | Cue tags and sentence cuts in your own client | [Kit](#kit) |
 
@@ -44,14 +44,14 @@ mic ──► fish-voice ──► ASR ──► LLM ──► one websocket tur
 
 ## Proxy
 
-Binds `0.0.0.0:8849`. `/health` works with no API key. Speech and transcription return 401 until `FISH_API_KEY` is set.
+Binds `127.0.0.1:8849` by default (`FISH_PROXY_HOST` changes it). `/health` works with no API key. Speech and transcription return 503 until `FISH_API_KEY` is set.
 
 ```bash
 uv run --package fish-audio-suite-proxy fish-audio-suite-proxy
 curl -s http://127.0.0.1:8849/health
 ```
 
-Point the client at `http://127.0.0.1:8849/v1`. The key in the client can be any non-empty string. The Fish key stays on the proxy. `tts-1` and `whisper-1` are mapped onto Fish models.
+Point the client at `http://127.0.0.1:8849/v1`. The Fish key stays on the proxy. Set `FISH_PROXY_API_KEYS` to require a bearer key from clients; without it any client key is accepted, so keep the proxy on loopback. `tts-1` and `whisper-1` are mapped onto Fish models.
 
 Docker, Open WebUI, and the field map: [packages/proxy/README.md](packages/proxy/README.md).
 
@@ -105,7 +105,7 @@ Exports: [packages/kit/README.md](packages/kit/README.md).
 │   ├── proxy/        # OpenAI audio HTTP on :8849
 │   └── voice/        # live websocket, sinks, fish-voice CLI
 ├── nix/              # NixOS module
-├── Dockerfile        # proxy image
+├── Dockerfile        # proxy image (non-root)
 ├── flake.nix
 ├── pyproject.toml    # workspace root, not a fourth package
 └── .env.example      # duplex CLI
@@ -128,9 +128,12 @@ uv run pytest
 | `FISH_API_KEY` | proxy, voice | none |
 | `FISH_VOICE_ID` | voice | none |
 | `FISH_BASE` | proxy, voice | `https://api.fish.audio` |
-| `FISH_MODEL` | proxy | `s2.1-pro` |
-| `FISH_TTS_MODEL` | voice | `s2.1-pro` |
-| `FISH_PROXY_HOST` / `FISH_PROXY_PORT` | proxy | `0.0.0.0` / `8849` |
+| `FISH_TTS_MODEL` | proxy, voice | `s2.1-pro` |
+| `FISH_ASR_MODEL` | proxy, voice | `transcribe-1` |
+| `FISH_LATENCY` | proxy, voice | `normal` |
+| `FISH_PROXY_HOST` / `FISH_PROXY_PORT` | proxy | `127.0.0.1` / `8849` |
+| `FISH_PROXY_API_KEYS` | proxy | none (any client key accepted) |
+| `FISH_LLM_BASE` / `FISH_LLM_KEY` / `FISH_LLM_MODEL` | voice | OpenRouter / none / none |
 
 Self-hosted [fish-speech](https://github.com/fishaudio/fish-speech) is `FISH_BASE=http://127.0.0.1:8080`. Cloud `chunk_length` stays in 100–300. A self-hosted base allows up to 1000.
 
@@ -142,9 +145,9 @@ Full tables: [proxy](packages/proxy/README.md#settings), [voice](packages/voice/
 inputs.fish-audio-suite.url = "github:kzndotsh/fish-audio-suite";
 ```
 
-`nixosModules.default` runs the proxy container on `127.0.0.1:8849:8849` with `autoStart = false`. Put `FISH_API_KEY` in `environmentFiles`.
+`nixosModules.default` runs the proxy as a hardened systemd service on `127.0.0.1:8849` (`services.fish-audio-suite-proxy.enable = true`). Put `FISH_API_KEY` in `environmentFiles`. Options for `host`, `port`, `openFirewall`, `autoStart`, and an `oci` backend are in [nix/module.nix](nix/module.nix).
 
-`nix run .#fish-audio-suite-voice` puts PortAudio on `LD_LIBRARY_PATH`. On NixOS, `./packages/voice/dev.sh` does the same. A bare `uv run` of the duplex CLI does not.
+`nix run .#fish-audio-suite-voice` puts PortAudio on the library path. On NixOS, `./packages/voice/dev.sh` does the same. A bare `uv run` of the duplex CLI does not.
 
 ## License
 
