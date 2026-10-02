@@ -17,6 +17,7 @@ from fish_audio_suite_voice.debug import (
     heartbeat_due,
     mark_turn,
     public_meta,
+    short_model,
     trace,
     write_reply_token,
     ws_event_view,
@@ -197,3 +198,12 @@ def test_conversation_joins_the_timed_log_with_debug(
     assert "+0." in lines[0]
     assert lines[0][2] == ":"
     assert "first_token" in lines[1]
+
+
+def test_short_model_drops_only_the_vendor_prefix() -> None:
+    assert short_model("cognitivecomputations/dolphin-mistral-24b-venice-edition") == (
+        "dolphin-mistral-24b-venice-edition"
+    )
+    assert short_model("openai/gpt-4o:nitro") == "gpt-4o:nitro"
+    assert short_model("local-model") == "local-model"
+    assert short_model(None) == ""

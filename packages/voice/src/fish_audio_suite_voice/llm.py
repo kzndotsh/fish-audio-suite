@@ -19,7 +19,7 @@ from typing import Any, Protocol, cast
 import httpx
 
 from fish_audio_suite_kit import MS_PER_S, ends_sentence, utf8_text
-from fish_audio_suite_voice.debug import console_print, debug, warn
+from fish_audio_suite_voice.debug import console_print, debug, short_model, trace, warn
 from fish_audio_suite_voice.live import is_cancel_noise
 from fish_audio_suite_voice.pause import sleep_unless
 from fish_audio_suite_voice.transports import (
@@ -102,7 +102,8 @@ async def check_openrouter_model(client: Any, tune: LlmTune) -> None:
     name = _event_field(data, "name")
     ctx = _event_field(data, "context_length")
     routed = f", routed from {route}" if isinstance(mid, str) and mid and mid != route else ""
-    debug("llm.model {} ({} token context){}", name or mid or route, ctx, routed)
+    # The ready line already names the model. A remap is announced below.
+    trace("llm.model {} ({} token context){}", name or short_model(mid or route), ctx, routed)
     if isinstance(mid, str) and mid and mid != route:
         console_print(f"  [llm model {route} → {mid}]", flush=True)
 
@@ -365,7 +366,7 @@ def _finish_llm(stats: _ChatStats, route_model: str) -> None:
         _usage_brief(stats.last_usage),
         stats.yielded,
         _provider_brief(stats.last_provider),
-        stats.last_model or route_model,
+        short_model(stats.last_model or route_model),
     )
     if stats.yielded == 0:
         warn(f"[llm] empty reply (model={route_model} finish={stats.last_finish!r})")
@@ -647,7 +648,7 @@ async def _stream_generation(
 ) -> AsyncIterator[str]:
     debug(
         "llm.request model={} msgs={} nitro={}",
-        route_model,
+        short_model(route_model),
         len(messages),
         tune.nitro,
     )

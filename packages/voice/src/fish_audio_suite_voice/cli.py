@@ -21,6 +21,7 @@ from fish_audio_suite_voice.debug import (
     console_print,
     debug_level,
     end_reply_line,
+    short_model,
     warn,
 )
 from fish_audio_suite_voice.duplex import EXIT_FATAL, EXIT_OK, bye, duplex_turns
@@ -177,7 +178,7 @@ async def run_loop(c: VoiceCliConfig) -> int:
         f"fish-voice ready | tts={c.tts_model} voice={c.fish_voice_id} "
         f"asr_lang={c.fish_asr_language or 'auto'} latency={c.latency} "
         f"playback={playback} | "
-        f"llm={c.llm.backend}:{c.llm.model} | Ctrl+C quit",
+        f"llm={c.llm.backend}:{short_model(c.llm.model)} | Ctrl+C quit",
         flush=True,
     )
 

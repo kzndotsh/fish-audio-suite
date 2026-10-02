@@ -56,6 +56,23 @@ class _ReplyLine:
 _REPLY = _ReplyLine()
 
 
+def short_model(model: object) -> str:
+    """Return a model id without its vendor prefix, for display only.
+
+    Parameters
+    ----------
+    model : object
+        An id such as ``vendor/name-7b``. ``None`` or blank gives ``""``.
+
+    Returns
+    -------
+    str
+        The part after the last ``/``. Any ``:suffix`` stays. Use the full id
+        wherever two ids are compared or sent to the API.
+    """
+    return str(model or "").strip().rsplit("/", 1)[-1]
+
+
 def console_print(*args: object, **kwargs: Any) -> None:
     """Print a status line. A closed stdout must not drop the spoken reply."""
     try:
