@@ -9,11 +9,17 @@ from functools import partial
 from fish_audio_suite_kit._charsets import (
     ANGLE_TOKEN_RE,
     BREAKS_RE,
-    SPACE_BEFORE_STOP_RE,
     THOUGHT_CLOSE_RE,
     THOUGHT_OPEN_RE,
     plain_breaks,
     utf8_text,
+)
+from fish_audio_suite_kit._linear import (
+    blank_table_separators,
+    collapse_space_before_stop,
+    emphasis_runs,
+    flatten_table_rows,
+    strip_space_before_newline,
 )
 from fish_audio_suite_kit.cues import is_paren_cue, rewrite_s1_parens
 
@@ -44,7 +50,8 @@ _FENCE_OPEN_RE = re.compile(r"```|~~~")
 _FENCE_CLOSERS = {"```": re.compile("```"), "~~~": re.compile("~~~")}
 _FENCE_TAIL_RE = re.compile(r"(?:```|~~~).*", re.DOTALL)
 _HTML_COMMENT_OPEN_RE = re.compile(r"<!--")
-_HTML_COMMENT_CLOSE_RE = re.compile(r"-->")
+# A comment ends at "-->" or at "--!>", which browsers also accept.
+_HTML_COMMENT_CLOSE_RE = re.compile(r"--!?>")
 _HTML_COMMENT_TAIL_RE = re.compile(r"<!--.*", re.DOTALL)
 # <script>, <style>, and <ref> hold source or notes. The generic tag rule would
 # keep their contents, so they are removed with the tags.
@@ -135,16 +142,6 @@ _MD_RULE_RE = re.compile(r"(?m)^[ \t]{0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$")
 _MD_QUOTE_RE = re.compile(r"(?m)^[ \t]{0,3}>+[ \t]?")
 # A task checkbox after the bullet. [x] would be read as a Fish cue.
 _MD_TASK_RE = re.compile(r"(?m)^[ \t]{0,3}\[[ \t]*(?:[xX][ \t]*)?\][ \t]+")
-# Emphasis marks. A mark between word characters is an identifier or a
-# product (fish_audio, 5*5), and a mark spaced on both sides is an operator.
-# A closer may follow a comma ("*Excited,*") or a "]" (`a[i]`).
-_MD_WRAP_RE = re.compile(
-    r"(?<=\w)[*_`~]{2,}(?=\w)"
-    r"|(?<![\w*_`~])[*_`~]+(?=\w)"
-    r"|(?<=\w)[*_`~]+(?!\w)"
-    r"|(?<=\w[,.!?;:，！：])[*_`~]+(?!\w)"
-    r"|(?<=\])[*_`~]+(?!\w)"
-)
 # ~~retracted~~ is a deletion. Dropping only the marks would speak the word.
 _MD_STRIKE_RE = re.compile(r"~~[^~\n]+~~")
 _MD_FOOTNOTE_RE = re.compile(rf"\[\^[^\]]{{1,{_LABEL}}}\]")
@@ -167,9 +164,6 @@ _MD_BREAK_RE = re.compile(
 )
 _MD_HTML_RE = re.compile(rf"<(?!/?\s*whisper\b)/?[A-Za-z][^>\n]{{0,{_TAG}}}>", re.IGNORECASE)
 HTML_ENTITY_RE = re.compile(r"&(#x[0-9A-Fa-f]+|#\d+|[A-Za-z]+);")
-# A separator row is pipes and dashes. A line needs a pipe, so a prose hyphen stays.
-_MD_TABLE_SEP_RE = re.compile(r"(?m)^(?=[ \t|:-]*\|)[ \t|:-]+$")
-_MD_TABLE_ROW_RE = re.compile(r"(?m)^[ \t]*\|(.+\|.+)[ \t]*$")
 _HTML_NAMED = {"amp": "&", "lt": "<", "gt": ">", "quot": '"', "apos": "'", "nbsp": " "}
 
 # --- Asides ------------------------------------------------------------------
@@ -228,16 +222,20 @@ def _ref_link(match: re.Match[str], edge: _Edge) -> str:
     return _with_word_gap(match, label, edge)
 
 
-def _unwrap_mark(match: re.Match[str], edge: _Edge) -> str:
-    # Two or more marks between words are bold: "door**today" is two words.
-    # One mark between words stays: 5*5 and fish_audio are single tokens.
-    before = _edge_char(match, end=False, edge=edge)
-    after = _edge_char(match, end=True, edge=edge)
-    if before.isalnum() and after.isalnum():
-        if len(match.group(0)) == 1:
-            return match.group(0)
-        return " "
-    return ""
+def _unwrap_marks(text: str, edge: _Edge) -> str:
+    # Emphasis marks go. Two or more between words are bold: "door**today" is two
+    # words. One mark between words stays: 5*5 and fish_audio are single tokens.
+    out: list[str] = []
+    last = 0
+    for start, end in emphasis_runs(text):
+        before = text[start - 1] if start else edge[0][:1]
+        after = text[end] if end < len(text) else edge[1][:1]
+        out.append(text[last:start])
+        if before.isalnum() and after.isalnum():
+            out.append(text[start:end] if end - start == 1 else " ")
+        last = end
+    out.append(text[last:])
+    return "".join(out)
 
 
 def _markdown_subs(edge: _Edge) -> _Replacement:
@@ -342,11 +340,6 @@ def html_char(match: re.Match[str]) -> str:
     return char
 
 
-def _table_cells(match: re.Match[str]) -> str:
-    cells = [cell.strip() for cell in match.group(1).split("|")]
-    return " ".join(cell for cell in cells if cell)
-
-
 def _unwrap_edge_marks(text: str, *, line_start: bool, before: str, after: str) -> str:
     # A chunk of only emphasis marks: decide from its neighbors whether it is
     # an opener, a closer, or a literal operator such as "2*3".
@@ -383,8 +376,8 @@ def _unwrap_edge_marks(text: str, *, line_start: bool, before: str, after: str) 
 def _strip_marks(text: str, *, line_start: bool, edge: _Edge) -> str:
     # Entities decode first, so "&lt;br&gt;" is handled as the tag it spells.
     stripped = HTML_ENTITY_RE.sub(html_char, text)
-    stripped = _line_sub(_MD_TABLE_SEP_RE, "", stripped, line_start=line_start)
-    stripped = _line_sub(_MD_TABLE_ROW_RE, _table_cells, stripped, line_start=line_start)
+    stripped = blank_table_separators(stripped, line_start=line_start)
+    stripped = flatten_table_rows(stripped, line_start=line_start)
     stripped = _MD_STRIKE_RE.sub(" ", stripped)
     stripped = _line_sub(_MD_FOOTNOTE_DEF_RE, "", stripped, line_start=line_start)
     stripped = _MD_FOOTNOTE_RE.sub(" ", stripped)
@@ -396,7 +389,7 @@ def _strip_marks(text: str, *, line_start: bool, edge: _Edge) -> str:
     stripped = _line_sub(_MD_TASK_RE, "", stripped, line_start=line_start)
     stripped = _line_sub(_MD_RULE_RE, "", stripped, line_start=line_start)
     stripped = _line_sub(_MD_QUOTE_RE, "", stripped, line_start=line_start)
-    return _MD_WRAP_RE.sub(partial(_unwrap_mark, edge=edge), stripped)
+    return _unwrap_marks(stripped, edge)
 
 
 def _strip_markdownish(text: str, *, line_start: bool, edge: _Edge) -> str:
@@ -417,12 +410,8 @@ def _strip_markdownish(text: str, *, line_start: bool, edge: _Edge) -> str:
     return "".join(parts)
 
 
-# Trailing spaces before a newline. Horizontal runs collapse; newlines stay.
-_TRAIL_SPACE_RE = re.compile(r"(?<![ \t])[ \t]+\n")
-
-
 def _tidy_breaks(text: str, *, before: str = "", after: str = "") -> str:
-    text = SPACE_BEFORE_STOP_RE.sub(r"\1", text)
+    text = collapse_space_before_stop(text)
     text = BREAKS_RE.sub("\n\n", text)
     if not before and not after:
         return text.strip()
@@ -574,6 +563,7 @@ def scrub_tts(
     cleaned = _drop_unclosed(cleaned, "(", ")", keep_digit=True, continued=continued)
     cleaned = _drop_unclosed(cleaned, "（", "）", keep_digit=True, continued=continued)
     cleaned = _drop_unclosed(cleaned, "[", "]", keep_digit=False, continued=continued)
-    cleaned = _TRAIL_SPACE_RE.sub("\n", cleaned)
+    # Trailing spaces before a newline go; the newlines stay.
+    cleaned = strip_space_before_newline(cleaned)
     # A lone surrogate cannot be encoded as UTF-8, and httpx would fail the request.
     return utf8_text(_tidy_breaks(cleaned, before=before, after=after))

@@ -620,6 +620,12 @@ def test_a_removed_aside_leaves_one_space(text: str, expected: str) -> None:
         "(" * 20_000,
         "a < b " * 3_000,
         "&lt;" * 5_000,
+        "|a|" + "a|" * 20_000,
+        "|a|a" + "\t" * 20_000,
+        "_*" * 10_000,
+        "a" + "_`" * 10_000 + "b",
+        "word " + "\t" * 20_000 + "\n",
+        "x" + " \t" * 10_000 + "!",
     ],
     ids=lambda text: f"{text[:10]!r}x{len(text)}",
 )
@@ -630,6 +636,44 @@ def test_hostile_input_is_scrubbed_in_linear_time(hostile: str) -> None:
     scrub_tts(hostile)
     hold_tts(hostile, line_start=True, sentence_start=True)
     assert time.perf_counter() - started < 1.0
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    ["\t" * 20_000 + ".", " " * 20_000 + "?", "|a|" + "a|" * 20_000, "<" + "\t" * 20_000],
+    ids=lambda text: f"{text[:6]!r}x{len(text)}",
+)
+def test_hostile_input_is_scrubbed_for_asr_in_linear_time(hostile: str) -> None:
+    import time
+
+    started = time.perf_counter()
+    scrub_asr(hostile)
+    assert time.perf_counter() - started < 1.0
+
+
+def test_an_html_comment_can_end_with_bang_dash_dash_gt() -> None:
+    assert _words("before <!-- x --!> after") == ["before", "after"]
+    assert _words("before <!-- x --> after") == ["before", "after"]
+    assert _words("before <!-- never closes after") == ["before"]
+
+
+def test_table_rows_become_cells_and_separators_vanish() -> None:
+    table = "| Name | Age |\n| --- | :-: |\n| Ann | 30 |"
+    assert _words(table) == ["Name", "Age", "Ann", "30"]
+    assert _words("a - b") == ["a", "-", "b"]
+    assert _words("|x|") == ["|x|"]
+
+
+def test_emphasis_marks_follow_the_neighbor_rules() -> None:
+    assert _words("a *bold* word") == ["a", "bold", "word"]
+    assert _words("door**today") == ["door", "today"]
+    assert _words("5*5 and fish_audio") == ["5*5", "and", "fish_audio"]
+    assert _words("*Excited,* he said") == ["Excited,", "he", "said"]
+
+
+def test_spaces_before_a_stop_and_before_a_newline_collapse() -> None:
+    assert scrub_tts("Hello  \t. Next , yes") == "Hello. Next, yes"
+    assert scrub_tts("one \t\ntwo") == "one\ntwo"
 
 
 def _words(text: str) -> list[str]:

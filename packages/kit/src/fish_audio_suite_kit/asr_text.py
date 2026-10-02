@@ -11,11 +11,11 @@ from fish_audio_suite_kit._charsets import (
     ANGLE_TOKEN_RE,
     BREAKS_RE,
     SENTENCE_STOPS,
-    SPACE_BEFORE_STOP_RE,
     cjk_latin_counts,
     plain_breaks,
     utf8_text,
 )
+from fish_audio_suite_kit._linear import collapse_space_before_stop
 from fish_audio_suite_kit.dialogue import DEFAULT_MIN_LETTERS, DEFAULT_SHORT_WORDS
 
 _SPEAKER_RE = re.compile(r"<\|speaker:\d+\|>")
@@ -154,7 +154,7 @@ _ASR_SPEAKERS = (
 
 
 def _tidy_asr(text: str) -> str:
-    text = SPACE_BEFORE_STOP_RE.sub(r"\1", text)
+    text = collapse_space_before_stop(text)
     return BREAKS_RE.sub("\n\n", text).strip()
 
 

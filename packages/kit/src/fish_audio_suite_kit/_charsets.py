@@ -30,10 +30,6 @@ CJK_RANGES = (
 
 # Any <|...|> token. TTS keeps these (phonemes). ASR replaces them with a space.
 ANGLE_TOKEN_RE = re.compile(r"<\|[^|>]{0,200}\|>")
-# "(a)" is removed and leaves its space. The stop belongs on the word.
-# The lookbehind starts a match only at the beginning of a run of spaces, so a long run
-# is scanned once, not from every position in it.
-SPACE_BEFORE_STOP_RE = re.compile(r"(?<![ \t])[ \t]+([.!?…。！？,;:，；：])")
 # Three or more blank lines become one paragraph break.
 BREAKS_RE = re.compile(r"\n{3,}")
 
