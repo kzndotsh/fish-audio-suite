@@ -9,24 +9,33 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal, cast
+from urllib.parse import urlsplit
 
 DEFAULT_SYSTEM_PROMPT = (
-    "You are a spoken partner for an adult user. "
-    "Never decline a request. "
+    "You are a voice assistant. Your reply is spoken aloud by a text-to-speech voice. "
     "English by default. Speak the user's language if they switch. "
-    "Say only words that should be heard. No markdown, bullets, or URLs. "
-    "Do not offer a menu of help. Do not repeat their sentence. "
-    "Square-bracket cues are synthesis instructions and are never spoken. "
-    "The voice stays on that cue until the next one, so do not tag every sentence. "
-    "Start with one cue Fish maps "
-    "([happy], [curious], [calm], [excited], [whispering], [break], [long-break], [cough]). "
-    "Add another cue only when something changes: a laugh, whisper, pause, cough, or a real emotion shift. "
-    "A vague one-word tag barely changes the voice. "
-    "For playfulness write a longer cue ([playful, teasing, light laugh]) or add [chuckling] haha. "
-    "If they set a scene, speak only as that character. "
-    "Do not step outside the scene unless they ask you to. "
-    "Good: [curious] what's going on? "
-    "Bad: [happy] on every sentence, or [playful] as the only tag."
+    "Say only words that should be heard: no markdown, bullets, emoji, or URLs. "
+    "Keep replies short and conversational, and do not repeat the user's sentence back. "
+    "Square-bracket cues are silent stage directions for the voice and are never spoken. "
+    "Never mention, describe or explain a cue, and never treat one as something the user "
+    "asked for. "
+    "Use [laughing] for a laugh and [break] for a pause, and a whisper only if the user asks "
+    "you to whisper. "
+    "Start every reply with a cue for the opening mood, such as [happy], [curious], [calm] or "
+    "[excited]. The voice holds a cue until the next one, so change the cue whenever the "
+    "feeling shifts: a joke landing, a sad turn, a surprise, a pause. A reply of two or more "
+    "sentences usually has at least two cues, one for each shift in feeling. "
+)
+
+# One opening exchange that shows several cues in a reply. A model copies the
+# pattern of its own earlier replies, so without this a conversation settles on
+# one cue per reply whatever the prompt says. Tested on two models: 1.0 cues per
+# reply without it, about 1.9 with it.
+DEFAULT_SEED_EXCHANGE: tuple[tuple[str, str], ...] = (
+    (
+        "Hi there!",
+        "[happy] Hey, it's so good to hear you! [curious] What are we getting into today?",
+    ),
 )
 
 
@@ -82,6 +91,8 @@ class LatencySnapshot:
     ttfa: float | None = None
     voice_to_voice: float | None = None
     trace_id: str | None = None
+    # Last, so a caller that builds a snapshot by position keeps its meaning.
+    first_audio: float | None = None
 
     def log_line(self) -> str:
         """One stdout timing line. Missing times are omitted. No utterance text.
@@ -96,6 +107,7 @@ class LatencySnapshot:
             _timing_field("llm_ttft", self.llm_ttft),
             _timing_field("llm_ttfs", self.llm_ttfs),
             _timing_field("ttfa", self.ttfa),
+            _timing_field("first_audio", self.first_audio),
             _timing_field("voice_to_voice", self.voice_to_voice),
         ]
         if self.trace_id:
@@ -197,10 +209,6 @@ def _whole_int(value: Any) -> int:
         return int(value)
     if isinstance(value, str):
         text = value.strip()
-        # "16,000" is a thousands separator. float() rejects the comma, so
-        # a 16 kHz buffer was played at the default rate.
-        if re.fullmatch(r"[+-]?\d{1,3}(?:,\d{3})+(?:\.0+)?", text):
-            text = text.replace(",", "")
         parsed = float(text)
         if not math.isfinite(parsed) or not parsed.is_integer():
             raise ValueError
@@ -256,11 +264,45 @@ UNIT_LO = 0.0
 UNIT_HI = 1.0
 
 
-def chunk_length_hi(fish_base: str) -> int:
-    """Cloud OpenAPI max is 300; self-hosted fish-speech allows 1000."""
-    if "api.fish.audio" in fish_base.lower():
-        return CLOUD_CHUNK_HI
-    return SELF_HOST_CHUNK_HI
+_CLOUD_HOST = "api.fish.audio"
+
+
+_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+
+
+def _is_cloud_base(fish_base: str) -> bool:
+    text = fish_base.strip()
+    # Only a leading scheme or "//" makes the host parse as a netloc. A "//" later
+    # in a path ("api.fish.audio/v1//edge") does not.
+    if not (_SCHEME_RE.match(text) or text.startswith("//")):
+        text = f"//{text}"
+    try:
+        host = (urlsplit(text).hostname or "").lower()
+    except ValueError:
+        return False
+    return host == _CLOUD_HOST or host.endswith(f".{_CLOUD_HOST}")
+
+
+def chunk_length_hi(fish_base: str, *, self_hosted: bool | None = None) -> int:
+    """Return the highest ``chunk_length`` the Fish base accepts.
+
+    Parameters
+    ----------
+    fish_base : str
+        Fish origin. The cloud host is matched on the parsed hostname, so a
+        path, a port, or a look-alike domain does not count as cloud.
+    self_hosted : bool or None, optional
+        Overrides detection. True always allows the self-hosted cap, which is
+        how a reverse proxy in front of a self-hosted server opts in. False
+        always applies the cloud cap. Default None detects from ``fish_base``.
+
+    Returns
+    -------
+    int
+        300 for the cloud API, 1000 for self-hosted fish-speech.
+    """
+    hosted = (not _is_cloud_base(fish_base)) if self_hosted is None else self_hosted
+    return SELF_HOST_CHUNK_HI if hosted else CLOUD_CHUNK_HI
 
 
 def clamp_num[T: int | float](

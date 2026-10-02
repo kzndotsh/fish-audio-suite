@@ -164,13 +164,23 @@ _LEAD_MARK_RE = re.compile(
     r"(?:[*_~`]+(?=[A-Za-z]))?"
 )
 # One or more [cues] already at the start of a sentence. Group 2 is the spoken rest.
-# A cue body cannot contain "[". "[[page]]" is not a stack, and treating the
-# inner "[" as cue text inserted a space: "[[page] ]".
+# A cue body cannot contain "[", so "[[page]]" is not a stack.
 _LEAD_STACK_RE = re.compile(r"^((?:\[[^\[\]]+\]\s*)+)(.*)$", re.DOTALL)
 # Each cue inside that stack, so [sad][whispering] stays two tags.
 _INNER_CUE_RE = re.compile(r"\[([^\]]+)\]")
 # Keep the newlines, so a blank line is not folded into the next sentence.
 _LINE_SPLIT_RE = re.compile(r"(\n+)")
+
+
+_PAREN_CUE_NAMES = _S1_PAREN_TAGS | {"clear"}
+# [name] for any known cue name, longest first so "laughing" beats "laugh".
+# A tag inside a larger bracket expression ("[[happy]]") is literal text.
+_KNOWN_CUE_TAG_RE = re.compile(
+    r"(?<!\[)\[(?:"
+    + "|".join(re.escape(tag) for tag in sorted(_PAREN_CUE_NAMES, key=len, reverse=True))
+    + r")\](?!\])",
+    re.IGNORECASE,
+)
 
 
 def paren_cue_names() -> frozenset[str]:
@@ -181,7 +191,26 @@ def paren_cue_names() -> frozenset[str]:
     frozenset of str
         Lowercase tags a parenthesis or bracket can carry without being speech.
     """
-    return _S1_PAREN_TAGS | {"clear"}
+    return _PAREN_CUE_NAMES
+
+
+def strip_cue_tags(text: str) -> str:
+    """Remove known ``[cue]`` tags, leaving the words that are spoken.
+
+    Parameters
+    ----------
+    text : str
+        Text that may contain Fish cues such as ``[happy]`` or ``[clear]``.
+
+    Returns
+    -------
+    str
+        The text with each known cue removed and whitespace collapsed to
+        single spaces. A bracket that is not a known cue, such as the index in
+        ``a[i]``, is kept because the speaker said it. A cue nested in a larger
+        bracket expression, such as ``[[happy]]``, is kept too.
+    """
+    return " ".join(_KNOWN_CUE_TAG_RE.sub(" ", text).split())
 
 
 def is_paren_cue(label: str) -> bool:
@@ -197,7 +226,7 @@ def is_paren_cue(label: str) -> bool:
     bool
         True for a known S1 tag or ``clear``.
     """
-    return label.strip().lower() in paren_cue_names()
+    return label.strip().lower() in _PAREN_CUE_NAMES
 
 
 def spoken_mood_span(text: str) -> tuple[int, int] | None:
@@ -276,8 +305,7 @@ def mood_lead_hold_at(text: str, *, sentence_start: bool) -> int | None:
     lead = _SPOKEN_MOOD_LEAD.match(body)
     if lead is not None:
         # "Anxious!" matches with one bang. "Anxious !!" is the same cue.
-        # Releasing at the first bang speaks the second one. "*Excited,*"
-        # still has the closing star; releasing at the comma speaks it.
+        # Hold through every bang, and through the closing star of "*Excited,*".
         tail = body[lead.end() :]
         if not tail and body[-1] in _LEAD_PUNCT:
             return line_at + skipped
@@ -296,8 +324,7 @@ def mood_lead_hold_at(text: str, *, sentence_start: bool) -> int | None:
         tail = body[idx:]
         if token in words and tail.strip() == "":
             return held
-        # "**Excited**," is one cue. The closing stars are not the end of
-        # the word, and the comma has not arrived yet.
+        # "**Excited**," is one cue: closing stars do not end the word.
         if token in words and all(ch in _LEAD_WRAP or ch.isspace() for ch in tail):
             return held
         return None
@@ -323,14 +350,14 @@ def _sentence_spans(part: str) -> list[tuple[str, str]]:
     return spans
 
 
-def _one_sentence(chunk: str, *, lead: bool = True) -> str:
+def _one_sentence(chunk: str, *, lead: bool) -> str:
     chunk = chunk.strip()
     if not chunk:
         return chunk
     m = _LEAD_STACK_RE.match(chunk)
     if m:
         cues = _INNER_CUE_RE.findall(m.group(1))
-        # [i][j] is an index. Spacing every bracket stack spoke "a[i] [j]".
+        # Only a lone bracket or a stack of known cues is a cue stack: [i][j] is an index.
         if cues and (len(cues) == 1 or all(_cue_word(c) for c in cues)):
             tags = " ".join(_bracket(c) for c in cues)
             return _lead(tags, m.group(2).lstrip())
@@ -342,17 +369,24 @@ def _one_sentence(chunk: str, *, lead: bool = True) -> str:
     return chunk
 
 
-def normalize_cues(text: str, *, lead: bool = True) -> str:
+def normalize_cues(text: str, *, lead: bool = False, continued: bool = False) -> str:
     """Rewrite third-party mood markup into Fish ``[cue]`` tags.
 
     Parameters
     ----------
     text : str
-        Model text that may contain ``[Tags]``, S1 ``(happy)``, a mood lead
-        such as ``Excited, …``, or ``<whisper>…</whisper>``.
+        Model text that may contain ``[Tags]``, S1 ``(happy)``, or
+        ``<whisper>…</whisper>``, and, when ``lead`` is True, a mood lead
+        such as ``Excited, …``.
     lead : bool, optional
-        When False, the first sentence is not rewritten as a mood lead.
-        A later sentence in the same string still is. Default True.
+        Rewrite a sentence-leading mood word (``Excited, hello``) into a cue.
+        Default False: the mood word is deleted from the speech when
+        rewritten, and it also matches ordinary English (``Curious, isn't
+        it?``). Enable it for models that write moods instead of cues.
+    continued : bool, optional
+        True when ``text`` continues a sentence already sent. The first
+        sentence is then not a mood lead, but later ones still are. Only
+        meaningful with ``lead``. Default False.
 
     Returns
     -------
@@ -364,11 +398,11 @@ def normalize_cues(text: str, *, lead: bool = True) -> str:
 
     Notes
     -----
-    A mood word only becomes a cue when it leads a sentence (``Happy, hello``).
-    ``Dr. Happy`` and ``1. Excited`` are not new sentences. The lead list is
-    Fish's single-word emotions, plus whispering, shouting, and screaming.
-    The same word mid-sentence is spoken text. Sound effects such as
-    ``Pause, wait`` stay spoken.
+    With ``lead``, a mood word becomes a cue only when it leads a sentence
+    (``Happy, hello``). ``Dr. Happy`` and ``1. Excited`` are not new
+    sentences. The lead list is Fish's single-word emotions, plus whispering,
+    shouting, and screaming. The same word mid-sentence is spoken text, and
+    sound effects such as ``Pause, wait`` stay spoken.
     """
     if not text:
         return text
@@ -377,7 +411,7 @@ def normalize_cues(text: str, *, lead: bool = True) -> str:
     text = _CUE_RE.sub(lambda m: _bracket(m.group(1)), text)
     parts = _LINE_SPLIT_RE.split(text)
     out: list[str] = []
-    allow_lead = lead
+    allow_lead = lead and not continued
     for part in parts:
         if not part or part.isspace():
             out.append(part)
@@ -389,7 +423,7 @@ def normalize_cues(text: str, *, lead: bool = True) -> str:
                     spoken.append(sep)
                 continue
             spoken.append(_one_sentence(sent, lead=allow_lead) + sep)
-            allow_lead = True
+            allow_lead = lead
         out.append("".join(spoken))
     return "".join(out)
 

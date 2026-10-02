@@ -9,10 +9,16 @@ import pytest
 
 from fish_audio_suite_voice.debug import (
     configure_voice_logging,
+    conversation,
     debug,
+    debug_level,
     env_debug,
     header_meta,
+    heartbeat_due,
+    mark_turn,
     public_meta,
+    short_model,
+    trace,
     write_reply_token,
     ws_event_view,
 )
@@ -28,6 +34,8 @@ def test_configure_voice_logging_replaces_library_handlers() -> None:
         assert httpx_log.level == logging.WARNING
         assert len(httpx_log.handlers) == 1
         configure_voice_logging(debug=True)
+        assert logging.getLogger("httpx").level == logging.WARNING
+        configure_voice_logging(debug=2)
         assert logging.getLogger("httpx").level == logging.INFO
         assert logging.getLogger("httpcore").level == logging.WARNING
         assert len(logging.getLogger("asyncio").handlers) == 1
@@ -54,10 +62,11 @@ def test_debug_closes_reply_before_the_log(
 ) -> None:
     configure_voice_logging(debug=True)
     write_reply_token("[calm] hey")
-    debug("llm.done")
+    debug("llm.stream_end finish=stop")
     captured = capsys.readouterr()
     assert captured.out == "[calm] hey\n"
-    assert "llm.done" in captured.err
+    assert "llm" in captured.err
+    assert "stream_end finish=stop" in captured.err
     assert not captured.err.startswith("[calm]")
 
 
@@ -70,6 +79,45 @@ def test_env_debug_truthy(monkeypatch: pytest.MonkeyPatch) -> None:
     assert env_debug()
     monkeypatch.setenv("FISH_VOICE_DEBUG", "0")
     assert not env_debug()
+
+
+def test_debug_level_and_trace_gating(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv("FISH_VOICE_DEBUG", raising=False)
+    assert debug_level() == 0
+    monkeypatch.setenv("FISH_VOICE_DEBUG", "1")
+    assert debug_level() == 1
+    monkeypatch.setenv("FISH_VOICE_DEBUG", "trace")
+    assert debug_level() == 2
+    monkeypatch.setenv("FISH_VOICE_DEBUG", "1")
+    configure_voice_logging(debug=1)
+    trace("barge.mic heartbeat")
+    debug("barge.arm ready")
+    err = capsys.readouterr().err
+    assert "heartbeat" not in err
+    assert "arm ready" in err
+    assert heartbeat_due(20, 20) is False
+    configure_voice_logging(debug=2)
+    trace("barge.mic heartbeat")
+    assert "heartbeat" in capsys.readouterr().err
+    assert heartbeat_due(20, 20) is True
+
+
+def test_debug_lines_are_tagged_and_offset_from_the_turn(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    configure_voice_logging(debug=1)
+    debug("tts.say {!r} ({} chars)", "Hello there.", 12)
+    first = capsys.readouterr().err
+    assert "tts" in first
+    assert "say 'Hello there.' (12 chars)" in first
+    mark_turn()
+    capsys.readouterr()
+    debug("asr.done status=200")
+    later = capsys.readouterr().err
+    assert "+0." in later
+    assert "asr" in later
 
 
 def test_ws_event_view_strips_audio() -> None:
@@ -111,3 +159,65 @@ def test_header_meta_keeps_x_headers() -> None:
     body = public_meta({"api_key": "sk-secret", "language": "en"})
     assert "api_key" not in body
     assert body["language"] == "en"
+
+
+def test_debug_flag_does_not_write_the_process_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("FISH_VOICE_DEBUG", raising=False)
+    configure_voice_logging(debug=True)
+    assert env_debug()
+    assert "FISH_VOICE_DEBUG" not in os.environ
+    configure_voice_logging(debug=False)
+    assert not env_debug()
+
+
+def test_conversation_is_plain_on_stdout_without_debug(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    conversation("you", "Hey there")
+    conversation("llm", "[happy] Hello!")
+    captured = capsys.readouterr()
+    assert captured.out == "you \u25b8 Hey there\nllm \u25b8 [happy] Hello!\n"
+    assert captured.err == ""
+
+
+def test_conversation_on_a_terminal_with_debug_has_the_time_columns_on_stdout(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    configure_voice_logging(debug=1)
+    monkeypatch.setattr("fish_audio_suite_voice.debug._stdout_tty", lambda: True)
+    mark_turn()
+    capsys.readouterr()
+    conversation("you", "Hey there")
+    debug("llm.first_token 700ms")
+    captured = capsys.readouterr()
+    lines = captured.out.splitlines()
+    assert len(lines) == 1
+    assert "you \u25b8" in lines[0]
+    assert "Hey there" in lines[0]
+    assert "+0." in lines[0]
+    assert lines[0][2] == ":"
+    # The log line stays on stderr.
+    assert "first_token" in captured.err
+    assert "Hey there" not in captured.err
+
+
+def test_piped_conversation_stays_plain_on_stdout_even_with_debug(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    configure_voice_logging(debug=1)
+    monkeypatch.setattr("fish_audio_suite_voice.debug._stdout_tty", lambda: False)
+    conversation("you", "Hey there")
+    captured = capsys.readouterr()
+    assert captured.out == "you \u25b8 Hey there\n"
+    assert "Hey there" not in captured.err
+
+
+def test_short_model_drops_only_the_vendor_prefix() -> None:
+    assert short_model("cognitivecomputations/dolphin-mistral-24b-venice-edition") == (
+        "dolphin-mistral-24b-venice-edition"
+    )
+    assert short_model("openai/gpt-4o:nitro") == "gpt-4o:nitro"
+    assert short_model("local-model") == "local-model"
+    assert short_model(None) == ""

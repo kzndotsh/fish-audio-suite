@@ -5,13 +5,9 @@ from __future__ import annotations
 import collections
 import io
 import threading
-from dataclasses import dataclass
 from typing import Any
 
-import numpy as np
-
-from fish_audio_suite_kit import env_float, env_int
-from fish_audio_suite_voice.aec import pcm_rms
+from fish_audio_suite_voice.aec import EchoCanceller, pcm_rms
 from fish_audio_suite_voice.barge import (
     DEFAULT_BARGE_RMS,
     FRAME_BYTES,
@@ -21,34 +17,25 @@ from fish_audio_suite_voice.barge import (
     frame_is_speech,
     mic_frames,
 )
-from fish_audio_suite_voice.debug import debug, heartbeat_due
+from fish_audio_suite_voice.debug import debug, heartbeat_due, trace
+from fish_audio_suite_voice.floor import AdaptiveFloor
 from fish_audio_suite_voice.playback import write_mono_wav
+from fish_audio_suite_voice.tune import (
+    IMPULSE_START_EXTRA,
+    MAX_UTTERANCE_FRAMES,
+    ListenTune,
+)
 
-DEFAULT_VAD_AGGRESSIVENESS = 1
-_VAD_MODE_HI = 3
-DEFAULT_SILENCE_FRAMES_END = 40
-DEFAULT_SPEECH_FRAMES_START = 4
-DEFAULT_MIN_SPEECH_RMS = 200.0
-DEFAULT_PRE_PAD_FRAMES = 20
 HOLD_RMS_RATIO = 0.55
 MIN_UTTERANCE_FRAMES = 4
-MAX_UTTERANCE_FRAMES = 500
 # One quiet frame is 30 ms, a normal dip inside a word. Ending on that dip
 # after the cap sends a cut-off sentence to ASR.
 _CAP_QUIET_FRAMES = 4
 _MIC_POLL_S = 0.25
 _WAV_HEADER_BYTES = 44
-DEFAULT_MIN_VOICED_FRAMES = 12
 IMPULSE_PEAK_RATIO = 8.0
 IMPULSE_EXTRA_VOICED = 12
-IMPULSE_START_EXTRA = 6
 IMPULSE_NOW_RATIO = 0.5
-_FLOOR_WINDOW = 80
-_FLOOR_FILL = 25
-_FLOOR_PERCENTILE = 20.0
-_FLOOR_GAIN = 2.5
-_FLOOR_LO = 80.0
-_FLOOR_HI = 450.0
 
 
 def start_hit(rms: float, vad_speech: bool, min_rms: float) -> bool:
@@ -118,100 +105,14 @@ def spike_start_allowed(peak_rms: float, now_rms: float, min_rms: float) -> bool
     return now_rms >= peak_rms * IMPULSE_NOW_RATIO
 
 
-@dataclass(frozen=True)
-class _ListenTune:
-    vad_aggressiveness: int
-    silence_frames_end: int
-    speech_frames_start: int
-    min_speech_rms: float
-    pre_pad_frames: int
-    min_voiced: int
-
-
-def _bounded_int(name: str, default: int, lo: int, hi: int | None = None) -> int:
-    value = env_int(name, default)
-    if value < lo or (hi is not None and value > hi):
-        return default
-    return value
-
-
-def _listen_tune() -> _ListenTune:
-    min_rms = env_float("FISH_VOICE_MIN_RMS", DEFAULT_MIN_SPEECH_RMS)
-    if min_rms <= 0:
-        min_rms = DEFAULT_MIN_SPEECH_RMS
-    speech_frames_start = _bounded_int("FISH_VOICE_SPEECH_FRAMES", DEFAULT_SPEECH_FRAMES_START, 1)
-    silence_frames_end = env_int("FISH_VOICE_SILENCE_FRAMES", DEFAULT_SILENCE_FRAMES_END)
-    # 0 and negative match every quiet frame, so the first pause ends the clip.
-    if silence_frames_end < 1:
-        silence_frames_end = DEFAULT_SILENCE_FRAMES_END
-    # Start hits are stored in the pre-pad ring. A shorter ring never fills,
-    # so the mic would stay closed for the whole session.
-    pre_pad = max(
-        _bounded_int("FISH_VOICE_PRE_PAD", DEFAULT_PRE_PAD_FRAMES, 0),
-        speech_frames_start + IMPULSE_START_EXTRA,
-    )
-    return _ListenTune(
-        vad_aggressiveness=_bounded_int(
-            "FISH_VOICE_VAD", DEFAULT_VAD_AGGRESSIVENESS, 0, _VAD_MODE_HI
-        ),
-        silence_frames_end=silence_frames_end,
-        speech_frames_start=speech_frames_start,
-        min_speech_rms=min_rms,
-        pre_pad_frames=pre_pad,
-        min_voiced=_bounded_int(
-            "FISH_VOICE_MIN_VOICED",
-            DEFAULT_MIN_VOICED_FRAMES,
-            1,
-            MAX_UTTERANCE_FRAMES,
-        ),
-    )
-
-
 def _encode_wav(pcm: bytes) -> bytes:
     buf = io.BytesIO()
     write_mono_wav(buf, pcm, SAMPLE_RATE)
     return buf.getvalue()
 
 
-class AdaptiveFloor:
-    """Quiet-percentile RMS gate. FISH_VOICE_MIN_RMS is the seed until the window fills."""
-
-    def __init__(
-        self,
-        default: float,
-        *,
-        window: int = _FLOOR_WINDOW,
-        percentile: float = _FLOOR_PERCENTILE,
-        gain: float = _FLOOR_GAIN,
-        lo: float = _FLOOR_LO,
-        hi: float = _FLOOR_HI,
-    ) -> None:
-        self.default = default
-        self.percentile = percentile
-        self.gain = gain
-        self.lo = lo
-        self.hi = hi
-        self.window: collections.deque[float] = collections.deque(maxlen=window)
-
-    def observe(self, rms: float, *, quiet: bool) -> None:
-        """Record RMS while the room is quiet so the floor can track hiss."""
-        if quiet:
-            self.window.append(rms)
-
-    def value(self) -> float:
-        """Return the raised noise floor, or the seed until the window fills."""
-        if len(self.window) < _FLOOR_FILL:
-            return self.default
-        quiet = np.fromiter(self.window, dtype=np.float64)
-        est = float(np.percentile(quiet, self.percentile) * self.gain)
-        # The high cap limits the estimate. It must not undercut the seed,
-        # or a loud FISH_VOICE_MIN_RMS starts accepting quieter frames.
-        capped = min(self.hi, max(self.lo, est))
-        return float(max(self.default, capped))
-
-
 class _Listen:
-    def __init__(self, tune: _ListenTune, vad: Any) -> None:
+    def __init__(self, tune: ListenTune, vad: Any) -> None:
         self.tune = tune
         self.vad = vad
         self.voiced: list[bytes] = []
@@ -327,7 +228,7 @@ class _Listen:
         return False
 
 
-def _clip_wav(heard: _Listen, tune: _ListenTune) -> bytes | None:
+def _clip_wav(heard: _Listen, tune: ListenTune) -> bytes | None:
     why = listen_reject_reason(
         voiced_frames=len(heard.voiced),
         speech_hits=heard.speech_hits,
@@ -348,13 +249,10 @@ def _clip_wav(heard: _Listen, tune: _ListenTune) -> bytes | None:
         return None
     pcm = b"".join(heard.voiced)
     debug(
-        "listen.end frames={} wav_bytes={} silence={} voiced_hits={} peak_rms={} duration_ms={}",
-        len(heard.voiced),
-        len(pcm) + _WAV_HEADER_BYTES,
-        heard.silence,
+        "listen.end {:.2f}s clip, {} voiced frames, peak rms {}",
+        len(heard.voiced) * FRAME_MS / 1000,
         heard.speech_hits,
         round(heard.clip_peak),
-        len(heard.voiced) * FRAME_MS,
     )
     return _encode_wav(pcm)
 
@@ -380,6 +278,8 @@ def record_utterance(
     stop: threading.Event | None = None,
     *,
     prefix: bytes = b"",
+    tune: ListenTune | None = None,
+    aec: EchoCanceller | None = None,
 ) -> bytes | None:
     """Block until one VAD utterance.
 
@@ -392,6 +292,10 @@ def record_utterance(
     prefix : bytes, optional
         PCM kept from the barge-in that interrupted the previous reply.
         The next listen starts from this clip instead of a cooldown.
+    tune : ListenTune or None, optional
+        VAD and utterance limits. None uses the defaults.
+    aec : EchoCanceller or None, optional
+        Cleans each frame against the far-end tap. None skips AEC.
 
     Returns
     -------
@@ -410,10 +314,10 @@ def record_utterance(
     """
     import webrtcvad
 
-    tune = _listen_tune()
+    tune = tune or ListenTune()
     heard = _Listen(tune, webrtcvad.Vad(tune.vad_aggressiveness))
     prime_listen(heard, prefix)
-    debug(
+    trace(
         "listen.open vad={} start_frames={} min_rms={} min_voiced={} pre_pad={} silence_end={} prefix_frames={}",
         tune.vad_aggressiveness,
         tune.speech_frames_start,
@@ -424,7 +328,9 @@ def record_utterance(
         len(heard.voiced),
     )
 
-    for idle_frames, frame in enumerate(mic_frames(device, stop, timeout=_MIC_POLL_S), start=1):
+    for idle_frames, frame in enumerate(
+        mic_frames(device, stop, timeout=_MIC_POLL_S, aec=aec), start=1
+    ):
         if heard.take(frame, idle_frames):
             break
     if stop is not None and stop.is_set():

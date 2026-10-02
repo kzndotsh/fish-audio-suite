@@ -8,15 +8,17 @@ on:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
-env:
-  PYTHON_VERSION: "3.12"
 jobs:
   python:
-    name: Python
+    name: Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -25,11 +27,11 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: ${{ matrix.python-version }}
       - name: Install uv
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: ${{ matrix.python-version }}
           enable-cache: true
       - name: Sync
         run: uv sync --frozen --all-packages --extra cli --group dev --group test
@@ -44,7 +46,64 @@ jobs:
       - name: Tests
         env:
           PYTHONDONTWRITEBYTECODE: "1"
-        run: uv run pytest --cov=fish_audio_suite_kit --cov=fish_audio_suite_proxy --cov=fish_audio_suite_voice --cov-branch --cov-report=term-missing --cov-fail-under=71
+        run: uv run pytest --cov --cov-report=term-missing --cov-fail-under=71
       - name: Prune uv cache for CI
         if: always()
         run: uv cache prune --ci
+  build:
+    name: Build wheels
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Build
+        run: uv build --all --out-dir dist
+      - name: Check metadata
+        run: uvx twine check --strict dist/*
+  nix:
+    name: Nix
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - name: Install Nix
+        uses: cachix/install-nix-action@13d8dd58da0234aa297dedd986986ccb8e7f3e24 # v31.11.1
+      - name: Flake check
+        run: nix flake check --print-build-logs
+  docker:
+    name: Docker
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - name: Build proxy image
+        run: docker build --tag fish-audio-suite-proxy:ci .
+      - name: Smoke health
+        run: |
+          docker run --detach --name proxy --publish 127.0.0.1:8849:8849 fish-audio-suite-proxy:ci
+          for _ in $(seq 1 20); do
+            curl --fail --silent http://127.0.0.1:8849/health && exit 0
+            sleep 1
+          done
+          docker logs proxy
+          exit 1

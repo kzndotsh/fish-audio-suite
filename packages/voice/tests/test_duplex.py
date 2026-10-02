@@ -4,25 +4,34 @@ import asyncio
 import sys
 import threading
 import time
+from collections.abc import AsyncIterator, Callable
 
+import httpx
 import pytest
 
 from fish_audio_suite_kit import FishHttpError, LatencySnapshot
 from fish_audio_suite_voice.config import VoiceCliConfig
 from fish_audio_suite_voice.duplex import (
-    HISTORY_TURNS,
     _accept_asr,
     _after_speech,
     _collect_reply,
+    _HeardLine,
     _Loop,
+    _opening_history,
     _recognize,
     _remember_user,
     _speak_reply,
+    _stream_turn,
+    _TokenPipe,
+    _trim_history,
     duplex_turns,
 )
 from fish_audio_suite_voice.live import IsolatedFishTts, IsolatedResult
 from fish_audio_suite_voice.playback import PortAudioMissingError
-from fish_audio_suite_voice.signals import STOP_RECORD
+from fish_audio_suite_voice.signals import DuplexSession
+from fish_audio_suite_voice.tune import DEFAULT_HISTORY_TURNS, LlmTune
+
+HISTORY_TURNS = DEFAULT_HISTORY_TURNS
 
 
 def _config() -> VoiceCliConfig:
@@ -44,21 +53,45 @@ def _config() -> VoiceCliConfig:
         playback="stdout",
         system_prompt="be brief",
         device=None,
-        llm_backend="openrouter",
-        llm_base="https://example.test/v1",
-        llm_key="lk",
-        llm_model="m",
+        llm=LlmTune(backend="openai", base="https://example.test/v1", key="lk", model="m"),
     )
 
 
-def _loop() -> _Loop:
+class _FakeBackend:
+    def __init__(self, tokens: Callable[..., AsyncIterator[str]] | None = None) -> None:
+        self._tokens = tokens
+
+    def stream(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        cancel: asyncio.Event | None = None,
+        trace_id: str | None = None,
+    ) -> AsyncIterator[str]:
+        if self._tokens is not None:
+            return self._tokens(messages, cancel=cancel, trace_id=trace_id)
+        return self._empty()
+
+    async def _empty(self) -> AsyncIterator[str]:
+        if False:
+            yield ""
+
+    async def aclose(self) -> None:
+        return None
+
+
+def _loop(
+    tokens: Callable[..., AsyncIterator[str]] | None = None,
+    session: DuplexSession | None = None,
+) -> _Loop:
     return _Loop(
         config=_config(),
         tts=IsolatedFishTts(api_key="k", voice_id="voice"),
         device=None,
-        or_client=None,
+        backend=_FakeBackend(tokens),
+        session=session or DuplexSession(),
+        asr_http=httpx.AsyncClient(),
         history=[{"role": "system", "content": "be brief"}],
-        llm_session="s",
     )
 
 
@@ -77,7 +110,7 @@ def test_accept_asr_drops_echoes_and_keeps_a_real_line() -> None:
 def test_history_keeps_the_system_prompt_and_drops_the_oldest_turn() -> None:
     history = [{"role": "system", "content": "be brief"}]
     for i in range(HISTORY_TURNS * 2 + 1):
-        _remember_user(history, f"u{i}")
+        _remember_user(history, f"u{i}", HISTORY_TURNS)
     assert history[0] == {"role": "system", "content": "be brief"}
     assert history[1]["content"] == "u1"
     assert history[-1]["content"] == f"u{HISTORY_TURNS * 2}"
@@ -87,9 +120,9 @@ def test_history_keeps_the_system_prompt_and_drops_the_oldest_turn() -> None:
 def test_history_drops_a_whole_turn_so_roles_stay_paired() -> None:
     history = [{"role": "system", "content": "be brief"}]
     for i in range(HISTORY_TURNS):
-        _remember_user(history, f"u{i}")
+        _remember_user(history, f"u{i}", HISTORY_TURNS)
         history.append({"role": "assistant", "content": f"a{i}"})
-    _remember_user(history, "newest")
+    _remember_user(history, "newest", HISTORY_TURNS)
     assert history[1] == {"role": "user", "content": "u1"}
     assert history[2] == {"role": "assistant", "content": "a1"}
     history.append({"role": "assistant", "content": "answer"})
@@ -177,33 +210,35 @@ def test_quit_during_asr_does_not_ask_the_llm(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    STOP_RECORD.clear()
+    session = DuplexSession()
     asked = {"n": 0}
 
     def wav(*_args: object, **_kwargs: object) -> bytes:
         return b"RIFFwav"
 
     async def asr(*_args: object, **_kwargs: object) -> str:
-        STOP_RECORD.set()
+        session.stop.set()
         return "hello there friend"
 
-    async def tokens(*_args: object, **_kwargs: object):
+    async def tokens(*_args: object, **_kwargs: object) -> AsyncIterator[str]:
         asked["n"] += 1
         if False:
             yield ""
 
     monkeypatch.setattr("fish_audio_suite_voice.duplex.record_utterance", wav)
     monkeypatch.setattr("fish_audio_suite_voice.duplex.fish_asr", asr)
-    monkeypatch.setattr("fish_audio_suite_voice.duplex.llm_token_stream", tokens)
-    try:
-        code = asyncio.run(
-            asyncio.wait_for(
-                duplex_turns(_config(), IsolatedFishTts(api_key="k", voice_id="voice"), None, None),
-                1,
-            )
+    code = asyncio.run(
+        asyncio.wait_for(
+            duplex_turns(
+                _config(),
+                IsolatedFishTts(api_key="k", voice_id="voice"),
+                None,
+                _FakeBackend(tokens),
+                session,
+            ),
+            1,
         )
-    finally:
-        STOP_RECORD.clear()
+    )
     assert code == 0
     assert asked["n"] == 0
     assert "you:" not in capsys.readouterr().out
@@ -220,12 +255,10 @@ class _ClosedStdout:
 def test_collect_reply_survives_a_closed_stdout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    loop = _loop()
-
-    async def tokens(*_args: object, **_kwargs: object):
+    async def tokens(*_args: object, **_kwargs: object) -> AsyncIterator[str]:
         yield "Open the door today friend."
 
-    monkeypatch.setattr("fish_audio_suite_voice.duplex.llm_token_stream", tokens)
+    loop = _loop(tokens)
     monkeypatch.setattr(sys, "stdout", _ClosedStdout())
     reply, ttft = asyncio.run(
         _collect_reply(loop, llm_cancel=asyncio.Event(), trace_id=None, started=0.0)
@@ -238,13 +271,11 @@ def test_collect_reply_keeps_partial_text_on_cancel(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    loop = _loop()
-
-    async def tokens(*_args: object, **_kwargs: object):
+    async def tokens(*_args: object, **_kwargs: object) -> AsyncIterator[str]:
         yield "Hi"
         raise asyncio.CancelledError
 
-    monkeypatch.setattr("fish_audio_suite_voice.duplex.llm_token_stream", tokens)
+    loop = _loop(tokens)
     reply, ttft = asyncio.run(
         _collect_reply(loop, llm_cancel=asyncio.Event(), trace_id=None, started=0.0)
     )
@@ -320,6 +351,7 @@ def test_cancelled_speak_keeps_the_audio_that_tripped_barge(
         text: str,
         sink: Sink,
         cancel: threading.Event | None = None,
+        on_first_audio: object = None,
     ) -> IsolatedResult:
         assert text == "Hello there friend"
         return IsolatedResult("hello", 4, True, True, 3.0, 2.0)
@@ -393,3 +425,297 @@ def test_speak_reply_releases_the_mic_before_returning(
     assert loop.history[-1]["content"] == "hello there"
     assert held["thread"].is_alive() is False
     assert time.monotonic() - started < 1
+
+
+def test_history_cap_follows_the_configured_turns() -> None:
+    history = [{"role": "system", "content": "be brief"}]
+    for i in range(5):
+        _remember_user(history, f"u{i}", 2)
+        history.append({"role": "assistant", "content": f"a{i}"})
+    _remember_user(history, "newest", 2)
+    # The oldest user and assistant leave together, so roles stay paired.
+    assert [m["content"] for m in history] == ["be brief", "u4", "a4", "newest"]
+
+
+def test_a_deliberate_repeat_is_kept_but_a_stale_copy_is_dropped() -> None:
+    assert _accept_asr("no", "no", stale=False) == "ok"
+    assert _accept_asr("No.", "no", stale=False) == "ok"
+    assert _accept_asr("no", "no", stale=True) == "skip"
+    assert _accept_asr("no", "yes", stale=True) == "ok"
+
+
+def test_token_pipe_hands_tokens_across_in_order() -> None:
+    pipe = _TokenPipe()
+    for token in ("Hello ", "there"):
+        pipe.push(token)
+    pipe.close()
+
+    async def drain() -> list[str]:
+        return [token async for token in pipe]
+
+    assert asyncio.run(drain()) == ["Hello ", "there"]
+
+
+class _StreamGate:
+    captured = b""
+
+    def __init__(self) -> None:
+        self.armed = 0
+
+    def start_after_bleed(self, cancel: threading.Event) -> threading.Thread:
+        self.armed += 1
+        thread = threading.Thread(target=lambda: None)
+        thread.start()
+        return thread
+
+
+class _StreamSink:
+    def start(self) -> None:
+        return None
+
+    def write(self, chunk: bytes) -> None:
+        return None
+
+    def finish(self, *, kill: bool = False) -> None:
+        return None
+
+    def bytes_played(self) -> int:
+        return 0
+
+
+async def _two_tokens(*_args: object, **_kwargs: object) -> AsyncIterator[str]:
+    for token in ("Hello ", "there friend."):
+        yield token
+        await asyncio.sleep(0)
+
+
+def test_stream_turn_feeds_tokens_to_tts_and_arms_barge_at_first_audio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = _loop(_two_tokens)
+    gate = _StreamGate()
+    monkeypatch.setattr("fish_audio_suite_voice.duplex.BargeGate", lambda **_kwargs: gate)
+    monkeypatch.setattr("fish_audio_suite_voice.duplex.make_sink", lambda *_a, **_k: _StreamSink())
+    heard_tokens: list[str] = []
+    armed_before_audio: list[int] = []
+
+    def speak_stream(
+        deltas: _TokenPipe,
+        sink: _StreamSink,
+        cancel: threading.Event,
+        on_first_audio: Callable[[], None] | None = None,
+    ) -> IsolatedResult:
+        async def drain() -> None:
+            heard_tokens.extend([token async for token in deltas])
+
+        asyncio.run(drain())
+        armed_before_audio.append(gate.armed)
+        assert on_first_audio is not None
+        on_first_audio()
+        return IsolatedResult("Hello there friend.", 4, True, False, 3.0, 2.0)
+
+    loop.tts.speak_stream_isolated = speak_stream
+    snapshot, code = asyncio.run(
+        _stream_turn(
+            loop,
+            _HeardLine("line", text="hi", started=time.perf_counter()),
+            threading.Event(),
+            asyncio.Event(),
+        )
+    )
+    assert code is None
+    assert heard_tokens == ["Hello ", "there friend."]
+    assert armed_before_audio == [0]
+    assert gate.armed == 1
+    assert snapshot.first_audio is not None
+    assert snapshot.llm_ttft is not None
+    assert loop.history[-1] == {"role": "assistant", "content": "Hello there friend."}
+
+
+def test_stream_turn_speaks_the_finished_reply_when_fish_fails_before_audio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = _loop(_two_tokens)
+    monkeypatch.setattr("fish_audio_suite_voice.duplex.BargeGate", lambda **_kwargs: _StreamGate())
+    monkeypatch.setattr("fish_audio_suite_voice.duplex.make_sink", lambda *_a, **_k: _StreamSink())
+    spoken: list[str] = []
+
+    def speak_stream(
+        deltas: _TokenPipe,
+        sink: _StreamSink,
+        cancel: threading.Event,
+        on_first_audio: Callable[[], None] | None = None,
+    ) -> IsolatedResult:
+        async def drain() -> None:
+            async for _token in deltas:
+                pass
+
+        asyncio.run(drain())
+        return IsolatedResult("", 0, False, False, None, None, error_status=503)
+
+    def speak_whole(
+        text: str,
+        sink: _StreamSink,
+        cancel: threading.Event | None = None,
+        on_first_audio: Callable[[], None] | None = None,
+    ) -> IsolatedResult:
+        spoken.append(text)
+        return IsolatedResult("Hello there friend.", 4, True, False, 3.0, 2.0)
+
+    loop.tts.speak_stream_isolated = speak_stream
+    loop.tts.speak_isolated = speak_whole
+    _snapshot, code = asyncio.run(
+        _stream_turn(
+            loop,
+            _HeardLine("line", text="hi", started=time.perf_counter()),
+            threading.Event(),
+            asyncio.Event(),
+        )
+    )
+    assert code is None
+    assert len(spoken) == 1
+    assert "Hello" in spoken[0]
+    assert loop.history[-1]["role"] == "assistant"
+
+
+def test_default_prompt_starts_with_a_pinned_multi_cue_exchange() -> None:
+    from fish_audio_suite_kit import DEFAULT_SYSTEM_PROMPT
+
+    history, pinned = _opening_history(DEFAULT_SYSTEM_PROMPT)
+    assert pinned == 3
+    assert [m["role"] for m in history] == ["system", "user", "assistant"]
+    assert history[2]["content"].count("[") >= 2
+
+
+def test_a_custom_prompt_gets_no_seed_exchange() -> None:
+    history, pinned = _opening_history("You are a pirate.")
+    assert pinned == 1
+    assert history == [{"role": "system", "content": "You are a pirate."}]
+
+
+def test_trimming_never_drops_the_pinned_seed() -> None:
+    from fish_audio_suite_kit import DEFAULT_SYSTEM_PROMPT
+
+    history, pinned = _opening_history(DEFAULT_SYSTEM_PROMPT)
+    for index in range(30):
+        _remember_user(history, f"question {index}", 3, pinned)
+        history.append({"role": "assistant", "content": f"[calm] answer {index}"})
+    assert history[:pinned] == _opening_history(DEFAULT_SYSTEM_PROMPT)[0]
+    assert len(history) == pinned + 3 * 2
+    assert history[-2]["content"] == "question 29"
+
+
+def test_trim_history_still_pairs_user_and_assistant_without_a_seed() -> None:
+    history = [{"role": "system", "content": "s"}]
+    for index in range(5):
+        history.append({"role": "user", "content": f"u{index}"})
+        history.append({"role": "assistant", "content": f"a{index}"})
+    _trim_history(history, 2)
+    assert [m["content"] for m in history] == ["s", "u3", "a3", "u4", "a4"]
+
+
+def test_a_fatal_fish_status_stops_the_llm_but_a_transient_one_does_not() -> None:
+    from fish_audio_suite_voice.duplex import _end_llm_when_tts_stops
+
+    async def scenario(status: int) -> bool:
+        loop = asyncio.get_running_loop()
+        done: asyncio.Future[IsolatedResult] = loop.create_future()
+        done.set_result(IsolatedResult("", 0, False, False, None, None, error_status=status))
+        llm_cancel = asyncio.Event()
+        _end_llm_when_tts_stops(done, llm_cancel)
+        return llm_cancel.is_set()
+
+    assert asyncio.run(scenario(401)) is True
+    assert asyncio.run(scenario(503)) is False
+
+
+def test_stream_turn_with_an_empty_reply_speaks_nothing_and_reports_nothing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    async def no_tokens(*_args: object, **_kwargs: object) -> AsyncIterator[str]:
+        if False:
+            yield ""
+
+    loop = _loop(no_tokens)
+    monkeypatch.setattr("fish_audio_suite_voice.duplex.BargeGate", lambda **_kwargs: _StreamGate())
+    monkeypatch.setattr("fish_audio_suite_voice.duplex.make_sink", lambda *_a, **_k: _StreamSink())
+    seen_cancel: list[bool] = []
+
+    def speak_stream(
+        deltas: _TokenPipe,
+        sink: _StreamSink,
+        cancel: threading.Event,
+        on_first_audio: Callable[[], None] | None = None,
+    ) -> IsolatedResult:
+        async def drain() -> None:
+            async for _token in deltas:
+                pass
+
+        asyncio.run(drain())
+        seen_cancel.append(cancel.is_set())
+        return IsolatedResult("", 0, False, True, None, None)
+
+    def never(*_args: object, **_kwargs: object) -> IsolatedResult:
+        raise AssertionError("an empty reply must not be spoken")
+
+    loop.tts.speak_stream_isolated = speak_stream
+    loop.tts.speak_isolated = never
+    history_before = list(loop.history)
+    _snapshot, code = asyncio.run(
+        _stream_turn(
+            loop,
+            _HeardLine("line", text="hi", started=time.perf_counter()),
+            threading.Event(),
+            asyncio.Event(),
+        )
+    )
+    assert code is None
+    assert seen_cancel == [True]
+    assert loop.history == history_before
+    assert "silent" not in capsys.readouterr().out
+
+
+def test_quit_during_the_stream_fallback_rebind_does_not_speak(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = _loop(_two_tokens)
+    monkeypatch.setattr("fish_audio_suite_voice.duplex.BargeGate", lambda **_kwargs: _StreamGate())
+    monkeypatch.setattr("fish_audio_suite_voice.duplex.make_sink", lambda *_a, **_k: _StreamSink())
+
+    def speak_stream(
+        deltas: _TokenPipe,
+        sink: _StreamSink,
+        cancel: threading.Event,
+        on_first_audio: Callable[[], None] | None = None,
+    ) -> IsolatedResult:
+        async def drain() -> None:
+            async for _token in deltas:
+                pass
+
+        asyncio.run(drain())
+        return IsolatedResult("", 0, False, False, None, None, error_status=503)
+
+    def never(*_args: object, **_kwargs: object) -> IsolatedResult:
+        raise AssertionError("nothing may be spoken after quit")
+
+    bind = loop.session.turn.bind
+
+    def bind_then_quit(cancel: threading.Event, llm_cancel: asyncio.Event, *a: object) -> None:
+        bind(cancel, llm_cancel)
+        # Ctrl+C lands right after the old flag was replaced.
+        loop.session.stop.set()
+
+    monkeypatch.setattr(loop.session.turn, "bind", bind_then_quit)
+    loop.tts.speak_stream_isolated = speak_stream
+    loop.tts.speak_isolated = never
+    _snapshot, code = asyncio.run(
+        _stream_turn(
+            loop,
+            _HeardLine("line", text="hi", started=time.perf_counter()),
+            threading.Event(),
+            asyncio.Event(),
+        )
+    )
+    assert code is None
+    assert loop.session.turn.cancel is not None
+    assert loop.session.turn.cancel.is_set()

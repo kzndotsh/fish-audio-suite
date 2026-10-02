@@ -10,12 +10,14 @@ Docs: https://docs.fish.audio/llms.txt
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any, Protocol
+from typing import Any
 
 import httpx
 import uvicorn
@@ -24,42 +26,36 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from fish_audio_suite_kit import (
     FISH_ASR_PATH,
-    FISH_RETRY_ATTEMPTS,
     FISH_TTS_PATH,
     CaptionCue,
     FishHttpError,
-    SuiteDefaults,
     bearer,
-    env_int,
     env_text,
-    env_token,
     fish_non_json,
-    fish_request_error,
-    fish_retry_pause,
-    fish_unreachable,
     is_asr_hallucination,
     is_caption_watermark,
     is_tts_junk,
     parse_asr_body,
     scrub_asr,
-    should_retry_fish_status,
     trace_id_of,
     without_watermark_segments,
 )
-from fish_audio_suite_proxy.errors import json_error, json_from_upstream, read_json_object
+from fish_audio_suite_proxy.errors import (
+    ProxyError,
+    json_error,
+    proxy_error_response,
+    read_json_object,
+)
 from fish_audio_suite_proxy.fields import (
-    catalog_ids,
-    dialogue_only_env,
     explicit_bool,
     pcm_sample_rate,
     prepare_tts_text,
-    quality_guard_env,
-    resolve_asr_model,
-    runtime_defaults,
     silent_speech,
-    strip_speakers_env,
     traced_model_headers,
 )
+from fish_audio_suite_proxy.limits import BodyLimitMiddleware
+from fish_audio_suite_proxy.models import catalog_ids, resolve_asr_model
+from fish_audio_suite_proxy.settings import ProxySettings, load_settings
 from fish_audio_suite_proxy.speech import pack_tts, speech_controls
 from fish_audio_suite_proxy.transcribe import (
     asr_response_format,
@@ -68,86 +64,24 @@ from fish_audio_suite_proxy.transcribe import (
     read_asr,
     transcription_body,
 )
+from fish_audio_suite_proxy.upstream import RetryPolicy, fish_send
 
 log = logging.getLogger("fish-audio-suite-proxy")
 _TTS_CHUNK = 4096
-_FISH_TIMEOUT_S = 120.0
-_FISH_CONNECT_S = 10.0
-_FISH_POOL_S = 5.0
+_PREVIEW_CHARS = 160
 _MAX_CONNECTIONS = 100
 _MAX_KEEPALIVE = 20
 _KEEPALIVE_EXPIRY_S = 30.0
-_PREVIEW_CHARS = 160
-_DEFAULT_PORT = 8849
-_PORT_MAX = 65535
-_DEFAULT_KEEP_ALIVE_S = 5
-_DEFAULT_GRACEFUL_S = 120
-
-logging.basicConfig(level=logging.INFO)
+_STARTED_AT = int(time.time())
+_OWNER = "fish-audio"
 
 
 def _user_agent() -> str:
     try:
         pkg = version("fish-audio-suite-proxy")
     except PackageNotFoundError:
-        pkg = "0.1.0"
+        pkg = "unknown"
     return f"fish-audio-suite-proxy/{pkg}"
-
-
-async def _closed_error(upstream: httpx.Response) -> JSONResponse:
-    body = await upstream.aread()
-    await upstream.aclose()
-    return json_from_upstream(upstream.status_code, body)
-
-
-class _FishHttp(Protocol):
-    def build_request(
-        self,
-        method: str,
-        url: str,
-        *,
-        content: Any = None,
-        data: Any = None,
-        files: Any = None,
-        json: Any = None,
-        headers: Any = None,
-    ) -> Any: ...
-
-    async def send(self, request: Any, *, stream: bool = False) -> Any: ...
-
-
-async def _fish_send(
-    client: _FishHttp,
-    *,
-    stream: bool,
-    **request_kwargs: Any,
-) -> httpx.Response | JSONResponse:
-    last_error: JSONResponse | None = None
-    for attempt in range(FISH_RETRY_ATTEMPTS):
-        try:
-            req = client.build_request(**request_kwargs)
-            upstream = await client.send(req, stream=stream)
-        except httpx.RequestError as exc:
-            status, message = fish_request_error(exc, httpx.TimeoutException)
-            last_error = json_error(status, message)
-        else:
-            # 3xx is not audio. A redirect body was streamed to the client
-            # as a 200 file, so the reply was never spoken.
-            if 200 <= upstream.status_code < 300:
-                return upstream
-            last_error = await _closed_error(upstream)
-            if not should_retry_fish_status(upstream.status_code):
-                return last_error
-            log.warning(
-                "fish retry status=%s attempt=%s/%s",
-                upstream.status_code,
-                attempt + 1,
-                FISH_RETRY_ATTEMPTS,
-            )
-        if await fish_retry_pause(attempt):
-            return last_error
-    status, message = fish_unreachable()
-    return last_error or json_error(status, message)
 
 
 @asynccontextmanager
@@ -157,30 +91,40 @@ async def lifespan(app: FastAPI):
     Parameters
     ----------
     app : FastAPI
-        Receives ``defaults``, ``fish_api_key``, and ``http`` on ``app.state``.
+        Receives ``settings``, ``defaults``, ``fish_api_key``, and ``http``
+        on ``app.state``.
 
     Notes
     -----
     ``FISH_API_KEY`` is read here, not at import, so ``GET /health`` works
-    with the key unset. Speech and transcription then return 401. The client
-    keeps HTTP/2 off, sends a User-Agent, and caps the connection pool.
+    with the key unset. Speech and transcription then return 503, because
+    the proxy is misconfigured, not the caller. The client keeps HTTP/2 off,
+    sends a User-Agent, and caps the connection pool.
     """
-    defaults = runtime_defaults()
+    logging.basicConfig(level=logging.INFO)
+    settings = load_settings()
     key = env_text("FISH_API_KEY")
     headers: dict[str, str] = {"User-Agent": _user_agent()}
     if key:
         headers["Authorization"] = bearer(key)
     else:
         log.warning("FISH_API_KEY unset; speech/transcription routes will fail until set")
-    app.state.defaults = defaults
+    if settings.exposed and not settings.auth_required:
+        log.warning(
+            "listening on %s with no FISH_PROXY_API_KEYS; anyone who can reach this port "
+            "spends your Fish credits",
+            settings.host,
+        )
+    app.state.settings = settings
+    app.state.defaults = settings.defaults
     app.state.fish_api_key = key
     app.state.http = httpx.AsyncClient(
-        base_url=defaults.fish_base,
+        base_url=settings.defaults.fish_base,
         timeout=httpx.Timeout(
-            connect=_FISH_CONNECT_S,
-            read=_FISH_TIMEOUT_S,
-            write=_FISH_TIMEOUT_S,
-            pool=_FISH_POOL_S,
+            connect=settings.connect_timeout_s,
+            read=settings.read_timeout_s,
+            write=settings.read_timeout_s,
+            pool=settings.pool_timeout_s,
         ),
         limits=httpx.Limits(
             max_connections=_MAX_CONNECTIONS,
@@ -195,20 +139,52 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan, title="fish-audio-suite-proxy")
+app.add_middleware(BodyLimitMiddleware)
+app.add_exception_handler(ProxyError, proxy_error_response)
 
 
-def _spoken_line(body: dict[str, Any], defaults: SuiteDefaults) -> tuple[str, str]:
+def _settings(request: Request) -> ProxySettings:
+    return request.app.state.settings
+
+
+def _client_allowed(request: Request, keys: tuple[str, ...]) -> bool:
+    header = request.headers.get("authorization", "")
+    scheme, _, token = header.partition(" ")
+    if scheme.lower() != "bearer":
+        return False
+    supplied = token.strip().encode()
+    # Compare against every key, so the time does not say which one matched.
+    matched = False
+    for key in keys:
+        matched |= hmac.compare_digest(supplied, key.encode())
+    return matched
+
+
+def _unauthorized(request: Request) -> JSONResponse | None:
+    keys = _settings(request).api_keys
+    if not keys or _client_allowed(request, keys):
+        return None
+    return json_error(401, "Invalid API key")
+
+
+def _spoken_line(body: dict[str, Any], settings: ProxySettings) -> tuple[str, str]:
     raw_input = body.get("input", "") or ""
-    dialogue_only = explicit_bool(body, "dialogue_only", default=dialogue_only_env())
-    spoken = prepare_tts_text(raw_input, dialogue_only=dialogue_only)
+    dialogue_only = explicit_bool(body, "dialogue_only", default=settings.tts_dialogue_only)
+    spoken = prepare_tts_text(
+        raw_input,
+        dialogue_only=dialogue_only,
+        mood_lead=settings.tts_mood_lead,
+    )
     preview = spoken.replace("\n", " ")[:_PREVIEW_CHARS]
     log.info(
-        "tts scrub model=%s raw_len=%d spoken_len=%d preview=%r",
-        body.get("model") or defaults.tts_model,
+        "tts scrub model=%s raw_len=%d spoken_len=%d",
+        body.get("model") or settings.defaults.tts_model,
         len(raw_input),
         len(spoken),
-        preview,
     )
+    # The text people speak is private. It is logged only on request.
+    if settings.log_text:
+        log.info("tts text preview=%r", preview)
     return spoken, preview
 
 
@@ -218,9 +194,11 @@ def _asr_text(
     lang: str,
     asr_model: str,
     traceparent: str,
+    settings: ProxySettings,
 ) -> tuple[str, list[CaptionCue]]:
-    strip_speakers = strip_speakers_env()
-    text = scrub_asr(transcript, strip_speakers=strip_speakers)
+    strip_speakers = settings.asr_strip_speakers
+    strip_cues = settings.asr_strip_cues
+    text = scrub_asr(transcript, strip_speakers=strip_speakers, strip_cues=strip_cues)
     log.info(
         "asr model=%s lang=%s chars=%d trace=%s",
         asr_model,
@@ -235,7 +213,7 @@ def _asr_text(
         # the caption line is spoken with the sentence.
         cues = [
             cue
-            for cue in caption_cues(data, "", strip_speakers=strip_speakers)
+            for cue in caption_cues(data, "", strip_speakers=strip_speakers, strip_cues=strip_cues)
             if not is_caption_watermark(cue.text)
         ]
         joined = " ".join(cue.text for cue in cues).strip()
@@ -243,16 +221,20 @@ def _asr_text(
             return joined, cues
         log.info("asr drop hallucination lang=%r chars=%d", detected_lang, len(text))
         return "", []
-    cues = caption_cues(data, text, strip_speakers=strip_speakers)
+    cues = caption_cues(data, text, strip_speakers=strip_speakers, strip_cues=strip_cues)
     # A watermark segment is omitted from the captions. The top-level text
     # still contains that phrase, so JSON says "thanks for watching" and
     # the SRT file does not.
-    trimmed = without_watermark_segments(text, data.get("segments"), strip_speakers=strip_speakers)
+    trimmed = without_watermark_segments(
+        text, data.get("segments"), strip_speakers=strip_speakers, strip_cues=strip_cues
+    )
     if trimmed != text and trimmed and not is_asr_hallucination(trimmed):
         # Segment cues already omit the watermark. When every segment was
         # one, the fallback cue was the untrimmed text, so the SRT file
         # still said "thanks for watching".
-        return trimmed, caption_cues(data, trimmed, strip_speakers=strip_speakers)
+        return trimmed, caption_cues(
+            data, trimmed, strip_speakers=strip_speakers, strip_cues=strip_cues
+        )
     return text, cues
 
 
@@ -264,14 +246,16 @@ async def _iter_upstream(upstream: httpx.Response) -> AsyncIterator[bytes]:
         await upstream.aclose()
 
 
-def _defaults(request: Request) -> SuiteDefaults:
-    return request.app.state.defaults
-
-
 def _fish_client(request: Request) -> httpx.AsyncClient | JSONResponse:
     if not request.app.state.fish_api_key:
-        return json_error(401, "Invalid Token")
+        # The caller did nothing wrong. A 401 would tell them to fix a key
+        # that is fine, while the proxy has none to send.
+        return json_error(503, "proxy has no FISH_API_KEY configured")
     return request.app.state.http
+
+
+def _policy(settings: ProxySettings) -> RetryPolicy:
+    return RetryPolicy(attempts=settings.retry_attempts, deadline_s=settings.retry_deadline_s)
 
 
 @app.post("/v1/audio/speech")
@@ -281,31 +265,38 @@ async def speech(request: Request):
     Parameters
     ----------
     request : Request
-        JSON body. ``input`` must be a string.
+        JSON body. ``input`` must be a string within ``FISH_PROXY_MAX_INPUT_CHARS``.
 
     Returns
     -------
     Response
         Audio bytes, silence in the requested format when the scrubbed text
         is junk, or an OpenAI error JSON. Fish 429 and 5xx are retried.
-        Other 4xx are not.
+        Other 4xx are not. An unsupported ``response_format`` is a 400.
 
     Notes
     -----
-    Reference clips are MessagePack. A missing API key is 401 from this
-    route, not from import.
+    Reference clips are MessagePack. A missing server key is a 503 from this
+    route, not an import error.
     """
-    defaults = _defaults(request)
+    if (refused := _unauthorized(request)) is not None:
+        return refused
+    settings = _settings(request)
+    defaults = settings.defaults
     body = await read_json_object(request)
     if isinstance(body, JSONResponse):
         return body
     raw_input = body.get("input", "")
     if not isinstance(raw_input, str):
         return json_error(400, "input must be a string")
-    controls = speech_controls(body, defaults)
-    spoken, preview = _spoken_line(body, defaults)
-    if is_tts_junk(spoken):
-        log.info("tts skip junk preview=%r", preview)
+    if settings.max_input_chars and len(raw_input) > settings.max_input_chars:
+        return json_error(400, f"input is longer than {settings.max_input_chars} characters")
+    controls = speech_controls(body, defaults, settings.tts_aliases)
+    spoken, preview = _spoken_line(body, settings)
+    if is_tts_junk(spoken, drop_narration=settings.tts_drop_narration):
+        log.info("tts skip junk chars=%d", len(spoken))
+        if settings.log_text:
+            log.info("tts junk preview=%r", preview)
         rate = pcm_sample_rate(controls.fmt, body, defaults.sample_rate)
         audio, mime = silent_speech(controls.fmt, rate)
         return Response(content=audio, media_type=mime)
@@ -314,7 +305,14 @@ async def speech(request: Request):
     if isinstance(client, JSONResponse):
         return client
 
-    packed = pack_tts(body, defaults, request.headers, controls, spoken)
+    packed = pack_tts(
+        body,
+        defaults,
+        request.headers,
+        controls,
+        spoken,
+        quality_guard=settings.quality_guard,
+    )
     if isinstance(packed, JSONResponse):
         return packed
     log.info(
@@ -324,9 +322,11 @@ async def speech(request: Request):
         trace_id_of(packed.headers["traceparent"]),
     )
 
-    upstream = await _fish_send(
+    upstream = await fish_send(
         client,
         stream=True,
+        policy=_policy(settings),
+        is_disconnected=request.is_disconnected,
         method="POST",
         url=FISH_TTS_PATH,
         headers=packed.headers,
@@ -353,7 +353,10 @@ async def transcriptions(request: Request):
         Transcript JSON, caption text, or an OpenAI error. Language is omitted
         upstream unless the client or ``FISH_ASR_LANGUAGE`` sets it.
     """
-    defaults = _defaults(request)
+    if (refused := _unauthorized(request)) is not None:
+        return refused
+    settings = _settings(request)
+    defaults = settings.defaults
     inbound = await read_asr(request)
     if isinstance(inbound, JSONResponse):
         return inbound
@@ -367,9 +370,11 @@ async def transcriptions(request: Request):
     files, form, lang = asr_upload(inbound, defaults, fmt, granularities)
 
     asr_headers = traced_model_headers(asr_model, request.headers)
-    r = await _fish_send(
+    r = await fish_send(
         client,
         stream=False,
+        policy=_policy(settings),
+        is_disconnected=request.is_disconnected,
         method="POST",
         url=FISH_ASR_PATH,
         headers=asr_headers,
@@ -388,7 +393,7 @@ async def transcriptions(request: Request):
         data, transcript = parse_asr_body(raw)
     except FishHttpError as exc:
         return json_error(exc.status, exc.message)
-    text, cues = _asr_text(data, transcript, lang, asr_model, asr_headers["traceparent"])
+    text, cues = _asr_text(data, transcript, lang, asr_model, asr_headers["traceparent"], settings)
     return transcription_body(
         fmt,
         text,
@@ -396,22 +401,36 @@ async def transcriptions(request: Request):
         data,
         language=inbound.language,
         granularities=granularities,
+        strip_speakers=settings.asr_strip_speakers,
+        strip_cues=settings.asr_strip_cues,
     )
 
 
 @app.get("/v1/models")
-async def models():
-    """List native Fish model ids and their ``fish-audio/`` prefixed copies.
+async def models(request: Request):
+    """List the model ids the routes accept.
+
+    Parameters
+    ----------
+    request : Request
+        Used for the key check and the alias table.
 
     Returns
     -------
     dict
-        OpenAI ``{object: list, data: [...]}``. Aliases such as ``tts-1``
-        are accepted on speech routes but not listed here.
+        OpenAI ``{object: list, data: [...]}``. Native Fish ids, the TTS
+        aliases (``tts-1`` and any from ``FISH_TTS_ALIASES``), ``whisper-1``,
+        and the ``fish-audio/`` prefixed native ids.
     """
+    if (refused := _unauthorized(request)) is not None:
+        return refused
+    aliases = _settings(request).tts_aliases
     return {
         "object": "list",
-        "data": [{"id": m, "object": "model"} for m in catalog_ids()],
+        "data": [
+            {"id": m, "object": "model", "created": _STARTED_AT, "owned_by": _OWNER}
+            for m in catalog_ids(aliases)
+        ],
     }
 
 
@@ -422,62 +441,19 @@ async def health(request: Request):
     Parameters
     ----------
     request : Request
-        Used only to read defaults stored at startup.
+        Used only to read the settings stored at startup.
 
     Returns
     -------
     dict
-        ``status`` is ``ok`` even when ``FISH_API_KEY`` is unset.
+        ``status`` is ``ok`` even when ``FISH_API_KEY`` is unset. No key
+        value is included, only whether client auth is required.
     """
-    defaults = _defaults(request)
-    return {
-        "status": "ok",
-        "defaults": {
-            "model": defaults.tts_model,
-            "asr_model": defaults.asr_model,
-            "asr_language": defaults.asr_language,
-            "latency": defaults.latency,
-            "chunk_length": defaults.chunk_length,
-            "format": defaults.audio_format,
-            "speed_scale": defaults.speed,
-            "quality_guard": quality_guard_env(),
-            "asr_strip_speakers": strip_speakers_env(),
-            "tts_dialogue_only": dialogue_only_env(),
-        },
-    }
-
-
-def _listen_port() -> int:
-    port = env_int("FISH_PROXY_PORT", _DEFAULT_PORT)
-    if 1 <= port <= _PORT_MAX:
-        return port
-    return _DEFAULT_PORT
-
-
-def _non_negative_s(name: str, default: int) -> int:
-    value = env_int(name, default)
-    return value if value >= 0 else default
+    return {"status": "ok", "defaults": _settings(request).health()}
 
 
 def _uvicorn_run_kwargs() -> dict[str, Any]:
-    workers = max(env_int("FISH_PROXY_WORKERS", env_int("WEB_CONCURRENCY", 1)), 1)
-    kwargs: dict[str, Any] = {
-        "host": env_token("FISH_PROXY_HOST", "0.0.0.0"),
-        "port": _listen_port(),
-        "workers": workers,
-        "loop": "auto",
-        "http": "auto",
-        "ws": "none",
-        "timeout_keep_alive": _non_negative_s("FISH_PROXY_KEEP_ALIVE", _DEFAULT_KEEP_ALIVE_S),
-        "timeout_graceful_shutdown": _non_negative_s(
-            "FISH_PROXY_GRACEFUL_SHUTDOWN", _DEFAULT_GRACEFUL_S
-        ),
-        "proxy_headers": True,
-    }
-    limit = env_int("FISH_PROXY_LIMIT_CONCURRENCY", 0)
-    if limit > 0:
-        kwargs["limit_concurrency"] = limit
-    return kwargs
+    return load_settings().uvicorn_kwargs()
 
 
 def main() -> None:
@@ -487,7 +463,7 @@ def main() -> None:
     -----
     The import string is required so ``FISH_PROXY_WORKERS`` can spawn
     processes. Websockets are disabled. ``forwarded-allow-ips`` is left
-    at uvicorn's default, not ``*``.
+    at uvicorn's default, not ``*``. The default host is ``127.0.0.1``.
     """
     # Import string so --workers / FISH_PROXY_WORKERS can spawn processes.
     uvicorn.run("fish_audio_suite_proxy.server:app", **_uvicorn_run_kwargs())

@@ -1,6 +1,8 @@
 """Unofficial Fish Audio text helpers. Not affiliated with Fish Audio."""
 
 from fish_audio_suite_kit.asr_text import (
+    DEFAULT_BACKCHANNELS,
+    DEFAULT_QUIT_PHRASES,
     is_asr_hallucination,
     is_backchannel,
     is_caption_watermark,
@@ -10,11 +12,17 @@ from fish_audio_suite_kit.asr_text import (
     without_watermark_segments,
 )
 from fish_audio_suite_kit.captions import CaptionCue, format_as_srt, format_as_vtt
-from fish_audio_suite_kit.cues import ensure_lead_cue, mood_lead_hold_at, normalize_cues
+from fish_audio_suite_kit.cues import (
+    ensure_lead_cue,
+    mood_lead_hold_at,
+    normalize_cues,
+    strip_cue_tags,
+)
 from fish_audio_suite_kit.cuts import ends_sentence, next_tts_cut, split_tts_piece
 from fish_audio_suite_kit.defaults import (
     CHUNK_LENGTH_LO,
     CLOUD_CHUNK_HI,
+    DEFAULT_SEED_EXCHANGE,
     DEFAULT_SYSTEM_PROMPT,
     FISH_LATENCIES,
     FISH_TTS_MODEL_IDS,
@@ -45,6 +53,7 @@ from fish_audio_suite_kit.defaults import (
     number_or,
     strip_base,
 )
+from fish_audio_suite_kit.dialogue import DEFAULT_SHORT_WORDS
 from fish_audio_suite_kit.http_errors import (
     FISH_ASR_PATH,
     FISH_RETRY_ATTEMPTS,
@@ -52,12 +61,14 @@ from fish_audio_suite_kit.http_errors import (
     FishHttpError,
     bearer,
     fish_attempt_exhausted,
+    fish_backoff_s,
     fish_backoff_seconds,
     fish_error_body,
     fish_non_json,
     fish_non_object,
     fish_request_error,
     fish_retry_pause,
+    fish_sleep_before_retry,
     fish_transport_error,
     fish_unreachable,
     parse_asr_body,
@@ -84,6 +95,10 @@ from fish_audio_suite_kit.trace_context import (
 __all__ = [
     "CHUNK_LENGTH_LO",
     "CLOUD_CHUNK_HI",
+    "DEFAULT_BACKCHANNELS",
+    "DEFAULT_QUIT_PHRASES",
+    "DEFAULT_SEED_EXCHANGE",
+    "DEFAULT_SHORT_WORDS",
     "DEFAULT_SYSTEM_PROMPT",
     "FISH_ASR_PATH",
     "FISH_LATENCIES",
@@ -119,12 +134,14 @@ __all__ = [
     "env_token",
     "extract_quoted_speech",
     "fish_attempt_exhausted",
+    "fish_backoff_s",
     "fish_backoff_seconds",
     "fish_error_body",
     "fish_non_json",
     "fish_non_object",
     "fish_request_error",
     "fish_retry_pause",
+    "fish_sleep_before_retry",
     "fish_transport_error",
     "fish_unreachable",
     "format_as_srt",
@@ -154,6 +171,7 @@ __all__ = [
     "skip_empty_delta",
     "split_tts_piece",
     "strip_base",
+    "strip_cue_tags",
     "trace_id_of",
     "utf8_text",
     "w3c_trace_headers",

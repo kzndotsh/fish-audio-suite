@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 import threading
 import time
-from collections.abc import AsyncIterator, Coroutine
+from collections.abc import AsyncIterator, Callable, Coroutine
 from dataclasses import dataclass
 from typing import Any
 
@@ -17,9 +17,10 @@ from fishaudio.exceptions import AuthenticationError
 from fish_audio_suite_kit import (
     FISH_RETRY_ATTEMPTS,
     ensure_trace_headers,
-    fish_backoff_seconds,
+    fish_backoff_s,
 )
 from fish_audio_suite_voice.debug import debug
+from fish_audio_suite_voice.pause import sleep_unless
 from fish_audio_suite_voice.playback import PlaybackSink
 from fish_audio_suite_voice.wire import (
     EventAcc,
@@ -37,7 +38,6 @@ from fish_audio_suite_voice.wire import (
 )
 
 _WS_TIMEOUT_S = 240.0
-_RETRY_POLL_S = 0.05
 
 __all__ = [
     "IsolatedResult",
@@ -93,18 +93,11 @@ class _Turn:
     headers: dict[str, str]
 
 
-async def _retry_pause(cancel: threading.Event, seconds: float) -> bool:
-    """Wait out a Fish backoff. True means the turn was cancelled."""
+async def _retry_pause(cancel: threading.Event, attempt: int) -> bool:
+    """Wait out a Fish backoff with jitter. True means the turn was cancelled."""
     # One sleep ignores barge-in. The next attempt would speak after the
     # user already interrupted, or Ctrl+C would wait out the full backoff.
-    left = seconds
-    while left > 0:
-        if cancel.is_set():
-            return True
-        step = min(_RETRY_POLL_S, left)
-        await asyncio.sleep(step)
-        left -= step
-    return cancel.is_set()
+    return await sleep_unless(fish_backoff_s(attempt), cancel.is_set)
 
 
 async def _one_attempt(turn: _Turn, events: AsyncIterator[Any], attempt: int) -> bool:
@@ -135,23 +128,21 @@ async def _one_attempt(turn: _Turn, events: AsyncIterator[Any], attempt: int) ->
             run.err_status = fate.err_status
             run.err_message = fate.err_message
             return True
-        return await _retry_pause(run.cancel, fish_backoff_seconds(attempt))
+        return await _retry_pause(run.cancel, attempt)
     return True
 
 
 def _turn_headers(spec: TurnSpec, sent_text: str) -> dict[str, str]:
     extra = ensure_trace_headers(spec.trace_headers)
     debug(
-        "tts.start voice={} model={} format={} sr={} latency={} speed={} chars={} trace={} text={}",
-        spec.voice_id,
+        "tts.start voice={} model={} {} {}Hz latency={} speed={}{}",
+        spec.voice_id[:8],
         spec.model,
         spec.audio_format,
         spec.sample_rate,
         spec.latency,
         spec.speed,
-        len(sent_text),
-        extra.get("traceparent", ""),
-        sent_text,
+        f" chars={len(sent_text)}" if sent_text else " streaming",
     )
     return extra
 
@@ -163,6 +154,7 @@ async def run_turn(
     cancel: threading.Event,
     *,
     sent_text: str,
+    on_first_audio: Callable[[], None] | None = None,
 ) -> IsolatedResult:
     """Play one Fish turn, retrying 429 and 5xx only before the first audio byte.
 
@@ -180,6 +172,9 @@ async def run_turn(
     sent_text : str
         Full text to replay. Empty means the original ``events`` iterator is
         the only source, so a failed attempt cannot be repeated.
+    on_first_audio : Callable or None, optional
+        Called once, on the websocket's thread, when the first audio chunk
+        arrives. It must not block.
 
     Returns
     -------
@@ -199,6 +194,7 @@ async def run_turn(
         acc=EventAcc(),
         t0=time.perf_counter(),
         audio=Heard(),
+        on_first_audio=on_first_audio,
     )
     turn = _Turn(run=run, held=_HeldClient(), headers=_turn_headers(spec, sent_text))
 

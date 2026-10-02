@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import re
 import threading
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterable, Callable, Coroutine, Iterable
 from dataclasses import dataclass, field
+from functools import cache
 from typing import Any, cast
 
-from fishaudio import TextEvent
 from fishaudio.types import AudioFormat, LatencyMode, Prosody, TTSConfig
 
 from fish_audio_suite_kit import (
@@ -21,14 +20,10 @@ from fish_audio_suite_kit import (
     UNIT_LO,
     SuiteDefaults,
     clamp_num,
-    ends_sentence,
-    hold_tts,
     known_mp3_bitrate,
     known_tts_model,
     normalize_cues,
     scrub_tts,
-    skip_empty_delta,
-    split_tts_piece,
     strip_base,
     utf8_text,
 )
@@ -37,13 +32,12 @@ from fish_audio_suite_voice.playback import PlaybackSink
 from fish_audio_suite_voice.session import (
     IsolatedResult,
     TurnSpec,
-    as_async,
     is_cancel_noise,
     run_isolated,
     run_turn,
     text_events,
 )
-from fish_audio_suite_voice.wire import flush_if_sent
+from fish_audio_suite_voice.stream_scrub import delta_events
 
 _STOCK = SuiteDefaults()
 # The installed SDK Prosody model rejects anything outside this range.
@@ -54,6 +48,12 @@ _SDK_VOLUME_HI = 20.0
 _SDK_FORMATS = frozenset({"wav", "pcm", "mp3", "opus"})
 
 
+@cache
+def _warn_coerced(kind: str, given: str, used: str) -> None:
+    # Once per distinct pair. A silent swap hid a wrong sink format.
+    warn(f"fish-voice: {kind} {given!r} is not supported by the Fish SDK, using {used!r}")
+
+
 def _sdk_format(fmt: str) -> AudioFormat:
     key = fmt.strip().lower()
     # pcm16 is this suite's raw PCM name. aac and flac are the proxy's MP3
@@ -61,8 +61,10 @@ def _sdk_format(fmt: str) -> AudioFormat:
     if key == "pcm16":
         key = "pcm"
     elif key in {"aac", "flac"}:
+        _warn_coerced("audio format", key, "mp3")
         key = "mp3"
     if key not in _SDK_FORMATS:
+        _warn_coerced("audio format", key, "pcm")
         key = "pcm"
     return cast(AudioFormat, key)
 
@@ -70,12 +72,14 @@ def _sdk_format(fmt: str) -> AudioFormat:
 def _sdk_latency(latency: str) -> LatencyMode:
     # low is a Fish HTTP mode. This SDK only accepts normal and balanced, and
     # building the config with low raises before any audio is sent.
-    # "LOW" used to miss both comparisons and go out as normal.
     key = latency.strip().lower()
     if key == "low":
+        _warn_coerced("latency", key, "balanced")
         return "balanced"
     if key == "balanced":
         return "balanced"
+    if key != "normal":
+        _warn_coerced("latency", key, "normal")
     return "normal"
 
 
@@ -102,120 +106,6 @@ def _sdk_volume(volume: float) -> float:
 
 def _spoken(text: str, *, lead: bool = True) -> str:
     return normalize_cues(scrub_tts(text), lead=lead)
-
-
-def _hold_at(text: str, *, line_start: bool, sentence_start: bool, before: str = "") -> int:
-    return hold_tts(
-        text,
-        line_start=line_start,
-        sentence_start=sentence_start,
-        before=before,
-    )
-
-
-def _at_line_start(ready: str) -> bool:
-    text = ready.rstrip(" \t")
-    return not text or text.endswith("\n")
-
-
-def _stable_prefix(
-    text: str, *, line_start: bool, sentence_start: bool, before: str = ""
-) -> tuple[str, str]:
-    cut = _hold_at(text, line_start=line_start, sentence_start=sentence_start, before=before)
-    return text[:cut], text[cut:]
-
-
-# A closer split from its word ("words" then "** ") is not an operator.
-# " * " still is: the mark does not start the chunk.
-_ORPHAN_CLOSER_RE = re.compile(r"^[*_`~]+(?=\s)")
-
-
-def _fold_stream_breaks(text: str) -> str:
-    # A carriage return or a Unicode line separator is a newline only after
-    # scrub. Until then the next mood looks mid-sentence and is spoken.
-    return (
-        text.replace("\r\n", "\n")
-        .replace("\r", "\n")
-        .replace("\u2028", "\n")
-        .replace("\u2029", "\n")
-    )
-
-
-def _glue_sentence_stop(ready: str, piece: str) -> str:
-    # "(https://example.com)" is removed after "door " was already buffered.
-    # The period arrives next, and Fish says "door" and then "dot".
-    if (
-        piece
-        and piece[0] in ".!?…。！？,;:，；："
-        and ready[-1:].isspace()
-        and ready[-1:] not in "\n\r"
-    ):
-        ready = ready[:-1]
-    return ready + piece
-
-
-def _drop_orphan_closer(stable: str, ready: str) -> str:
-    if not ready or not ready[-1].isalnum():
-        return stable
-    # "~~~" then a newline is a code fence, not a leftover closer.
-    # Stripping it spoke the code.
-    if stable.startswith(("~~~", "```")):
-        return stable
-    return _ORPHAN_CLOSER_RE.sub("", stable)
-
-
-def _continues_sentence(ready: str, incoming: str = "") -> bool:
-    if not ready.rstrip():
-        return False
-    # A new line is its own sentence, even when the previous line has no stop.
-    # "List\nExcited," is a cue. The newline was already sent, so the next
-    # token would otherwise look mid-sentence and the mood would be spoken.
-    if ready.rstrip(" \t").endswith("\n"):
-        return False
-    if ends_sentence(ready):
-        return False
-    # "Hello؟" + " Excited" — the space is still in this token, not in ready.
-    # "Dr." + " Happy" is not a new sentence.
-    return not (incoming[:1].isspace() and ends_sentence(ready + incoming[:1]))
-
-
-def _scrub_chunk(
-    text: str,
-    *,
-    lead: bool = True,
-    line_start: bool = True,
-    before: str = "",
-    after: str = "",
-    continued: bool = False,
-) -> str:
-    """Scrub one stable stream chunk with the text already accepted around it."""
-    if not text:
-        return ""
-    # A chunk edge is the middle of the reply. Whole-string scrub strips
-    # that space, and cue rewrite strips it again. The newline is how the
-    # next chunk knows it starts a line.
-    lead_space = text[0] == " "
-    trail_space = text[-1] == " "
-    body = text.lstrip(" \t")
-    lead_breaks = min(len(body) - len(body.lstrip("\n")), 2)
-    ended_line = text.rstrip(" \t").endswith("\n")
-    cleaned = scrub_tts(
-        text,
-        line_start=line_start,
-        continued=continued,
-        before=before[-1:],
-        after=after[:1],
-    )
-    spoken = normalize_cues(cleaned, lead=lead)
-    if (lead_space or cleaned[:1] == " ") and spoken[:1] != " ":
-        spoken = f" {spoken}"
-    if (trail_space or cleaned[-1:] == " ") and spoken[-1:] != " ":
-        spoken = f"{spoken} "
-    if lead_breaks and not spoken.startswith("\n"):
-        spoken = ("\n" * lead_breaks) + spoken.lstrip(" ")
-    elif ended_line and not spoken.endswith("\n"):
-        spoken = f"{spoken.rstrip(' ')}\n"
-    return spoken
 
 
 def _quiet_result(cancelled: bool) -> IsolatedResult:
@@ -246,6 +136,7 @@ class IsolatedFishTts:
     chunk_length: int = _STOCK.chunk_length
     min_chunk_length: int = _STOCK.min_chunk_length
     volume: float = _STOCK.volume
+    mood_lead: bool = False
     partial_chars: int = _STOCK.tts_partial_chars
     base_url: str = _STOCK.fish_base
     trace_headers: dict[str, str] = field(default_factory=dict)
@@ -260,6 +151,7 @@ class IsolatedFishTts:
         text: str,
         sink: PlaybackSink,
         cancel: threading.Event | None = None,
+        on_first_audio: Callable[[], None] | None = None,
     ) -> IsolatedResult:
         """Run one Fish websocket on a private thread and event loop.
 
@@ -271,6 +163,8 @@ class IsolatedFishTts:
             Where PCM or encoded audio is written.
         cancel : threading.Event or None, optional
             Set to stop the turn. A new event is created when omitted.
+        on_first_audio : Callable or None, optional
+            Called once on the websocket's thread at the first audio chunk.
 
         Returns
         -------
@@ -291,6 +185,60 @@ class IsolatedFishTts:
         Do not ``aclose()`` the websocket iterator.
         """
         cancel = cancel or threading.Event()
+        return self._run_on_thread(
+            lambda: self.speak(text, sink, cancel, on_first_audio=on_first_audio), cancel
+        )
+
+    def speak_stream_isolated(
+        self,
+        deltas: Iterable[str] | AsyncIterable[str],
+        sink: PlaybackSink,
+        cancel: threading.Event,
+        on_first_audio: Callable[[], None] | None = None,
+    ) -> IsolatedResult:
+        """Speak a token stream on a private thread while the model is still writing.
+
+        Parameters
+        ----------
+        deltas : Iterable or AsyncIterable of str
+            Model tokens. An async iterable is read on the private loop, so it
+            must not depend on the caller's loop.
+        sink : PlaybackSink
+            Where PCM or encoded audio is written.
+        cancel : threading.Event
+            Set to stop the turn.
+        on_first_audio : Callable or None, optional
+            Called once on the websocket's thread at the first audio chunk.
+
+        Returns
+        -------
+        IsolatedResult
+            How much was spoken. ``sent_text`` is empty, so a failed turn is not
+            replayed here. The caller can speak the finished reply instead.
+
+        Raises
+        ------
+        Exception
+            Re-raised from the private thread, as ``speak_isolated`` does.
+
+        Notes
+        -----
+        Flushes once after the first sentence and once at the end. Fish holds
+        text until a chunk fills or a flush arrives, so one flush at the end
+        would keep the reply silent until the model finished.
+        """
+        return self._run_on_thread(
+            lambda: self.speak_deltas(
+                deltas, sink, cancel, early_flush=True, on_first_audio=on_first_audio
+            ),
+            cancel,
+        )
+
+    def _run_on_thread(
+        self,
+        make: Callable[[], Coroutine[Any, Any, IsolatedResult]],
+        cancel: threading.Event,
+    ) -> IsolatedResult:
         result: IsolatedResult | None = None
         # thread.join does not re-raise. A sink that fails to open would
         # otherwise look like a silent turn.
@@ -299,9 +247,9 @@ class IsolatedFishTts:
         def worker() -> None:
             nonlocal result, error
             try:
-                result = run_isolated(self.speak(text, sink, cancel))
+                result = run_isolated(make())
             except (asyncio.CancelledError, BaseExceptionGroup, RuntimeError, GeneratorExit) as e:
-                if not is_cancel_noise(e):
+                if not is_cancel_noise(e, cancelled=cancel.is_set()):
                     warn(f"[tts] {e}")
                 result = _quiet_result(cancel.is_set())
             except Exception as exc:
@@ -321,6 +269,7 @@ class IsolatedFishTts:
         text: str,
         sink: PlaybackSink,
         cancel: threading.Event,
+        on_first_audio: Callable[[], None] | None = None,
     ) -> IsolatedResult:
         """Speak one full string on the caller's loop.
 
@@ -333,6 +282,8 @@ class IsolatedFishTts:
         cancel : threading.Event
             Stops the turn. Also used as the retry boundary: 429 and 5xx
             replay only before the first audio byte.
+        on_first_audio : Callable or None, optional
+            Called once at the first audio chunk.
 
         Returns
         -------
@@ -344,31 +295,40 @@ class IsolatedFishTts:
         Prefer ``speak_isolated`` when the caller is already inside an event
         loop that must stay free for the LLM. Duplex does that.
         """
-        prepared = _spoken(text)
+        prepared = _spoken(text, lead=self.mood_lead)
         return await run_turn(
             self._spec(),
             text_events(prepared, cancel, self.partial_chars),
             sink,
             cancel,
             sent_text=prepared,
+            on_first_audio=on_first_audio,
         )
 
     async def speak_deltas(
         self,
-        deltas: Iterable[str] | AsyncIterator[str],
+        deltas: Iterable[str] | AsyncIterable[str],
         sink: PlaybackSink,
         cancel: threading.Event,
+        *,
+        early_flush: bool = False,
+        on_first_audio: Callable[[], None] | None = None,
     ) -> IsolatedResult:
         """Stream model deltas, cutting them into Fish text events.
 
         Parameters
         ----------
-        deltas : Iterable or AsyncIterator of str
+        deltas : Iterable or AsyncIterable of str
             Token stream. Empty pieces are skipped.
         sink : PlaybackSink
             Playback target.
         cancel : threading.Event
             Stops the turn.
+        early_flush : bool, optional
+            Flush once after the first piece so audio starts before the model
+            finishes. Default False.
+        on_first_audio : Callable or None, optional
+            Called once at the first audio chunk.
 
         Returns
         -------
@@ -378,119 +338,26 @@ class IsolatedFishTts:
 
         Notes
         -----
-        The duplex loop does not call this. It waits for the full reply and
-        uses ``speak_isolated``, which can replay on 429 or 5xx. A thought,
+        Duplex reaches this through ``speak_stream_isolated`` when streaming is
+        on. Otherwise it waits for the full reply and uses ``speak_isolated``,
+        which can replay on 429 or 5xx. A thought,
         parenthesis, bracket, or URL stays buffered until it closes, so a
         cut cannot speak the inside of a span the closer would remove.
         """
         return await run_turn(
             self._spec(),
-            self._delta_events(deltas, cancel),
+            delta_events(
+                deltas,
+                cancel,
+                partial_chars=self.partial_chars,
+                mood_lead=self.mood_lead,
+                early_flush=early_flush,
+            ),
             sink,
             cancel,
             sent_text="",
+            on_first_audio=on_first_audio,
         )
-
-    async def _delta_events(
-        self,
-        deltas: Iterable[str] | AsyncIterator[str],
-        cancel: threading.Event,
-    ) -> AsyncIterator[Any]:
-        raw = ""
-        ready = ""
-        # The last accepted character. ready is empty once that text is sent,
-        # and the next span still needs the neighbor so its gap survives.
-        last = ""
-        sent = 0
-        # Text already sent on this line. An empty ready buffer is not a new
-        # line, so a star after "Hello." must not be stripped as a bullet.
-        sent_line = ""
-
-        def counted(piece: str) -> TextEvent | None:
-            nonlocal sent
-            event = self._text_event(piece)
-            if event is None:
-                return None
-            sent += 1
-            return event
-
-        def take_ready() -> str | None:
-            nonlocal ready
-            split = split_tts_piece(ready, self.partial_chars, flush_rest=False)
-            if split is None:
-                return None
-            piece, ready = split
-            return piece
-
-        async for tok in as_async(deltas):
-            if cancel.is_set():
-                break
-            # A space-only token is not a TextEvent, but it is the boundary
-            # between words. Dropping it here joins those words.
-            raw = _fold_stream_breaks(raw + tok)
-            sentence_start = not _continues_sentence(ready, raw)
-            stable, raw = _stable_prefix(
-                raw,
-                line_start=_at_line_start(sent_line + ready),
-                sentence_start=sentence_start,
-                before=ready,
-            )
-            if stable:
-                stable = _drop_orphan_closer(stable, ready)
-                ready = _glue_sentence_stop(
-                    ready,
-                    _scrub_chunk(
-                        stable,
-                        lead=sentence_start,
-                        line_start=_at_line_start(sent_line + ready),
-                        before=ready[-1:] or last,
-                        after=raw[:1],
-                        continued=bool((sent_line + ready).strip()),
-                    ),
-                )
-                if ready:
-                    last = ready[-1]
-            while True:
-                piece = take_ready()
-                if piece is None:
-                    break
-                sent_line = (sent_line + piece).rsplit("\n", 1)[-1]
-                event = counted(piece)
-                if event is not None:
-                    yield event
-        if not cancel.is_set() and raw:
-            lead = not _continues_sentence(ready, raw)
-            raw = _drop_orphan_closer(raw, ready)
-            ready = _glue_sentence_stop(
-                ready,
-                _scrub_chunk(
-                    raw,
-                    lead=lead,
-                    line_start=_at_line_start(sent_line + ready),
-                    before=ready[-1:] or last,
-                    continued=bool((sent_line + ready).strip()),
-                ),
-            )
-        # A span held until the end can be longer than the send window.
-        # One cut would speak the first words and drop the rest.
-        while ready and not cancel.is_set():
-            split = split_tts_piece(ready, self.partial_chars, flush_rest=True)
-            if split is None:
-                break
-            piece, ready = split
-            event = counted(piece)
-            if event is not None:
-                yield event
-        flush = flush_if_sent(sent, cancel)
-        if flush is not None:
-            yield flush
-
-    def _text_event(self, piece: str) -> TextEvent | None:
-        # The piece was already scrubbed, including one edge space. Scrubbing
-        # again strips that space and the next cut is spoken as one word.
-        if skip_empty_delta(piece):
-            return None
-        return TextEvent(text=piece)
 
     def _spec(self) -> TurnSpec:
         return TurnSpec(

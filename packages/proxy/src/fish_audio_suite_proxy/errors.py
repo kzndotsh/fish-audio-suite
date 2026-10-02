@@ -18,6 +18,32 @@ _ERROR_TYPES = {
 }
 
 
+class ProxyError(Exception):
+    """A request the proxy refuses. The app maps it to an OpenAI error envelope.
+
+    Attributes
+    ----------
+    status : int
+        HTTP status of the response.
+    message : str
+        Shown in ``error.message``.
+    """
+
+    def __init__(self, status: int, message: str) -> None:
+        """Store the status and message.
+
+        Parameters
+        ----------
+        status : int
+            HTTP status of the response.
+        message : str
+            Client-facing reason.
+        """
+        self.status = int(status)
+        self.message = message
+        super().__init__(message)
+
+
 def _openai_error_type(status: int) -> str:
     named = _ERROR_TYPES.get(status)
     if named is not None:
@@ -71,6 +97,26 @@ def json_error(status: int, message: str) -> JSONResponse:
         OpenAI envelope with the matching status code.
     """
     return JSONResponse(openai_error_body(status, message), status_code=status)
+
+
+def proxy_error_response(_request: Request, exc: Exception) -> JSONResponse:
+    """Exception handler that turns a ``ProxyError`` into its error response.
+
+    Parameters
+    ----------
+    _request : Request
+        Unused. Part of the Starlette handler signature.
+    exc : Exception
+        A ``ProxyError``. Any other exception is a 500.
+
+    Returns
+    -------
+    JSONResponse
+        OpenAI envelope with the error's status.
+    """
+    if isinstance(exc, ProxyError):
+        return json_error(exc.status, exc.message)
+    return json_error(500, "internal error")
 
 
 async def read_json_object(request: Request) -> dict[str, Any] | JSONResponse:

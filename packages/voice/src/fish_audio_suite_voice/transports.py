@@ -1,9 +1,8 @@
-"""Duplex chat transports: OpenRouter SDK, or httpx SSE for any other base."""
+"""Duplex chat transports: OpenRouter SDK, or httpx SSE for any OpenAI-compatible server."""
 
 from __future__ import annotations
 
 import json
-import math
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -12,12 +11,10 @@ from typing import Any, Protocol
 import httpx
 
 from fish_audio_suite_kit import MS_PER_S, bearer, strip_base, utf8_text
-from fish_audio_suite_voice.debug import debug, env_debug, header_meta, warn
+from fish_audio_suite_voice.debug import debug, env_debug, warn
+from fish_audio_suite_voice.pause import header_retry_after, seconds_value
+from fish_audio_suite_voice.tune import LlmTune
 
-LLM_REFERER = "https://github.com/kzndotsh/fish-audio-suite"
-LLM_TITLE = "fish-audio-suite-voice"
-LLM_TEMPERATURE = 0.8
-LLM_TIMEOUT_S = 120.0
 _ABORT_CHARS = 800
 _SSE_DATA = "data:"
 
@@ -34,34 +31,47 @@ class ChatCall:
 
     Notes
     -----
-    ``route_model`` may already include ``:nitro``. ``use_openrouter`` is true
-    only when ``base`` contains ``openrouter.ai``. ``stats`` is filled while
-    events are consumed and is how a HTTP error aborts the stream.
+    ``route_model`` may already include ``:nitro``. ``tune.openrouter`` picks the
+    SDK path. ``stats`` is filled while events are consumed and is how a HTTP
+    error aborts the stream. ``http`` is the session's pooled client for the
+    OpenAI-compatible path.
     """
 
     messages: list[dict[str, str]]
-    base: str
-    key: str
+    tune: LlmTune
     route_model: str
-    max_tokens: int
-    nitro: bool
     client: Any | None
+    http: httpx.AsyncClient | None
     session_id: str | None
     trace_id: str | None
     stats: _AbortStats
-    use_openrouter: bool
+
+
+def http_client(tune: LlmTune) -> httpx.AsyncClient:
+    """Build the pooled client for the OpenAI-compatible backend.
+
+    Parameters
+    ----------
+    tune : LlmTune
+        Supplies the request timeout.
+
+    Returns
+    -------
+    httpx.AsyncClient
+        Reused for every reply in a session. The caller closes it.
+    """
+    return httpx.AsyncClient(timeout=tune.timeout_s)
 
 
 @asynccontextmanager
-async def openrouter_client(key: str, base: str) -> AsyncGenerator[Any, None]:
+async def openrouter_client(tune: LlmTune) -> AsyncGenerator[Any, None]:
     """Open an OpenRouter client for the duplex loop.
 
     Parameters
     ----------
-    key : str
-        API key.
-    base : str
-        Server URL passed through to the SDK.
+    tune : LlmTune
+        Supplies the key, server URL, and attribution fields. An empty
+        referer, title, or category is not sent.
 
     Yields
     ------
@@ -78,21 +88,21 @@ async def openrouter_client(key: str, base: str) -> AsyncGenerator[Any, None]:
     # The SDK writes the key into Authorization and adds Bearer itself.
     # A newline raises before the request is sent, so the reply is empty.
     async with OpenRouter(
-        api_key=bearer(key).removeprefix("Bearer "),
-        http_referer=LLM_REFERER,
-        x_open_router_title=LLM_TITLE,
-        x_open_router_categories="cli-agent",
-        server_url=strip_base(base),
+        api_key=bearer(tune.key).removeprefix("Bearer "),
+        http_referer=tune.referer or None,
+        x_open_router_title=tune.title or None,
+        x_open_router_categories=tune.categories or None,
+        server_url=strip_base(tune.base),
     ) as owned:
         yield owned
 
 
 @asynccontextmanager
-async def _or_client_ctx(key: str, base: str, client: Any | None) -> AsyncGenerator[Any, None]:
+async def _or_client_ctx(tune: LlmTune, client: Any | None) -> AsyncGenerator[Any, None]:
     if client is not None:
         yield client
         return
-    async with openrouter_client(key, base) as owned:
+    async with openrouter_client(tune) as owned:
         yield owned
 
 
@@ -112,32 +122,29 @@ def _json_ready(value: Any) -> Any:
     return value
 
 
-def _chat_body(
-    messages: list[dict[str, str]],
-    route_model: str,
-    max_tokens: int,
-    token_field: str,
-) -> dict[str, Any]:
+def _chat_body(call: ChatCall, token_field: str) -> dict[str, Any]:
+    tune = call.tune
     return _json_ready(
         {
-            "messages": messages,
-            "model": route_model,
+            "messages": call.messages,
+            "model": call.route_model,
             "stream": True,
-            "temperature": LLM_TEMPERATURE,
-            token_field: max_tokens,
+            "temperature": tune.temperature,
+            token_field: tune.max_tokens,
         }
     )
 
 
 def _send_kwargs(call: ChatCall) -> dict[str, Any]:
-    send_kw = _chat_body(call.messages, call.route_model, call.max_tokens, "max_completion_tokens")
-    send_kw["timeout_ms"] = int(LLM_TIMEOUT_S * MS_PER_S)
-    if call.nitro:
-        send_kw["provider"] = {"sort": "throughput"}
+    tune = call.tune
+    send_kw = _chat_body(call, "max_completion_tokens")
+    send_kw["timeout_ms"] = int(tune.timeout_s * MS_PER_S)
+    if tune.nitro and tune.provider_sort and call.route_model.endswith(":nitro"):
+        send_kw["provider"] = {"sort": tune.provider_sort}
     if call.session_id:
         send_kw["session_id"] = call.session_id
     if call.trace_id:
-        send_kw["trace"] = {"trace_id": call.trace_id, "trace_name": LLM_TITLE}
+        send_kw["trace"] = {"trace_id": call.trace_id, "trace_name": tune.title or "fish-voice"}
     if env_debug():
         _note_usage(send_kw)
         send_kw["x_open_router_metadata"] = "enabled"
@@ -148,7 +155,7 @@ async def _iter_openrouter_events(call: ChatCall) -> AsyncIterator[object]:
     from openrouter.errors import OpenRouterError
 
     try:
-        async with _or_client_ctx(call.key, call.base, call.client) as or_client:
+        async with _or_client_ctx(call.tune, call.client) as or_client:
             res = await or_client.chat.send_async(**_send_kwargs(call))
             async with res as event_stream:
                 async for event in event_stream:
@@ -188,30 +195,10 @@ def _abort_http(
 
 
 def _retry_after_seconds(headers: httpx.Headers | None, body: str) -> float | None:
-    if headers is not None:
-        raw = headers.get("retry-after")
-        if raw is not None:
-            found = _seconds_value(raw)
-            if found is not None:
-                return found
+    found = header_retry_after(headers)
+    if found is not None:
+        return found
     return _seconds_in_json(body)
-
-
-def _seconds_value(raw: object) -> float | None:
-    if isinstance(raw, bool):
-        return None
-    if isinstance(raw, (int, float)):
-        value = float(raw)
-    elif isinstance(raw, str):
-        try:
-            value = float(raw.strip())
-        except ValueError:
-            return None
-    else:
-        return None
-    if math.isfinite(value) and value >= 0:
-        return value
-    return None
 
 
 def _seconds_in_json(body: str) -> float | None:
@@ -226,7 +213,7 @@ def _find_retry_seconds(value: object) -> float | None:
     if isinstance(value, dict):
         for key in ("retry_after_seconds", "Retry-After", "retry-after"):
             if key in value:
-                found = _seconds_value(value[key])
+                found = seconds_value(value[key])
                 if found is not None:
                     return found
         for item in value.values():
@@ -285,30 +272,35 @@ def chat_completions_url(base: str) -> str:
     return f"{strip_base(base)}/chat/completions"
 
 
+@asynccontextmanager
+async def _pooled(call: ChatCall) -> AsyncGenerator[httpx.AsyncClient, None]:
+    if call.http is not None:
+        yield call.http
+        return
+    async with http_client(call.tune) as owned:
+        yield owned
+
+
 async def _iter_httpx_sse_events(call: ChatCall) -> AsyncIterator[object]:
-    url = chat_completions_url(call.base)
+    url = chat_completions_url(call.tune.base)
+    # No Referer or X-Title: those attribute an app to OpenRouter and should
+    # not leak to an arbitrary chat-completions server.
     headers = {
-        "Authorization": bearer(call.key),
+        "Authorization": bearer(call.tune.key),
         "Content-Type": "application/json",
-        "HTTP-Referer": LLM_REFERER,
-        "X-Title": LLM_TITLE,
     }
-    payload = _chat_body(call.messages, call.route_model, call.max_tokens, "max_tokens")
+    payload = _chat_body(call, "max_tokens")
     if env_debug():
         _note_usage(payload)
     async with (
-        httpx.AsyncClient(timeout=LLM_TIMEOUT_S) as http,
+        _pooled(call) as http,
         http.stream("POST", url, headers=headers, json=payload) as resp,
     ):
         if resp.status_code >= 400:
             body = _abort_text(await resp.aread())
             _abort_http(call.stats, resp.status_code, call.route_model, body, resp.headers)
             return
-        debug(
-            "llm.response status={} headers={}",
-            resp.status_code,
-            header_meta(resp.headers),
-        )
+        debug("llm.response status={}", resp.status_code)
         buf = ""
         async for line in resp.aiter_lines():
             buf, parsed, stop = _feed_sse(buf, line)
@@ -324,7 +316,7 @@ def chat_events(call: ChatCall) -> AsyncIterator[object]:
     Parameters
     ----------
     call : ChatCall
-        Request. ``use_openrouter`` selects the SDK.
+        Request. ``tune.openrouter`` selects the SDK.
 
     Returns
     -------
@@ -332,6 +324,6 @@ def chat_events(call: ChatCall) -> AsyncIterator[object]:
         Raw chat events. ``llm_token_stream`` is the only consumer and applies
         the same field reads to both transports.
     """
-    if call.use_openrouter:
+    if call.tune.openrouter:
         return _iter_openrouter_events(call)
     return _iter_httpx_sse_events(call)

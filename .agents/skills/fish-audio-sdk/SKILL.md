@@ -12,7 +12,7 @@ Use this skill to generate correct, runnable code with the **official Fish Audio
 
 If the user wants raw `curl` / HTTP / WebSocket without installing an SDK, use the **`fish-audio-api`** skill instead.
 
-> This file is the index. Deeper, task-specific rules and full examples live in [`references/`](references/). Read the reference for the task you're doing before writing code.
+> Vendored from `https://docs.fish.audio` (see `skills-lock.json`). The task-specific `references/` pages the upstream skill links to are not vendored here; use the SDK docs at `https://docs.fish.audio` for full examples. The upstream licence is unstated.
 
 ## Global facts
 
@@ -20,7 +20,7 @@ If the user wants raw `curl` / HTTP / WebSocket without installing an SDK, use t
 - **Base URL:** `https://api.fish.audio` (override with `base_url=` in Python / `baseUrl:` in JS).
 - **Models:** the API supports `s1`, `s2-pro`, `s2.1-pro` (recommended for production), and `s2.1-pro-free` (free tier), but the SDK type definitions currently list only `s1` and `s2-pro` (`s2-pro` = SDK default). Both SDKs forward the model value without runtime validation, so `"s2.1-pro"` works over the wire. Static type checkers will flag it, so add `# type: ignore` (Python) / an `as` cast (TS), or use the `fish-audio-api` skill for raw calls. `speech-1.5` / `speech-1.6` are **deprecated**. In Python pass `model="s2-pro"` (keyword); in JS pass the **positional** `backend` argument.
 - **Audio formats:** `mp3` (default), `wav`, `pcm`, `opus`.
-- **Playback in examples:** `play()` shells out to a system audio tool: Python uses **ffmpeg/ffplay** (or `mpv`), JS uses **ffplay**. It is for local/desktop use; in a server, `save()` to a file or stream the bytes instead. See [references/installation.md](references/installation.md).
+- **Playback in examples:** `play()` shells out to a system audio tool: Python uses **ffmpeg/ffplay** (or `mpv`), JS uses **ffplay**. It is for local/desktop use; in a server, `save()` to a file or stream the bytes instead.
 
 ## Quick start: Python
 
@@ -72,16 +72,9 @@ To pick a model in JS, pass `backend` as the **positional** argument (not a name
 const audio = await client.textToSpeech.convert({ text: "Hi" }, "s1");
 ```
 
-## Capabilities → references
+## Capabilities
 
-| Task                                                             | Reference                                                    |
-| ---------------------------------------------------------------- | ------------------------------------------------------------ |
-| Install, auth, playback deps, verify a key                       | [references/installation.md](references/installation.md)     |
-| Text-to-Speech (convert, stream, formats, prosody, model select) | [references/text-to-speech.md](references/text-to-speech.md) |
-| Voice cloning (instant references + persistent voice models)     | [references/voice-cloning.md](references/voice-cloning.md)   |
-| Speech-to-Text (transcribe, segments, timestamps)                | [references/speech-to-text.md](references/speech-to-text.md) |
-| Realtime WebSocket TTS (stream text → audio)                     | [references/websocket.md](references/websocket.md)           |
-| Errors, retries, and timeouts (the **real** exception types)     | [references/errors.md](references/errors.md)                 |
+Install, auth, playback deps, verify a key. Text-to-Speech (convert, stream, formats, prosody, model select). Voice cloning (instant references and persistent voice models). Speech-to-Text (transcribe, segments, timestamps). Realtime WebSocket TTS (stream text to audio). Errors, retries, and timeouts. Details for each are in the SDK docs.
 
 ## Python ↔ JavaScript name map
 
@@ -106,14 +99,14 @@ The two SDKs do **not** use the same names. Use this map when porting code betwe
 
 - **Audio from text** → `tts.convert` (Python) / `textToSpeech.convert` (JS).
 - **Reuse a saved voice** → pass `reference_id` (the voice model `id`).
-- **Clone a voice instantly from a clip** → pass `references=[ReferenceAudio(audio=..., text=...)]` (Python) / `references: [{ audio, text }]` (JS). See [voice-cloning](references/voice-cloning.md).
+- **Clone a voice instantly from a clip** → pass `references=[ReferenceAudio(audio=..., text=...)]` (Python) / `references: [{ audio, text }]` (JS).
 - **Persistent custom voice to reuse** → create a voice model, then use its `id` as `reference_id`.
-- **Stream tokens from an LLM and play speech as it arrives** → `tts.stream_websocket` (Python) / `textToSpeech.convertRealtime` (JS). See [websocket](references/websocket.md).
+- **Stream tokens from an LLM and play speech as it arrives** → `tts.stream_websocket` (Python) / `textToSpeech.convertRealtime` (JS).
 - **Transcribe audio** → `asr.transcribe` (Python) / `speechToText.convert` (JS).
 
 ## Gotchas (verified against the SDK source)
 
 - Python `latency` accepts only **`"normal"` or `"balanced"`** (default `"balanced"`); there is no `"low"`.
-- The Python client has **no `max_retries`** and does **not** auto-retry; the JS client **does** auto-retry (configurable via per-call `requestOptions.maxRetries`). See [errors](references/errors.md).
+- The Python client has **no `max_retries`** and does **not** auto-retry; the JS client **does** auto-retry (configurable via per-call `requestOptions.maxRetries`).
 - Python defines a `ValidationError` class but **never raises it**, so don't catch it expecting validation failures; a 422 surfaces as `APIError`. The JS SDK throws `UnprocessableEntityError` on 422.
-- ASR segment `start` / `end` are in **seconds**, but `duration` is in **milliseconds**. See [speech-to-text](references/speech-to-text.md).
+- ASR segment `start` / `end` are in **seconds**, but `duration` is in **milliseconds**.

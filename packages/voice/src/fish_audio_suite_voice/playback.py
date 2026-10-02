@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
 from fish_audio_suite_kit import MS_PER_S, SuiteDefaults
-from fish_audio_suite_voice.aec import SAMPLE_BYTES, even_pcm, tap_clear, tap_playback
+from fish_audio_suite_voice.aec import SAMPLE_BYTES, EchoCanceller, even_pcm
 
 PORTAUDIO_HINT = """sounddevice needs the PortAudio C library (the Python wheel does not ship it).
   Debian/Ubuntu: sudo apt install libportaudio2
@@ -238,8 +238,12 @@ class SounddeviceSink(_Played):
 
     Notes
     -----
-    The far-end tap used by AEC is filled before each blocking write, so the
-    reference matches what is about to hit the speaker. Missing PortAudio
+    ``output_latency_s`` is the device buffer reported by PortAudio, so the
+    spoken-prefix estimate can discount audio that has not been heard yet.
+    The far-end tap used by AEC (``aec``) is filled before each blocking write,
+    so the reference matches what is about to hit the speaker. The stream's
+    output latency is recorded on it so the barge gate can align the reference.
+    Without ``aec`` nothing is tapped. Missing PortAudio
     raises ``PortAudioMissingError`` when the stream opens, not at import.
     """
 
@@ -249,11 +253,14 @@ class SounddeviceSink(_Played):
         sample_rate: int = _DEFAULT_RATE,
         device: str | int | None = None,
         cancel: threading.Event | None = None,
+        aec: EchoCanceller | None = None,
     ) -> None:
         super().__init__()
         self.sample_rate = _positive_rate(sample_rate)
         self.device = device
         self._cancel = cancel
+        self._aec = aec
+        self.output_latency_s = 0.0
         self._stream: Any = None
         self._odd = b""
 
@@ -263,9 +270,13 @@ class SounddeviceSink(_Played):
 
         self._reset_played()
         self._odd = b""
-        tap_clear()
+        if self._aec is not None:
+            self._aec.clear()
         self._stream = sd.RawOutputStream(**pcm_stream_kwargs(self.sample_rate, self.device))
         self._stream.start()
+        self.output_latency_s = _stream_latency_s(self._stream)
+        if self._aec is not None:
+            self._aec.output_latency_s = self.output_latency_s
 
     def write(self, chunk: bytes) -> None:
         """Play PCM in short slices, tapping far-end before each blocking write."""
@@ -282,7 +293,8 @@ class SounddeviceSink(_Played):
                 self._odd = b""
                 return
             # Tap before the blocking DAC write so AEC has far-end while this slice plays.
-            tap_playback(piece, self.sample_rate)
+            if self._aec is not None:
+                self._aec.tap_playback(piece, self.sample_rate)
             self._stream.write(piece)
             self._count(piece)
 
@@ -300,7 +312,20 @@ class SounddeviceSink(_Played):
                 stream.stop()
         with contextlib.suppress(Exception):
             stream.close()
-        tap_clear()
+        if self._aec is not None:
+            self._aec.clear()
+
+
+def _stream_latency_s(stream: Any) -> float:
+    # sounddevice reports one float for a stream. Some builds report a pair.
+    latency = getattr(stream, "latency", 0.0)
+    if isinstance(latency, (tuple, list)):
+        latency = latency[-1] if latency else 0.0
+    try:
+        value = float(latency)
+    except (TypeError, ValueError):
+        return 0.0
+    return value if value > 0 else 0.0
 
 
 def _reap(proc: subprocess.Popen[bytes], *, timeout: float) -> None:
@@ -311,7 +336,7 @@ def _reap(proc: subprocess.Popen[bytes], *, timeout: float) -> None:
 
 
 class MpvSink(_Played):
-    """Optional legacy mp3 stdin player. Not required on PATH for other sinks."""
+    """Optional mp3 stdin player. Not required on PATH for other sinks."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -424,6 +449,7 @@ def make_sink(
     sample_rate: int = _DEFAULT_RATE,
     device: str | int | None = None,
     cancel: threading.Event | None = None,
+    aec: EchoCanceller | None = None,
 ) -> PlaybackSink:
     """Build the sink named by ``FISH_PLAYBACK`` or ``--playback``.
 
@@ -439,6 +465,8 @@ def make_sink(
         PortAudio device.
     cancel : threading.Event or None, optional
         Passed to the sounddevice sink so a barge-in can stop the stream.
+    aec : EchoCanceller or None, optional
+        Far-end tap filled by the sounddevice sink.
 
     Returns
     -------
@@ -460,5 +488,5 @@ def make_sink(
     if key == "mpv":
         return MpvSink()
     if key in _SPEAKER_SINKS:
-        return SounddeviceSink(sample_rate=sample_rate, device=device, cancel=cancel)
+        return SounddeviceSink(sample_rate=sample_rate, device=device, cancel=cancel, aec=aec)
     raise ValueError(f"unknown playback sink {name!r}")

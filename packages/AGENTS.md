@@ -2,7 +2,7 @@
 
 > Inherits root [AGENTS.md](../AGENTS.md)
 
-uv workspace (`members = ["packages/*"]`). Each child is a hatchling src layout. Proxy and voice depend on kit through `[tool.uv.sources]` `workspace = true`. Do not document a standalone `pip install` of proxy or voice. Kit has to come from this workspace.
+uv workspace (`members = ["packages/*"]`). Each child is a hatchling src layout. Proxy and voice depend on kit as `fish-audio-suite-kit>=0.1,<0.2` and resolve it from the workspace in dev (`[tool.uv.sources]`). Bump that range with a kit breaking release; the three dists publish together.
 
 | Dir | Dist / import |
 | --- | --- |

@@ -21,7 +21,7 @@ from fish_audio_suite_kit import (
     scrub_asr,
     utf8_text,
 )
-from fish_audio_suite_proxy.errors import json_error, read_json_object
+from fish_audio_suite_proxy.errors import ProxyError, json_error, read_json_object
 from fish_audio_suite_proxy.speech import ClipError, decode_audio_b64
 
 
@@ -80,10 +80,33 @@ def _form_text(value: Any, default: str) -> str:
     return default
 
 
+ASR_FORMATS = ("json", "text", "verbose_json", "srt", "vtt")
+
+
 def asr_response_format(raw: str) -> str:
-    """Return one response-format token. A newline is not part of the name."""
-    # "srt\\nbad" is not the srt branch, so a caption client receives JSON.
-    return _single_line(raw.lower(), "json")
+    """Return one response-format token. A newline is not part of the name.
+
+    Parameters
+    ----------
+    raw : str
+        The client's ``response_format``.
+
+    Returns
+    -------
+    str
+        The lowercase token, cut at the first control character.
+
+    Raises
+    ------
+    ProxyError
+        400 when the token is not one of ``ASR_FORMATS``. The reply is never
+        sent in a different format than the one asked for.
+    """
+    fmt = _single_line(raw.lower(), "json")
+    if fmt not in ASR_FORMATS:
+        allowed = ", ".join(ASR_FORMATS)
+        raise ProxyError(400, f"unsupported response_format {fmt[:32]!r}; use one of: {allowed}")
+    return fmt
 
 
 def _single_line(value: str, default: str) -> str:
@@ -99,7 +122,7 @@ def _asr_from_form(form: FormData, audio: bytes, upload: UploadFile) -> _Inbound
     model = form.get("model")
     return _InboundAsr(
         audio,
-        upload.filename or "audio.webm",
+        _filename(upload.filename),
         _single_line(upload.content_type or "", "application/octet-stream"),
         model if isinstance(model, str) else None,
         _form_text(form.get("language"), ""),
@@ -108,8 +131,30 @@ def _asr_from_form(form: FormData, audio: bytes, upload: UploadFile) -> _Inbound
     )
 
 
+_MAX_FILENAME_CHARS = 255
+
+
+def _filename(raw: str | None) -> str:
+    # The name becomes a multipart header value. Keep the last path part and
+    # cap the length so a client cannot inflate the upstream request.
+    name = _single_line((raw or "").replace("\\", "/").rsplit("/", 1)[-1], "")
+    return name[:_MAX_FILENAME_CHARS] or "audio.webm"
+
+
 def _empty_upload() -> JSONResponse:
     return json_error(400, "empty audio upload")
+
+
+_FORM_ERRORS = {
+    400: "invalid multipart form body",
+    413: "form upload is too large",
+    422: "form fields could not be read",
+}
+
+
+def _form_error_message(status: int) -> str:
+    # The parser's own text can name internals, so the client gets a fixed message.
+    return _FORM_ERRORS.get(status, "invalid form body")
 
 
 async def read_asr(request: Request) -> _InboundAsr | JSONResponse:
@@ -136,7 +181,7 @@ async def read_asr(request: Request) -> _InboundAsr | JSONResponse:
     try:
         form = await request.form()
     except HTTPException as exc:
-        return json_error(exc.status_code, str(exc.detail))
+        return json_error(exc.status_code, _form_error_message(exc.status_code))
     upload = form.get("file")
     if not isinstance(upload, UploadFile):
         return _empty_upload()
@@ -183,13 +228,13 @@ def _duration_s(value: Any) -> float:
     return float(value)
 
 
-def _segment_cue(seg: Any, *, strip_speakers: bool) -> CaptionCue | None:
+def _segment_cue(seg: Any, *, strip_speakers: bool, strip_cues: bool) -> CaptionCue | None:
     if not isinstance(seg, dict):
         return None
     raw_text = seg.get("text", "")
     if not isinstance(raw_text, str):
         return None
-    body = scrub_asr(raw_text, strip_speakers=strip_speakers)
+    body = scrub_asr(raw_text, strip_speakers=strip_speakers, strip_cues=strip_cues)
     if not body:
         return None
     start = max(0.0, _seconds(seg.get("start", 0)))
@@ -197,7 +242,13 @@ def _segment_cue(seg: Any, *, strip_speakers: bool) -> CaptionCue | None:
     return CaptionCue(start, end, body)
 
 
-def caption_cues(data: dict[str, Any], text: str, *, strip_speakers: bool) -> list[CaptionCue]:
+def caption_cues(
+    data: dict[str, Any],
+    text: str,
+    *,
+    strip_speakers: bool,
+    strip_cues: bool = False,
+) -> list[CaptionCue]:
     """Build timed cues from Fish segments, or one cue for the whole transcript.
 
     Parameters
@@ -208,6 +259,8 @@ def caption_cues(data: dict[str, Any], text: str, *, strip_speakers: bool) -> li
         Scrubbed full transcript, used when ``segments`` is missing or empty.
     strip_speakers : bool
         Drop speaker labels inside each segment.
+    strip_cues : bool, optional
+        Drop ``[cue]`` annotations inside each segment. Default False.
 
     Returns
     -------
@@ -220,7 +273,7 @@ def caption_cues(data: dict[str, Any], text: str, *, strip_speakers: bool) -> li
     raw_segments = data.get("segments") or []
     if isinstance(raw_segments, list):
         for seg in raw_segments:
-            cue = _segment_cue(seg, strip_speakers=strip_speakers)
+            cue = _segment_cue(seg, strip_speakers=strip_speakers, strip_cues=strip_cues)
             if cue is not None and not is_caption_watermark(cue.text):
                 cues.append(cue)
     if cues:
@@ -263,6 +316,31 @@ def _json_text(value: Any) -> str | None:
     return None
 
 
+def _word_rows(
+    data: dict[str, Any],
+    *,
+    strip_speakers: bool,
+    strip_cues: bool,
+) -> list[dict[str, Any]]:
+    # Fish segments are phrases, not words, so they are never relabeled as
+    # words. Only real word timings from Fish are passed through, scrubbed the
+    # same way as the transcript so the flags hold for every field.
+    raw = data.get("words")
+    if not isinstance(raw, list):
+        return []
+    rows: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        raw = _json_text(item.get("word")) or _json_text(item.get("text")) or ""
+        word = scrub_asr(raw, strip_speakers=strip_speakers, strip_cues=strip_cues).strip()
+        start = _json_number(item.get("start"))
+        end = _json_number(item.get("end"))
+        if word and start is not None and end is not None:
+            rows.append({"word": word, "start": start, "end": end})
+    return rows
+
+
 def _verbose_body(
     text: str,
     cues: list[CaptionCue],
@@ -270,6 +348,8 @@ def _verbose_body(
     *,
     language: str | None,
     granularities: list[str],
+    strip_speakers: bool,
+    strip_cues: bool,
 ) -> dict[str, Any]:
     raw_lang = _json_text(data.get("language_code")) or _json_text(data.get("language")) or language
     # A surrogate in the language tag makes the JSON response fail to encode,
@@ -282,8 +362,14 @@ def _verbose_body(
         "text": text,
         "segments": _cue_rows(cues, "text"),
     }
-    if any(g.strip().lower() == "word" for g in granularities):
-        body["words"] = _cue_rows(cues, "word")
+    wants_words = any(g.strip().lower() == "word" for g in granularities)
+    words = (
+        _word_rows(data, strip_speakers=strip_speakers, strip_cues=strip_cues)
+        if wants_words
+        else None
+    )
+    if words:
+        body["words"] = words
     return body
 
 
@@ -295,6 +381,8 @@ def transcription_body(
     *,
     language: str | None,
     granularities: list[str],
+    strip_speakers: bool = False,
+    strip_cues: bool = False,
 ) -> PlainTextResponse | dict[str, Any]:
     """Shape the Fish ASR result as JSON, verbose JSON, SRT, or VTT.
 
@@ -305,19 +393,25 @@ def transcription_body(
     text : str
         Scrubbed transcript.
     cues : list of CaptionCue
-        Timed phrases. Word rows are added only for ``verbose_json`` when a
-        granularity is ``word``.
+        Timed phrases returned as ``segments``.
     data : dict
-        Decoded Fish JSON, used for duration and language.
+        Decoded Fish JSON, used for duration and language. A ``words`` array is
+        returned for ``verbose_json`` with ``word`` granularity only when Fish
+        sent word timings. Segments are never relabeled as words.
     language : str or None
         Client or env language hint.
     granularities : list of str
         ``timestamp_granularities`` values.
+    strip_speakers : bool, optional
+        Drop speaker labels from each word row. Default False.
+    strip_cues : bool, optional
+        Drop ``[cue]`` annotations from each word row. Default False.
 
     Returns
     -------
     PlainTextResponse or dict
-        Caption text, a verbose object, or ``{"text": ...}``.
+        Caption text, a verbose object, or ``{"text": ...}``. A word that is
+        empty after scrubbing is left out.
     """
     plain = _plain_transcript(fmt, text, cues)
     if plain is not None:
@@ -329,6 +423,8 @@ def transcription_body(
             data,
             language=language,
             granularities=granularities,
+            strip_speakers=strip_speakers,
+            strip_cues=strip_cues,
         )
     return {"text": text}
 

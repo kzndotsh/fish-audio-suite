@@ -4,32 +4,42 @@
 
 `IsolatedFishTts` + sinks + `BargeGate`. `fish-voice` is a duplex recipe on top, not the library.
 
+Library classes take settings and state as arguments. Application settings come from `config.cfg()` and `tune.*.from_env()` only, read once with validation (bad value: warn, use default). Do not add settings reads below that layer. Two CLI integration points are exempt because they are not settings: `debug.debug_level()` reads `FISH_VOICE_DEBUG`, and `envfile.py` writes `os.environ` when it loads a dotenv file.
+
 | File | Owns |
 | --- | --- |
-| `live.py` | `IsolatedFishTts` and `IsolatedResult`. `speak_isolated` runs on a **private thread + loop** (safe under `asyncio.run` / `to_thread`). |
-| `session.py` | One Fish turn: retry 429/5xx only before first audio, replaying `speak()` text, on a private loop. |
-| `wire.py` | The live websocket. Poll Ctrl+C with `asyncio.wait` on `anext`; do not `wait_for` (timeout cancels the WS generator). On barge/Ctrl+C close the **client**; do not `aclose()` the WS iterator. Custom `httpx.AsyncClient` carries `base_url` + W3C headers onto the live WS upgrade. Branch `APIError` / `WebSocketError`. Empty Fish audio logs `[tts] no audio voice=…` on stderr. Fish `TTSConfig` has no `features`; quality-guard stays proxy HTTP. |
-| `playback.py` | `PlaybackSink`, `make_sink`, `SounddeviceSink` (~30 ms DAC slices; far-end tap **before** each blocking write), `FileSink`, `StdoutSink`, optional `MpvSink`. |
-| `aec.py` | Optional AEC3 (`pywebrtc-audio` extra). Playback PCM (default 44.1 kHz) → 16 kHz; `process(near, far)` when far has energy. `FISH_VOICE_AEC=0` / missing extra / FileSink: mic passthrough. Bleed 0.3 s when loaded else 0.9. PipeWire echo-cancel is host-only. |
-| `barge.py` | `BargeGate` interrupt. Bleed: `effective_bleed_s` at arm (AEC short vs `FISH_VOICE_BLEED_DELAY` 0.9). Far-end ×2.2 barge floor only when AEC is off; with AEC3 the cleaned mic already dropped speaker bleed. VAD mode 1, same as listen. Hits decay after 3 missed frames so a short gap in a phrase does not reset. A trip keeps the last 20 frames, clears the speaker tap, and the next listen starts from that clip with no post-speak cooldown. |
-| `listen.py` | One utterance for ASR. Start is consecutive VAD+RMS at the newest end of the pre-pad. An 8x peak also needs this frame at least half the peak, and `FISH_VOICE_SPEECH_FRAMES` + 6 trailing hits (defaults 4+6). Impulse reject when voiced hits are at most `min_voiced` + 12 (defaults 12+12). A VAD-true frame holds the turn. Silence end is 40 frames (~1.2s). |
-| `llm.py` | Duplex chat stream. Both transports share one event consumer. `models.get_async` warns on 404 and does not exit. A 429 retries once when Retry-After is at most 15 seconds. A stop before a sentence end sends one assistant-prefill continuation. Only a suffix that continues that sentence is yielded. OpenRouter requests do not set a reasoning parameter. A `reasoning` field on a stream event is not spoken. |
-| `transports.py` | OpenRouter SDK (`send_async`, `stream=True`) when the base is `openrouter.ai`; httpx SSE otherwise. `:nitro` + `provider.sort=throughput`. `max_completion_tokens`, one duplex `session_id`, `async with res` on the event stream. `openrouter` stays imported inside the helpers that need it. |
-| `cli.py` | Env files, `fish-voice` entry, smoke test. Process env, then `--env-file`, else `./.env`. A non-UTF-8 env file is skipped. Duplex exits 2 when playback is `file`, unknown, or `mpv` is not on PATH. `--debug` / `FISH_VOICE_DEBUG=1`. Second SIGINT is default terminate. |
-| `duplex.py` | Mic → Fish ASR → LLM → `speak_isolated` (full reply, then TTS). One sampled W3C trace id per turn on ASR REST + live TTS. ASR/TTS 401/402/403 exit 2. Ctrl+C sets `STOP_RECORD` and the in-flight TTS/LLM cancel; sticky quit (no `STOP_RECORD.clear()` per listen). |
-| `asr.py` | Fish ASR over httpx. Connect timeout 10s; read/write/pool 60s. No default voice. Omit ASR `language` unless `FISH_ASR_LANGUAGE`. Retry 429/5xx. |
-| `config.py` | `VoiceCliConfig` from the process environment. `FISH_LLM_BACKEND` is only the ready-line label. |
-| `signals.py` | `STOP_RECORD`, `TURN`, `request_quit`. |
-| `debug.py` | CLI calls `configure_voice_logging` (idempotent). Stderr is DEBUG with `--debug` / `FISH_VOICE_DEBUG=1`, otherwise WARNING. Intercepts `httpx` at INFO when debug is on (the request line). `httpcore`, `websockets`, and `asyncio` stay WARNING so raw `b'...'` header bytes never hit stderr. `warn` is the stderr diagnostic (closes an open reply first). Transcript lines stay on stdout. Fish WS msgpack tap (audio as byte length) only when debug is on. |
+| `tune.py` | Frozen `ListenTune`, `BargeTune`, `AecTune`, `LlmTune`, their defaults, and `read_int` / `read_float` / `read_flag`. `LlmTune.from_env` picks the backend and keeps provider keys apart. |
+| `config.py` | `VoiceCliConfig`: Fish/TTS fields plus the four tunes, `history_turns`, `mood_lead`, `drop_narration`. |
+| `signals.py` | `DuplexSession` (quit `stop`, `TurnSignals`, `EchoCanceller`) and `install_sigint`. No module-level flags. `TurnSignals.fire` is thread-safe for the asyncio event. |
+| `live.py` | `IsolatedFishTts` and `IsolatedResult`. `speak_isolated` runs on a **private thread + loop**. SDK coercions (`low` latency, `aac`/`flac`) warn once. |
+| `session.py` | One Fish turn: retry 429/5xx only before first audio, replaying `speak()` text. Backoff is kit `fish_backoff_s` through `pause.sleep_unless`. |
+| `wire.py` | The live websocket. `_pump_ws_audio` drives the SDK iterator from **one reader task** through a one-chunk queue (backpressure, so the reader cannot buffer a long reply); the SDK holds an anyio scope inside it, so a task per `anext` raises "cancel scope in a different task". Poll cancel with a timeout on the queue; a reader that ends with no marker (the stream itself was cancelled) is surfaced, not polled forever; on barge/Ctrl+C close the **client**, never `aclose()` the iterator. `is_cancel_noise` checks types and the cancel flag first; message text is a logged fallback. |
+| `spoken.py` | What the listener heard, for history. PCM: bytes played minus output latency, scaled by speed, cut to a word. Encoded audio cannot be cut, so a cancelled or failed turn records nothing. A finished turn keeps its cues except `[clear]`. |
+| `stream_scrub.py` | Streaming scrub behind `speak_deltas` (holds unclosed spans). Duplex does not use it. |
+| `pause.py` | `sleep_unless(seconds, cancelled)`, `header_retry_after`. Every retry wait goes through it. |
+| `playback.py` | `PlaybackSink`, `make_sink`, `SounddeviceSink` (~30 ms DAC slices; far-end tap **before** each blocking write; records `output_latency_s`), `FileSink`, `StdoutSink`, optional `MpvSink` (mp3 on stdin). |
+| `aec.py` | `EchoCanceller` (one per session): far-end tap, lazy AEC3 (`pywebrtc-audio` extra), `align()`, `clean()`, `effective_bleed_s()`. Disabled AEC still marks "playing" so the barge `over` gain works. |
+| `floor.py` | `AdaptiveFloor`: quiet-percentile RMS floor shared by listen and barge. Warm-up is capped by the window size. |
+| `barge.py` | `BargeGate`. Floor follows the room (seed `min_rms`) and only learns from frames below the floor itself, not the boosted need; ×`over` only while the speaker plays with AEC off. `aec=None` means no AEC; an explicit `bleed_delay_s` beats the AEC default. VAD mode 1 like listen. Hits decay after 3 misses. A trip keeps 20 frames, clears the tap; next listen starts from that clip with no cooldown. `watch` aligns the far-end ring first. |
+| `listen.py` | One utterance for ASR. Start = consecutive VAD+RMS at the newest pre-pad end; an 8x peak needs more hits; impulse reject; a VAD-true frame holds the turn. |
+| `asr.py` | Fish ASR over httpx. Takes `cancel` and a session `client` (`asr_client()`). 429/5xx wait with jitter and `Retry-After`. Cues are always stripped for the LLM. |
+| `llm.py` | `ChatBackend` protocol, `open_chat_backend(tune)`. One event consumer for both transports. 429 retries once when Retry-After ≤ 15 s. Continuation after a mid-sentence stop is opt-in (`FISH_LLM_CONTINUE`). |
+| `transports.py` | OpenRouter SDK (`send_async`, `session_id`) or one pooled httpx SSE client. Referer/title/categories and `:nitro` are OpenRouter-only; `FISH_LLM_NITRO` is off by default. `openrouter` stays imported inside helpers. |
+| `envfile.py` | Minimal dotenv loader. Process env wins, then `--env-file`, else `./.env`. Non-UTF-8 files are skipped. |
+| `cli.py` | `fish-voice` entry, smoke test (`--out`, else a unique temp file), `run_loop`. Ctrl+C goes to `DuplexSession.request_quit` on the loop; a stray `CancelledError` exits 2, never restarts. |
+| `duplex.py` | Mic → Fish ASR → `ChatBackend` → `speak_isolated`. One W3C trace id per turn. ASR/TTS 401/402/403 exit 2. Quit is sticky. Junk and narration filtering use `c.drop_narration`; mood leads use `c.mood_lead`. Streaming TTS (`FISH_STREAM_TTS`) skips the whole-reply junk and `drop_narration` filters, because it never holds the whole reply. An empty streamed reply cancels the Fish turn and speaks nothing. |
+| `debug.py` | `configure_voice_logging` (idempotent; sets a module flag, never `os.environ`). `warn` is the stderr diagnostic. Conversation lines (`conversation()`) always go to stdout; on a terminal with debug on they carry the same time columns as the log, piped they stay plain. Fish WS tap only when debug is on. |
 
 | Task | Command |
 | --- | --- |
-| Tests | `uv run pytest packages/voice` |
+| Tests | `uv run pytest packages/voice` (an autouse `conftest.py` resets the logging flag and the warn-once cache) |
 | Smoke | `uv run --package fish-audio-suite-voice --extra cli fish-voice --smoke` |
 | Local env | `cp .env.example .env` then `./packages/voice/dev.sh --smoke` / `./packages/voice/dev.sh` |
 
-`--smoke` uses `FileSink`; exits 2 if `FISH_API_KEY` or `FISH_VOICE_ID` is missing. The duplex loop does not call `speak_deltas`. Do not commit `.env`. `dev.sh` prefixes PortAudio + Pulse on `LD_LIBRARY_PATH` (NixOS); override with `FISH_VOICE_PORTAUDIO_LIB`.
+`--smoke` uses `FileSink`; exits 2 if `FISH_API_KEY` or `FISH_VOICE_ID` is missing. Do not commit `.env`. `dev.sh` builds PortAudio + Pulse with nix only on NixOS or with `FISH_VOICE_NIX=1`, pinned to this flake's lock; override with `FISH_VOICE_PORTAUDIO_LIB`.
 
-Extras `speakers` / `vad` / `aec` / `cli` are optional (`cli` pulls the first three plus `openrouter`). `sounddevice`, `webrtcvad`, `pywebrtc_audio`, and `openrouter` stay imported inside the functions that need them so `import fish_audio_suite_voice` works without extras. The `vad` extra is **`webrtcvad-wheels`**, not abandoned PyPI `webrtcvad` (that 2017 sdist imports `pkg_resources` and breaks on 3.12). Mic/speakers need system PortAudio; missing lib → `PortAudioMissingError` (CLI exits 2 with install hints). NixOS: flake wrap or `dev.sh`, not bare `uv run`.
+Extras `speakers` / `vad` / `aec` / `cli` are optional. `sounddevice`, `webrtcvad`, `pywebrtc_audio`, and `openrouter` stay imported inside the functions that need them so `import fish_audio_suite_voice` works without extras. The `vad` extra is **`webrtcvad-wheels`**, not PyPI `webrtcvad` (breaks on 3.12). Mic/speakers need system PortAudio; missing lib → `PortAudioMissingError` (CLI exits 2 with hints).
 
-Skip empty deltas; yield `FlushEvent` only after at least one `TextEvent`. Duplex Ctrl+C must cancel TTS (`TURN.cancel`), not only the mic `STOP_RECORD`.
+Skip empty deltas; yield `FlushEvent` only after at least one `TextEvent`. `FISH_STREAM_TTS` runs the LLM and TTS together through `_TokenPipe`; `delta_events(early_flush=True)` flushes once after the first piece and again at the end only if more text followed. Fish holds text until a flush, so a single end flush would keep the reply silent. Ctrl+C must cancel TTS (`session.turn`), not only the mic `session.stop`.
+
+Not done: one persistent mic reader shared by listen and barge (each phase still reopens the stream), and `stream_delay_ms` from the real stream latency (the ring is trimmed instead; unverified on hardware).

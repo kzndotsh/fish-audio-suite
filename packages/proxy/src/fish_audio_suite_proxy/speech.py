@@ -21,6 +21,7 @@ from fish_audio_suite_kit import (
     UNIT_HI,
     UNIT_LO,
     SuiteDefaults,
+    chunk_length_hi,
     clamp_num,
     known_latency,
     known_mp3_bitrate,
@@ -28,22 +29,26 @@ from fish_audio_suite_kit import (
     number_or,
     utf8_text,
 )
-from fish_audio_suite_proxy.errors import json_error
+from fish_audio_suite_proxy.errors import ProxyError, json_error
 from fish_audio_suite_proxy.fields import (
-    chunk_length_hi,
     explicit_bool,
     first_choice,
     media_type,
     pcm_sample_rate,
     pick_format,
     pick_reference_id,
-    quality_guard_env,
-    resolve_tts_model,
     traced_model_headers,
 )
+from fish_audio_suite_proxy.models import resolve_tts_model
 
 _PHONEME_MARK_RE = re.compile(r"<\|phoneme_(?:start|end)\|>")
 _DATA_URI = "data:"
+_MAX_PRONUNCIATION_ENTRIES = 512
+# ormsgpack rejects integers outside this range. A bigger seed would 500
+# the speech route when a reference clip forces MessagePack. The same range
+# bounds a sample rate or bitrate, which the encoder would also refuse.
+_MSGPACK_INT_LO = -(2**63)
+_MSGPACK_INT_HI = 2**64 - 1
 
 
 def _clamped_int(
@@ -96,17 +101,17 @@ def _pick_latency(body: dict[str, Any], default: str) -> str:
     return known_latency(raw, default)
 
 
-def _want_quality_guard(body: dict[str, Any]) -> bool:
+def _want_quality_guard(body: dict[str, Any], default: bool) -> bool:
     for key in ("quality_guard", "fish_quality_guard"):
         if key in body and body[key] is not None:
             # explicit_bool stops at the first present value. A null
             # quality_guard is present, so passing both keys ignored
-            # fish_quality_guard and used the env default instead.
-            return explicit_bool(body, key, default=quality_guard_env())
+            # fish_quality_guard and used the configured default instead.
+            return explicit_bool(body, key, default=default)
     features = body.get("features")
     if isinstance(features, list) and "quality-guard" in features:
         return True
-    return quality_guard_env()
+    return default
 
 
 class ClipError(Exception):
@@ -288,7 +293,7 @@ def _body_float(body: dict[str, Any], key: str, default: float) -> float:
 
 
 def _fit_int(value: int, default: int) -> int:
-    if value < _SEED_LO or value > _SEED_HI:
+    if value < _MSGPACK_INT_LO or value > _MSGPACK_INT_HI:
         return default
     return value
 
@@ -299,7 +304,7 @@ def _body_int(body: dict[str, Any], key: str, default: int) -> int:
 
 def _bounded_rate(fmt: str, body: dict[str, Any], default: int) -> int:
     rate = pcm_sample_rate(fmt, body, default)
-    if _SEED_LO <= rate <= _SEED_HI:
+    if _MSGPACK_INT_LO <= rate <= _MSGPACK_INT_HI:
         return rate
     # Ask again with no client rate so pcm16 still falls back to 24 kHz.
     return pcm_sample_rate(fmt, {}, default)
@@ -341,6 +346,8 @@ def _fish_tts_payload(
     defaults: SuiteDefaults,
     controls: _SpeechControls,
     spoken: str,
+    *,
+    quality_guard: bool = False,
 ) -> dict[str, Any]:
     fmt = controls.fmt
     native_fmt = "pcm" if fmt == "pcm16" else fmt
@@ -384,14 +391,8 @@ def _fish_tts_payload(
         ),
         **_codec_fields(body, defaults, fmt, native_fmt),
     }
-    _optional_tts(payload, body)
+    _optional_tts(payload, body, quality_guard=quality_guard)
     return payload
-
-
-# ormsgpack rejects integers outside this range. A bigger seed would 500
-# the speech route when a reference clip forces MessagePack.
-_SEED_LO = -(2**63)
-_SEED_HI = 2**64 - 1
 
 
 def _seed(value: Any) -> int | None:
@@ -401,13 +402,13 @@ def _seed(value: Any) -> int | None:
         return None
     # int("42.0") raises, so a whole-number decimal was omitted and Fish
     # picked a different seed than the one the client asked for.
-    parsed = number_or(value, _SEED_LO - 1, int)
-    if parsed < _SEED_LO or parsed > _SEED_HI:
+    parsed = number_or(value, _MSGPACK_INT_LO - 1, int)
+    if parsed < _MSGPACK_INT_LO or parsed > _MSGPACK_INT_HI:
         return None
     return parsed
 
 
-def _optional_tts(payload: dict[str, Any], body: dict[str, Any]) -> None:
+def _optional_tts(payload: dict[str, Any], body: dict[str, Any], *, quality_guard: bool) -> None:
     voice = pick_reference_id(body)
     if voice:
         payload["reference_id"] = voice
@@ -419,14 +420,23 @@ def _optional_tts(payload: dict[str, Any], body: dict[str, Any]) -> None:
         cache = cache.strip().lower()
     if cache in _CACHE_MODES:
         payload["use_memory_cache"] = cache
-    if _want_quality_guard(body):
+    if _want_quality_guard(body, quality_guard):
         payload["features"] = ["quality-guard"]
     pd = body.get("pronunciation_dictionary")
     if pd:
+        if not isinstance(pd, list) or len(pd) > _MAX_PRONUNCIATION_ENTRIES:
+            raise ProxyError(
+                400,
+                f"pronunciation_dictionary must be a list of at most {_MAX_PRONUNCIATION_ENTRIES} entries",
+            )
         payload["pronunciation_dictionary"] = _scrub_pronunciation_dictionary(pd)
 
 
-def speech_controls(body: dict[str, Any], defaults: SuiteDefaults) -> _SpeechControls:
+def speech_controls(
+    body: dict[str, Any],
+    defaults: SuiteDefaults,
+    aliases: Mapping[str, str] | None = None,
+) -> _SpeechControls:
     """Clamp speed, format, latency, and chunk lengths for one speech call.
 
     Parameters
@@ -435,16 +445,23 @@ def speech_controls(body: dict[str, Any], defaults: SuiteDefaults) -> _SpeechCon
         OpenAI speech JSON.
     defaults : SuiteDefaults
         Env-backed knobs. Request ``speed`` is multiplied by ``defaults.speed``.
+    aliases : Mapping or None, optional
+        TTS model alias table. ``None`` maps the OpenAI names to the default.
 
     Returns
     -------
     _SpeechControls
         Values safe to put on the Fish payload. Cloud chunk length stays
         within 100-300.
+
+    Raises
+    ------
+    ProxyError
+        With status 400 when the request names an unsupported audio format.
     """
     raw_speed = _body_float(body, "speed", _REQUEST_SPEED) * defaults.speed
     return _SpeechControls(
-        model=resolve_tts_model(body.get("model"), defaults.tts_model),
+        model=resolve_tts_model(body.get("model"), defaults.tts_model, aliases),
         speed=clamp_num(raw_speed, TTS_SPEED_LO, TTS_SPEED_HI, defaults.speed, float),
         fmt=pick_format(body, defaults.audio_format),
         latency=_pick_latency(body, defaults.latency),
@@ -495,6 +512,8 @@ def pack_tts(
     incoming: Mapping[str, str],
     controls: _SpeechControls,
     spoken: str,
+    *,
+    quality_guard: bool = False,
 ) -> _PackedTts | JSONResponse:
     """Build the Fish TTS request, JSON or MessagePack when clips are attached.
 
@@ -510,6 +529,8 @@ def pack_tts(
         Already clamped speech fields.
     spoken : str
         Scrubbed text. This is what Fish speaks, not the raw ``input``.
+    quality_guard : bool, optional
+        Default for the Fish quality-guard feature when the request is silent.
 
     Returns
     -------
@@ -522,7 +543,7 @@ def pack_tts(
     A number outside the 64-bit range cannot be MessagePacked with a clip.
     That is a 400, not an unhandled 500.
     """
-    payload = _fish_tts_payload(body, defaults, controls, spoken)
+    payload = _fish_tts_payload(body, defaults, controls, spoken, quality_guard=quality_guard)
     try:
         clips = _fish_reference_clips(body)
     except ClipError as exc:
