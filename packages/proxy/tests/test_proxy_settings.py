@@ -433,3 +433,28 @@ def test_catalog_ids_list_each_id_once_when_an_alias_shadows_a_native_id() -> No
 def test_an_alias_target_with_the_prefix_reaches_fish_without_it() -> None:
     table = {"my-voice": "fish-audio/s2-pro"}
     assert resolve_tts_model("my-voice", "s2.1-pro", table) == "s2-pro"
+
+
+def test_a_transport_error_text_never_reaches_the_client(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    secret = "connect to 10.0.0.5:443 refused"
+    with caplog.at_level("WARNING", logger="fish-audio-suite-proxy"):
+        out, _client, _sleeps = run_fish_send(
+            monkeypatch,
+            [httpx.ConnectError(secret) for _ in range(2)],
+            policy=RetryPolicy(attempts=2),
+        )
+    assert out.status_code == 502
+    assert b"10.0.0.5" not in out.body
+    assert "10.0.0.5" in caplog.text
+
+
+def test_a_timeout_is_still_a_504_with_the_fixed_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    out, _client, _sleeps = run_fish_send(
+        monkeypatch, [httpx.ReadTimeout("slow upstream 10.0.0.5")]
+    )
+    assert out.status_code == 504
+    assert b"10.0.0.5" not in out.body

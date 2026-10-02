@@ -88,14 +88,36 @@ _DEADLINE_STATUS = 504
 _DEADLINE_MESSAGE = "Fish did not answer before the retry deadline"
 
 
+def _transport_failure(exc: httpx.RequestError) -> JSONResponse:
+    """Build the client response for a failed Fish request.
+
+    Parameters
+    ----------
+    exc : httpx.RequestError
+        The transport failure.
+
+    Returns
+    -------
+    JSONResponse
+        A 504 for a timeout and a 502 with the fixed unreachable message
+        otherwise. The error's own text can name hosts, addresses or errno
+        values, so it is logged here and never sent to the client.
+    """
+    if isinstance(exc, httpx.TimeoutException):
+        status, message = fish_request_error(exc, httpx.TimeoutException)
+        return json_error(status, message)
+    log.warning("fish transport error: %s", exc)
+    status, message = fish_unreachable()
+    return json_error(status, message)
+
+
 async def _closed_error(upstream: httpx.Response) -> JSONResponse:
     # The body read can fail on a dropped connection. The response is closed
     # either way, and the failure is classified like any other transport error.
     try:
         body = await upstream.aread()
     except httpx.RequestError as exc:
-        status, message = fish_request_error(exc, httpx.TimeoutException)
-        return json_error(status, message)
+        return _transport_failure(exc)
     finally:
         await upstream.aclose()
     return json_from_upstream(upstream.status_code, body)
@@ -158,8 +180,7 @@ async def fish_send(
             # Fish may already be working on it, so it is not sent again.
             return json_error(_DEADLINE_STATUS, _DEADLINE_MESSAGE)
         except httpx.RequestError as exc:
-            status, message = fish_request_error(exc, httpx.TimeoutException)
-            last_error = json_error(status, message)
+            last_error = _transport_failure(exc)
             if not isinstance(exc, _RETRY_TRANSPORT):
                 return last_error
         else:
