@@ -14,8 +14,8 @@ from fastapi.responses import JSONResponse
 
 from fish_audio_suite_kit import (
     FISH_RETRY_ATTEMPTS,
+    FishHttpError,
     fish_backoff_s,
-    fish_request_error,
     fish_unreachable,
     should_retry_fish_status,
 )
@@ -104,8 +104,8 @@ def _transport_failure(exc: httpx.RequestError) -> JSONResponse:
         values, so it is logged here and never sent to the client.
     """
     if isinstance(exc, httpx.TimeoutException):
-        status, message = fish_request_error(exc, httpx.TimeoutException)
-        return json_error(status, message)
+        timed_out = FishHttpError.timed_out()
+        return json_error(timed_out.status, timed_out.message)
     log.warning("fish transport error: %s", exc)
     status, message = fish_unreachable()
     return json_error(status, message)
