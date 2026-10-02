@@ -42,7 +42,7 @@ approves the posted plan. Does not push or change CI unless asked.
 
 ## Gotchas
 
-- CI is GitHub Actions. Ruff, pydoclint, basedpyright, and pytest gate every change; the wheel, nix, and Docker jobs only matter when packaging, `flake.nix`, `nix/`, or the `Dockerfile` changed.
+- CI is GitHub Actions. Ruff, pydoclint, basedpyright, and pytest gate every change; the wheel, nix, and Docker jobs run on every CI run, but you only need to run their commands locally when packaging, `flake.nix`, `nix/`, or the `Dockerfile` changed.
 - Format with `uv run ruff format packages` so `ruff format --check` in CI passes.
 - Pytest: `--import-mode=importlib`; prefer `uv run pytest packages/<member>` over the whole suite.
 - Dist names stay `fish-audio-suite-{kit,proxy,voice}` only.

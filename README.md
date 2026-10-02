@@ -51,7 +51,7 @@ uv run --package fish-audio-suite-proxy fish-audio-suite-proxy
 curl -s http://127.0.0.1:8849/health
 ```
 
-Point the client at `http://127.0.0.1:8849/v1`. The Fish key stays on the proxy. Set `FISH_PROXY_API_KEYS` to require a bearer key from clients; without it any client key is accepted, so keep the proxy on loopback. `tts-1` and `whisper-1` are mapped onto Fish models.
+Point the client at `http://127.0.0.1:8849/v1`. The Fish key stays on the proxy. Set `FISH_PROXY_API_KEYS` to require a bearer key from clients; without it any client key is accepted, so keep the proxy on loopback. The Docker image listens on every interface inside the container, so publish it on loopback (`-p 127.0.0.1:8849:8849`) or set `FISH_PROXY_API_KEYS` before you publish it elsewhere. `tts-1` and `whisper-1` are mapped onto Fish models.
 
 Docker, Open WebUI, and the field map: [packages/proxy/README.md](packages/proxy/README.md).
 

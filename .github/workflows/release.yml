@@ -1,5 +1,6 @@
 name: Release
 # Publishes the three wheels to PyPI when a v* tag is pushed.
+# The tag must equal the version in all three packages, or the run fails.
 # Inert until the repo variable PYPI_PUBLISH is "true" and a PyPI trusted
 # publisher (workflow release.yml, environment pypi) exists for each dist.
 on:
@@ -26,6 +27,30 @@ jobs:
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           python-version: "3.12"
+      - name: Check the tag matches the package versions
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import sys
+          import tomllib
+
+          tag = os.environ["TAG"]
+          wanted = tag.removeprefix("v")
+          bad = []
+          for pkg in ("kit", "proxy", "voice"):
+              path = pathlib.Path("packages") / pkg / "pyproject.toml"
+              version = tomllib.loads(path.read_text())["project"]["version"]
+              if version != wanted:
+                  bad.append(f"{path} is {version}")
+          if bad:
+              sys.exit(
+                  f"Tag {tag} does not match the package versions: {'; '.join(bad)}. "
+                  "Bump the versions in a commit, then tag that commit."
+              )
+          PY
       - name: Build
         run: uv build --all --out-dir dist
       - name: Check metadata

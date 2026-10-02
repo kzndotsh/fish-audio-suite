@@ -9,7 +9,7 @@ gaps, and scoped doc accuracy. Not a full-repo audit.
   would catch after format + check.
 - No new `Any`, type ignores, or `cast` to silence basedpyright. Use
   `Type | None`, not `Optional[Type]`. No inline imports, except lazy imports of
-  optional extras (`sounddevice`, `webrtcvad`, `pywebrtc_audio`) in voice.
+  optional extras (`sounddevice`, `webrtcvad`, `pywebrtc_audio`, `openrouter`) in voice.
 - No file over 1600 lines; split rather than land bloat.
 - Stay in the requested scope — no drive-by refactors.
 - Do not add a `CHANGELOG.md`; this repo does not keep one.

@@ -10,10 +10,12 @@ self:
 let
   cfg = config.services.fish-audio-suite-proxy;
   portStr = toString cfg.port;
-  env = {
+  # The generated port comes last. The firewall rule and the container port
+  # mapping both follow `port`, so a different value would leave it unreachable.
+  env = cfg.environment // {
     FISH_PROXY_PORT = portStr;
-  }
-  // cfg.environment;
+  };
+  lowPort = cfg.port < 1024;
 in
 {
   options.services.fish-audio-suite-proxy = {
@@ -57,7 +59,10 @@ in
     port = lib.mkOption {
       type = lib.types.port;
       default = 8849;
-      description = "Proxy port. Sets `FISH_PROXY_PORT`, and the published port for `oci`.";
+      description = ''
+        Proxy port. Sets `FISH_PROXY_PORT`, and the published port for `oci`.
+        A port below 1024 gives the `native` service CAP_NET_BIND_SERVICE.
+      '';
     };
 
     openFirewall = lib.mkOption {
@@ -78,7 +83,10 @@ in
       example = {
         FISH_MODEL = "s2.1-pro";
       };
-      description = "Extra `FISH_*` variables. Do not put secrets here; they land in the Nix store.";
+      description = ''
+        Extra `FISH_*` variables. Do not put secrets here; they land in the Nix
+        store. `FISH_PROXY_PORT` and `FISH_PROXY_HOST` are rejected: use `port` and `host`.
+      '';
     };
 
     environmentFiles = lib.mkOption {
@@ -96,6 +104,10 @@ in
     lib.mkMerge [
       {
         assertions = [
+          {
+            assertion = !(cfg.environment ? FISH_PROXY_PORT) && !(cfg.environment ? FISH_PROXY_HOST);
+            message = "services.fish-audio-suite-proxy.environment must not set FISH_PROXY_PORT or FISH_PROXY_HOST. Use the `port` and `host` options.";
+          }
           {
             assertion = cfg.backend != "oci" || cfg.image != null;
             message = "services.fish-audio-suite-proxy.image is required when backend = \"oci\".";
@@ -131,6 +143,9 @@ in
               "AF_UNIX"
             ];
             LockPersonality = true;
+            # Binding a port below 1024 needs this. Otherwise drop every capability.
+            AmbientCapabilities = lib.optional lowPort "CAP_NET_BIND_SERVICE";
+            CapabilityBoundingSet = if lowPort then [ "CAP_NET_BIND_SERVICE" ] else [ "" ];
           };
         };
       })
