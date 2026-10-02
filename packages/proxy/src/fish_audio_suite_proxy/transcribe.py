@@ -145,6 +145,18 @@ def _empty_upload() -> JSONResponse:
     return json_error(400, "empty audio upload")
 
 
+_FORM_ERRORS = {
+    400: "invalid multipart form body",
+    413: "form upload is too large",
+    422: "form fields could not be read",
+}
+
+
+def _form_error_message(status: int) -> str:
+    # The parser's own text can name internals, so the client gets a fixed message.
+    return _FORM_ERRORS.get(status, "invalid form body")
+
+
 async def read_asr(request: Request) -> _InboundAsr | JSONResponse:
     """Read multipart ``file`` or JSON ``input_audio`` into one upload.
 
@@ -169,7 +181,7 @@ async def read_asr(request: Request) -> _InboundAsr | JSONResponse:
     try:
         form = await request.form()
     except HTTPException as exc:
-        return json_error(exc.status_code, str(exc.detail))
+        return json_error(exc.status_code, _form_error_message(exc.status_code))
     upload = form.get("file")
     if not isinstance(upload, UploadFile):
         return _empty_upload()

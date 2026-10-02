@@ -475,7 +475,7 @@ def test_transcription_bad_multipart_is_openai_error() -> None:
         assert broken.status_code == 400
         body = broken.json()
         assert body["error"]["type"] == "invalid_request_error"
-        assert "boundary" in body["error"]["message"].lower()
+        assert body["error"]["message"] == "invalid multipart form body"
 
 
 def test_transcription_bad_json_is_400() -> None:
