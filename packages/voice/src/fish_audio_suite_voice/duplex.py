@@ -35,6 +35,7 @@ from fish_audio_suite_voice.config import VoiceCliConfig
 from fish_audio_suite_voice.debug import (
     clear_turn,
     console_print,
+    conversation,
     debug,
     end_reply_line,
     env_debug,
@@ -126,7 +127,7 @@ async def _collect_reply(
                 ttft_ms = elapsed_ms(started)
                 debug("llm.first_token {:.0f}ms", ttft_ms)
                 if live:
-                    write_reply_token("llm: ")
+                    write_reply_token("llm \u25b8 ")
             parts.append(tok)
             if live:
                 write_reply_token(tok)
@@ -139,7 +140,7 @@ async def _collect_reply(
         end_reply_line()
     reply = "".join(parts).strip()
     if reply and not live:
-        console_print(f"llm: {reply}", flush=True)
+        conversation("llm", reply)
     return reply, ttft_ms
 
 
@@ -377,7 +378,7 @@ def _turn_summary(snapshot: LatencySnapshot) -> str:
 
 
 def _skip_asr(reason: str, text: str) -> Literal["skip"]:
-    debug("asr skip {} chars={}", reason, len(text.strip()))
+    debug("asr.skip {} ({} chars)", reason, len(text.strip()))
     return "skip"
 
 
@@ -390,7 +391,6 @@ def _accept_asr(
     if is_backchannel(text):
         return _skip_asr("backchannel", text)
     if is_asr_hallucination(text):
-        warn("[asr skip hallucination]")
         return _skip_asr("hallucination", text)
     if is_quit_utterance(text):
         return "quit"
@@ -452,7 +452,7 @@ async def _recognize(
         return _HeardLine("bye")
     if decision == "skip":
         return _HeardLine("again")
-    console_print(f"you: {text}  [asr {asr_ms:.0f}ms]")
+    conversation("you", text)
     return _HeardLine(
         "line",
         text=text,
@@ -463,7 +463,10 @@ async def _recognize(
 
 
 async def _hear_line(loop: _Loop, last_user: str) -> _HeardLine:
-    console_print("listening…")
+    if env_debug():
+        debug("listen.waiting for you")
+    else:
+        console_print("listening…")
     clear_turn()
     trace("listen.waiting device={}", loop.device)
     try:
@@ -560,8 +563,12 @@ async def _answer_line(loop: _Loop, heard: _HeardLine) -> int | None:
             )
             if fatal is not None:
                 return fatal
-    console_print(_turn_summary(snapshot), flush=True)
-    debug("turn.timing {}", snapshot.log_line())
+    summary = _turn_summary(snapshot)
+    if env_debug():
+        debug("turn.summary {}", summary.strip().removeprefix("\u21b3 "))
+        trace("turn.timing {}", snapshot.log_line())
+    else:
+        console_print(summary, flush=True)
     stop = loop.session.stop
     loop.session.turn.fire()
     loop.session.turn.clear()

@@ -65,7 +65,7 @@ def _barge_step(
     if not voiced:
         miss += 1
         if miss >= BARGE_MISS_DECAY_FRAMES and hit:
-            debug(
+            trace(
                 "barge.decay hit={hit} rms={rms:.0f} need={need:.0f} far={far}",
                 hit=hit,
                 rms=rms,

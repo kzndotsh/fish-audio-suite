@@ -9,6 +9,7 @@ import pytest
 
 from fish_audio_suite_voice.debug import (
     configure_voice_logging,
+    conversation,
     debug,
     debug_level,
     env_debug,
@@ -168,3 +169,31 @@ def test_debug_flag_does_not_write_the_process_environment(
     assert "FISH_VOICE_DEBUG" not in os.environ
     configure_voice_logging(debug=False)
     assert not env_debug()
+
+
+def test_conversation_is_plain_on_stdout_without_debug(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    conversation("you", "Hey there")
+    conversation("llm", "[happy] Hello!")
+    captured = capsys.readouterr()
+    assert captured.out == "you \u25b8 Hey there\nllm \u25b8 [happy] Hello!\n"
+    assert captured.err == ""
+
+
+def test_conversation_joins_the_timed_log_with_debug(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    configure_voice_logging(debug=1)
+    mark_turn()
+    capsys.readouterr()
+    conversation("you", "Hey there")
+    debug("llm.first_token 700ms")
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    lines = captured.err.splitlines()
+    assert "you \u25b8" in lines[0]
+    assert "Hey there" in lines[0]
+    assert "+0." in lines[0]
+    assert lines[0][2] == ":"
+    assert "first_token" in lines[1]

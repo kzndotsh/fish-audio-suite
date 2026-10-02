@@ -172,9 +172,11 @@ _TAGGED = re.compile(r"^([a-z]+)\.([a-z_]+)\b ?(.*)$", re.DOTALL)
 _BRACKETED = re.compile(r"^\[([A-Za-z-]+)\]\s*(.*)$", re.DOTALL)
 _TAG_WIDTH = 7
 _TAG_COLORS = {
+    "you": "96",
     "listen": "36",
     "asr": "33",
     "llm": "35",
+    "turn": "37",
     "tts": "32",
     "barge": "31",
     "aec": "34",
@@ -214,15 +216,54 @@ def _offset() -> str:
     return f"{time.perf_counter() - t0:+.2f}s".rjust(8)
 
 
+def _compose(stamp: str, tag: str, label: str, body: str) -> str:
+    tag_text = _paint(_TAG_COLORS.get(tag, "90"), label.ljust(_TAG_WIDTH))
+    return f"{_dim(stamp)} {_dim(_offset())}  {tag_text}{body}"
+
+
 def _format_record(record: Any) -> str:
     stamp = record["time"].strftime("%H:%M:%S.") + f"{record['time'].microsecond // 1000:03d}"
     tag, body = _split_tag(str(record["message"]), record["level"].name)
     if record["level"].name == "WARNING":
         tag = "warn" if tag == "log" else tag
         body = _paint("93", body)
-    tag_text = _paint(_TAG_COLORS.get(tag, "90"), tag.ljust(_TAG_WIDTH))
-    record["extra"]["line"] = f"{_dim(stamp)} {_dim(_offset())}  {tag_text}{body}"
+    record["extra"]["line"] = _compose(stamp, tag, tag, body)
     return "{extra[line]}\n{exception}"
+
+
+def _now_stamp() -> str:
+    now = time.time()
+    millis = int((now % 1) * 1000)
+    return time.strftime("%H:%M:%S", time.localtime(now)) + f".{millis:03d}"
+
+
+_ROLE_COLORS = {"you": "96", "llm": "95"}
+
+
+def conversation(role: str, text: str) -> None:
+    """Print one line of the conversation, ``you`` or ``llm``.
+
+    Parameters
+    ----------
+    role : str
+        ``you`` or ``llm``.
+    text : str
+        What was said.
+
+    Notes
+    -----
+    With debug on the line joins the log on stderr, with the same time columns,
+    so it stays in order with the lines around it. Otherwise it is a plain
+    ``role \u25b8 text`` line on stdout.
+    """
+    end_reply_line()
+    label = f"{role} \u25b8"
+    if not env_debug():
+        console_print(f"{label} {text}", flush=True)
+        return
+    color = _ROLE_COLORS.get(role, "97")
+    body = _paint(f"1;{color}", text)
+    _write_stderr(_compose(_now_stamp(), role, label, body) + "\n")
 
 
 def _write_stderr(message: str) -> None:
