@@ -429,3 +429,10 @@ def test_history_cap_follows_the_configured_turns() -> None:
     _remember_user(history, "newest", 2)
     # The oldest user and assistant leave together, so roles stay paired.
     assert [m["content"] for m in history] == ["be brief", "u4", "a4", "newest"]
+
+
+def test_a_deliberate_repeat_is_kept_but_a_stale_copy_is_dropped() -> None:
+    assert _accept_asr("no", "no", stale=False) == "ok"
+    assert _accept_asr("No.", "no", stale=False) == "ok"
+    assert _accept_asr("no", "no", stale=True) == "skip"
+    assert _accept_asr("no", "yes", stale=True) == "ok"

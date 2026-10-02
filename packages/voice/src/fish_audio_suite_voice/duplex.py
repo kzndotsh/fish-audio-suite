@@ -186,7 +186,12 @@ def _skip_asr(reason: str, text: str) -> Literal["skip"]:
     return "skip"
 
 
-def _accept_asr(text: str, last_user: str) -> Literal["skip", "quit", "ok"]:
+def _accept_asr(
+    text: str,
+    last_user: str,
+    *,
+    stale: bool = True,
+) -> Literal["skip", "quit", "ok"]:
     if is_backchannel(text):
         return _skip_asr("backchannel", text)
     if is_asr_hallucination(text):
@@ -194,7 +199,9 @@ def _accept_asr(text: str, last_user: str) -> Literal["skip", "quit", "ok"]:
         return _skip_asr("hallucination", text)
     if is_quit_utterance(text):
         return "quit"
-    if same_utterance(text, last_user):
+    # Only a clip that ended almost as the mic opened can be a stale copy. A
+    # later repeat is the user saying it again on purpose.
+    if stale and same_utterance(text, last_user):
         return "skip"
     return "ok"
 
@@ -209,7 +216,13 @@ class _HeardLine:
     code: int = 0
 
 
-async def _recognize(loop: _Loop, wav: bytes, last_user: str) -> _HeardLine:
+async def _recognize(
+    loop: _Loop,
+    wav: bytes,
+    last_user: str,
+    *,
+    stale: bool = True,
+) -> _HeardLine:
     c = loop.config
     started = time.perf_counter()
     asr_parent = make_traceparent()
@@ -239,7 +252,7 @@ async def _recognize(loop: _Loop, wav: bytes, last_user: str) -> _HeardLine:
     if loop.session.stop.is_set():
         return _HeardLine("bye")
     asr_ms = elapsed_ms(started)
-    decision = _accept_asr(text, last_user)
+    decision = _accept_asr(text, last_user, stale=stale)
     if decision == "quit":
         return _HeardLine("bye")
     if decision == "skip":
@@ -260,6 +273,7 @@ async def _hear_line(loop: _Loop, last_user: str) -> _HeardLine:
     try:
         prefix = loop.barge_prefix
         loop.barge_prefix = b""
+        opened = time.monotonic()
         wav = await asyncio.to_thread(
             record_utterance,
             loop.device,
@@ -277,7 +291,10 @@ async def _hear_line(loop: _Loop, last_user: str) -> _HeardLine:
         debug("listen.dropped (too short or none)")
         return _HeardLine("again")
     debug("listen.wav bytes={}", len(wav))
-    heard = await _recognize(loop, wav, last_user)
+    # A barge-in clip carries fresh speech, so it is never a stale copy.
+    window = loop.config.repeat_window_s
+    stale = not prefix and time.monotonic() - opened < window
+    heard = await _recognize(loop, wav, last_user, stale=stale)
     # Quit during the Fish request used to come back as a normal line, so
     # the LLM still answered after Ctrl+C.
     if loop.session.stop.is_set():

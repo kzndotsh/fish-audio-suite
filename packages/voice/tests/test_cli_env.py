@@ -474,3 +474,12 @@ def test_smoke_default_path_is_unique_and_not_a_shared_name(
     assert len(files) == 2
     assert "fish-audio-suite-smoke.wav" not in {p.name for p in tmp_path.iterdir()}
     assert "smoke: wrote" in capsys.readouterr().out
+
+
+def test_repeat_window_env_is_read_and_clamped(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("FISH_VOICE_REPEAT_WINDOW_S", raising=False)
+    assert cfg().repeat_window_s == 1.5
+    monkeypatch.setenv("FISH_VOICE_REPEAT_WINDOW_S", "0")
+    assert cfg().repeat_window_s == 0.0
+    monkeypatch.setenv("FISH_VOICE_REPEAT_WINDOW_S", "-3")
+    assert cfg().repeat_window_s == 1.5

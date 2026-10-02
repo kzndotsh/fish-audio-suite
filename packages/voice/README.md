@@ -137,6 +137,7 @@ LLM:
 | `FISH_LLM_CONTINUE` | off | Send one more request when a reply stops mid-sentence |
 | `FISH_SYSTEM_PROMPT` | the kit default | System prompt text |
 | `FISH_HISTORY_TURNS` | `20` | User and assistant pairs kept |
+| `FISH_VOICE_REPEAT_WINDOW_S` | `1.5` | A line equal to the previous one is dropped only if it ends this soon after the mic opens. 0 never drops a repeat |
 | `FISH_MOOD_LEAD`, `FISH_DROP_NARRATION` | off | See roleplay helpers |
 
 Listen and interrupt. Times are approximate at 30 ms frames.

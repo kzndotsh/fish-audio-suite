@@ -33,8 +33,13 @@ from fish_audio_suite_voice.tune import (
     ListenTune,
     LlmTune,
     read_flag,
+    read_float,
     read_int,
 )
+
+# A fresh utterance cannot end sooner: the turn needs about 1.2 s of silence plus
+# the minimum voiced time. A faster clip is mostly pre-roll or leftover audio.
+DEFAULT_REPEAT_WINDOW_S = 1.5
 
 __all__ = ["OPENROUTER_API_BASE", "VoiceCliConfig", "cfg"]
 
@@ -61,6 +66,9 @@ class VoiceCliConfig:
         Echo cancellation.
     history_turns : int
         User and assistant pairs kept in the chat history.
+    repeat_window_s : float
+        A transcript equal to the previous line is dropped only when it ends
+        within this many seconds of the mic opening. 0 never drops a repeat.
     mood_lead : bool
         Rewrite a sentence-leading mood word into a ``[cue]``.
     drop_narration : bool
@@ -90,6 +98,7 @@ class VoiceCliConfig:
     barge: BargeTune = field(default_factory=BargeTune)
     aec: AecTune = field(default_factory=AecTune)
     history_turns: int = DEFAULT_HISTORY_TURNS
+    repeat_window_s: float = DEFAULT_REPEAT_WINDOW_S
     mood_lead: bool = False
     drop_narration: bool = False
 
@@ -165,6 +174,7 @@ def cfg() -> VoiceCliConfig:
         barge=BargeTune.from_env(),
         aec=AecTune.from_env(),
         history_turns=read_int("FISH_HISTORY_TURNS", DEFAULT_HISTORY_TURNS, lo=1),
+        repeat_window_s=read_float("FISH_VOICE_REPEAT_WINDOW_S", DEFAULT_REPEAT_WINDOW_S, lo=0.0),
         mood_lead=read_flag("FISH_MOOD_LEAD", default=False),
         drop_narration=read_flag("FISH_DROP_NARRATION", default=False),
     )
