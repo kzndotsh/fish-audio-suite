@@ -2,9 +2,9 @@
 
 > Scope: `packages/proxy` (inherits root [AGENTS.md](../../AGENTS.md))
 
-OpenAI-shaped Fish HTTP on **8849**: `/v1/audio/speech`, `/v1/audio/transcriptions`, `/v1/models`, `/health`.
+OpenAI-shaped Fish HTTP on **8849**, bound to `127.0.0.1` unless `FISH_PROXY_HOST` says otherwise: `/v1/audio/speech`, `/v1/audio/transcriptions`, `/v1/models`, `/health`. Behavior, fields, and every setting are in [`README.md`](README.md). Keep that table in step with `settings.py`.
 
-CLI: `fish-audio-suite-proxy`. Import: `fish_audio_suite_proxy`. Uvicorn uses `uvicorn[standard]` (`loop`/`http` auto → uvloop + httptools). Default **one worker**. Import string `fish_audio_suite_proxy.server:app` so `FISH_PROXY_WORKERS` can spawn processes. `timeout_graceful_shutdown` default 120s (Fish stream budget). Optional `FISH_PROXY_LIMIT_CONCURRENCY` → 503. `ws=none`. Do not set `forwarded-allow-ips=*`.
+CLI: `fish-audio-suite-proxy`. Import: `fish_audio_suite_proxy`. Start uvicorn with the import string `fish_audio_suite_proxy.server:app` so `FISH_PROXY_WORKERS` can spawn processes. `ws=none`. Do not set `forwarded-allow-ips=*`.
 
 | Task | Command |
 | --- | --- |
@@ -12,6 +12,23 @@ CLI: `fish-audio-suite-proxy`. Import: `fish_audio_suite_proxy`. Uvicorn uses `u
 | Tests | `uv run pytest packages/proxy` |
 | Image | `docker build -t fish-audio-suite-proxy:latest .` |
 
-Scrub through kit. `FISH_API_KEY` is read in lifespan — importing the app and `GET /health` must work with it unset. The Fish client sends `User-Agent: fish-audio-suite-proxy/<version>`, keeps `http2` off, and caps the pool at 100 connections / 20 keepalive. Connect 10s, pool 5s, read/write 120s. `FISH_BASE` may be Fish Cloud or a self-hosted fish-speech `:8080`.
+| Module | Owns |
+| --- | --- |
+| `server.py` | App, lifespan, routes, client-key check |
+| `settings.py` | `ProxySettings`, built once in lifespan on `app.state.settings`. No other module reads the env |
+| `upstream.py` | `fish_send`: bounded retry, `Retry-After`, deadline, stops on disconnect |
+| `limits.py` | Request body cap middleware |
+| `models.py` | TTS aliases, ASR id rules, `/v1/models` ids |
+| `fields.py` | Format, silence, request-field readers, trace headers |
+| `speech.py`, `transcribe.py` | Fish TTS body and ASR upload/response |
+| `errors.py` | OpenAI error envelope, `ProxyError` |
 
-OpenAI field translation is split across `fields.py`, `speech.py`, `transcribe.py`, and `errors.py`. The FastAPI app, retry loop, and routes stay in `server.py`. Strip `fish-audio/` from model ids. TTS aliases `tts-1` / `tts-1-hd` / `gpt-4o-mini-tts` / `playai-tts` → `s2.1-pro`. Only `transcribe-1` and `transcribe-1-pro` are native ASR ids. Any other client model, including `whisper-1`, uses the default when that default is native; otherwise the default string is sent unchanged. Do not remap `s2.1-pro-free` or `drama-3-preview`. `GET /v1/models` lists the TTS catalog, `transcribe-1`, `transcribe-1-pro`, and `whisper-1`, plus `fish-audio/` prefixes of the native ids. It does not list `tts-1`. `response_format=pcm16` → Fish `pcm` at 24 kHz unless `sample_rate` is set. `verbose_json` plus `timestamp_granularities=word` adds a `words` array. Transcription accepts multipart `file` or JSON `input_audio`. `is_tts_junk` → silent MP3. Forward `seed`, `use_memory_cache`, `reference_id` (string or list). `references` and `input_references` decode to raw audio and go upstream as MessagePack. Fish TTS 4xx/5xx → OpenAI `{error:{code,message,type}}` with the upstream status; Fish bodies are `provider_error`. Cloud `chunk_length` 100–300; self-host 100–1000. Omit ASR `language` unless the client or `FISH_ASR_LANGUAGE` sets it. Forward valid incoming `traceparent`/`tracestate` onto Fish TTS/ASR; mint a sampled `traceparent` if omitted. Retry 429/5xx (and transport timeouts) with exponential backoff; do not retry other 4xx. Missing `FISH_API_KEY` → 401. Transcription `srt`/`vtt` return those files from Fish segments (kit formatters). Read `timestamp_granularities` and `timestamp_granularities[]`. `FISH_PROXY_KEEP_ALIVE` defaults to 5s.
+Invariants:
+- `FISH_API_KEY` is read in lifespan. Importing the app and `GET /health` must work with it unset. A missing key is 503, a wrong client key is 401.
+- Scrub and cue logic lives in kit. Do not copy it here.
+- Never log request text above DEBUG unless `FISH_PROXY_LOG_TEXT` is set. Never put a key in `/health`.
+- Retry only 429, 5xx, and connections that never opened. A read timeout is not repeated.
+- Return the format the client asked for, or a 400. Do not swap it.
+- A word array comes from Fish word timings only. Segments are not words.
+- Forward valid `traceparent` and `tracestate`. Mint a sampled one when absent.
+- Fish errors become `{error:{code,message,type}}` with the upstream status. Fish bodies are `provider_error`.

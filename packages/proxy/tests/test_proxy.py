@@ -1,10 +1,7 @@
 from __future__ import annotations
 
-import asyncio
 import base64
-import json
 from typing import Any
-from unittest.mock import AsyncMock
 
 import httpx
 import ormsgpack
@@ -13,26 +10,27 @@ from fastapi.testclient import TestClient
 from starlette.datastructures import FormData
 from starlette.responses import JSONResponse
 
-from fish_audio_suite_kit import CaptionCue, SuiteDefaults, is_asr_hallucination, is_tts_junk
-from fish_audio_suite_proxy.errors import json_from_upstream
-from fish_audio_suite_proxy.fields import (
-    catalog_ids,
+from fish_audio_suite_kit import (
+    CaptionCue,
+    SuiteDefaults,
     chunk_length_hi,
+    ensure_trace_headers,
+    is_asr_hallucination,
+    is_tts_junk,
+)
+from fish_audio_suite_proxy.errors import ProxyError
+from fish_audio_suite_proxy.fields import (
     explicit_bool,
     pcm_sample_rate,
     pick_format,
     pick_reference_id,
     prepare_tts_text,
-    resolve_asr_model,
-    resolve_tts_model,
-    runtime_defaults,
-    upstream_trace_headers,
 )
-from fish_audio_suite_proxy.server import _fish_send, _uvicorn_run_kwargs, app
+from fish_audio_suite_proxy.models import catalog_ids, resolve_asr_model, resolve_tts_model
+from fish_audio_suite_proxy.server import _uvicorn_run_kwargs, app
+from fish_audio_suite_proxy.settings import runtime_defaults
 from fish_audio_suite_proxy.speech import (
     _fish_tts_payload,
-    _scrub_pronunciation_dictionary,
-    _seed,
     _SpeechControls,
     pack_tts,
     speech_controls,
@@ -44,77 +42,17 @@ from fish_audio_suite_proxy.transcribe import (
     transcription_body,
 )
 
-
-class _FakeUpstream:
-    def __init__(self, status_code: int, body: bytes = b"") -> None:
-        self.status_code = status_code
-        self._body = body
-
-    async def aread(self) -> bytes:
-        return self._body
-
-    async def aclose(self) -> None:
-        return None
-
-
-class _FakeFishClient:
-    def __init__(self, outcomes: list[Exception | _FakeUpstream]) -> None:
-        self._outcomes = list(outcomes)
-        self.sends = 0
-
-    def build_request(
-        self,
-        method: str,
-        url: str,
-        *,
-        content: Any = None,
-        data: Any = None,
-        files: Any = None,
-        json: Any = None,
-        headers: Any = None,
-    ) -> dict[str, Any]:
-        return {
-            "method": method,
-            "url": url,
-            "content": content,
-            "data": data,
-            "files": files,
-            "json": json,
-            "headers": headers,
-        }
-
-    async def send(self, request: Any, *, stream: bool = False) -> _FakeUpstream:
-        del request, stream
-        self.sends += 1
-        item = self._outcomes.pop(0)
-        if isinstance(item, Exception):
-            raise item
-        return item
-
-
-def _run_fish_send(
-    monkeypatch: pytest.MonkeyPatch,
-    outcomes: list[Exception | _FakeUpstream],
-) -> tuple[Any, _FakeFishClient, AsyncMock]:
-    sleeps = AsyncMock()
-    monkeypatch.setattr("fish_audio_suite_kit.http_errors.asyncio.sleep", sleeps)
-    client = _FakeFishClient(outcomes)
-
-    async def _run() -> Any:
-        return await _fish_send(
-            client,
-            stream=False,
-            method="POST",
-            url="https://api.fish.audio/v1/tts",
-        )
-
-    return asyncio.run(_run()), client, sleeps
+from .helpers import AudioStream, FakeUpstream, capture_upstream, run_fish_send
 
 
 def test_prepare_tts_normalizes_cues() -> None:
-    spoken = prepare_tts_text("Excited, hello there friend", dialogue_only=False)
+    spoken = prepare_tts_text("Excited, hello there friend", dialogue_only=False, mood_lead=True)
     assert spoken.startswith("[excited]")
     assert "hello" in spoken
+
+
+def test_a_mood_word_is_spoken_as_written_unless_the_lead_is_on() -> None:
+    assert prepare_tts_text("Curious, isn't it?", dialogue_only=False) == "Curious, isn't it?"
 
 
 def test_dialogue_only_drops_the_stage_note() -> None:
@@ -135,28 +73,36 @@ def test_explicit_bool_keeps_false_and_uses_the_default_when_absent() -> None:
     assert explicit_bool({"dialogue_only": "maybe"}, "dialogue_only", default=True) is True
 
 
-def test_unknown_format_with_an_unknown_default_is_mp3() -> None:
-    assert pick_format({"format": "nope"}, "not-a-format") == "mp3"
+def test_no_format_with_an_unknown_default_is_mp3() -> None:
+    assert pick_format({}, "not-a-format") == "mp3"
+
+
+@pytest.mark.parametrize("name", ["nope", "aac", "flac"])
+def test_an_unsupported_format_is_a_400_not_other_bytes(name: str) -> None:
+    with pytest.raises(ProxyError) as caught:
+        pick_format({"response_format": name}, "mp3")
+    assert caught.value.status == 400
+    assert name in caught.value.message
 
 
 def test_junk_pcm_and_wav_are_silence() -> None:
     with TestClient(app) as client:
         pcm = client.post(
             "/v1/audio/speech",
-            json={"input": "hi", "response_format": "pcm"},
+            json={"input": "...", "response_format": "pcm"},
         )
         wav = client.post(
             "/v1/audio/speech",
-            json={"input": "hi", "response_format": "wav"},
+            json={"input": "...", "response_format": "wav"},
         )
         huge = client.post(
             "/v1/audio/speech",
-            json={"input": "hi", "response_format": "wav", "sample_rate": 2**32},
+            json={"input": "...", "response_format": "wav", "sample_rate": 2**32},
         )
-        mp3 = client.post("/v1/audio/speech", json={"input": "hi"})
+        mp3 = client.post("/v1/audio/speech", json={"input": "..."})
         opus = client.post(
             "/v1/audio/speech",
-            json={"input": "hi", "response_format": "opus"},
+            json={"input": "...", "response_format": "opus"},
         )
     assert pcm.status_code == 200
     assert pcm.headers["content-type"].startswith("audio/pcm")
@@ -222,8 +168,10 @@ def test_format_env_uses_the_request_alias(monkeypatch: pytest.MonkeyPatch) -> N
 
 def test_tts_and_asr_model_aliases() -> None:
     assert resolve_tts_model("fish-audio/s2.1-pro", "s1") == "s2.1-pro"
-    assert resolve_tts_model("tts-1", "s1") == "s2.1-pro"
-    assert resolve_tts_model("playai-tts", "s1") == "s2.1-pro"
+    assert resolve_tts_model("tts-1", "s1") == "s1"
+    assert resolve_tts_model("gpt-4o-mini-tts", "s2.1-pro") == "s2.1-pro"
+    assert resolve_tts_model("playai-tts", "s1") == "playai-tts"
+    assert resolve_tts_model("voice-a", "s1", {"voice-a": "s2-pro"}) == "s2-pro"
     assert resolve_tts_model("s2.1-pro-free", "s2.1-pro") == "s2.1-pro-free"
     assert resolve_tts_model("drama-3-preview", "s2.1-pro") == "drama-3-preview"
     assert resolve_tts_model("S2.1-PRO", "s1") == "s2.1-pro"
@@ -256,6 +204,9 @@ def test_catalog_includes_fish_audio_slugs() -> None:
     assert "fish-audio/s2.1-pro" in ids
     assert "fish-audio/transcribe-1" in ids
     assert "whisper-1" in ids
+    assert "tts-1" in ids
+    assert "my-voice" in catalog_ids({"my-voice": "s2-pro"})
+    assert "tts-1" not in catalog_ids({"my-voice": "s2-pro"})
 
 
 def test_asr_hallucination_without_network() -> None:
@@ -360,7 +311,7 @@ def test_speech_bad_json_is_400() -> None:
 
 
 def test_normalize_loudness_false_reaches_fish(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured = _capture_upstream(monkeypatch, _AudioStream())
+    captured = capture_upstream(monkeypatch, AudioStream())
     with TestClient(app) as client:
         off = client.post(
             "/v1/audio/speech",
@@ -382,7 +333,7 @@ def test_normalize_loudness_false_reaches_fish(monkeypatch: pytest.MonkeyPatch) 
 def test_dialogue_only_string_false_keeps_the_stage_note(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    captured = _capture_upstream(monkeypatch, _AudioStream())
+    captured = capture_upstream(monkeypatch, AudioStream())
     raw = 'She smiles. "Hello there friend."'
     with TestClient(app) as client:
         kept = client.post("/v1/audio/speech", json={"input": raw, "dialogue_only": "false"})
@@ -395,7 +346,7 @@ def test_dialogue_only_string_false_keeps_the_stage_note(
 
 
 def test_guillemet_dialogue_is_spoken(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured = _capture_upstream(monkeypatch, _AudioStream())
+    captured = capture_upstream(monkeypatch, AudioStream())
     raw = "She smiles. «Hello there friend.»"
     with TestClient(app) as client:
         kept = client.post("/v1/audio/speech", json={"input": raw})
@@ -431,7 +382,7 @@ def test_null_chunk_length_does_not_hide_the_alias() -> None:
 def test_null_quality_guard_does_not_hide_the_alias(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("fish_audio_suite_proxy.speech.quality_guard_env", lambda: False)
+    del monkeypatch
     defaults = SuiteDefaults()
     spoken = "Hello there friend"
 
@@ -502,7 +453,7 @@ def test_surrogate_in_speech_text_still_encodes() -> None:
 
 
 def test_speech_json_bom_is_a_request(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured = _capture_upstream(monkeypatch, _AudioStream())
+    captured = capture_upstream(monkeypatch, AudioStream())
     body = b'\xef\xbb\xbf{"input": "Hello there friend"}'
     with TestClient(app) as client:
         response = client.post(
@@ -538,17 +489,6 @@ def test_transcription_bad_json_is_400() -> None:
         assert broken.json()["error"]["message"] == "invalid JSON body"
 
 
-def test_speech_without_key_is_401(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("FISH_API_KEY", raising=False)
-    with TestClient(app) as client:
-        r = client.post("/v1/audio/speech", json={"input": "[clear] Hello there friend"})
-        assert r.status_code == 401
-        body = r.json()
-        assert body["error"]["code"] == 401
-        assert body["error"]["type"] == "authentication_error"
-        assert "message" in body["error"]
-
-
 def test_fish_client_timeout_and_user_agent() -> None:
     with TestClient(app) as client:
         assert client.get("/health").status_code == 200
@@ -568,6 +508,7 @@ def test_health_without_api_key() -> None:
         body = r.json()
         assert body["status"] == "ok"
         assert body["defaults"]["asr_strip_speakers"] is False
+        assert body["defaults"]["asr_strip_cues"] is False
         assert body["defaults"]["tts_dialogue_only"] is False
         models = client.get("/v1/models")
         ids = {m["id"] for m in models.json()["data"]}
@@ -578,10 +519,10 @@ def test_health_without_api_key() -> None:
 
 def test_upstream_trace_headers_forward_or_mint() -> None:
     sample = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
-    forwarded = upstream_trace_headers({"traceparent": sample, "tracestate": "vendor=1"})
+    forwarded = ensure_trace_headers({"traceparent": sample, "tracestate": "vendor=1"})
     assert forwarded["traceparent"] == sample
     assert forwarded["tracestate"] == "vendor=1"
-    minted = upstream_trace_headers({})
+    minted = ensure_trace_headers({})
     assert minted["traceparent"].startswith("00-")
 
 
@@ -635,14 +576,14 @@ def test_uvicorn_run_kwargs_workers_and_limit(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_fish_send_retries_429_then_ok(monkeypatch: pytest.MonkeyPatch) -> None:
-    out, client, sleeps = _run_fish_send(
+    out, client, sleeps = run_fish_send(
         monkeypatch,
         [
-            _FakeUpstream(429, b'{"message": "slow down", "status": 429}'),
-            _FakeUpstream(200),
+            FakeUpstream(429, b'{"message": "slow down", "status": 429}'),
+            FakeUpstream(200),
         ],
     )
-    assert isinstance(out, _FakeUpstream)
+    assert isinstance(out, FakeUpstream)
     assert out.status_code == 200
     assert client.sends == 2
     sleeps.assert_awaited_once()
@@ -651,9 +592,9 @@ def test_fish_send_retries_429_then_ok(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_fish_send_does_not_treat_a_redirect_as_audio(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    out, client, sleeps = _run_fish_send(
+    out, client, sleeps = run_fish_send(
         monkeypatch,
-        [_FakeUpstream(302, b"<html>moved</html>")],
+        [FakeUpstream(302, b"<html>moved</html>")],
     )
     assert isinstance(out, JSONResponse)
     assert out.status_code == 302
@@ -662,21 +603,21 @@ def test_fish_send_does_not_treat_a_redirect_as_audio(
 
 
 def test_fish_send_does_not_retry_401(monkeypatch: pytest.MonkeyPatch) -> None:
-    out, client, sleeps = _run_fish_send(
+    out, client, sleeps = run_fish_send(
         monkeypatch,
-        [_FakeUpstream(401, b'{"message": "Invalid Token", "status": 401}')],
+        [FakeUpstream(401, b'{"message": "Invalid Token", "status": 401}')],
     )
     assert out.status_code == 401
     assert client.sends == 1
     sleeps.assert_not_awaited()
 
 
-def test_fish_send_retries_timeout_then_ok(monkeypatch: pytest.MonkeyPatch) -> None:
-    out, client, sleeps = _run_fish_send(
+def test_fish_send_retries_a_connect_timeout_then_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    out, client, sleeps = run_fish_send(
         monkeypatch,
-        [httpx.TimeoutException("timed out"), _FakeUpstream(200)],
+        [httpx.ConnectTimeout("timed out"), FakeUpstream(200)],
     )
-    assert isinstance(out, _FakeUpstream)
+    assert isinstance(out, FakeUpstream)
     assert out.status_code == 200
     assert client.sends == 2
     sleeps.assert_awaited_once()
@@ -738,7 +679,17 @@ def test_verbose_words_accepts_padded_granularity() -> None:
         granularities=[" word "],
     )
     assert isinstance(body, dict)
-    assert body["words"] == [{"word": "hello", "start": 0.0, "end": 1.0}]
+    assert "words" not in body
+    with_words = transcription_body(
+        "verbose_json",
+        "hello",
+        [CaptionCue(0.0, 1.0, "hello")],
+        {"words": [{"word": "hello", "start": 0.0, "end": 0.4}, {"word": 7}, "junk"]},
+        language=None,
+        granularities=[" word "],
+    )
+    assert isinstance(with_words, dict)
+    assert with_words["words"] == [{"word": "hello", "start": 0.0, "end": 0.4}]
 
 
 def test_caption_cues_drop_a_watermark_segment() -> None:
@@ -805,779 +756,3 @@ def test_caption_cues_keep_zero_when_times_are_junk() -> None:
         strip_speakers=False,
     )
     assert [(c.start, c.end, c.text) for c in backwards] == [(2.0, 2.0, "hello")]
-
-
-_WAV_UPLOAD = {"file": ("a.wav", b"xx", "audio/wav")}
-
-
-class _AsrJson:
-    def json(self) -> dict[str, Any]:
-        return {
-            "text": "hello there",
-            "duration": 1.5,
-            "language": "en",
-            "segments": [
-                {"text": "hello", "start": 0, "end": 0.6},
-                {"text": "there", "start": 0.6, "end": 1.5},
-            ],
-        }
-
-
-def test_transcriptions_srt_and_granularities_bracket(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured = _capture_upstream(monkeypatch, _AsrJson())
-    with TestClient(app) as client:
-
-        def post(data: dict[str, str]) -> Any:
-            return client.post("/v1/audio/transcriptions", files=_WAV_UPLOAD, data=data)
-
-        srt = post({"response_format": "srt"})
-        assert srt.status_code == 200
-        assert srt.headers["content-type"].startswith("application/x-subrip")
-        assert "00:00:00,000 --> 00:00:00,600" in srt.text
-        assert "hello" in srt.text
-        injected = post({"response_format": "srt\nbad"})
-        assert injected.status_code == 200
-        assert injected.headers["content-type"].startswith("application/x-subrip")
-        assert "00:00:00,000 --> 00:00:00,600" in injected.text
-        vtt = post({"response_format": "vtt"})
-        assert vtt.text.startswith("WEBVTT")
-        assert "00:00:00.000 --> 00:00:00.600" in vtt.text
-        json_body = post({"timestamp_granularities[]": "segment"})
-        assert json_body.json() == {"text": "hello there"}
-        assert captured["data"]["ignore_timestamps"] == "false"
-        verbose = post(
-            {
-                "response_format": "verbose_json",
-                "timestamp_granularities[]": "word",
-            }
-        )
-        payload = verbose.json()
-        assert payload["text"] == "hello there"
-        assert payload["segments"][0]["text"] == "hello"
-        assert payload["words"] == [
-            {"word": "hello", "start": 0.0, "end": 0.6},
-            {"word": "there", "start": 0.6, "end": 1.5},
-        ]
-        verbose_seg = post({"response_format": "verbose_json"})
-        assert "words" not in verbose_seg.json()
-
-
-def test_verbose_language_surrogate_still_encodes() -> None:
-    body = transcription_body(
-        "verbose_json",
-        "hello there",
-        [CaptionCue(0.0, 1.0, "hello there")],
-        {"language": "en\ud800", "duration": 1.0},
-        language=None,
-        granularities=[],
-    )
-    encoded = JSONResponse(body).body
-    assert b"hello there" in encoded
-    assert "\\ud800" not in encoded.decode()
-
-
-def test_blank_transcript_keeps_segment_text(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _SegmentsOnly:
-        def json(self) -> dict[str, Any]:
-            return {
-                "text": "",
-                "duration": 1.5,
-                "segments": [
-                    {"text": "hello", "start": 0, "end": 0.6},
-                    {"text": "there", "start": 0.6, "end": 1.5},
-                ],
-            }
-
-    _capture_upstream(monkeypatch, _SegmentsOnly())
-    with TestClient(app) as client:
-        response = client.post("/v1/audio/transcriptions", files=_WAV_UPLOAD)
-    assert response.status_code == 200
-    assert response.json()["text"] == "hello there"
-
-
-def test_watermark_transcript_keeps_real_segments(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _Watermark:
-        def json(self) -> dict[str, Any]:
-            return {
-                "text": "Thanks for watching.",
-                "duration": 1.5,
-                "segments": [
-                    {"text": "hello", "start": 0, "end": 0.6},
-                    {"text": "there", "start": 0.6, "end": 1.5},
-                ],
-            }
-
-    _capture_upstream(monkeypatch, _Watermark())
-    with TestClient(app) as client:
-        response = client.post("/v1/audio/transcriptions", files=_WAV_UPLOAD)
-    assert response.status_code == 200
-    assert response.json()["text"] == "hello there"
-
-
-def test_watermark_segment_is_left_out_of_the_transcript(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _Mixed:
-        def json(self) -> dict[str, Any]:
-            return {
-                "text": "Thanks for watching.",
-                "duration": 2.0,
-                "segments": [
-                    {"text": "Thanks for watching.", "start": 0, "end": 0.4},
-                    {"text": "ok", "start": 0.4, "end": 0.7},
-                    {"text": "hello there friend", "start": 0.7, "end": 2.0},
-                ],
-            }
-
-    _capture_upstream(monkeypatch, _Mixed())
-    with TestClient(app) as client:
-        response = client.post("/v1/audio/transcriptions", files=_WAV_UPLOAD)
-    assert response.status_code == 200
-    assert response.json()["text"] == "ok hello there friend"
-
-
-def test_real_transcript_drops_a_trailing_watermark(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class _MixedText:
-        def json(self) -> dict[str, Any]:
-            return {
-                "text": "hello there friend. Thanks for watching.",
-                "duration": 2.0,
-                "segments": [
-                    {"text": "hello there friend.", "start": 0, "end": 1.2},
-                    {"text": "Thanks for watching.", "start": 1.2, "end": 2.0},
-                ],
-            }
-
-    _capture_upstream(monkeypatch, _MixedText())
-    with TestClient(app) as client:
-        response = client.post("/v1/audio/transcriptions", files=_WAV_UPLOAD)
-    assert response.status_code == 200
-    assert response.json()["text"] == "hello there friend."
-    assert "watching" not in response.json()["text"]
-
-
-def test_srt_drops_a_watermark_when_it_is_the_only_segment(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class _OnlyWatermarkSegment:
-        def json(self) -> dict[str, Any]:
-            return {
-                "text": "hello there friend. Thanks for watching.",
-                "duration": 2.0,
-                "segments": [
-                    {"text": "Thanks for watching.", "start": 1.2, "end": 2.0},
-                ],
-            }
-
-    _capture_upstream(monkeypatch, _OnlyWatermarkSegment())
-    with TestClient(app) as client:
-        srt = client.post(
-            "/v1/audio/transcriptions",
-            files=_WAV_UPLOAD,
-            data={"response_format": "srt"},
-        )
-        body = client.post("/v1/audio/transcriptions", files=_WAV_UPLOAD)
-    assert srt.status_code == 200
-    assert "watching" not in srt.text
-    assert "hello there friend." in srt.text
-    assert body.json()["text"] == "hello there friend."
-
-
-def test_transcription_non_string_text_is_502(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _BadText:
-        def json(self) -> dict[str, Any]:
-            return {"text": ["hello"]}
-
-    _capture_upstream(monkeypatch, _BadText())
-    with TestClient(app) as client:
-        response = client.post("/v1/audio/transcriptions", files=_WAV_UPLOAD)
-    assert response.status_code == 502
-    assert response.json()["error"]["message"] == "Fish returned a non-object body"
-
-
-def test_transcription_non_object_upstream_is_502(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _ListBody:
-        def json(self) -> list[str]:
-            return ["hello"]
-
-    _capture_upstream(monkeypatch, _ListBody())
-    with TestClient(app) as client:
-        response = client.post("/v1/audio/transcriptions", files=_WAV_UPLOAD)
-    assert response.status_code == 502
-    assert response.json()["error"]["message"] == "Fish returned a non-object body"
-    assert response.json()["error"]["type"] == "api_error"
-
-
-def test_verbose_language_nan_falls_through(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _NanLang:
-        def json(self) -> dict[str, Any]:
-            return {
-                "text": "hello there",
-                "language_code": float("nan"),
-                "language": "en",
-            }
-
-    _capture_upstream(monkeypatch, _NanLang())
-    with TestClient(app) as client:
-        response = client.post(
-            "/v1/audio/transcriptions",
-            files=_WAV_UPLOAD,
-            data={"response_format": "verbose_json"},
-        )
-    assert response.status_code == 200
-    assert response.json()["language"] == "en"
-
-
-def test_verbose_duration_infinity_is_null(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _Infinite:
-        def json(self) -> dict[str, Any]:
-            return {"text": "hello there", "duration": float("inf")}
-
-    _capture_upstream(monkeypatch, _Infinite())
-    with TestClient(app) as client:
-        response = client.post(
-            "/v1/audio/transcriptions",
-            files=_WAV_UPLOAD,
-            data={"response_format": "verbose_json"},
-        )
-    assert response.status_code == 200
-    assert response.json()["duration"] is None
-
-
-def test_transcription_non_json_upstream_is_502(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _Broken:
-        def json(self) -> dict[str, Any]:
-            raise json.JSONDecodeError("Expecting value", "", 0)
-
-    _capture_upstream(monkeypatch, _Broken())
-    with TestClient(app) as client:
-        response = client.post("/v1/audio/transcriptions", files=_WAV_UPLOAD)
-    assert response.status_code == 502
-    assert response.json()["error"]["message"] == "Fish returned a non-JSON body"
-    assert response.json()["error"]["type"] == "api_error"
-
-    class _NotUtf8:
-        def json(self) -> dict[str, Any]:
-            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
-
-    _capture_upstream(monkeypatch, _NotUtf8())
-    with TestClient(app) as client:
-        response = client.post("/v1/audio/transcriptions", files=_WAV_UPLOAD)
-    assert response.status_code == 502
-    assert response.json()["error"]["message"] == "Fish returned a non-JSON body"
-
-
-def test_upstream_errors_use_openai_envelope() -> None:
-    resp = json_from_upstream(402, {"message": "no credits", "status": 402})
-    assert resp.status_code == 402
-    body = json.loads(bytes(resp.body))
-    assert body == {
-        "error": {
-            "code": 402,
-            "message": "no credits",
-            "type": "provider_error",
-            "metadata": {"provider_name": "fish-audio"},
-        }
-    }
-    bad = json_from_upstream(502, {"message": "bad \ud800 byte", "status": 502})
-    assert bad.status_code == 502
-    encoded = bytes(bad.body)
-    encoded.decode("utf-8")
-    assert "\ud800" not in encoded.decode("utf-8")
-
-
-def test_json_transcription(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured = _capture_upstream(monkeypatch, _AsrJson())
-    audio = base64.b64encode(b"RIFF").decode()
-    with TestClient(app) as client:
-        r = client.post(
-            "/v1/audio/transcriptions",
-            json={
-                "model": "fish-audio/transcribe-1",
-                "input_audio": {"data": audio, "format": "wav"},
-            },
-        )
-    assert r.status_code == 200
-    assert r.json()["text"] == "hello there"
-    name, data, content_type = captured["files"]["audio"]
-    assert name == "utterance.wav"
-    assert data == b"RIFF"
-    assert content_type == "audio/wav"
-
-
-class _AudioStream:
-    async def aiter_bytes(self, _n: int = 4096):
-        yield b"mp3"
-
-    async def aclose(self) -> None:
-        return None
-
-
-def _capture_upstream(monkeypatch: pytest.MonkeyPatch, result: Any) -> dict[str, Any]:
-    captured: dict[str, Any] = {}
-
-    async def fake_send(*_args: object, **kwargs: object) -> Any:
-        captured.update(kwargs)
-        return result
-
-    monkeypatch.setenv("FISH_API_KEY", "test-key")
-    monkeypatch.setattr("fish_audio_suite_proxy.server._fish_send", fake_send)
-    return captured
-
-
-def _post_speech(
-    monkeypatch: pytest.MonkeyPatch,
-    body: dict[str, Any],
-) -> tuple[httpx.Response, dict[str, Any]]:
-    captured = _capture_upstream(monkeypatch, _AudioStream())
-    with TestClient(app) as client:
-        return client.post("/v1/audio/speech", json=body), captured
-
-
-def test_data_uri_scheme_is_case_insensitive(monkeypatch: pytest.MonkeyPatch) -> None:
-    sample = base64.b64encode(b"RIFF").decode()
-    response, captured = _post_speech(
-        monkeypatch,
-        {
-            "input": "Hello there friend",
-            "input_references": [
-                {
-                    "type": "input_audio",
-                    "input_audio": {"data": f"DATA:audio/wav;base64,{sample}"},
-                },
-                {"type": "text", "text": "sample line"},
-            ],
-        },
-    )
-    assert response.status_code == 200
-    packed = ormsgpack.unpackb(captured["content"])
-    assert packed["references"] == [{"audio": b"RIFF", "text": "sample line"}]
-
-
-def test_input_references_sent_as_msgpack(monkeypatch: pytest.MonkeyPatch) -> None:
-    sample = base64.b64encode(b"RIFF").decode()
-    response, captured = _post_speech(
-        monkeypatch,
-        {
-            "input": "Hello there friend",
-            "input_references": [
-                {
-                    "type": "input_audio",
-                    "input_audio": {"data": f"data:audio/wav;base64,{sample}"},
-                },
-                {"type": "text", "text": "sample line"},
-            ],
-        },
-    )
-    assert response.status_code == 200
-    assert captured["headers"]["Content-Type"] == "application/msgpack"
-    packed = ormsgpack.unpackb(captured["content"])
-    assert packed["references"] == [{"audio": b"RIFF", "text": "sample line"}]
-
-
-def test_two_input_audio_parts_both_reach_fish(monkeypatch: pytest.MonkeyPatch) -> None:
-    first = base64.b64encode(b"RIFF").decode()
-    second = base64.b64encode(b"WAVE").decode()
-    response, captured = _post_speech(
-        monkeypatch,
-        {
-            "input": "Hello there friend",
-            "input_references": [
-                {"type": "input_audio", "input_audio": {"data": first}},
-                {"type": "text", "text": "first line"},
-                {"type": "input_audio", "input_audio": {"data": second}},
-                {"type": "text", "text": "second line"},
-            ],
-        },
-    )
-    assert response.status_code == 200
-    packed = ormsgpack.unpackb(captured["content"])
-    assert packed["references"] == [
-        {"audio": b"RIFF", "text": "first line"},
-        {"audio": b"WAVE", "text": "second line"},
-    ]
-
-
-def test_broken_input_audio_does_not_wipe_an_earlier_clip(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    sample = base64.b64encode(b"RIFF").decode()
-    response, captured = _post_speech(
-        monkeypatch,
-        {
-            "input": "Hello there friend",
-            "input_references": [
-                {"type": "input_audio", "input_audio": {"data": sample}},
-                {"type": "input_audio", "input_audio": "nope"},
-                {"type": "text", "text": "sample line"},
-            ],
-        },
-    )
-    assert response.status_code == 200
-    packed = ormsgpack.unpackb(captured["content"])
-    assert packed["references"] == [{"audio": b"RIFF", "text": "sample line"}]
-
-
-def test_empty_later_audio_does_not_wipe_an_earlier_clip(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    sample = base64.b64encode(b"RIFF").decode()
-    response, captured = _post_speech(
-        monkeypatch,
-        {
-            "input": "Hello there friend",
-            "input_references": [
-                {"type": "input_audio", "input_audio": {"data": sample}},
-                {"type": "input_audio", "input_audio": {"data": ""}},
-                {"type": "input_audio", "input_audio": {"data": "!!!!"}},
-                {"type": "text", "text": "sample line"},
-            ],
-        },
-    )
-    assert response.status_code == 200
-    packed = ormsgpack.unpackb(captured["content"])
-    assert packed["references"] == [{"audio": b"RIFF", "text": "sample line"}]
-
-
-def test_missing_text_part_does_not_wipe_an_earlier_transcript(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    sample = base64.b64encode(b"RIFF").decode()
-    response, captured = _post_speech(
-        monkeypatch,
-        {
-            "input": "Hello there friend",
-            "input_references": [
-                {"type": "text", "text": "sample line"},
-                {"type": "input_audio", "input_audio": {"data": sample}},
-                {"type": "text"},
-            ],
-        },
-    )
-    assert response.status_code == 200
-    packed = ormsgpack.unpackb(captured["content"])
-    assert packed["references"] == [{"audio": b"RIFF", "text": "sample line"}]
-
-
-def test_input_references_without_audio_is_400(monkeypatch: pytest.MonkeyPatch) -> None:
-    response, _captured = _post_speech(
-        monkeypatch,
-        {
-            "input": "Hello there friend",
-            "input_references": [{"type": "input_audio", "input_audio": "nope"}],
-        },
-    )
-    assert response.status_code == 400
-    assert "input_audio" in response.json()["error"]["message"]
-    empty, _captured_empty = _post_speech(
-        monkeypatch,
-        {
-            "input": "Hello there friend",
-            "input_references": [{"type": "input_audio", "input_audio": {"data": ""}}],
-        },
-    )
-    assert empty.status_code == 400
-
-
-def test_later_non_string_text_keeps_an_earlier_transcript(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    sample = base64.b64encode(b"RIFF").decode()
-    response, captured = _post_speech(
-        monkeypatch,
-        {
-            "input": "Hello there friend",
-            "input_references": [
-                {"type": "text", "text": 1},
-                {"type": "text", "text": "sample line"},
-                {"type": "input_audio", "input_audio": {"data": sample}},
-                {"type": "text", "text": ["nope"]},
-            ],
-        },
-    )
-    assert response.status_code == 200
-    packed = ormsgpack.unpackb(captured["content"])
-    assert packed["references"] == [{"audio": b"RIFF", "text": "sample line"}]
-
-
-def test_reference_text_must_be_a_string(monkeypatch: pytest.MonkeyPatch) -> None:
-    sample = base64.b64encode(b"RIFF").decode()
-    response, _captured = _post_speech(
-        monkeypatch,
-        {
-            "input": "Hello there friend",
-            "references": [{"audio": sample, "text": ["nope"]}],
-        },
-    )
-    assert response.status_code == 400
-    assert response.json()["error"]["message"] == "reference text must be a string"
-    only_bad, _captured_bad = _post_speech(
-        monkeypatch,
-        {
-            "input": "Hello there friend",
-            "input_references": [
-                {"type": "input_audio", "input_audio": {"data": sample}},
-                {"type": "text", "text": ["nope"]},
-            ],
-        },
-    )
-    assert only_bad.status_code == 400
-    assert only_bad.json()["error"]["message"] == "reference text must be a string"
-
-
-def test_null_reference_does_not_drop_a_real_clip(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    sample = base64.b64encode(b"RIFF").decode()
-    response, captured = _post_speech(
-        monkeypatch,
-        {
-            "input": "Hello there friend",
-            "references": [{"audio": sample, "text": "sample line"}, None],
-        },
-    )
-    assert response.status_code == 200
-    packed = ormsgpack.unpackb(captured["content"])
-    assert packed["references"] == [{"audio": b"RIFF", "text": "sample line"}]
-    only_null, _captured = _post_speech(
-        monkeypatch,
-        {"input": "Hello there friend", "references": [None]},
-    )
-    assert only_null.status_code == 400
-
-
-def test_reference_string_is_400(monkeypatch: pytest.MonkeyPatch) -> None:
-    response, captured = _post_speech(
-        monkeypatch,
-        {"input": "Hello there friend", "references": "not-a-clip"},
-    )
-    assert response.status_code == 400
-    assert response.json()["error"]["message"] == "references must be clips"
-    assert "content" not in captured
-
-
-def test_references_sent_as_msgpack(monkeypatch: pytest.MonkeyPatch) -> None:
-    sample = base64.b64encode(b"RIFF").decode()
-    response, captured = _post_speech(
-        monkeypatch,
-        {
-            "input": "Hello there friend",
-            "references": [{"audio": sample, "text": "sample line"}],
-        },
-    )
-    assert response.status_code == 200
-    packed = ormsgpack.unpackb(captured["content"])
-    assert packed["references"] == [{"audio": b"RIFF", "text": "sample line"}]
-
-
-def test_urlsafe_reference_audio_is_a_clip(monkeypatch: pytest.MonkeyPatch) -> None:
-    raw = bytes(range(64))
-    sample = base64.urlsafe_b64encode(raw).decode()
-    response, captured = _post_speech(
-        monkeypatch,
-        {
-            "input": "Hello there friend",
-            "references": [{"audio": f"data:audio/wav;base64,{sample}", "text": "sample line"}],
-        },
-    )
-    assert response.status_code == 200
-    packed = ormsgpack.unpackb(captured["content"])
-    assert packed["references"] == [{"audio": raw, "text": "sample line"}]
-
-
-def test_one_reference_object_is_a_clip(monkeypatch: pytest.MonkeyPatch) -> None:
-    sample = base64.b64encode(b"RIFF").decode()
-    response, captured = _post_speech(
-        monkeypatch,
-        {
-            "input": "Hello there friend",
-            "references": {"audio": sample, "text": "sample line"},
-        },
-    )
-    assert response.status_code == 200
-    packed = ormsgpack.unpackb(captured["content"])
-    assert packed["references"] == [{"audio": b"RIFF", "text": "sample line"}]
-
-
-def test_seed_keeps_a_padded_integer(monkeypatch: pytest.MonkeyPatch) -> None:
-    response, captured = _post_speech(
-        monkeypatch,
-        {"input": "Hello there friend", "seed": " 42 "},
-    )
-    assert response.status_code == 200
-    assert captured["json"]["seed"] == 42
-    _, captured = _post_speech(monkeypatch, {"input": "Hello there friend", "seed": "42.0"})
-    assert captured["json"]["seed"] == 42
-    _, captured = _post_speech(monkeypatch, {"input": "Hello there friend", "seed": "42.5"})
-    assert "seed" not in captured["json"]
-    _, captured = _post_speech(monkeypatch, {"input": "Hello there friend", "seed": True})
-    assert "seed" not in captured["json"]
-
-
-def test_seed_infinity_is_omitted() -> None:
-    assert _seed(float("inf")) is None
-    assert _seed(float("-inf")) is None
-    assert _seed(2**64 - 1) == 2**64 - 1
-    assert _seed(-(2**63)) == -(2**63)
-    assert _seed(2**64) is None
-    assert _seed(-(2**63) - 1) is None
-
-
-def test_huge_token_and_rate_with_a_clip_keep_defaults(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    sample = base64.b64encode(b"RIFF").decode()
-    response, captured = _post_speech(
-        monkeypatch,
-        {
-            "input": "Hello there friend",
-            "max_new_tokens": 2**64,
-            "sample_rate": 2**64,
-            "references": [{"audio": sample, "text": "sample line"}],
-        },
-    )
-    assert response.status_code == 200
-    packed = ormsgpack.unpackb(captured["content"])
-    assert packed["max_new_tokens"] == 1024
-    assert packed["sample_rate"] == 44100
-    assert packed["references"][0]["audio"] == b"RIFF"
-    response, captured = _post_speech(
-        monkeypatch,
-        {
-            "input": "Hello there friend",
-            "format": "pcm16",
-            "sample_rate": 2**64,
-            "references": [{"audio": sample, "text": "sample line"}],
-        },
-    )
-    assert response.status_code == 200
-    assert ormsgpack.unpackb(captured["content"])["sample_rate"] == 24_000
-
-
-def test_huge_seed_with_a_reference_clip_is_omitted(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    sample = base64.b64encode(b"RIFF").decode()
-    response, captured = _post_speech(
-        monkeypatch,
-        {
-            "input": "Hello there friend",
-            "seed": 2**64,
-            "references": [{"audio": sample, "text": "sample line"}],
-        },
-    )
-    assert response.status_code == 200
-    packed = ormsgpack.unpackb(captured["content"])
-    assert "seed" not in packed
-    assert packed["references"][0]["audio"] == b"RIFF"
-
-
-def test_memory_cache_strips_and_lowercases(monkeypatch: pytest.MonkeyPatch) -> None:
-    response, captured = _post_speech(
-        monkeypatch,
-        {"input": "Hello there friend", "use_memory_cache": " ON "},
-    )
-    assert response.status_code == 200
-    assert captured["json"]["use_memory_cache"] == "on"
-
-
-def test_pronunciation_huge_int_with_a_clip_is_400(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    sample = base64.b64encode(b"RIFF").decode()
-    response, _captured = _post_speech(
-        monkeypatch,
-        {
-            "input": "Hello there friend",
-            "pronunciation_dictionary": [{"items": [{"value": "ah", "n": 2**64}]}],
-            "references": [{"audio": sample, "text": "sample line"}],
-        },
-    )
-    assert response.status_code == 400
-    assert "encoded" in response.json()["error"]["message"]
-
-
-def test_pronunciation_scrub_keeps_non_strings() -> None:
-    cleaned = _scrub_pronunciation_dictionary(
-        [{"items": [{"value": "<|phoneme_start|>ah<|phoneme_end|>"}, {"value": ["nope"]}]}]
-    )
-    assert cleaned[0]["items"][0]["value"] == "ah"
-    assert cleaned[0]["items"][1]["value"] == ["nope"]
-
-
-def test_json_asr_format_is_stripped(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured = _capture_upstream(monkeypatch, _AsrJson())
-    audio = base64.b64encode(b"RIFF").decode()
-    with TestClient(app) as client:
-        response = client.post(
-            "/v1/audio/transcriptions",
-            json={"input_audio": {"data": audio, "format": " wav "}},
-        )
-    assert response.status_code == 200
-    name, _data, content_type = captured["files"]["audio"]
-    assert name == "utterance.wav"
-    assert content_type == "audio/wav"
-
-
-def test_json_asr_format_cannot_split_the_part_header(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured = _capture_upstream(monkeypatch, _AsrJson())
-    audio = base64.b64encode(b"RIFF").decode()
-    with TestClient(app) as client:
-        response = client.post(
-            "/v1/audio/transcriptions",
-            json={"input_audio": {"data": audio, "format": "wav\r\nX-Injected: 1"}},
-        )
-    assert response.status_code == 200
-    name, _data, content_type = captured["files"]["audio"]
-    assert name == "utterance.wav"
-    assert content_type == "audio/wav"
-
-
-def test_json_asr_language_cannot_inject_a_form_part(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured = _capture_upstream(monkeypatch, _AsrJson())
-    audio = base64.b64encode(b"RIFF").decode()
-    with TestClient(app) as client:
-        response = client.post(
-            "/v1/audio/transcriptions",
-            json={
-                "input_audio": {"data": audio, "format": "wav"},
-                "language": 'en\r\nContent-Disposition: form-data; name="hack"',
-            },
-        )
-    assert response.status_code == 200
-    assert captured["data"]["language"] == "en"
-    assert "hack" not in captured["data"]
-
-
-def test_json_asr_non_string_format_stays_wav(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured = _capture_upstream(monkeypatch, _AsrJson())
-    audio = base64.b64encode(b"RIFF").decode()
-    with TestClient(app) as client:
-        response = client.post(
-            "/v1/audio/transcriptions",
-            json={"input_audio": {"data": audio, "format": ["wav"]}},
-        )
-    assert response.status_code == 200
-    name, _data, content_type = captured["files"]["audio"]
-    assert name == "utterance.wav"
-    assert content_type == "audio/wav"
-
-
-def test_bad_reference_audio_is_400(monkeypatch: pytest.MonkeyPatch) -> None:
-    response, _captured = _post_speech(
-        monkeypatch,
-        {
-            "input": "Hello there friend",
-            "input_references": [
-                {"type": "input_audio", "input_audio": {"data": "!!!!"}},
-            ],
-        },
-    )
-    assert response.status_code == 400
-    assert response.json()["error"]["type"] == "invalid_request_error"
