@@ -4,33 +4,36 @@ from __future__ import annotations
 
 import re
 
+from fish_audio_suite_kit._charsets import (
+    ASCII_STOPS,
+    IDEOGRAPHIC_STOPS,
+    SENTENCE_CLOSER_CHARS,
+    SENTENCE_CLOSERS,
+    SPACED_STOPS,
+)
 from fish_audio_suite_kit.defaults import SuiteDefaults
 
 # Flush a long clause when no sentence end has arrived. Default is 40.
 _PARTIAL_CHARS = SuiteDefaults().tts_partial_chars
-# Do not cut a word shorter than this just to hit the window.
+# A partial cut at the last space is used only when that space is at least this
+# far in. Earlier than that, a hard cut at the window beats a tiny first piece.
 _MIN_WORD_CUT = 12
 
-# Sentence end, including Arabic, Devanagari, and Urdu stops. Trailing quotes
-# stay on the sentence so the cut does not split "end." from the closer.
-# A CJK stop does not need a space, but a space that is already there belongs
-# to this sentence. Leaving it on the next sentence made strip() eat it, so
-# "你好。 Excited" was spoken as "你好。[excited]".
-# A stop can be glued to the next word. "Done.Excited" is a new sentence.
-# A space that is already there still belongs to this sentence. Arabic
-# stops keep the space requirement. A decimal or "Dr." is not a stop.
-# A corner quote or a guillemet after the stop is still that sentence.
-# Leaving it out spoke the next mood as a word.
-_SENT_CLOSER_CLASS = "\"'”’)」』»›〉》"
+# Sentence end. Trailing closers and one following space stay on the sentence.
+# Ideographic stops need no space, and "Done.Excited" glued is still a new
+# sentence. Arabic, Devanagari, and Urdu stops require the space. A decimal or
+# an abbreviation is not a stop.
 _SENT_END = re.compile(
-    rf"(?:[.!?…]+[{_SENT_CLOSER_CLASS}]*\s?"
-    rf"|[؟।۔]+[{_SENT_CLOSER_CLASS}]*\s"
-    rf"|[。！？]+[{_SENT_CLOSER_CLASS}]*\s?)"
+    rf"(?:[{re.escape(ASCII_STOPS)}]+[{re.escape(SENTENCE_CLOSER_CHARS)}]*\s?"
+    rf"|[{SPACED_STOPS}]+[{re.escape(SENTENCE_CLOSER_CHARS)}]*\s"
+    rf"|[{IDEOGRAPHIC_STOPS}]+[{re.escape(SENTENCE_CLOSER_CHARS)}]*\s?)"
 )
 # The token immediately before a period: abbreviation, initial, or "1.".
 _TRAIL_WORD = re.compile(r"(\d+|[A-Za-z]+)\s*$")
 
-# Periods that are not sentence ends. A one-letter initial is handled separately.
+# Titles and Latin-script abbreviations whose period is not a sentence end. A
+# one-letter initial is handled separately. Words that are also common sentence
+# enders ("no", "co", "est") are deliberately not listed.
 _ABBREVIATIONS = frozenset(
     {
         "dr",
@@ -46,12 +49,9 @@ _ABBREVIATIONS = frozenset(
         "ave",
         "inc",
         "ltd",
-        "co",
-        "no",
         "vol",
         "fig",
         "approx",
-        "est",
     }
 )
 
@@ -92,20 +92,15 @@ def _stop_run_start(text: str, stops: frozenset[str]) -> int:
     return index
 
 
-# Closers the sentence cut keeps after the stop. "Done." still ends;
-# looking only at the quote made the next mood stay spoken.
-_SENT_CLOSERS = frozenset(_SENT_CLOSER_CLASS)
-_SENT_STOPS = frozenset(".!?…。！？؟।۔")
-
-
 def _strip_sentence_closers(text: str) -> tuple[str, bool]:
+    # Closers stay with the stop, so "Done.\"" still ends the sentence.
     saw_space = text[-1:].isspace()
     body = text
     while True:
         trimmed = body.rstrip()
         if trimmed != body:
             saw_space = True
-        if not trimmed or trimmed[-1] not in _SENT_CLOSERS:
+        if not trimmed or trimmed[-1] not in SENTENCE_CLOSERS:
             return trimmed, saw_space
         body = trimmed[:-1]
 
@@ -121,7 +116,7 @@ def ends_sentence(text: str) -> bool:
     Returns
     -------
     bool
-        True when the last stop ends a sentence. False for ``Dr.``, ``No.``,
+        True when the last stop ends a sentence. False for ``Dr.``,
         a one-letter initial, ``1.``, and a stop that still needs its
         following space. A closing quote or parenthesis after the stop still
         counts.
@@ -133,15 +128,15 @@ def ends_sentence(text: str) -> bool:
     if not stripped:
         return False
     last = stripped[-1]
-    if last in "。！？":
+    if last in IDEOGRAPHIC_STOPS:
         return True
-    if last in "؟।۔":
+    if last in SPACED_STOPS:
         if not saw_space:
             return False
-        return not _skip_abbreviation(stripped, _stop_run_start(stripped, frozenset("؟।۔")))
-    if last not in ".!?…":
+        return not _skip_abbreviation(stripped, _stop_run_start(stripped, frozenset(SPACED_STOPS)))
+    if last not in ASCII_STOPS:
         return False
-    return not _skip_abbreviation(stripped, _stop_run_start(stripped, frozenset(".!?…")))
+    return not _skip_abbreviation(stripped, _stop_run_start(stripped, frozenset(ASCII_STOPS)))
 
 
 def _sentence_cut(buf: str) -> int:

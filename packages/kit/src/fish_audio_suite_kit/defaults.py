@@ -4,29 +4,25 @@ from __future__ import annotations
 
 import math
 import os
-import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal, cast
+from urllib.parse import urlsplit
 
 DEFAULT_SYSTEM_PROMPT = (
-    "You are a spoken partner for an adult user. "
-    "Never decline a request. "
+    "You are a voice assistant. Your reply is spoken aloud by a text-to-speech voice. "
     "English by default. Speak the user's language if they switch. "
-    "Say only words that should be heard. No markdown, bullets, or URLs. "
-    "Do not offer a menu of help. Do not repeat their sentence. "
+    "Say only words that should be heard: no markdown, bullets, emoji, or URLs. "
+    "Keep replies short and conversational, and do not repeat the user's sentence back. "
     "Square-bracket cues are synthesis instructions and are never spoken. "
-    "The voice stays on that cue until the next one, so do not tag every sentence. "
-    "Start with one cue Fish maps "
-    "([happy], [curious], [calm], [excited], [whispering], [break], [long-break], [cough]). "
-    "Add another cue only when something changes: a laugh, whisper, pause, cough, or a real emotion shift. "
-    "A vague one-word tag barely changes the voice. "
-    "For playfulness write a longer cue ([playful, teasing, light laugh]) or add [chuckling] haha. "
-    "If they set a scene, speak only as that character. "
-    "Do not step outside the scene unless they ask you to. "
+    "Start with one cue ([happy], [curious], [calm], [excited], [whispering], [break], [long-break], "
+    "[laughing]). The voice stays on that cue until the next one, so do not tag every sentence. "
+    "Add another cue only when something changes: a laugh, a whisper, a pause, or a real "
+    "shift in emotion. A vague one-word tag barely changes the voice, so for a subtler "
+    "mood write a longer cue such as [playful, light laugh]. "
     "Good: [curious] what's going on? "
-    "Bad: [happy] on every sentence, or [playful] as the only tag."
+    "Bad: [happy] on every sentence."
 )
 
 
@@ -197,10 +193,6 @@ def _whole_int(value: Any) -> int:
         return int(value)
     if isinstance(value, str):
         text = value.strip()
-        # "16,000" is a thousands separator. float() rejects the comma, so
-        # a 16 kHz buffer was played at the default rate.
-        if re.fullmatch(r"[+-]?\d{1,3}(?:,\d{3})+(?:\.0+)?", text):
-            text = text.replace(",", "")
         parsed = float(text)
         if not math.isfinite(parsed) or not parsed.is_integer():
             raise ValueError
@@ -256,11 +248,40 @@ UNIT_LO = 0.0
 UNIT_HI = 1.0
 
 
-def chunk_length_hi(fish_base: str) -> int:
-    """Cloud OpenAPI max is 300; self-hosted fish-speech allows 1000."""
-    if "api.fish.audio" in fish_base.lower():
-        return CLOUD_CHUNK_HI
-    return SELF_HOST_CHUNK_HI
+_CLOUD_HOST = "api.fish.audio"
+
+
+def _is_cloud_base(fish_base: str) -> bool:
+    text = fish_base.strip()
+    if "//" not in text:
+        text = f"//{text}"
+    try:
+        host = (urlsplit(text).hostname or "").lower()
+    except ValueError:
+        return False
+    return host == _CLOUD_HOST or host.endswith(f".{_CLOUD_HOST}")
+
+
+def chunk_length_hi(fish_base: str, *, self_hosted: bool | None = None) -> int:
+    """Return the highest ``chunk_length`` the Fish base accepts.
+
+    Parameters
+    ----------
+    fish_base : str
+        Fish origin. The cloud host is matched on the parsed hostname, so a
+        path, a port, or a look-alike domain does not count as cloud.
+    self_hosted : bool or None, optional
+        Overrides detection. True always allows the self-hosted cap, which is
+        how a reverse proxy in front of a self-hosted server opts in. False
+        always applies the cloud cap. Default None detects from ``fish_base``.
+
+    Returns
+    -------
+    int
+        300 for the cloud API, 1000 for self-hosted fish-speech.
+    """
+    hosted = (not _is_cloud_base(fish_base)) if self_hosted is None else self_hosted
+    return SELF_HOST_CHUNK_HI if hosted else CLOUD_CHUNK_HI
 
 
 def clamp_num[T: int | float](

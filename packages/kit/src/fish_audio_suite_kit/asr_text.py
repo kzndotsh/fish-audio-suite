@@ -7,20 +7,19 @@ import unicodedata
 import zlib
 from typing import cast
 
-from fish_audio_suite_kit.text_filters import utf8_text
+from fish_audio_suite_kit._charsets import (
+    ANGLE_TOKEN_RE,
+    BREAKS_RE,
+    SENTENCE_STOPS,
+    SPACE_BEFORE_STOP_RE,
+    cjk_latin_counts,
+    plain_breaks,
+    utf8_text,
+)
+from fish_audio_suite_kit.dialogue import DEFAULT_MIN_LETTERS, DEFAULT_SHORT_WORDS
 
 _SPEAKER_RE = re.compile(r"<\|speaker:\d+\|>")
-_ANGLE_TOKEN_RE = re.compile(r"<\|[^|>]*\|>")
 _H_SPACE_RE = re.compile(r"[ \t]+")
-_SPACE_BEFORE_STOP_RE = re.compile(r"[ \t]+([.!?…。！？,;:，；：])")
-_BREAKS_RE = re.compile(r"\n{3,}")
-_CJK_RANGES = (
-    range(0x3040, 0x3100),
-    range(0x3400, 0x4DC0),
-    range(0x4E00, 0xA000),
-    range(0xF900, 0xFB00),
-    range(0xAC00, 0xD7B0),
-)
 
 # VibeVoice timestamp [0.00-1.23]. A decimal marks a clock. [1-2] is a range
 # the speaker said, so an integer pair stays in the transcript.
@@ -30,20 +29,25 @@ _VIBEVOICE_TS_RE = re.compile(
     r"|\d+(?:\.\d+)?\s*[-–]\s*\d+\.\d+"
     r")\]\s*"
 )
-# "Speaker 1:" labels from engines that do not use <|speaker:N|>.
-# A digit after the colon is a clock ("Speaker 1:00"), not a label.
-# A fullwidth colon is the same label. Leaving it in sent "Speaker 1" to the model.
+# "Speaker 1:" labels from engines that do not use <|speaker:N|>. A digit
+# after the colon is a clock ("Speaker 1:00"), not a label. A fullwidth colon
+# is the same label.
 _SPEAKER_N_RE = re.compile(r"\bSpeaker\s+\d+\s*[:：](?!\d)\s*", re.IGNORECASE)
 
-# Listener noises. Duplex hears one of these and keeps listening instead of answering.
-# English spellings plus the CJK, Japanese, and Korean fillers models actually emit.
-_BACKCHANNELS = frozenset(
+# transcribe-1-pro annotations such as [laughter] or [高兴]. Digits-only
+# brackets ("[1-2]", "[5]") are something the speaker said, so they stay.
+_ASR_CUE_RE = re.compile(r"\[(?!\d+(?:\s*[-–]\s*\d+)?\])[^\[\]\n]{1,40}\]")
+
+# Listener noises. A caller that hears one keeps listening instead of answering.
+# English spellings plus the Chinese, Japanese, and Korean fillers models emit.
+# "right" and "sure" are real answers, so they are not here. A caller can pass
+# its own set to is_backchannel.
+DEFAULT_BACKCHANNELS = frozenset(
     {
         "yeah",
         "yep",
         "yup",
         "ya",
-        "sure",
         "mhmm",
         "mhm",
         "mmhmm",
@@ -57,7 +61,6 @@ _BACKCHANNELS = frozenset(
         "huh",
         "mm",
         "hmm",
-        "right",
         "uh",
         "um",
         "ah",
@@ -87,21 +90,19 @@ _BACKCHANNELS = frozenset(
     }
 )
 
-# Whole utterance, after folding. "stop" mid-sentence is not a quit.
-_QUIT = frozenset(
+# Whole utterance, after folding. These end the session, so they are explicit
+# goodbyes. "stop" is not here: people say it to interrupt speech. A caller can
+# pass its own set to is_quit_utterance.
+DEFAULT_QUIT_PHRASES = frozenset(
     {
         "quit",
         "exit",
-        "stop",
         "goodbye",
         "good bye",
         "good-bye",
         "bye",
         "bye bye",
         "bye-bye",
-        "please stop",
-        "stop please",
-        "stop now",
     }
 )
 
@@ -130,9 +131,8 @@ _CJK_HALLUCINATION_PHRASES = frozenset({"谢谢观看", "感谢观看", "请订�
 # Strip spaces and quotes too, so "谢谢观看。" matches the phrase with no marks.
 _ASR_PUNCT_RE = re.compile(r"[\s.。、，,!?！？…·・~～'\"“”‘’]+")
 # Fold for phrase lists. Spaces stay, so "uh huh" does not become "uhhuh".
-# Arabic comma, semicolon, and question mark, plus the danda and Urdu stop.
-# The sentence cutter already treats those as stops. Leaving them on the
-# line made the same utterance look new, so duplex answered it again.
+# Includes the Arabic comma, semicolon, and question mark, plus the danda and
+# Urdu stop, so the same utterance folds the same way in every script.
 _FOLD_PUNCT_RE = re.compile(r"[.。、，,!?！？…·・~～؟،؛।۔]+")
 _SPACE_RE = re.compile(r"\s+")
 # Below this size, gzip ratio is noise. A stuck caption loop compresses past the ratio.
@@ -145,61 +145,29 @@ _EMOJI_RE = re.compile(
     flags=re.UNICODE,
 )
 
+# A speaker marker is replaced by a space, not nothing: removing it would join
+# the words on either side.
 _ASR_SPEAKERS = (
-    # An empty replacement joined the words on either side, so "door" and
-    # "today" were heard as one word.
     (_SPEAKER_RE, " "),
     (_SPEAKER_N_RE, ""),
 )
 
 
-def _plain_breaks(text: str) -> str:
-    return (
-        text.replace("\r\n", "\n")
-        .replace("\r", "\n")
-        .replace("\u2028", "\n")
-        .replace("\u2029", "\n")
-        .replace("\u200b", "")
-        .replace("\ufeff", "")
-        .replace("\u2060", "")
-        .replace("\u00ad", "")
-    )
-
-
-def _replace(text: str, pairs: tuple[tuple[re.Pattern[str], str], ...]) -> str:
-    for pattern, repl in pairs:
-        text = pattern.sub(repl, text)
-    return text
-
-
 def _tidy_asr(text: str) -> str:
-    text = _SPACE_BEFORE_STOP_RE.sub(r"\1", text)
-    return _BREAKS_RE.sub("\n\n", text).strip()
-
-
-def _cjk_latin_counts(text: str) -> tuple[int, int]:
-    cjk = latin = 0
-    for ch in text:
-        code = ord(ch)
-        if any(code in span for span in _CJK_RANGES):
-            cjk += 1
-        elif ch.isalpha():
-            latin += 1
-    return cjk, latin
+    text = SPACE_BEFORE_STOP_RE.sub(r"\1", text)
+    return BREAKS_RE.sub("\n\n", text).strip()
 
 
 def _folded(text: str) -> str:
-    # A curly apostrophe is the same word. Leaving it made the two spellings
-    # of "don't" two lines, so the assistant answered the echo again.
-    # "cafe" plus a combining acute is the same word as the composed letter.
+    # Fold spellings of the same word: curly and straight apostrophes, and a
+    # composed letter against a letter plus a combining accent.
     straight = (
         unicodedata.normalize("NFC", (text or "").strip())
         .lower()
         .replace("\u2019", "'")
         .replace("\u2018", "'")
         .replace("\u02bc", "'")
-        # A kashida only stretches a letter. Leaving it made the same line
-        # a new utterance, so the assistant answered it again.
+        # A kashida only stretches an Arabic letter.
         .replace("\u0640", "")
     )
     s = _FOLD_PUNCT_RE.sub("", straight)
@@ -219,7 +187,7 @@ def _gzip_repetitive(text: str) -> bool:
     return (len(raw) / max(len(compressed), 1)) >= _GZIP_RATIO
 
 
-def scrub_asr(text: str, *, strip_speakers: bool = True) -> str:
+def scrub_asr(text: str, *, strip_speakers: bool = True, strip_cues: bool = False) -> str:
     """Strip ASR markup Fish and other engines leave in the transcript.
 
     Parameters
@@ -229,20 +197,26 @@ def scrub_asr(text: str, *, strip_speakers: bool = True) -> str:
     strip_speakers : bool, optional
         Drop ``Speaker 1:`` style labels. Default True. The proxy turns this
         off unless ``FISH_ASR_STRIP_SPEAKERS`` or the client asks.
+    strip_cues : bool, optional
+        Drop ``[laughter]`` style annotations that ``transcribe-1-pro`` adds.
+        Default False. A bracket with only digits, such as ``[1-2]``, stays.
 
     Returns
     -------
     str
-        Transcript without timestamps or ``<|…|>`` tokens. Fish ``[cue]`` tags
-        are not expected here and are not specially kept.
+        Transcript without timestamps or ``<|…|>`` tokens. Annotations are
+        kept unless ``strip_cues`` is True.
     """
     if not text:
         return ""
-    cleaned = _plain_breaks(text)
+    cleaned = plain_breaks(text)
     if strip_speakers:
-        cleaned = _replace(cleaned, _ASR_SPEAKERS)
+        for pattern, repl in _ASR_SPEAKERS:
+            cleaned = pattern.sub(repl, cleaned)
     cleaned = _VIBEVOICE_TS_RE.sub(" ", cleaned)
-    cleaned = _ANGLE_TOKEN_RE.sub(" ", cleaned)
+    cleaned = ANGLE_TOKEN_RE.sub(" ", cleaned)
+    if strip_cues:
+        cleaned = _ASR_CUE_RE.sub(" ", cleaned)
     cleaned = _H_SPACE_RE.sub(" ", cleaned)
     return utf8_text(_tidy_asr(cleaned))
 
@@ -277,10 +251,10 @@ def is_caption_watermark(text: str) -> bool:
     return _known_hallucination(text.strip())
 
 
-# Same stops that end a sentence, plus an ellipsis. A caption after one of
-# those was left in the transcript and answered on the next turn.
-_CLAUSE_END_RE = re.compile(r"[.!?。！？…؟।۔][\"'”’)\]]*\s*$")
-_WATERMARK_STOP_RE = re.compile(r"[.!?。！？…؟।۔]")
+# A caption after any sentence stop is a separate clause, so it is dropped.
+_STOP_CLASS = re.escape("".join(sorted(SENTENCE_STOPS)))
+_CLAUSE_END_RE = re.compile(rf"[{_STOP_CLASS}][\"'”’)\]]*\s*$")
+_WATERMARK_STOP_RE = re.compile(rf"[{_STOP_CLASS}]")
 
 
 def _drop_watermark_clause(text: str, phrase: str) -> str:
@@ -295,9 +269,9 @@ def _drop_watermark_clause(text: str, phrase: str) -> str:
         before = text[: match.start()]
         after = text[match.end() :]
         matched = text[match.start() : match.end()]
-        # A trailing "thanks for watching" is the caption. "Thanks for watching
-        # the door" is the sentence: the match ate a space, not a period.
-        # A later copy is still a caption. Stopping at the first hit left it.
+        # A trailing "thanks for watching" is the caption, but "Thanks for
+        # watching the door" is a sentence: the match consumed no stop. Keep
+        # scanning, since a later copy can still be a caption.
         trailing = not after.strip()
         stopped = _WATERMARK_STOP_RE.search(matched) is not None
         at_edge = not before.strip() or _CLAUSE_END_RE.search(before) is not None
@@ -323,6 +297,7 @@ def without_watermark_segments(
     segments: object,
     *,
     strip_speakers: bool = True,
+    strip_cues: bool = False,
 ) -> str:
     """Remove watermark segment phrases from a transcript that also has speech.
 
@@ -334,6 +309,8 @@ def without_watermark_segments(
         Fish ``segments``. A non-list leaves ``text`` unchanged.
     strip_speakers : bool, optional
         Passed to ``scrub_asr`` for each segment. Default True.
+    strip_cues : bool, optional
+        Passed to ``scrub_asr`` for each segment. Default False.
 
     Returns
     -------
@@ -356,7 +333,7 @@ def without_watermark_segments(
         raw_text = cast(dict[str, object], seg).get("text")
         if not isinstance(raw_text, str):
             continue
-        body = scrub_asr(raw_text, strip_speakers=strip_speakers)
+        body = scrub_asr(raw_text, strip_speakers=strip_speakers, strip_cues=strip_cues)
         if not body or not is_caption_watermark(body):
             continue
         dropped = True
@@ -380,35 +357,46 @@ def without_watermark_segments(
 def _without_marks(s: str) -> str | None:
     if not _EMOJI_RE.sub("", s).strip():
         return None
-    if _ANGLE_TOKEN_RE.fullmatch(s.replace(" ", "")):
+    if ANGLE_TOKEN_RE.fullmatch(s.replace(" ", "")):
         return None
-    tagged = _ANGLE_TOKEN_RE.sub("", s).strip()
+    tagged = ANGLE_TOKEN_RE.sub("", s).strip()
     return tagged or None
 
 
-def is_asr_hallucination(text: str) -> bool:
+def is_asr_hallucination(
+    text: str,
+    *,
+    min_letters: int = DEFAULT_MIN_LETTERS,
+    short_words: frozenset[str] | None = None,
+) -> bool:
     """Return whether an ASR string is silence, a caption watermark, or too thin.
 
     Parameters
     ----------
     text : str
         Transcript, usually after ``scrub_asr``.
+    min_letters : int, optional
+        Fewest letters that count as speech. Default 2, so ``no``, ``ok``,
+        and ``hi`` are kept and a lone letter is dropped.
+    short_words : frozenset of str or None, optional
+        Lowercase words kept even below ``min_letters``. Default
+        ``DEFAULT_SHORT_WORDS``. Matters when a caller raises the floor.
 
     Returns
     -------
     bool
         True for empty text, ``nospeech``, YouTube-caption boilerplate
         (thanks-for-watching, Amara, 谢谢观看), gzip-repetitive text, emoji-only
-        or angle-token-only text, a single CJK character, or fewer than three
-        letters. ``ok`` stays too thin. ``Été`` and a Russian sentence are
-        speech. Three digits are a number, so ``100`` is kept. A longer CJK
+        or angle-token-only text, a single CJK character, or fewer than
+        ``min_letters`` letters. ``Été`` and a Russian sentence are speech.
+        Three digits are a number, so ``100`` is kept, and a longer CJK
         sentence is kept.
 
     Notes
     -----
-    Duplex uses this to drop the turn before the LLM. A false positive skips
-    real speech; the Latin floor is three letters so ``ok`` is not speech and
-    ``okay`` is.
+    A caller uses this to drop a turn before the LLM, so a false positive
+    discards real speech. Callers who want a stricter gate can raise
+    ``min_letters`` and rely on ``short_words`` for the answers they keep.
     """
     if not text or not text.strip():
         return True
@@ -418,52 +406,66 @@ def is_asr_hallucination(text: str) -> bool:
     tagged = _without_marks(s)
     if tagged is None or _gzip_repetitive(tagged):
         return True
-    cjk, latin = _cjk_latin_counts(s)
-    if latin == 0 and cjk == 1:
+    cjk, letters = cjk_latin_counts(s)
+    if letters == 0 and cjk == 1:
         return True
     if cjk:
         return False
-    # "100" is an answer. "ok" and "42" stay below the floor.
     if sum(ch.isdigit() for ch in s) >= 3:
         return False
-    return latin < 3
+    words = DEFAULT_SHORT_WORDS if short_words is None else short_words
+    if "".join(ch for ch in s.lower() if ch.isalnum()) in words:
+        return False
+    return letters < min_letters
 
 
 def _known_phrase(text: str, phrases: frozenset[str]) -> bool:
     return _folded(text) in phrases
 
 
-def is_backchannel(text: str) -> bool:
+def _folded_phrases(phrases: frozenset[str] | set[str]) -> frozenset[str]:
+    return frozenset(_folded(phrase) for phrase in phrases)
+
+
+def is_backchannel(text: str, *, phrases: frozenset[str] | set[str] | None = None) -> bool:
     """Return whether the utterance is only a listener noise.
 
     Parameters
     ----------
     text : str
         Short transcript such as ``yeah``, ``uh huh``, or ``嗯``.
+    phrases : frozenset of str or set of str or None, optional
+        Phrases that count as noise. Folded (lowercase, punctuation removed)
+        before matching. Default ``DEFAULT_BACKCHANNELS``.
 
     Returns
     -------
     bool
-        True for a known backchannel after case-folding. Duplex then listens
-        again instead of answering.
+        True for a known backchannel after case-folding. A caller then
+        listens again instead of answering.
     """
-    return _known_phrase(text, _BACKCHANNELS)
+    known = DEFAULT_BACKCHANNELS if phrases is None else _folded_phrases(phrases)
+    return _known_phrase(text, known)
 
 
-def is_quit_utterance(text: str) -> bool:
-    """Return whether the utterance asks the duplex loop to stop.
+def is_quit_utterance(text: str, *, phrases: frozenset[str] | set[str] | None = None) -> bool:
+    """Return whether the utterance asks the loop to stop.
 
     Parameters
     ----------
     text : str
         Transcript such as ``bye`` or ``quit``.
+    phrases : frozenset of str or set of str or None, optional
+        Whole-utterance phrases that quit. Folded before matching. Default
+        ``DEFAULT_QUIT_PHRASES``.
 
     Returns
     -------
     bool
-        True for a known quit phrase after case-folding.
+        True when the whole utterance is a quit phrase after case-folding.
     """
-    return _known_phrase(text, _QUIT)
+    known = DEFAULT_QUIT_PHRASES if phrases is None else _folded_phrases(phrases)
+    return _known_phrase(text, known)
 
 
 def same_utterance(text: str, previous: str) -> bool:

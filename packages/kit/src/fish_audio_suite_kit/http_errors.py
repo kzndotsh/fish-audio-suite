@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
+import random
 from typing import Any, cast
 
+from fish_audio_suite_kit._charsets import utf8_text
 from fish_audio_suite_kit.defaults import number_or
-from fish_audio_suite_kit.text_filters import utf8_text
 
 FISH_TTS_PATH = "/v1/tts"
 FISH_ASR_PATH = "/v1/asr"
@@ -16,6 +18,11 @@ FISH_TIMEOUT_STATUS = 504
 FISH_TIMEOUT_MESSAGE = "Fish request timed out"
 FISH_UNREACHABLE_STATUS = 502
 FISH_UNREACHABLE_MESSAGE = "Fish upstream unreachable"
+FISH_NON_JSON_MESSAGE = "Fish returned a non-JSON body"
+FISH_NON_OBJECT_MESSAGE = "Fish returned a non-object body"
+# Longest single wait between retries, and the longest Retry-After we honor.
+FISH_BACKOFF_CAP_S = 30.0
+FISH_RETRY_AFTER_CAP_S = 60.0
 
 
 class FishHttpError(Exception):
@@ -34,6 +41,26 @@ class FishHttpError(Exception):
         self.status = int(status)
         self.message = utf8_text(str(message))
         super().__init__(f"HTTP {self.status}: {self.message}")
+
+    @classmethod
+    def unreachable(cls) -> FishHttpError:
+        """Build the 502 for a retry loop that ended with no Fish response."""
+        return cls(FISH_UNREACHABLE_STATUS, FISH_UNREACHABLE_MESSAGE)
+
+    @classmethod
+    def timed_out(cls) -> FishHttpError:
+        """Build the 504 for a Fish request that timed out."""
+        return cls(FISH_TIMEOUT_STATUS, FISH_TIMEOUT_MESSAGE)
+
+    @classmethod
+    def non_json(cls) -> FishHttpError:
+        """Build the 502 for a Fish body that is not JSON."""
+        return cls(FISH_UNREACHABLE_STATUS, FISH_NON_JSON_MESSAGE)
+
+    @classmethod
+    def non_object(cls) -> FishHttpError:
+        """Build the 502 for JSON that is not an object, or a non-string ASR text."""
+        return cls(FISH_UNREACHABLE_STATUS, FISH_NON_OBJECT_MESSAGE)
 
 
 def should_retry_fish_status(status: int) -> bool:
@@ -58,12 +85,77 @@ def fish_attempt_exhausted(attempt: int) -> bool:
 
 
 def fish_backoff_seconds(attempt: int) -> float:
-    """Docs: `2 ** attempt` for attempts 0..4."""
+    """Return the documented base wait, ``2 ** attempt`` seconds, with no jitter."""
     return float(2 ** max(0, attempt))
 
 
+def fish_backoff_s(
+    attempt: int,
+    *,
+    retry_after: float | None = None,
+    rng: random.Random | None = None,
+) -> float:
+    """Return how long to wait before the next try.
+
+    Parameters
+    ----------
+    attempt : int
+        Zero-based attempt that just failed.
+    retry_after : float or None, optional
+        Seconds from a ``Retry-After`` header. A usable value raises the wait
+        to at least that long, capped at ``FISH_RETRY_AFTER_CAP_S``. Negative,
+        non-finite, or None is ignored.
+    rng : random.Random or None, optional
+        Source of jitter. Default is the module-level ``random``.
+
+    Returns
+    -------
+    float
+        Exponential base (``2 ** attempt``, capped at ``FISH_BACKOFF_CAP_S``)
+        with equal jitter: a uniform draw between half the base and the base.
+    """
+    base = min(FISH_BACKOFF_CAP_S, fish_backoff_seconds(attempt))
+    draw = (rng or random).random()
+    wait = base / 2 + draw * base / 2
+    if retry_after is not None and math.isfinite(retry_after) and retry_after >= 0:
+        wait = max(wait, min(retry_after, FISH_RETRY_AFTER_CAP_S))
+    return wait
+
+
+async def fish_sleep_before_retry(
+    attempt: int,
+    *,
+    retry_after: float | None = None,
+    rng: random.Random | None = None,
+) -> bool:
+    """Sleep with jitter before another try.
+
+    Parameters
+    ----------
+    attempt : int
+        Zero-based attempt that just failed.
+    retry_after : float or None, optional
+        Seconds from a ``Retry-After`` header. See ``fish_backoff_s``.
+    rng : random.Random or None, optional
+        Source of jitter.
+
+    Returns
+    -------
+    bool
+        True after sleeping, so the caller should try again. False when this
+        was the last attempt and nothing was slept.
+    """
+    if fish_attempt_exhausted(attempt):
+        return False
+    await asyncio.sleep(fish_backoff_s(attempt, retry_after=retry_after, rng=rng))
+    return True
+
+
 async def fish_retry_pause(attempt: int) -> bool:
-    """Sleep before another try, or report that this attempt is the last.
+    """Sleep ``2 ** attempt`` seconds, or report that this attempt is the last.
+
+    Prefer ``fish_sleep_before_retry``. Its return value is the natural way
+    round, and it adds jitter and ``Retry-After``.
 
     Parameters
     ----------
@@ -100,8 +192,8 @@ def bearer(key: str) -> str:
         ``Bearer`` plus the key.
     """
     token = key.strip()
-    # A newline would split the header. A non-ASCII character cannot be
-    # encoded into it, so the client raises before the request is sent.
+    # A newline would split the header, and a non-ASCII character cannot be
+    # encoded into it. Send an empty token so the upstream answers 401.
     if any(ord(ch) < 32 or ord(ch) >= 127 for ch in token):
         token = ""
     return f"Bearer {token}"
@@ -126,7 +218,7 @@ def fish_non_json() -> tuple[int, str]:
     tuple of int and str
         ``(502, "Fish returned a non-JSON body")``.
     """
-    return FISH_UNREACHABLE_STATUS, "Fish returned a non-JSON body"
+    return FISH_UNREACHABLE_STATUS, FISH_NON_JSON_MESSAGE
 
 
 def fish_non_object() -> tuple[int, str]:
@@ -137,19 +229,19 @@ def fish_non_object() -> tuple[int, str]:
     tuple of int and str
         ``(502, "Fish returned a non-object body")``.
     """
-    return FISH_UNREACHABLE_STATUS, "Fish returned a non-object body"
+    return FISH_UNREACHABLE_STATUS, FISH_NON_OBJECT_MESSAGE
 
 
 def parse_asr_body(body: object) -> tuple[dict[str, Any], str]:
     """ASR JSON object plus its text. Missing text is empty. A bad shape is 502."""
     data = _as_dict(body)
     if data is None:
-        raise FishHttpError(*fish_non_object())
+        raise FishHttpError.non_object()
     raw = data.get("text")
     if raw is None:
         return data, ""
     if not isinstance(raw, str):
-        raise FishHttpError(*fish_non_object())
+        raise FishHttpError.non_object()
     return data, raw
 
 
@@ -227,22 +319,21 @@ def _nested_message(value: Any) -> Any:
 
 
 def _read_message(value: Any) -> tuple[str | None, bool]:
-    # A blank string and a dict with no text are not the error. Stopping
-    # on them hid detail, so the client saw "error" or "HTTP 400".
+    # A blank string or an object with no text carries no detail. Keep looking
+    # in the other fields before falling back to "error" or "HTTP <status>".
     if value is None or (isinstance(value, str) and not value.strip()):
         return None, False
     if isinstance(value, str):
         return value.strip(), False
     if isinstance(value, dict):
         inner = _nested_message(value)
-        # A nested list is the same 422 payload. Returning the dict as
-        # "error" hid "field required". A string list joined the same way.
+        # A nested list is a 422 payload: report its messages, joined, not the dict.
         if inner is not None and inner is not value:
             found, _saw = _read_message(inner)
             if found:
                 return found, True
-        # One validation object is the same payload as a one-item list.
-        # str(dict) is the Python repr, so the field message never showed.
+        # One validation object is a one-item list. Never str() a dict: the
+        # client would see a Python repr instead of the field message.
         summary = _validation_msgs([value])
         if summary:
             return summary, True
@@ -292,14 +383,13 @@ def _validation_msgs(items: list[Any]) -> str | None:
     # not the whole validation array.
     parts: list[str] = []
     for item in items:
-        # One entry without a message used to hide the rest of the 422.
+        # An entry without a message is skipped; the others still report.
         if not isinstance(item, dict):
             continue
         entry = cast(dict[str, Any], item)
         msg = entry.get("msg")
         if not isinstance(msg, str) or not msg.strip():
-            # Some 422 objects use message instead of msg. Stopping on the
-            # missing msg hid the field text and the client saw "error".
+            # Some 422 objects use "message" instead of "msg".
             msg = entry.get("message")
         if isinstance(msg, str) and msg.strip():
             parts.append(msg.strip())
