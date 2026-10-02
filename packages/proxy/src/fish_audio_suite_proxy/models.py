@@ -97,7 +97,8 @@ def resolve_tts_model(
     raw = _native_model_id(_model_name(model, default))
     target = table.get(raw.lower())
     if target is not None:
-        return known_tts_model(target)
+        # A target written as fish-audio/<id> is the same model as <id>.
+        return known_tts_model(_native_model_id(target))
     if any(ch.isspace() or ord(ch) < 32 for ch in raw):
         return known_tts_model(default)
     return known_tts_model(raw)
@@ -158,4 +159,5 @@ def catalog_ids(aliases: Mapping[str, str] | None = None) -> list[str]:
     alias_names = OPENAI_TTS_NAMES if aliases is None else tuple(aliases)
     native = [*FISH_TTS_MODEL_IDS, *_ASR_NATIVE]
     prefixed = [f"{_PREFIX}{name}" for name in native]
-    return [*native, *alias_names, *_ASR_ALIASES, *prefixed]
+    # An alias can share a name with a native id. Each id is listed once.
+    return list(dict.fromkeys([*native, *alias_names, *_ASR_ALIASES, *prefixed]))

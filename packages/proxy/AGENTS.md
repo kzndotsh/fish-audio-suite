@@ -24,11 +24,11 @@ CLI: `fish-audio-suite-proxy`. Import: `fish_audio_suite_proxy`. Start uvicorn w
 | `errors.py` | OpenAI error envelope, `ProxyError` |
 
 Invariants:
-- `FISH_API_KEY` is read in lifespan. Importing the app and `GET /health` must work with it unset. A missing key is 503, a wrong client key is 401.
+- `FISH_API_KEY` is read in lifespan. Importing the app and `GET /health` must work with it unset. A missing key is 503 on any request that would call Fish, and a wrong client key is 401. Text that is only junk returns local silence first, so it never reaches the key check.
 - Scrub and cue logic lives in kit. Do not copy it here.
 - Never log request text above DEBUG unless `FISH_PROXY_LOG_TEXT` is set. Never put a key in `/health`.
 - Retry only 429, 5xx, and connections that never opened. A read timeout is not repeated.
-- Return the format the client asked for, or a 400. Do not swap it.
+- Return the format the client asked for, or a 400. Do not swap it. This holds for speech and transcription.
 - A word array comes from Fish word timings only. Segments are not words.
 - Forward valid `traceparent` and `tracestate`. Mint a sampled one when absent.
 - Fish errors become `{error:{code,message,type}}` with the upstream status. Fish bodies are `provider_error`.

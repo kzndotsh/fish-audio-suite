@@ -21,7 +21,7 @@ from fish_audio_suite_kit import (
     scrub_asr,
     utf8_text,
 )
-from fish_audio_suite_proxy.errors import json_error, read_json_object
+from fish_audio_suite_proxy.errors import ProxyError, json_error, read_json_object
 from fish_audio_suite_proxy.speech import ClipError, decode_audio_b64
 
 
@@ -80,10 +80,33 @@ def _form_text(value: Any, default: str) -> str:
     return default
 
 
+ASR_FORMATS = ("json", "text", "verbose_json", "srt", "vtt")
+
+
 def asr_response_format(raw: str) -> str:
-    """Return one response-format token. A newline is not part of the name."""
-    # "srt\\nbad" is not the srt branch, so a caption client receives JSON.
-    return _single_line(raw.lower(), "json")
+    """Return one response-format token. A newline is not part of the name.
+
+    Parameters
+    ----------
+    raw : str
+        The client's ``response_format``.
+
+    Returns
+    -------
+    str
+        The lowercase token, cut at the first control character.
+
+    Raises
+    ------
+    ProxyError
+        400 when the token is not one of ``ASR_FORMATS``. The reply is never
+        sent in a different format than the one asked for.
+    """
+    fmt = _single_line(raw.lower(), "json")
+    if fmt not in ASR_FORMATS:
+        allowed = ", ".join(ASR_FORMATS)
+        raise ProxyError(400, f"unsupported response_format {fmt[:32]!r}; use one of: {allowed}")
+    return fmt
 
 
 def _single_line(value: str, default: str) -> str:
@@ -281,9 +304,15 @@ def _json_text(value: Any) -> str | None:
     return None
 
 
-def _word_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
+def _word_rows(
+    data: dict[str, Any],
+    *,
+    strip_speakers: bool,
+    strip_cues: bool,
+) -> list[dict[str, Any]]:
     # Fish segments are phrases, not words, so they are never relabeled as
-    # words. Only real word timings from Fish are passed through.
+    # words. Only real word timings from Fish are passed through, scrubbed the
+    # same way as the transcript so the flags hold for every field.
     raw = data.get("words")
     if not isinstance(raw, list):
         return []
@@ -291,7 +320,8 @@ def _word_rows(data: dict[str, Any]) -> list[dict[str, Any]]:
     for item in raw:
         if not isinstance(item, dict):
             continue
-        word = _json_text(item.get("word")) or _json_text(item.get("text"))
+        raw = _json_text(item.get("word")) or _json_text(item.get("text")) or ""
+        word = scrub_asr(raw, strip_speakers=strip_speakers, strip_cues=strip_cues).strip()
         start = _json_number(item.get("start"))
         end = _json_number(item.get("end"))
         if word and start is not None and end is not None:
@@ -306,6 +336,8 @@ def _verbose_body(
     *,
     language: str | None,
     granularities: list[str],
+    strip_speakers: bool,
+    strip_cues: bool,
 ) -> dict[str, Any]:
     raw_lang = _json_text(data.get("language_code")) or _json_text(data.get("language")) or language
     # A surrogate in the language tag makes the JSON response fail to encode,
@@ -318,7 +350,12 @@ def _verbose_body(
         "text": text,
         "segments": _cue_rows(cues, "text"),
     }
-    words = _word_rows(data) if any(g.strip().lower() == "word" for g in granularities) else None
+    wants_words = any(g.strip().lower() == "word" for g in granularities)
+    words = (
+        _word_rows(data, strip_speakers=strip_speakers, strip_cues=strip_cues)
+        if wants_words
+        else None
+    )
     if words:
         body["words"] = words
     return body
@@ -332,6 +369,8 @@ def transcription_body(
     *,
     language: str | None,
     granularities: list[str],
+    strip_speakers: bool = False,
+    strip_cues: bool = False,
 ) -> PlainTextResponse | dict[str, Any]:
     """Shape the Fish ASR result as JSON, verbose JSON, SRT, or VTT.
 
@@ -351,11 +390,16 @@ def transcription_body(
         Client or env language hint.
     granularities : list of str
         ``timestamp_granularities`` values.
+    strip_speakers : bool, optional
+        Drop speaker labels from each word row. Default False.
+    strip_cues : bool, optional
+        Drop ``[cue]`` annotations from each word row. Default False.
 
     Returns
     -------
     PlainTextResponse or dict
-        Caption text, a verbose object, or ``{"text": ...}``.
+        Caption text, a verbose object, or ``{"text": ...}``. A word that is
+        empty after scrubbing is left out.
     """
     plain = _plain_transcript(fmt, text, cues)
     if plain is not None:
@@ -367,6 +411,8 @@ def transcription_body(
             data,
             language=language,
             granularities=granularities,
+            strip_speakers=strip_speakers,
+            strip_cues=strip_cues,
         )
     return {"text": text}
 

@@ -69,13 +69,14 @@ The same fields are under Admin, Settings, Audio.
 | `response_format` `aac`, `flac`, or anything else | 400. Fish cannot produce it, and other bytes would break the client's decoder |
 | `speed` | Multiplied by `FISH_SPEED`, then clamped to 0.5–2.0. OpenAI allows 0.25–4.0 |
 | `response_format=srt` or `vtt` | Caption file built from Fish segments |
+| Transcription `response_format` other than `json`, `text`, `verbose_json`, `srt`, `vtt` | 400, never a different format |
 | `verbose_json` and word timestamps | `segments` always. `words` only when Fish returns word timings |
 | Transcription body | Multipart `file`, or JSON `input_audio` (base64, optional `data:` URI) |
 | `references`, `input_references` | Decoded and sent as MessagePack. Without clips the body is JSON |
 | `seed`, `use_memory_cache` | Forwarded (`on` / `off`) |
 | `traceparent`, `tracestate` | Forwarded. A sampled `traceparent` is minted when the client omits one |
 
-`GET /v1/models` lists every id the routes accept: the Fish ids, the TTS aliases, `whisper-1`, and the `fish-audio/` prefixed ids.
+`GET /v1/models` lists the ids the proxy knows: the Fish ids, the TTS aliases, `whisper-1`, and the `fish-audio/` prefixed ids. The speech route also forwards any other single-token TTS model id as written, so a newer Fish model works before it is listed.
 
 `s2.1-pro-free` and `drama-3-preview` are left alone. Text that is only cues or junk returns one frame of silence in the requested format. ASR `language` is omitted unless the request or `FISH_ASR_LANGUAGE` sets it.
 
@@ -95,7 +96,7 @@ Beyond the OpenAI fields, a speech request may set `latency`, `chunk_length`, `m
 
 ### Retries
 
-Fish 429 and 5xx are retried up to `FISH_PROXY_RETRY_ATTEMPTS` times, waiting longer each time with jitter and honoring `Retry-After`. A connection that never opened is retried. A read timeout is not, because Fish may already have made, and billed, the audio. The loop stops at `FISH_PROXY_RETRY_DEADLINE` seconds, or when the client disconnects.
+Fish 429 and 5xx are retried until `FISH_PROXY_RETRY_ATTEMPTS` tries have been made in total, counting the first request (the default of 5 allows 4 retries), waiting longer each time with jitter and honoring `Retry-After`. A connection that never opened is retried. A read timeout is not, because Fish may already have made, and billed, the audio. The loop stops at `FISH_PROXY_RETRY_DEADLINE` seconds, or when the client disconnects. The deadline also cuts off a request that is still waiting on Fish, which then returns 504.
 
 ## Settings
 

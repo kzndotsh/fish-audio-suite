@@ -10,6 +10,31 @@ from fish_audio_suite_proxy.errors import ProxyError, json_error
 _TOO_LARGE = 413
 
 
+def _declared_too_large(declared: str, limit: int) -> bool:
+    """Return whether a ``Content-Length`` value is a number above ``limit``.
+
+    Parameters
+    ----------
+    declared : str
+        The header value. Anything that is not plain ASCII digits is ignored.
+    limit : int
+        Largest accepted body in bytes.
+
+    Returns
+    -------
+    bool
+        True when the value is above the limit. A value with more digits than
+        the limit is too large without converting it, because ``int`` refuses
+        a very long digit string.
+    """
+    if not (declared.isascii() and declared.isdigit()):
+        return False
+    digits = declared.lstrip("0")
+    if len(digits) > len(str(limit)):
+        return True
+    return bool(digits) and int(digits) > limit
+
+
 class BodyTooLargeError(ProxyError):
     """Signal that the request body went past ``FISH_PROXY_MAX_BODY_BYTES``."""
 
@@ -67,7 +92,7 @@ class BodyLimitMiddleware:
             await self.app(scope, receive, send)
             return
         declared = Headers(scope=scope).get("content-length", "")
-        if declared.isdigit() and int(declared) > limit:
+        if _declared_too_large(declared, limit):
             refusal = json_error(_TOO_LARGE, f"request body exceeds {limit} bytes")
             await refusal(scope, receive, send)
             return

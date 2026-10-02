@@ -401,6 +401,8 @@ async def transcriptions(request: Request):
         data,
         language=inbound.language,
         granularities=granularities,
+        strip_speakers=settings.asr_strip_speakers,
+        strip_cues=settings.asr_strip_cues,
     )
 
 

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
+import time
 from typing import Any
 
 import httpx
@@ -12,9 +14,12 @@ from fastapi.testclient import TestClient
 from fish_audio_suite_proxy.fields import (
     SILENT_MP3,
 )
+from fish_audio_suite_proxy.limits import _declared_too_large
+from fish_audio_suite_proxy.models import catalog_ids, resolve_tts_model
 from fish_audio_suite_proxy.server import _uvicorn_run_kwargs, app
 from fish_audio_suite_proxy.settings import load_settings
-from fish_audio_suite_proxy.upstream import RetryPolicy, retry_after_s
+from fish_audio_suite_proxy.transcribe import transcription_body
+from fish_audio_suite_proxy.upstream import RetryPolicy, fish_send, retry_after_s
 
 from .helpers import (
     AsrJson,
@@ -295,3 +300,136 @@ def test_a_filename_cannot_carry_a_path_or_grow_without_bound(
     name = captured["files"]["audio"][0]
     assert "/" not in name
     assert len(name) <= 255
+
+
+class _StalledClient:
+    sends = 0
+
+    def build_request(self, method: str, url: str, **_kwargs: Any) -> dict[str, str]:
+        return {"method": method, "url": url}
+
+    async def send(self, request: Any, *, stream: bool = False) -> Any:
+        del request, stream
+        self.sends += 1
+        await asyncio.Event().wait()
+
+
+def test_the_deadline_cuts_off_a_stalled_request() -> None:
+    client = _StalledClient()
+
+    async def run() -> Any:
+        return await fish_send(
+            client,
+            stream=False,
+            policy=RetryPolicy(attempts=5, deadline_s=0.05),
+            method="POST",
+            url="https://api.fish.audio/v1/tts",
+        )
+
+    started = time.monotonic()
+    out = asyncio.run(run())
+    assert out.status_code == 504
+    assert client.sends == 1
+    assert time.monotonic() - started < 2
+
+
+class _BrokenBody(FakeUpstream):
+    closed = False
+
+    async def aread(self) -> bytes:
+        raise httpx.ReadError("connection dropped")
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+def test_a_failed_error_body_read_closes_the_response_and_is_classified(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    broken = _BrokenBody(503)
+    out, client, _sleeps = run_fish_send(monkeypatch, [broken], policy=RetryPolicy(attempts=1))
+    assert broken.closed is True
+    assert client.sends == 1
+    assert out.status_code >= 500
+
+
+def test_a_failed_error_body_read_still_retries_a_503(monkeypatch: pytest.MonkeyPatch) -> None:
+    broken = _BrokenBody(503)
+    out, client, _sleeps = run_fish_send(
+        monkeypatch, [broken, FakeUpstream(200)], policy=RetryPolicy(attempts=3)
+    )
+    assert broken.closed is True
+    assert client.sends == 2
+    assert out.status_code == 200
+
+
+def test_a_huge_content_length_is_too_large_not_an_error() -> None:
+    assert _declared_too_large("9" * 5000, 1000) is True
+    assert _declared_too_large("1001", 1000) is True
+    assert _declared_too_large("1000", 1000) is False
+    assert _declared_too_large("0" * 5000 + "5", 1000) is False
+    assert _declared_too_large("\u00b2", 1000) is False
+    assert _declared_too_large("", 1000) is False
+    assert _declared_too_large("abc", 1000) is False
+
+
+def test_an_unsupported_transcription_format_is_a_400_and_never_calls_fish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = capture_upstream(monkeypatch, AsrJson())
+    with TestClient(app) as client:
+        r = client.post(
+            "/v1/audio/transcriptions",
+            files={"file": ("a.wav", b"xx", "audio/wav")},
+            data={"response_format": "xml"},
+        )
+        ok = client.post(
+            "/v1/audio/transcriptions",
+            files={"file": ("a.wav", b"xx", "audio/wav")},
+            data={"response_format": "JSON"},
+        )
+    assert r.status_code == 400
+    assert "xml" in r.json()["error"]["message"]
+    assert "verbose_json" in r.json()["error"]["message"]
+    assert ok.status_code == 200
+    assert captured
+
+
+def test_word_rows_are_scrubbed_like_the_transcript_and_empty_ones_dropped() -> None:
+    data = {
+        "words": [
+            {"word": "<|speaker:0|>Hello", "start": 0.0, "end": 0.4},
+            {"word": "[laughter]", "start": 0.4, "end": 0.9},
+            {"word": "ok\ud800", "start": 0.9, "end": 1.2},
+            {"word": "   ", "start": 1.2, "end": 1.3},
+        ]
+    }
+    stripped = transcription_body(
+        "verbose_json",
+        "Hello ok",
+        [],
+        data,
+        language="en",
+        granularities=["word"],
+        strip_speakers=True,
+        strip_cues=True,
+    )
+    kept = transcription_body(
+        "verbose_json", "Hello ok", [], data, language="en", granularities=["word"]
+    )
+    assert isinstance(stripped, dict)
+    assert isinstance(kept, dict)
+    assert [w["word"] for w in stripped["words"]] == ["Hello", "ok?"]
+    assert "[laughter]" in [w["word"] for w in kept["words"]]
+    json.dumps(stripped)
+
+
+def test_catalog_ids_list_each_id_once_when_an_alias_shadows_a_native_id() -> None:
+    ids = catalog_ids({"s2-pro": "s2.1-pro", "my-voice": "s2-pro"})
+    assert ids == list(dict.fromkeys(ids))
+    assert "my-voice" in ids
+
+
+def test_an_alias_target_with_the_prefix_reaches_fish_without_it() -> None:
+    table = {"my-voice": "fish-audio/s2-pro"}
+    assert resolve_tts_model("my-voice", "s2.1-pro", table) == "s2-pro"

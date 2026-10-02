@@ -84,10 +84,28 @@ def retry_after_s(headers: Any) -> float | None:
         return None
 
 
+_DEADLINE_STATUS = 504
+_DEADLINE_MESSAGE = "Fish did not answer before the retry deadline"
+
+
 async def _closed_error(upstream: httpx.Response) -> JSONResponse:
-    body = await upstream.aread()
-    await upstream.aclose()
+    # The body read can fail on a dropped connection. The response is closed
+    # either way, and the failure is classified like any other transport error.
+    try:
+        body = await upstream.aread()
+    except httpx.RequestError as exc:
+        status, message = fish_request_error(exc, httpx.TimeoutException)
+        return json_error(status, message)
+    finally:
+        await upstream.aclose()
     return json_from_upstream(upstream.status_code, body)
+
+
+def _remaining(policy: RetryPolicy, started: float) -> float | None:
+    """Return the seconds left in the deadline, or None when there is none."""
+    if not policy.deadline_s:
+        return None
+    return max(0.001, policy.deadline_s - (time.monotonic() - started))
 
 
 async def fish_send(
@@ -123,7 +141,9 @@ async def fish_send(
     -----
     429 and 5xx are retried, honoring ``Retry-After``, with jitter from the
     kit. Transport errors are retried only when the connection never opened.
-    A read timeout is returned as a 504 without a second request.
+    A read timeout is returned as a 504 without a second request. The
+    deadline applies to each send and each error-body read, so a stalled
+    request is cut off at the deadline, not at the read timeout.
     """
     policy = policy or RetryPolicy()
     started = time.monotonic()
@@ -131,7 +151,12 @@ async def fish_send(
     for attempt in range(policy.attempts):
         retry_after: float | None = None
         try:
-            upstream = await client.send(client.build_request(**request_kwargs), stream=stream)
+            # The deadline bounds a stalled request too, not only the pauses.
+            async with asyncio.timeout(_remaining(policy, started)):
+                upstream = await client.send(client.build_request(**request_kwargs), stream=stream)
+        except TimeoutError:
+            # Fish may already be working on it, so it is not sent again.
+            return json_error(_DEADLINE_STATUS, _DEADLINE_MESSAGE)
         except httpx.RequestError as exc:
             status, message = fish_request_error(exc, httpx.TimeoutException)
             last_error = json_error(status, message)
@@ -143,7 +168,11 @@ async def fish_send(
             if 200 <= upstream.status_code < 300:
                 return upstream
             retry_after = retry_after_s(getattr(upstream, "headers", None))
-            last_error = await _closed_error(upstream)
+            try:
+                async with asyncio.timeout(_remaining(policy, started)):
+                    last_error = await _closed_error(upstream)
+            except TimeoutError:
+                return json_error(_DEADLINE_STATUS, _DEADLINE_MESSAGE)
             if not should_retry_fish_status(upstream.status_code):
                 return last_error
             log.warning(
