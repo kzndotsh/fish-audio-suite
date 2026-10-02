@@ -1274,3 +1274,52 @@ def test_tts_spec_warns_once_when_it_swaps_a_format_or_latency(
     assert err.count("'flac'") == 1
     assert "'ogg'" in err
     assert "'low'" in err
+
+
+def _kinds(events: list[object]) -> list[str]:
+    return [type(event).__name__ for event in events]
+
+
+def test_early_flush_speaks_the_first_piece_then_flushes_again_at_the_end() -> None:
+    async def run() -> list[object]:
+        tts = IsolatedFishTts(api_key="k", voice_id="v")
+        deltas = ["Hello there my friend. ", "How are you doing today? ", "I hope it is well."]
+        return [
+            event
+            async for event in delta_events(
+                deltas, threading.Event(), partial_chars=tts.partial_chars, early_flush=True
+            )
+        ]
+
+    kinds = _kinds(asyncio.run(run()))
+    assert kinds[0] == "TextEvent"
+    assert kinds[1] == "FlushEvent"
+    assert kinds[-1] == "FlushEvent"
+    assert kinds.count("FlushEvent") == 2
+
+
+def test_early_flush_with_one_piece_does_not_flush_twice() -> None:
+    async def run() -> list[object]:
+        return [
+            event
+            async for event in delta_events(
+                ["Hello there my friend."],
+                threading.Event(),
+                partial_chars=IsolatedFishTts(api_key="k", voice_id="v").partial_chars,
+                early_flush=True,
+            )
+        ]
+
+    assert _kinds(asyncio.run(run())) == ["TextEvent", "FlushEvent"]
+
+
+def test_early_flush_on_an_empty_reply_sends_nothing() -> None:
+    async def run() -> list[object]:
+        return [
+            event
+            async for event in delta_events(
+                [], threading.Event(), partial_chars=50, early_flush=True
+            )
+        ]
+
+    assert asyncio.run(run()) == []

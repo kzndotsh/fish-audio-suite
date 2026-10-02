@@ -15,10 +15,13 @@ from fish_audio_suite_voice.duplex import (
     _accept_asr,
     _after_speech,
     _collect_reply,
+    _HeardLine,
     _Loop,
     _recognize,
     _remember_user,
     _speak_reply,
+    _stream_turn,
+    _TokenPipe,
     duplex_turns,
 )
 from fish_audio_suite_voice.live import IsolatedFishTts, IsolatedResult
@@ -346,6 +349,7 @@ def test_cancelled_speak_keeps_the_audio_that_tripped_barge(
         text: str,
         sink: Sink,
         cancel: threading.Event | None = None,
+        on_first_audio: object = None,
     ) -> IsolatedResult:
         assert text == "Hello there friend"
         return IsolatedResult("hello", 4, True, True, 3.0, 2.0)
@@ -436,3 +440,137 @@ def test_a_deliberate_repeat_is_kept_but_a_stale_copy_is_dropped() -> None:
     assert _accept_asr("No.", "no", stale=False) == "ok"
     assert _accept_asr("no", "no", stale=True) == "skip"
     assert _accept_asr("no", "yes", stale=True) == "ok"
+
+
+def test_token_pipe_hands_tokens_across_in_order() -> None:
+    pipe = _TokenPipe()
+    for token in ("Hello ", "there"):
+        pipe.push(token)
+    pipe.close()
+
+    async def drain() -> list[str]:
+        return [token async for token in pipe]
+
+    assert asyncio.run(drain()) == ["Hello ", "there"]
+
+
+class _StreamGate:
+    captured = b""
+
+    def __init__(self) -> None:
+        self.armed = 0
+
+    def start_after_bleed(self, cancel: threading.Event) -> threading.Thread:
+        self.armed += 1
+        thread = threading.Thread(target=lambda: None)
+        thread.start()
+        return thread
+
+
+class _StreamSink:
+    def start(self) -> None:
+        return None
+
+    def write(self, chunk: bytes) -> None:
+        return None
+
+    def finish(self, *, kill: bool = False) -> None:
+        return None
+
+    def bytes_played(self) -> int:
+        return 0
+
+
+async def _two_tokens(*_args: object, **_kwargs: object) -> AsyncIterator[str]:
+    for token in ("Hello ", "there friend."):
+        yield token
+        await asyncio.sleep(0)
+
+
+def test_stream_turn_feeds_tokens_to_tts_and_arms_barge_at_first_audio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = _loop(_two_tokens)
+    gate = _StreamGate()
+    monkeypatch.setattr("fish_audio_suite_voice.duplex.BargeGate", lambda **_kwargs: gate)
+    monkeypatch.setattr("fish_audio_suite_voice.duplex.make_sink", lambda *_a, **_k: _StreamSink())
+    heard_tokens: list[str] = []
+    armed_before_audio: list[int] = []
+
+    def speak_stream(
+        deltas: _TokenPipe,
+        sink: _StreamSink,
+        cancel: threading.Event,
+        on_first_audio: Callable[[], None] | None = None,
+    ) -> IsolatedResult:
+        async def drain() -> None:
+            heard_tokens.extend([token async for token in deltas])
+
+        asyncio.run(drain())
+        armed_before_audio.append(gate.armed)
+        assert on_first_audio is not None
+        on_first_audio()
+        return IsolatedResult("Hello there friend.", 4, True, False, 3.0, 2.0)
+
+    loop.tts.speak_stream_isolated = speak_stream
+    snapshot, code = asyncio.run(
+        _stream_turn(
+            loop,
+            _HeardLine("line", text="hi", started=time.perf_counter()),
+            threading.Event(),
+            asyncio.Event(),
+        )
+    )
+    assert code is None
+    assert heard_tokens == ["Hello ", "there friend."]
+    assert armed_before_audio == [0]
+    assert gate.armed == 1
+    assert snapshot.first_audio is not None
+    assert snapshot.llm_ttft is not None
+    assert loop.history[-1] == {"role": "assistant", "content": "Hello there friend."}
+
+
+def test_stream_turn_speaks_the_finished_reply_when_fish_fails_before_audio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = _loop(_two_tokens)
+    monkeypatch.setattr("fish_audio_suite_voice.duplex.BargeGate", lambda **_kwargs: _StreamGate())
+    monkeypatch.setattr("fish_audio_suite_voice.duplex.make_sink", lambda *_a, **_k: _StreamSink())
+    spoken: list[str] = []
+
+    def speak_stream(
+        deltas: _TokenPipe,
+        sink: _StreamSink,
+        cancel: threading.Event,
+        on_first_audio: Callable[[], None] | None = None,
+    ) -> IsolatedResult:
+        async def drain() -> None:
+            async for _token in deltas:
+                pass
+
+        asyncio.run(drain())
+        return IsolatedResult("", 0, False, False, None, None, error_status=503)
+
+    def speak_whole(
+        text: str,
+        sink: _StreamSink,
+        cancel: threading.Event | None = None,
+        on_first_audio: Callable[[], None] | None = None,
+    ) -> IsolatedResult:
+        spoken.append(text)
+        return IsolatedResult("Hello there friend.", 4, True, False, 3.0, 2.0)
+
+    loop.tts.speak_stream_isolated = speak_stream
+    loop.tts.speak_isolated = speak_whole
+    _snapshot, code = asyncio.run(
+        _stream_turn(
+            loop,
+            _HeardLine("line", text="hi", started=time.perf_counter()),
+            threading.Event(),
+            asyncio.Event(),
+        )
+    )
+    assert code is None
+    assert len(spoken) == 1
+    assert "Hello" in spoken[0]
+    assert loop.history[-1]["role"] == "assistant"

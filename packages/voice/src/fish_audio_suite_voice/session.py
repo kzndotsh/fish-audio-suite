@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 import threading
 import time
-from collections.abc import AsyncIterator, Coroutine
+from collections.abc import AsyncIterator, Callable, Coroutine
 from dataclasses import dataclass
 from typing import Any
 
@@ -135,16 +135,14 @@ async def _one_attempt(turn: _Turn, events: AsyncIterator[Any], attempt: int) ->
 def _turn_headers(spec: TurnSpec, sent_text: str) -> dict[str, str]:
     extra = ensure_trace_headers(spec.trace_headers)
     debug(
-        "tts.start voice={} model={} format={} sr={} latency={} speed={} chars={} trace={} text={}",
-        spec.voice_id,
+        "tts.start voice={} model={} {} {}Hz latency={} speed={}{}",
+        spec.voice_id[:8],
         spec.model,
         spec.audio_format,
         spec.sample_rate,
         spec.latency,
         spec.speed,
-        len(sent_text),
-        extra.get("traceparent", ""),
-        sent_text,
+        f" chars={len(sent_text)}" if sent_text else " streaming",
     )
     return extra
 
@@ -156,6 +154,7 @@ async def run_turn(
     cancel: threading.Event,
     *,
     sent_text: str,
+    on_first_audio: Callable[[], None] | None = None,
 ) -> IsolatedResult:
     """Play one Fish turn, retrying 429 and 5xx only before the first audio byte.
 
@@ -173,6 +172,9 @@ async def run_turn(
     sent_text : str
         Full text to replay. Empty means the original ``events`` iterator is
         the only source, so a failed attempt cannot be repeated.
+    on_first_audio : Callable or None, optional
+        Called once, on the websocket's thread, when the first audio chunk
+        arrives. It must not block.
 
     Returns
     -------
@@ -192,6 +194,7 @@ async def run_turn(
         acc=EventAcc(),
         t0=time.perf_counter(),
         audio=Heard(),
+        on_first_audio=on_first_audio,
     )
     turn = _Turn(run=run, held=_HeldClient(), headers=_turn_headers(spec, sent_text))
 

@@ -71,6 +71,8 @@ class VoiceCliConfig:
         within this many seconds of the mic opening. 0 never drops a repeat.
     mood_lead : bool
         Rewrite a sentence-leading mood word into a ``[cue]``.
+    stream_tts : bool
+        Speak the reply while the model is still writing it. Off by default.
     drop_narration : bool
         Drop stage-direction lines such as ``She smiles.`` before TTS.
     """
@@ -101,6 +103,7 @@ class VoiceCliConfig:
     repeat_window_s: float = DEFAULT_REPEAT_WINDOW_S
     mood_lead: bool = False
     drop_narration: bool = False
+    stream_tts: bool = False
 
 
 def _asr_model(default: str) -> str:
@@ -177,4 +180,5 @@ def cfg() -> VoiceCliConfig:
         repeat_window_s=read_float("FISH_VOICE_REPEAT_WINDOW_S", DEFAULT_REPEAT_WINDOW_S, lo=0.0),
         mood_lead=read_flag("FISH_MOOD_LEAD", default=False),
         drop_narration=read_flag("FISH_DROP_NARRATION", default=False),
+        stream_tts=read_flag("FISH_STREAM_TTS", default=False),
     )

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterable, Callable, Coroutine, Iterable
 from dataclasses import dataclass, field
 from functools import cache
-from typing import cast
+from typing import Any, cast
 
 from fishaudio.types import AudioFormat, LatencyMode, Prosody, TTSConfig
 
@@ -151,6 +151,7 @@ class IsolatedFishTts:
         text: str,
         sink: PlaybackSink,
         cancel: threading.Event | None = None,
+        on_first_audio: Callable[[], None] | None = None,
     ) -> IsolatedResult:
         """Run one Fish websocket on a private thread and event loop.
 
@@ -162,6 +163,8 @@ class IsolatedFishTts:
             Where PCM or encoded audio is written.
         cancel : threading.Event or None, optional
             Set to stop the turn. A new event is created when omitted.
+        on_first_audio : Callable or None, optional
+            Called once on the websocket's thread at the first audio chunk.
 
         Returns
         -------
@@ -182,6 +185,60 @@ class IsolatedFishTts:
         Do not ``aclose()`` the websocket iterator.
         """
         cancel = cancel or threading.Event()
+        return self._run_on_thread(
+            lambda: self.speak(text, sink, cancel, on_first_audio=on_first_audio), cancel
+        )
+
+    def speak_stream_isolated(
+        self,
+        deltas: Iterable[str] | AsyncIterable[str],
+        sink: PlaybackSink,
+        cancel: threading.Event,
+        on_first_audio: Callable[[], None] | None = None,
+    ) -> IsolatedResult:
+        """Speak a token stream on a private thread while the model is still writing.
+
+        Parameters
+        ----------
+        deltas : Iterable or AsyncIterable of str
+            Model tokens. An async iterable is read on the private loop, so it
+            must not depend on the caller's loop.
+        sink : PlaybackSink
+            Where PCM or encoded audio is written.
+        cancel : threading.Event
+            Set to stop the turn.
+        on_first_audio : Callable or None, optional
+            Called once on the websocket's thread at the first audio chunk.
+
+        Returns
+        -------
+        IsolatedResult
+            How much was spoken. ``sent_text`` is empty, so a failed turn is not
+            replayed here. The caller can speak the finished reply instead.
+
+        Raises
+        ------
+        Exception
+            Re-raised from the private thread, as ``speak_isolated`` does.
+
+        Notes
+        -----
+        Flushes once after the first sentence and once at the end. Fish holds
+        text until a chunk fills or a flush arrives, so one flush at the end
+        would keep the reply silent until the model finished.
+        """
+        return self._run_on_thread(
+            lambda: self.speak_deltas(
+                deltas, sink, cancel, early_flush=True, on_first_audio=on_first_audio
+            ),
+            cancel,
+        )
+
+    def _run_on_thread(
+        self,
+        make: Callable[[], Coroutine[Any, Any, IsolatedResult]],
+        cancel: threading.Event,
+    ) -> IsolatedResult:
         result: IsolatedResult | None = None
         # thread.join does not re-raise. A sink that fails to open would
         # otherwise look like a silent turn.
@@ -190,7 +247,7 @@ class IsolatedFishTts:
         def worker() -> None:
             nonlocal result, error
             try:
-                result = run_isolated(self.speak(text, sink, cancel))
+                result = run_isolated(make())
             except (asyncio.CancelledError, BaseExceptionGroup, RuntimeError, GeneratorExit) as e:
                 if not is_cancel_noise(e, cancelled=cancel.is_set()):
                     warn(f"[tts] {e}")
@@ -212,6 +269,7 @@ class IsolatedFishTts:
         text: str,
         sink: PlaybackSink,
         cancel: threading.Event,
+        on_first_audio: Callable[[], None] | None = None,
     ) -> IsolatedResult:
         """Speak one full string on the caller's loop.
 
@@ -224,6 +282,8 @@ class IsolatedFishTts:
         cancel : threading.Event
             Stops the turn. Also used as the retry boundary: 429 and 5xx
             replay only before the first audio byte.
+        on_first_audio : Callable or None, optional
+            Called once at the first audio chunk.
 
         Returns
         -------
@@ -242,24 +302,33 @@ class IsolatedFishTts:
             sink,
             cancel,
             sent_text=prepared,
+            on_first_audio=on_first_audio,
         )
 
     async def speak_deltas(
         self,
-        deltas: Iterable[str] | AsyncIterator[str],
+        deltas: Iterable[str] | AsyncIterable[str],
         sink: PlaybackSink,
         cancel: threading.Event,
+        *,
+        early_flush: bool = False,
+        on_first_audio: Callable[[], None] | None = None,
     ) -> IsolatedResult:
         """Stream model deltas, cutting them into Fish text events.
 
         Parameters
         ----------
-        deltas : Iterable or AsyncIterator of str
+        deltas : Iterable or AsyncIterable of str
             Token stream. Empty pieces are skipped.
         sink : PlaybackSink
             Playback target.
         cancel : threading.Event
             Stops the turn.
+        early_flush : bool, optional
+            Flush once after the first piece so audio starts before the model
+            finishes. Default False.
+        on_first_audio : Callable or None, optional
+            Called once at the first audio chunk.
 
         Returns
         -------
@@ -269,19 +338,25 @@ class IsolatedFishTts:
 
         Notes
         -----
-        The duplex loop does not call this. It waits for the full reply and
-        uses ``speak_isolated``, which can replay on 429 or 5xx. A thought,
+        Duplex reaches this through ``speak_stream_isolated`` when streaming is
+        on. Otherwise it waits for the full reply and uses ``speak_isolated``,
+        which can replay on 429 or 5xx. A thought,
         parenthesis, bracket, or URL stays buffered until it closes, so a
         cut cannot speak the inside of a span the closer would remove.
         """
         return await run_turn(
             self._spec(),
             delta_events(
-                deltas, cancel, partial_chars=self.partial_chars, mood_lead=self.mood_lead
+                deltas,
+                cancel,
+                partial_chars=self.partial_chars,
+                mood_lead=self.mood_lead,
+                early_flush=early_flush,
             ),
             sink,
             cancel,
             sent_text="",
+            on_first_audio=on_first_audio,
         )
 
     def _spec(self) -> TurnSpec:

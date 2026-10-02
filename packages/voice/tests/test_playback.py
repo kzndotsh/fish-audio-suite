@@ -278,6 +278,7 @@ def test_speak_isolated_works_inside_asyncio_run(
         text: str,
         sink: FileSink,
         cancel: threading.Event,
+        on_first_audio: object = None,
     ) -> IsolatedResult:
         sink.start()
         sink.write(b"\x00\x00" * 64)

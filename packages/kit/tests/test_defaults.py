@@ -65,6 +65,7 @@ def test_suite_defaults_and_timing() -> None:
     assert "never spoken" in DEFAULT_SYSTEM_PROMPT
     assert "[excited]" in DEFAULT_SYSTEM_PROMPT
     assert "do not tag every sentence" in DEFAULT_SYSTEM_PROMPT
+    assert "first_audio=850ms" in LatencySnapshot(first_audio=850).log_line()
     line = LatencySnapshot(ttfa=12.4).log_line()
     assert "ttfa=12ms" in line
     assert "asr=" not in line

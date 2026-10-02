@@ -21,8 +21,6 @@ DEFAULT_SYSTEM_PROMPT = (
     "Add another cue only when something changes: a laugh, a whisper, a pause, or a real "
     "shift in emotion. A vague one-word tag barely changes the voice, so for a subtler "
     "mood write a longer cue such as [playful, light laugh]. "
-    "Good: [curious] what's going on? "
-    "Bad: [happy] on every sentence."
 )
 
 
@@ -76,6 +74,7 @@ class LatencySnapshot:
     llm_ttft: float | None = None
     llm_ttfs: float | None = None
     ttfa: float | None = None
+    first_audio: float | None = None
     voice_to_voice: float | None = None
     trace_id: str | None = None
 
@@ -92,6 +91,7 @@ class LatencySnapshot:
             _timing_field("llm_ttft", self.llm_ttft),
             _timing_field("llm_ttfs", self.llm_ttfs),
             _timing_field("ttfa", self.ttfa),
+            _timing_field("first_audio", self.first_audio),
             _timing_field("voice_to_voice", self.voice_to_voice),
         ]
         if self.trace_id:

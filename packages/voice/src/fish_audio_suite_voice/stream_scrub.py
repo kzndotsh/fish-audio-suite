@@ -9,10 +9,10 @@ from __future__ import annotations
 
 import re
 import threading
-from collections.abc import AsyncIterator, Iterable
+from collections.abc import AsyncIterable, AsyncIterator, Iterable
 from typing import Any
 
-from fishaudio import TextEvent
+from fishaudio import FlushEvent, TextEvent
 
 from fish_audio_suite_kit import (
     ends_sentence,
@@ -163,17 +163,18 @@ def _scrub_chunk(
 
 
 async def delta_events(
-    deltas: Iterable[str] | AsyncIterator[str],
+    deltas: Iterable[str] | AsyncIterable[str],
     cancel: threading.Event,
     *,
     partial_chars: int,
     mood_lead: bool = False,
+    early_flush: bool = False,
 ) -> AsyncIterator[Any]:
     """Cut model deltas into Fish text events, scrubbing as each span closes.
 
     Parameters
     ----------
-    deltas : Iterable or AsyncIterator of str
+    deltas : Iterable or AsyncIterable of str
         Token stream. Empty pieces are skipped.
     cancel : threading.Event
         Stops the stream.
@@ -181,11 +182,18 @@ async def delta_events(
         Size of one Fish text event.
     mood_lead : bool, optional
         Rewrite a sentence-leading mood word into a ``[cue]``. Default False.
+    early_flush : bool, optional
+        Flush once right after the first piece, so Fish speaks it while the
+        model is still writing. Default False. Fish holds text until a chunk
+        fills or a flush arrives, so without this a streamed reply is silent
+        until the model finishes.
 
     Yields
     ------
     Any
         ``TextEvent`` pieces, then one ``FlushEvent`` when any text was sent.
+        With ``early_flush`` there is one more flush after the first piece,
+        and the final flush is sent only if text followed it.
 
     Notes
     -----
@@ -198,6 +206,8 @@ async def delta_events(
     # and the next span still needs the neighbor so its gap survives.
     last = ""
     sent = 0
+    flushed_early = False
+    since_flush = 0
     # Text already sent on this line. An empty ready buffer is not a new
     # line, so a star after "Hello." must not be stripped as a bullet.
     sent_line = ""
@@ -255,6 +265,11 @@ async def delta_events(
             event = counted(piece)
             if event is not None:
                 yield event
+                since_flush += 1
+                if early_flush and not flushed_early:
+                    flushed_early = True
+                    since_flush = 0
+                    yield FlushEvent()
     if not cancel.is_set() and raw:
         lead = not _continues_sentence(ready, raw)
         raw = _drop_orphan_closer(raw, ready)
@@ -278,6 +293,12 @@ async def delta_events(
         event = counted(piece)
         if event is not None:
             yield event
-    flush = flush_if_sent(sent, cancel)
+            since_flush += 1
+            if early_flush and not flushed_early:
+                flushed_early = True
+                since_flush = 0
+                yield FlushEvent()
+    # A flush with no text after the early one would ask Fish to flush nothing.
+    flush = flush_if_sent(since_flush if flushed_early else sent, cancel)
     if flush is not None:
         yield flush

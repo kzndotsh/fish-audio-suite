@@ -40,6 +40,6 @@ Library classes take settings and state as arguments. Only `config.cfg()` and `t
 
 Extras `speakers` / `vad` / `aec` / `cli` are optional. `sounddevice`, `webrtcvad`, `pywebrtc_audio`, and `openrouter` stay imported inside the functions that need them so `import fish_audio_suite_voice` works without extras. The `vad` extra is **`webrtcvad-wheels`**, not PyPI `webrtcvad` (breaks on 3.12). Mic/speakers need system PortAudio; missing lib → `PortAudioMissingError` (CLI exits 2 with hints).
 
-Skip empty deltas; yield `FlushEvent` only after at least one `TextEvent`. Ctrl+C must cancel TTS (`session.turn`), not only the mic `session.stop`.
+Skip empty deltas; yield `FlushEvent` only after at least one `TextEvent`. `FISH_STREAM_TTS` runs the LLM and TTS together through `_TokenPipe`; `delta_events(early_flush=True)` flushes once after the first piece and again at the end only if more text followed. Fish holds text until a flush, so a single end flush would keep the reply silent. Ctrl+C must cancel TTS (`session.turn`), not only the mic `session.stop`.
 
 Not done: one persistent mic reader shared by listen and barge (each phase still reopens the stream), and `stream_delay_ms` from the real stream latency (the ring is trimmed instead; unverified on hardware).

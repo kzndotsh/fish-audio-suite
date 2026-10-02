@@ -483,3 +483,10 @@ def test_repeat_window_env_is_read_and_clamped(monkeypatch: pytest.MonkeyPatch) 
     assert cfg().repeat_window_s == 0.0
     monkeypatch.setenv("FISH_VOICE_REPEAT_WINDOW_S", "-3")
     assert cfg().repeat_window_s == 1.5
+
+
+def test_stream_tts_is_off_unless_asked(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("FISH_STREAM_TTS", raising=False)
+    assert cfg().stream_tts is False
+    monkeypatch.setenv("FISH_STREAM_TTS", "1")
+    assert cfg().stream_tts is True

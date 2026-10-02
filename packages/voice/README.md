@@ -22,7 +22,7 @@ result = tts.speak_isolated("Hello there.", FileSink(Path("turn.wav")))
 cp .env.example .env
 ./packages/voice/dev.sh --smoke    # writes a new temp wav, or pass --out PATH
 ./packages/voice/dev.sh            # duplex
-./packages/voice/dev.sh --debug    # or FISH_VOICE_DEBUG=1
+./packages/voice/dev.sh --debug    # or FISH_VOICE_DEBUG=1; --trace (or 2) adds heartbeats
 ```
 
 `--smoke` exits 2 if `FISH_API_KEY` or `FISH_VOICE_ID` is missing. The same entry point from anywhere the extra is installed:
@@ -74,6 +74,20 @@ The chat history gets only what you probably heard. For PCM that is a word-align
 ### LLM backends
 
 `FISH_LLM_BACKEND` picks `openai` (any chat-completions server over one pooled httpx client) or `openrouter` (the SDK). Unset, it follows the host of `FISH_LLM_BASE`. A key never crosses providers: `OPENROUTER_API_KEY` is only a fallback for the OpenRouter backend and `OPENAI_API_KEY` only for the other. OpenRouter-only options: `FISH_LLM_NITRO=1` adds `:nitro` to the model and sorts providers by `FISH_LLM_PROVIDER_SORT`, and `FISH_LLM_REFERER`, `FISH_LLM_TITLE`, `FISH_LLM_CATEGORIES` set the attribution (empty disables one). The OpenAI backend sends none of those headers.
+
+### Streaming the reply
+
+By default the reply is spoken after the model finishes. Set `FISH_STREAM_TTS=1` to speak
+while the model is still writing. The Fish socket opens with the request and the first
+sentence is flushed at once, so audio starts about when that sentence is done instead of when
+the whole reply is. The socket then gets one more flush at the end.
+
+- One extra flush is needed: Fish holds text until a chunk fills or a flush arrives, so a single
+  flush at the end keeps a short reply silent until the model is done.
+- The reply is scrubbed as it arrives, and the whole-reply junk check is skipped.
+- The barge-in gate arms at the first audio chunk.
+- If Fish fails before any audio, the finished reply is spoken on the normal path.
+- The `first_audio` timing is measured from the start of ASR, in both modes, so you can compare them.
 
 ### Roleplay helpers
 
@@ -137,6 +151,7 @@ LLM:
 | `FISH_LLM_CONTINUE` | off | Send one more request when a reply stops mid-sentence |
 | `FISH_SYSTEM_PROMPT` | the kit default | System prompt text |
 | `FISH_HISTORY_TURNS` | `20` | User and assistant pairs kept |
+| `FISH_STREAM_TTS` | off | Speak the reply while the model is still writing it. See streaming below |
 | `FISH_VOICE_REPEAT_WINDOW_S` | `1.5` | A line equal to the previous one is dropped only if it ends this soon after the mic opens. 0 never drops a repeat |
 | `FISH_MOOD_LEAD`, `FISH_DROP_NARRATION` | off | See roleplay helpers |
 
@@ -158,7 +173,7 @@ Listen and interrupt. Times are approximate at 30 ms frames.
 | `FISH_VOICE_BARGE_FRAMES` | `10` | Loud voiced frames in a row that interrupt (about 300 ms) |
 | `FISH_VOICE_BARGE_RMS` | `220` | Barge floor seed. It follows the room, never below this |
 | `FISH_VOICE_BARGE_OVER` | `2.2` | Floor multiplier while the speaker plays and AEC is off. At least 1 |
-| `FISH_VOICE_DEBUG` | off | `--debug` or `1` |
+| `FISH_VOICE_DEBUG` | off | `1` or `--debug` logs events. `2`, `trace` or `--trace` adds mic heartbeats, raw audio events and HTTP lines |
 
 `dev.sh` also reads `FISH_VOICE_ENV` (env file path), `FISH_VOICE_PORTAUDIO_LIB` (library directories), and `FISH_VOICE_NIX=1` (build PortAudio with nix on a host that is not NixOS).
 

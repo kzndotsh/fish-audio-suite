@@ -110,6 +110,7 @@ class TurnRun:
     audio: Heard
     err_status: int | None = None
     err_message: str | None = None
+    on_first_audio: Callable[[], None] | None = None
 
 
 async def text_events(
@@ -265,16 +266,23 @@ async def send_turn(
     await _pump_ws_audio(stream, run, close_client)
 
 
-def _note_first_audio(audio: Heard, chunk: bytes, t0: float) -> None:
+def _note_first_audio(
+    audio: Heard,
+    chunk: bytes,
+    t0: float,
+    on_first_audio: Callable[[], None] | None = None,
+) -> None:
     if audio.got_audio:
         return
     audio.got_audio = True
     audio.ttfa_ms = elapsed_ms(t0)
     debug(
-        "tts.first_audio ttfa_ms={:.0f} chunk={}",
+        "tts.first_audio {:.0f}ms after tts.start ({} bytes)",
         audio.ttfa_ms,
         len(chunk),
     )
+    if on_first_audio is not None:
+        on_first_audio()
 
 
 _STREAM_END = object()
@@ -319,7 +327,7 @@ async def _pump_ws_audio(
                 raise item
             if not item:
                 continue
-            _note_first_audio(run.audio, item, run.t0)
+            _note_first_audio(run.audio, item, run.t0, run.on_first_audio)
             if run.cancel.is_set():
                 await close_client()
                 return
@@ -336,13 +344,13 @@ def _remember_event(ev: Any, acc: EventAcc, t0: float) -> None:
         if acc.ttfs_ms is None:
             acc.ttfs_ms = elapsed_ms(t0)
             debug(
-                "tts.text_event chars={} ttfs_ms={:.0f} text={}",
+                "tts.say {!r} ({} chars, first sentence at +{:.0f}ms)",
+                text,
                 len(text),
                 acc.ttfs_ms,
-                text,
             )
             return
-        debug("tts.text_event chars={} text={}", len(text), text)
+        debug("tts.say {!r} ({} chars)", text, len(text))
         return
     if isinstance(ev, FlushEvent):
         debug("tts.flush")
