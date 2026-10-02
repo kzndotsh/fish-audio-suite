@@ -4,7 +4,7 @@
 
 | File | Owns |
 | --- | --- |
-| [`module.nix`](module.nix) | `nixosModules.default`, called as `import ./module.nix self`. `services.fish-audio-suite-proxy`: `enable`, `backend` (`native` systemd service, default; or `oci`), `package`, `image` (required for `oci`), `host` (`127.0.0.1`), `port` (`8849`), `openFirewall`, `autoStart` (true), `environment`, `environmentFiles` |
+| [`module.nix`](module.nix) | `nixosModules.default`, called as `import ./module.nix self`. `services.fish-audio-suite-proxy`: `enable`, `backend` (`native` systemd service, default; or `oci`), `package`, `image` (required for `oci`), `host` (`127.0.0.1`), `port` (`8849`), `openFirewall`, `autoStart` (true), `gracefulShutdownSeconds` (`120`, keep equal to `DEFAULT_GRACEFUL_S` in the proxy settings; the service and container stop timeouts are this plus 10), `environment`, `environmentFiles` |
 
 The module sets `FISH_PROXY_PORT` from `port`; `FISH_PROXY_HOST` is set for `native` only (the container image sets it itself). `FISH_API_KEY` goes in `environmentFiles`, never `environment`.
 

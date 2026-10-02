@@ -51,7 +51,7 @@ uv run --package fish-audio-suite-proxy fish-audio-suite-proxy
 curl -s http://127.0.0.1:8849/health
 ```
 
-Point the client at `http://127.0.0.1:8849/v1`. The Fish key stays on the proxy. Set `FISH_PROXY_API_KEYS` to require a bearer key from clients; without it any client key is accepted, so keep the proxy on loopback. The Docker image listens on every interface inside the container, so publish it on loopback (`-p 127.0.0.1:8849:8849`) or set `FISH_PROXY_API_KEYS` before you publish it elsewhere. `tts-1` and `whisper-1` are mapped onto Fish models.
+Point the client at `http://127.0.0.1:8849/v1`. The Fish key stays on the proxy. Set `FISH_PROXY_API_KEYS` to require a bearer key from clients; without it any client key is accepted, so keep the proxy on loopback. The Docker image listens on every interface inside the container, so publish it on loopback (`-p 127.0.0.1:8849:8849`) or set `FISH_PROXY_API_KEYS` before you publish it elsewhere. On stop the proxy lets in-flight replies finish for up to `FISH_PROXY_GRACEFUL_SHUTDOWN` seconds (default 120), but Docker kills a container after 10 seconds, so run it with `--stop-timeout 130` (compose: `stop_grace_period: 130s`). `tts-1` and `whisper-1` are mapped onto Fish models.
 
 Docker, Open WebUI, and the field map: [packages/proxy/README.md](packages/proxy/README.md).
 
@@ -145,7 +145,7 @@ Full tables: [proxy](packages/proxy/README.md#settings), [voice](packages/voice/
 inputs.fish-audio-suite.url = "github:kzndotsh/fish-audio-suite";
 ```
 
-`nixosModules.default` runs the proxy as a hardened systemd service on `127.0.0.1:8849` (`services.fish-audio-suite-proxy.enable = true`). Put `FISH_API_KEY` in `environmentFiles`. Options for `host`, `port`, `openFirewall`, `autoStart`, and an `oci` backend are in [nix/module.nix](nix/module.nix).
+`nixosModules.default` runs the proxy as a hardened systemd service on `127.0.0.1:8849` (`services.fish-audio-suite-proxy.enable = true`). Put `FISH_API_KEY` in `environmentFiles`. Options for `host`, `port`, `openFirewall`, `autoStart`, `gracefulShutdownSeconds` (the service waits that plus 10 seconds to stop), and an `oci` backend are in [nix/module.nix](nix/module.nix).
 
 `nix run .#fish-audio-suite-voice` puts PortAudio on the library path. On NixOS, `./packages/voice/dev.sh` does the same. A bare `uv run` of the duplex CLI does not.
 

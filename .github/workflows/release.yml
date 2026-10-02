@@ -1,8 +1,10 @@
 name: Release
 # Publishes the three wheels to PyPI when a v* tag is pushed.
-# The tag must equal the version in all three packages, or the run fails.
-# Inert until the repo variable PYPI_PUBLISH is "true" and a PyPI trusted
-# publisher (workflow release.yml, environment pypi) exists for each dist.
+# The tag must equal the version in all three packages, or the build fails.
+# Three jobs keep the powers apart: test and build can only read the repo, and
+# only publish holds the PyPI trusted-publishing token and the attestation rights.
+# Publishing is inert until the repo variable PYPI_PUBLISH is "true" and a PyPI
+# trusted publisher (workflow release.yml, environment pypi) exists for each dist.
 on:
   push:
     tags: ["v*"]
@@ -10,14 +12,45 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Sync
+        run: uv sync --frozen --all-packages --extra cli --group dev --group test
+      - name: Ruff check
+        run: uv run ruff check packages
+      - name: Ruff format
+        run: uv run ruff format --check packages
+      - name: Docstrings
+        run: uv run pydoclint --config=pyproject.toml packages
+      - name: Types
+        run: uv run basedpyright
+      - name: Tests
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        run: uv run pytest
+      - name: Prune uv cache for CI
+        if: always()
+        run: uv cache prune --ci
   build:
     name: Build
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    environment: pypi
     permissions:
       contents: read
-      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -55,8 +88,38 @@ jobs:
         run: uv build --all --out-dir dist
       - name: Check metadata
         run: uvx twine check --strict dist/*
-      - name: Publish
-        if: vars.PYPI_PUBLISH == 'true'
-        run: uv publish --trusted-publishing always dist/*
-        env:
-          UV_PUBLISH_URL: https://upload.pypi.org/legacy/
+      - name: Upload the distributions
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+  publish:
+    name: Publish
+    needs: [test, build]
+    # Publishing waits for the tests and for a deliberate opt-in.
+    if: vars.PYPI_PUBLISH == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: pypi
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Download the distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist/
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/*
+      - name: Publish to PyPI
+        # Signs each file with a PEP 740 attestation through trusted publishing.
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          packages-dir: dist/
+          attestations: true
