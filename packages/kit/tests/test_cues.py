@@ -263,3 +263,9 @@ def test_the_mood_hold_is_off_unless_leads_are_on() -> None:
     assert hold_tts("Excited,", line_start=True, sentence_start=True) == len("Excited,")
     assert hold_tts("Exc", line_start=True, sentence_start=True) == len("Exc")
     assert hold_tts("Exc", line_start=True, sentence_start=True, lead=True) == 0
+
+
+def test_strip_cue_tags_keeps_a_tag_nested_in_a_larger_bracket() -> None:
+    assert strip_cue_tags("[[happy]] hi") == "[[happy]] hi"
+    assert strip_cue_tags("[happy] hi [calm] there") == "hi there"
+    assert strip_cue_tags("[sad][whispering] hi") == "hi"

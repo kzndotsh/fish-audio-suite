@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from fish_audio_suite_kit import (
+    hold_tts,
     is_tts_junk,
     normalize_cues,
     scrub_asr,
@@ -594,3 +595,63 @@ def test_a_removed_aside_keeps_the_period_on_the_word() -> None:
 )
 def test_a_removed_aside_leaves_one_space(text: str, expected: str) -> None:
     assert scrub_tts(text) == expected
+
+
+@pytest.mark.parametrize(
+    "hostile",
+    [
+        "<a" * 10_000,
+        "<!--" * 5_000,
+        "[^" * 10_000,
+        "*" * 20_000,
+        "\t" * 20_000,
+        "<" + "\t" * 20_000,
+        "[ " * 10_000,
+        "[" + " " * 20_000,
+        "[a b][ " * 3_000,
+        "|" + "\t" * 20_000,
+        "[x](http://" + "a" * 20_000,
+        "(http://" + "a" * 20_000,
+        "![ " * 7_000,
+        "<think>" * 3_000,
+        "<script>" * 2_500,
+        "```" * 6_000 + "x",
+        "~~~" * 6_000 + "x",
+        "(" * 20_000,
+        "a < b " * 3_000,
+        "&lt;" * 5_000,
+    ],
+    ids=lambda text: f"{text[:10]!r}x{len(text)}",
+)
+def test_hostile_input_is_scrubbed_in_linear_time(hostile: str) -> None:
+    import time
+
+    started = time.perf_counter()
+    scrub_tts(hostile)
+    hold_tts(hostile, line_start=True, sentence_start=True)
+    assert time.perf_counter() - started < 1.0
+
+
+def _words(text: str) -> list[str]:
+    return scrub_tts(text).split()
+
+
+def test_an_unclosed_tilde_fence_swallows_the_rest_of_the_reply() -> None:
+    assert _words("Here:\n~~~\ncode that never closes") == ["Here:"]
+    assert _words("Here:\n```\ncode that never closes") == ["Here:"]
+    assert _words("before ~~~code~~~ after") == ["before", "after"]
+    assert _words("before ```code``` mid ~~~more~~~ after") == ["before", "mid", "after"]
+
+
+def test_a_reference_link_label_keeps_its_word_gap() -> None:
+    assert _words("Open [the docs][ref]today please") == ["Open", "the", "docs", "today", "please"]
+    assert _words("[the docs][ref] first") == ["the", "docs", "first"]
+
+
+def test_closed_blocks_are_removed_and_an_unclosed_one_drops_the_rest() -> None:
+    assert _words("a <!-- x --> b") == ["a", "b"]
+    assert _words("a <!-- never closed. gone") == ["a"]
+    assert _words("Hi <think>secret</think> there") == ["Hi", "there"]
+    assert _words("Hi <think>cut off. gone") == ["Hi"]
+    assert _words("x <script>alert(1)</script> y <style>p{}</style> z") == ["x", "y", "z"]
+    assert _words("x <SCRIPT>a</script> y") == ["x", "y"]

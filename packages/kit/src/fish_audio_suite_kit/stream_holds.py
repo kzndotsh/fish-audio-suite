@@ -202,13 +202,13 @@ def _incomplete_html(text: str) -> int | None:
     if start < 0 or ">" in text[start + 1 :]:
         return None
     tail = text[start + 1 :]
+    # A tag name follows "<" at once, so "a < b" is a comparison. Only a closing
+    # tag may have a space after its slash ("</ p"), and that does not end it.
     if tail[:1] == "/":
-        tail = tail[1:]
-    # A space inside the tag ("</ p") does not end it.
-    body = tail.lstrip(" \t")
-    if body[:1] and not body[0].isalpha():
+        tail = tail[1:].lstrip(" \t")
+    if tail[:1] and not tail[0].isalpha():
         return None
-    if len(body) > 80:
+    if len(tail) > 80:
         return None
     return start
 
@@ -216,12 +216,13 @@ def _incomplete_html(text: str) -> int | None:
 def _incomplete_escaped_tag(text: str) -> int | None:
     # "&lt;br" is a tag still being written. Releasing it speaks "br".
     found: int | None = None
+    # One scan for the last closer, instead of a search of the rest per opener.
+    last_close = max((m.start() for m in _GT_ENTITY_RE.finditer(text)), default=-1)
     for match in _LT_ENTITY_RE.finditer(text):
-        rest = text[match.end() :]
-        if _GT_ENTITY_RE.search(rest):
+        if last_close >= match.end():
             continue
-        body = rest[1:] if rest[:1] == "/" else rest
-        body = body.lstrip(" \t")
+        rest = text[match.end() :]
+        body = rest[1:].lstrip(" \t") if rest[:1] == "/" else rest
         if body[:1] and not body[0].isalpha():
             continue
         if len(body) > 80:

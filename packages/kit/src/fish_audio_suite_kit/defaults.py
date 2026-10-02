@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -88,9 +89,10 @@ class LatencySnapshot:
     llm_ttft: float | None = None
     llm_ttfs: float | None = None
     ttfa: float | None = None
-    first_audio: float | None = None
     voice_to_voice: float | None = None
     trace_id: str | None = None
+    # Last, so a caller that builds a snapshot by position keeps its meaning.
+    first_audio: float | None = None
 
     def log_line(self) -> str:
         """One stdout timing line. Missing times are omitted. No utterance text.
@@ -265,9 +267,14 @@ UNIT_HI = 1.0
 _CLOUD_HOST = "api.fish.audio"
 
 
+_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
+
+
 def _is_cloud_base(fish_base: str) -> bool:
     text = fish_base.strip()
-    if "//" not in text:
+    # Only a leading scheme or "//" makes the host parse as a netloc. A "//" later
+    # in a path ("api.fish.audio/v1//edge") does not.
+    if not (_SCHEME_RE.match(text) or text.startswith("//")):
         text = f"//{text}"
     try:
         host = (urlsplit(text).hostname or "").lower()

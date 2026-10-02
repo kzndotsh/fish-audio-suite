@@ -151,3 +151,25 @@ def test_no_ends_a_sentence_and_does_not_glue_the_next_one() -> None:
 @pytest.mark.parametrize("title", ["Dr.", "Mr.", "Mrs.", "Prof.", "etc."])
 def test_titles_do_not_end_a_sentence(title: str) -> None:
     assert not ends_sentence(title)
+
+
+def test_no_before_a_number_and_co_before_a_suffix_are_abbreviations() -> None:
+    assert next_tts_cut("See No. 5 for details. Next one.", partial_chars=400) == 23
+    assert next_tts_cut("Acme Co. Ltd. is here. Okay.", partial_chars=400) == 23
+    assert next_tts_cut("Acme Co. LLC is here. Okay.", partial_chars=400) == 22
+
+
+def test_no_and_co_before_a_word_still_end_the_sentence() -> None:
+    assert next_tts_cut("No. I will not do that.", partial_chars=400) == 4
+    assert next_tts_cut("He said no. Then left.", partial_chars=400) == 12
+    assert next_tts_cut("We met at the co. Then left.", partial_chars=400) == 18
+
+
+def test_many_short_sentences_are_cut_in_linear_time() -> None:
+    import time
+
+    for text in ("a. " * 7_000, "Dr. " * 5_000, "No. 5 " * 3_000):
+        started = time.perf_counter()
+        next_tts_cut(text)
+        ends_sentence(text)
+        assert time.perf_counter() - started < 0.5

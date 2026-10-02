@@ -157,3 +157,42 @@ def test_chunk_length_hi_reads_the_hostname(base: str, expected: int) -> None:
 def test_chunk_length_hi_can_be_forced() -> None:
     assert chunk_length_hi("https://fish.internal", self_hosted=False) == 300
     assert chunk_length_hi("https://api.fish.audio", self_hosted=True) == 1000
+
+
+def test_latency_snapshot_keeps_its_positional_fields() -> None:
+    snapshot = LatencySnapshot(1.0, 2.0, 3.0, 4.0, 5.0, "trace")
+    assert snapshot.voice_to_voice == 5.0
+    assert snapshot.trace_id == "trace"
+    assert snapshot.first_audio is None
+
+
+@pytest.mark.parametrize(
+    ("base", "expected"),
+    [
+        ("api.fish.audio/v1//edge", 300),
+        ("https://api.fish.audio", 300),
+        ("//api.fish.audio", 300),
+        ("http://127.0.0.1:8080//x", 1000),
+        ("evil.com/api.fish.audio//", 1000),
+    ],
+)
+def test_cloud_is_detected_from_the_host_even_with_a_double_slash_in_the_path(
+    base: str, expected: int
+) -> None:
+    assert chunk_length_hi(base) == expected
+
+
+def test_the_package_root_still_exports_the_helpers_it_used_to() -> None:
+    import fish_audio_suite_kit as kit
+
+    for name in (
+        "FISH_LATENCIES",
+        "canonical_traceparent",
+        "fish_error_body",
+        "fish_non_object",
+        "fish_transport_error",
+        "mood_lead_hold_at",
+        "sentence_closer_hold_at",
+    ):
+        assert name in kit.__all__
+        assert callable(getattr(kit, name)) or getattr(kit, name)

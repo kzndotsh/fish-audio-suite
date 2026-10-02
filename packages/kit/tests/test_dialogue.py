@@ -129,3 +129,26 @@ def test_noise_is_still_junk(line: str) -> None:
 def test_the_letter_floor_is_a_parameter() -> None:
     assert is_tts_junk("no", min_letters=9, short_words=frozenset())
     assert not is_tts_junk("no", min_letters=9)
+
+
+def test_nested_quotes_of_another_style_stay_inside_the_speech() -> None:
+    assert extract_quoted_speech('She nods. 「こんにちは "hi" 友よ」 and leaves.') == (
+        '「こんにちは "hi" 友よ」'
+    )
+    assert extract_quoted_speech("She said “I think ‹so› too” then went.") == ("“I think ‹so› too”")
+    assert extract_quoted_speech("Elle dit «bonjour mon ami» puis part.") == "«bonjour mon ami»"
+
+
+def test_an_empty_quote_pair_is_not_speech_and_hides_the_narration() -> None:
+    assert extract_quoted_speech('She smiles. "" Then waits for you.') == ""
+
+
+def test_an_unclosed_trailing_quote_is_kept_after_narration_or_a_closed_quote() -> None:
+    assert extract_quoted_speech('She smiles. "Hello there my fri') == '"Hello there my fri"'
+    assert (
+        extract_quoted_speech('She nods. "Hello there." She waits. "And I was thinking about')
+        == '"Hello there." "And I was thinking about"'
+    )
+    assert extract_quoted_speech('The pipe is 5" wide. She said "hold on a second') == (
+        '"hold on a second"'
+    )

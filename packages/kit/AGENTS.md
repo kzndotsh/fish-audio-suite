@@ -4,7 +4,7 @@
 
 Pure text. No network, audio, or OpenTelemetry. Do not add `httpx` / FastAPI / `fishaudio` / sounddevice.
 
-Import: `fish_audio_suite_kit`. Tests: `uv run pytest packages/kit` (one `test_<module>.py` per source module).
+Import: `fish_audio_suite_kit`. Tests: `uv run pytest packages/kit`. `tests/` has one file per area. `test_scrub_tts.py` covers `scrub_markdown`, and `_charsets` and `text_filters` are exercised through the other files.
 
 ## Layout
 
@@ -15,10 +15,14 @@ Import: `fish_audio_suite_kit`. Tests: `uv run pytest packages/kit` (one `test_<
 | `scrub_markdown` | `scrub_tts`: thoughts, markdown, HTML, URLs, asides |
 | `stream_holds` | `hold_tts`: one list of hold checks. A hold mirrors a `scrub_markdown` rule |
 | `dialogue` | `extract_quoted_speech`, `is_tts_junk`, narration, the letter floor |
+| `cues` | `normalize_cues`, `ensure_lead_cue`, `strip_cue_tags`, the S1 cue names |
 | `cuts` | `next_tts_cut`, `split_tts_piece`, `ends_sentence` |
 | `asr_text` | `scrub_asr`, `is_asr_hallucination`, backchannel and quit gates, watermarks |
 | `defaults` | `SuiteDefaults`, clamps, env readers, `chunk_length_hi` |
 | `http_errors` | Fish error shape, retry and backoff helpers |
+| `captions` | `CaptionCue`, `format_as_srt`, `format_as_vtt`. No network |
+| `trace_context` | W3C `traceparent` parse and make, `ensure_trace_headers`. No OpenTelemetry |
+| `_charsets` | Private. Stops, closers, CJK ranges, thought-tag names, shared regexes |
 | `text_filters` | Re-export facade only |
 
 ## Invariants
@@ -32,4 +36,5 @@ Import: `fish_audio_suite_kit`. Tests: `uv run pytest packages/kit` (one `test_<
 - `FishHttpError.unreachable()` / `.timed_out()` / `.non_json()` / `.non_object()` build the 502 and 504 errors. The `fish_unreachable()` style tuple helpers stay for callers.
 - `chunk_length_hi` decides cloud from the parsed hostname. `self_hosted=` overrides. Env is read by callers, never at import.
 - `scrub_asr` keeps `[cue]` annotations unless `strip_cues=True`. Digit-only brackets always stay.
+- A regex over model text is bounded or anchored: `_LABEL`, `_TAG` and `_ASIDE` in `scrub_markdown`, a run-start lookbehind for space runs, and `_erase_spans` for open-to-close blocks. An unbounded scan from every opener is quadratic. `test_scrub_tts.py` times hostile 20k-character inputs.
 - Public API is `__init__.py`. Another package must not import a private module.

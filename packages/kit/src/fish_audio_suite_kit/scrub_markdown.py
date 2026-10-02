@@ -23,34 +23,42 @@ _Edge = tuple[str, str]
 _Repl = str | Callable[[re.Match[str]], str]
 _Replacement = tuple[tuple[re.Pattern[str], _Repl], ...]
 
+# Every pattern below that scans for a closer is bounded, or is anchored so it
+# starts once per run. Reply text is model output, and an unbounded scan from each
+# of thousands of openers is quadratic. A label, tag, or aside longer than the bound
+# is left as text, which is what a real reply never contains.
+_LABEL = 200
+_TAG = 300
+_ASIDE = 500
+
 # --- Blocks that are removed whole -------------------------------------------
 
 # Chain-of-thought is scratch work. An unclosed block means the model was cut
-# off, so the rest of the reply is scratch too.
-_THOUGHTS_RE = re.compile(
-    f"{THOUGHT_OPEN_RE.pattern}.*?{THOUGHT_CLOSE_RE.pattern}",
-    re.IGNORECASE | re.DOTALL,
-)
+# off, so the rest of the reply is scratch too. A closed span is removed by
+# _erase_spans, which scans once. The tail patterns drop what is left after an
+# opener that never closed.
 _THOUGHT_TAIL_RE = re.compile(f"{THOUGHT_OPEN_RE.pattern}.*", re.IGNORECASE | re.DOTALL)
-# Fenced code (backticks or tildes) is source, not speech.
-_FENCE_RE = re.compile(r"```.*?```|~~~.*?~~~", re.DOTALL)
-_FENCE_TAIL_RE = re.compile(r"```.*", re.DOTALL)
-_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+# Fenced code (backticks or tildes) is source, not speech. An unclosed fence of
+# either kind swallows the rest of the reply.
+_FENCE_OPEN_RE = re.compile(r"```|~~~")
+_FENCE_CLOSERS = {"```": re.compile("```"), "~~~": re.compile("~~~")}
+_FENCE_TAIL_RE = re.compile(r"(?:```|~~~).*", re.DOTALL)
+_HTML_COMMENT_OPEN_RE = re.compile(r"<!--")
+_HTML_COMMENT_CLOSE_RE = re.compile(r"-->")
 _HTML_COMMENT_TAIL_RE = re.compile(r"<!--.*", re.DOTALL)
 # <script>, <style>, and <ref> hold source or notes. The generic tag rule would
 # keep their contents, so they are removed with the tags.
 _HTML_BLOCK_NAMES = r"script|style|ref"
-_HTML_BLOCK_RE = re.compile(
-    rf"<\s*({_HTML_BLOCK_NAMES})\b[^>]*>.*?</\s*\1\s*>",
-    re.IGNORECASE | re.DOTALL,
-)
 _HTML_BLOCK_TAIL_RE = re.compile(
-    rf"<\s*(?:{_HTML_BLOCK_NAMES})\b[^>]*>.*", re.IGNORECASE | re.DOTALL
+    rf"<\s*(?:{_HTML_BLOCK_NAMES})\b[^>]{{0,{_TAG}}}>.*", re.IGNORECASE | re.DOTALL
 )
-HTML_BLOCK_OPEN_RE = re.compile(rf"<\s*({_HTML_BLOCK_NAMES})\b[^>]*>", re.IGNORECASE)
+HTML_BLOCK_OPEN_RE = re.compile(rf"<\s*({_HTML_BLOCK_NAMES})\b[^>]{{0,{_TAG}}}>", re.IGNORECASE)
 HTML_BLOCK_CLOSE_RE = re.compile(rf"<\s*/\s*({_HTML_BLOCK_NAMES})\s*>", re.IGNORECASE)
+_HTML_BLOCK_CLOSERS = {
+    name: re.compile(rf"<\s*/\s*{name}\s*>", re.IGNORECASE) for name in _HTML_BLOCK_NAMES.split("|")
+}
 # CosyVoice stage directions. Phoneme tokens use a different shape and stay.
-_STAGE_TOKEN_RE = re.compile(r"<\|(?:ACT|DELAY|CALL)\b[^|]*\|>", re.IGNORECASE)
+_STAGE_TOKEN_RE = re.compile(r"<\|(?:ACT|DELAY|CALL)\b[^|]{0,200}\|>", re.IGNORECASE)
 # MOSS duration pause. Fish [pause] has no number and is an alias, not this.
 _MOSS_PAUSE_RE = re.compile(r"\[pause\s+\d+(?:\.\d+)?s\]", re.IGNORECASE)
 # TTSD speaker labels [S1] through [S5]. A Fish [cue] is words, not S plus a digit.
@@ -58,7 +66,6 @@ _TTSD_SPEAKER_RE = re.compile(r"\[S[1-5]\]")
 
 # TTS only. Fish [cue] and <|phoneme|> tokens are not in this list.
 _TTS_ERASE: _Replacement = (
-    (_THOUGHTS_RE, " "),
     (_STAGE_TOKEN_RE, " "),
     (_MOSS_PAUSE_RE, " "),
     (_TTSD_SPEAKER_RE, " "),
@@ -71,45 +78,50 @@ _TTS_ERASE: _Replacement = (
 _URL_ASCII = r"[A-Za-z0-9\-._~:/?#\[\]@!$&'*+=%,;]"
 # Only a URL target makes a Markdown link. [happy](softly) is a cue plus an aside.
 # A title after the URL belongs to the link.
+# The address is possessive: it can only end at a character the class excludes,
+# so giving characters back never helps and would cost a scan per position.
 _MD_LINK_RE = re.compile(
-    r"\[([^\]]+)\]\(\s*<?https?://" + _URL_ASCII + r"+>?(?:\s+[\"'][^\"']*[\"'])?([^)]*)\)",
+    rf"\[([^\]]{{1,{_LABEL}}})\]\(\s*<?https?://"
+    + _URL_ASCII
+    + rf"++>?(?:\s+[\"'][^\"']{{0,{_LABEL}}}[\"'])?([^)]{{0,{_ASIDE}}})\)",
     re.IGNORECASE,
 )
 # A link whose closing parenthesis never arrived: keep the label, drop the URL.
 _OPEN_MD_LINK_RE = re.compile(
-    r"\[([^\]]+)\]\(\s*<?https?://" + _URL_ASCII + r"+[ \t]*",
+    rf"\[([^\]]{{1,{_LABEL}}})\]\(\s*<?https?://" + _URL_ASCII + r"++[ \t]*",
     re.IGNORECASE,
 )
 _OPEN_URL_PAREN_RE = re.compile(
-    r"\(\s*<?https?://" + _URL_ASCII + r"+[ \t]*",
+    r"\(\s*<?https?://" + _URL_ASCII + r"++[ \t]*",
     re.IGNORECASE,
 )
 # "(https://example.com)." The space before the parenthesis belongs to the
-# link, so the stop attaches to the word before it.
+# link, so the stop attaches to the word before it. The lookbehind starts the
+# match at the first space of a run.
 _CLOSED_URL_PAREN_RE = re.compile(
-    r"[ \t]*\(\s*<?https?://" + _URL_ASCII + r"+>?([^)]*)\)",
+    r"(?<![ \t])[ \t]*\(\s*<?https?://" + _URL_ASCII + rf"++>?([^)]{{0,{_ASIDE}}})\)",
     re.IGNORECASE,
 )
 # ![alt](url) is an image: keep the alt text, drop the bang with it.
-_MD_IMAGE_RE = re.compile(r"!\[([^\]]*)\]\([^)\n]*\)")
+_MD_IMAGE_RE = re.compile(rf"!\[([^\]]{{0,{_LABEL}}})\]\([^)\n]{{0,{_ASIDE}}}\)")
 # A bare URL. The address is ASCII and ends at whitespace or a closer.
 # A trailing period, question mark, or comma is the sentence. A comma, bang,
 # or colon before a letter starts the next word. A colon before a digit is a
 # port. The space before the address belongs to the link.
 _URL_RE = re.compile(
-    "[ \t]*https?://(?:[A-Za-z0-9\\-_~/?#\\[\\]@$&'*+=%]"
+    "(?<![ \t])[ \t]*https?://(?:[A-Za-z0-9\\-_~/?#\\[\\]@$&'*+=%]"
     "|\\.(?!\\s|$)"
     "|[,!?;:](?!\\s|$|[A-Za-z]))+"
     "(?:[,!:;](?=[A-Za-z]))?",
     re.IGNORECASE,
 )
 # <https://example.com> is one link, not a less-than sign plus a URL.
-_MD_AUTOLINK_RE = re.compile(r"<https?://[^>\s]+>", re.IGNORECASE)
+_MD_AUTOLINK_RE = re.compile(rf"<https?://[^>\s]{{1,{_ASIDE}}}>", re.IGNORECASE)
 # [the door](softly) is the words. [happy](softly) is a cue and stays.
-_MD_PLAIN_LINK_RE = re.compile(r"\[([^\]]+)\]\([^)\n]*\)")
+_MD_PLAIN_LINK_RE = re.compile(rf"\[([^\]]{{1,{_LABEL}}})\]\([^)\n]{{0,{_ASIDE}}}\)")
 # [docs][ref] is the word "docs". [happy][whispering] is two cues. a[i][j] is
 # an index. The spaced-label form is handled by _MD_REF_LINK_RE.
-_MD_BARE_REF_RE = re.compile(r"(?<!\w)\[([^\]]+)\]\[([^\]]*)\]")
+_MD_BARE_REF_RE = re.compile(rf"(?<!\w)\[([^\]]{{1,{_LABEL}}})\]\[([^\]]{{0,{_LABEL}}})\]")
 
 # --- Line-level markdown -----------------------------------------------------
 
@@ -122,33 +134,38 @@ _MD_RULE_RE = re.compile(r"(?m)^[ \t]{0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$")
 # "> text" is a quote mark. "2 > 1" stays.
 _MD_QUOTE_RE = re.compile(r"(?m)^[ \t]{0,3}>+[ \t]?")
 # A task checkbox after the bullet. [x] would be read as a Fish cue.
-_MD_TASK_RE = re.compile(r"(?m)^[ \t]{0,3}\[[ \t]*[xX]?[ \t]*\][ \t]+")
+_MD_TASK_RE = re.compile(r"(?m)^[ \t]{0,3}\[[ \t]*(?:[xX][ \t]*)?\][ \t]+")
 # Emphasis marks. A mark between word characters is an identifier or a
 # product (fish_audio, 5*5), and a mark spaced on both sides is an operator.
 # A closer may follow a comma ("*Excited,*") or a "]" (`a[i]`).
 _MD_WRAP_RE = re.compile(
     r"(?<=\w)[*_`~]{2,}(?=\w)"
-    r"|(?<!\w)[*_`~]+(?=\w)"
+    r"|(?<![\w*_`~])[*_`~]+(?=\w)"
     r"|(?<=\w)[*_`~]+(?!\w)"
     r"|(?<=\w[,.!?;:，！：])[*_`~]+(?!\w)"
     r"|(?<=\])[*_`~]+(?!\w)"
 )
 # ~~retracted~~ is a deletion. Dropping only the marks would speak the word.
 _MD_STRIKE_RE = re.compile(r"~~[^~\n]+~~")
-_MD_FOOTNOTE_RE = re.compile(r"\[\^[^\]]+\]")
-_MD_FOOTNOTE_DEF_RE = re.compile(r"(?m)^[ \t]*\[\^[^\]]+\]:[ \t]*")
+_MD_FOOTNOTE_RE = re.compile(rf"\[\^[^\]]{{1,{_LABEL}}}\]")
+_MD_FOOTNOTE_DEF_RE = re.compile(rf"(?m)^[ \t]*\[\^[^\]]{{1,{_LABEL}}}\]:[ \t]*")
 # [the docs][ref] is a reference link. The label must contain a space, or it
-# could be a cue stack like [sad][whispering].
-_MD_REF_LINK_RE = re.compile(r"\[([^\]]*\s[^\]]*)\]\[[^\]]+\]")
-_MD_REF_DEF_RE = re.compile(r"(?m)^[ \t]{0,3}\[[^\]]+\]:[ \t]*\n?")
+# could be a cue stack like [sad][whispering]. The lookahead finds that space
+# first, so the label itself is scanned once.
+_MD_REF_LINK_RE = re.compile(
+    rf"\[(?=[^\]\s]{{0,{_LABEL}}}\s)([^\]]{{1,{_LABEL}}})\]\[[^\]]{{1,{_LABEL}}}\]"
+)
+_MD_REF_DEF_RE = re.compile(rf"(?m)^[ \t]{{0,3}}\[[^\]]{{1,{_LABEL}}}\]:[ \t]*\n?")
 # Block tags are word boundaries. Inline tags (<sup>, <span>) are not.
 # <|phoneme|> starts with a bar, so it is not a tag. <whisper> is a cue.
 _MD_BREAK_RE = re.compile(
-    r"<[ \t]*/?[ \t]*(?:br|p|div|hr|li|tr|td|th|table|thead|tbody|tfoot|ul|ol|pre|details|summary"
-    r"|h[1-6]|blockquote|section|article|header|footer|nav|figure|figcaption)\b[^>\n]*>",
+    r"<[ \t]*(?:/[ \t]*)?"
+    r"(?:br|p|div|hr|li|tr|td|th|table|thead|tbody|tfoot|ul|ol|pre|details|summary"
+    r"|h[1-6]|blockquote|section|article|header|footer|nav|figure|figcaption)\b"
+    rf"[^>\n]{{0,{_TAG}}}>",
     re.IGNORECASE,
 )
-_MD_HTML_RE = re.compile(r"<(?!/?\s*whisper\b)/?[A-Za-z][^>\n]*>", re.IGNORECASE)
+_MD_HTML_RE = re.compile(rf"<(?!/?\s*whisper\b)/?[A-Za-z][^>\n]{{0,{_TAG}}}>", re.IGNORECASE)
 HTML_ENTITY_RE = re.compile(r"&(#x[0-9A-Fa-f]+|#\d+|[A-Za-z]+);")
 # A separator row is pipes and dashes. A line needs a pipe, so a prose hyphen stays.
 _MD_TABLE_SEP_RE = re.compile(r"(?m)^(?=[ \t|:-]*\|)[ \t|:-]+$")
@@ -160,8 +177,8 @@ _HTML_NAMED = {"amp": "&", "lt": "<", "gt": ">", "quot": '"', "apos": "'", "nbsp
 # Stage asides. Runs after S1 (happy) becomes [happy], so a Fish paren tag
 # survives. A digit means a phone number or code, so (555) stays. The space
 # before the aside goes with it, so removal leaves a single gap.
-_PARENS_RE = re.compile(r"[ \t]*\([^)\d]*\)")
-_FW_PARENS_RE = re.compile(r"（[^）\d]*）")
+_PARENS_RE = re.compile(rf"(?<![ \t])[ \t]*\([^)\d]{{0,{_ASIDE}}}\)")
+_FW_PARENS_RE = re.compile(rf"（[^）\d]{{0,{_ASIDE}}}）")
 
 
 def _edge_char(match: re.Match[str], *, end: bool, edge: _Edge) -> str:
@@ -208,7 +225,7 @@ def _ref_link(match: re.Match[str], edge: _Edge) -> str:
         return match.group(0)
     if is_paren_cue(label):
         return f"[{label}]"
-    return label
+    return _with_word_gap(match, label, edge)
 
 
 def _unwrap_mark(match: re.Match[str], edge: _Edge) -> str:
@@ -239,6 +256,33 @@ def _markdown_subs(edge: _Edge) -> _Replacement:
         (_PARENS_RE, ""),
         (_FW_PARENS_RE, " "),
     )
+
+
+def _erase_spans(
+    text: str,
+    open_re: re.Pattern[str],
+    close_for: Callable[[re.Match[str]], re.Pattern[str]],
+) -> str:
+    """Replace each opener-to-closer span with a space, scanning the text once.
+
+    The first opener that has no closer ends the scan. A later opener cannot have
+    one either, and a ``*_TAIL_RE`` pattern drops that unclosed tail afterwards.
+    A lazy ``.*?`` pattern would rescan the rest of the text from every opener.
+    """
+    out: list[str] = []
+    pos = 0
+    while True:
+        opener = open_re.search(text, pos)
+        if opener is None:
+            break
+        closer = close_for(opener).search(text, opener.end())
+        if closer is None:
+            break
+        out.append(text[pos : opener.start()])
+        out.append(" ")
+        pos = closer.end()
+    out.append(text[pos:])
+    return "".join(out)
 
 
 def _replace(text: str, pairs: _Replacement) -> str:
@@ -374,7 +418,7 @@ def _strip_markdownish(text: str, *, line_start: bool, edge: _Edge) -> str:
 
 
 # Trailing spaces before a newline. Horizontal runs collapse; newlines stay.
-_TRAIL_SPACE_RE = re.compile(r"[ \t]+\n")
+_TRAIL_SPACE_RE = re.compile(r"(?<![ \t])[ \t]+\n")
 
 
 def _tidy_breaks(text: str, *, before: str = "", after: str = "") -> str:
@@ -510,16 +554,21 @@ def scrub_tts(
     if not text:
         return ""
     cleaned = _unwrap_spoken_paren(plain_breaks(text), continued=continued)
+    cleaned = _erase_spans(cleaned, THOUGHT_OPEN_RE, lambda _opener: THOUGHT_CLOSE_RE)
     cleaned = _replace(cleaned, _TTS_ERASE)
     cleaned = _THOUGHT_TAIL_RE.sub("", cleaned)
-    cleaned = _FENCE_RE.sub(" ", cleaned)
+    cleaned = _erase_spans(cleaned, _FENCE_OPEN_RE, lambda opener: _FENCE_CLOSERS[opener.group(0)])
     cleaned = _FENCE_TAIL_RE.sub("", cleaned)
     # Blocks run after fences, so a <!-- or <script> inside a code block does
     # not eat the reply. Script runs before comments, so a comment inside a
     # script does not either.
-    cleaned = _HTML_BLOCK_RE.sub(" ", cleaned)
+    cleaned = _erase_spans(
+        cleaned,
+        HTML_BLOCK_OPEN_RE,
+        lambda opener: _HTML_BLOCK_CLOSERS[opener.group(1).lower()],
+    )
     cleaned = _HTML_BLOCK_TAIL_RE.sub("", cleaned)
-    cleaned = _HTML_COMMENT_RE.sub(" ", cleaned)
+    cleaned = _erase_spans(cleaned, _HTML_COMMENT_OPEN_RE, lambda _opener: _HTML_COMMENT_CLOSE_RE)
     cleaned = _HTML_COMMENT_TAIL_RE.sub("", cleaned)
     cleaned = _strip_markdownish(cleaned, line_start=line_start, edge=edge)
     cleaned = _drop_unclosed(cleaned, "(", ")", keep_digit=True, continued=continued)

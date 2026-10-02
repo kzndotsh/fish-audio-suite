@@ -174,10 +174,11 @@ _LINE_SPLIT_RE = re.compile(r"(\n+)")
 
 _PAREN_CUE_NAMES = _S1_PAREN_TAGS | {"clear"}
 # [name] for any known cue name, longest first so "laughing" beats "laugh".
+# A tag inside a larger bracket expression ("[[happy]]") is literal text.
 _KNOWN_CUE_TAG_RE = re.compile(
-    r"\[(?:"
+    r"(?<!\[)\[(?:"
     + "|".join(re.escape(tag) for tag in sorted(_PAREN_CUE_NAMES, key=len, reverse=True))
-    + r")\]",
+    + r")\](?!\])",
     re.IGNORECASE,
 )
 
@@ -206,7 +207,8 @@ def strip_cue_tags(text: str) -> str:
     str
         The text with each known cue removed and whitespace collapsed to
         single spaces. A bracket that is not a known cue, such as the index in
-        ``a[i]``, is kept because the speaker said it.
+        ``a[i]``, is kept because the speaker said it. A cue nested in a larger
+        bracket expression, such as ``[[happy]]``, is kept too.
     """
     return " ".join(_KNOWN_CUE_TAG_RE.sub(" ", text).split())
 
