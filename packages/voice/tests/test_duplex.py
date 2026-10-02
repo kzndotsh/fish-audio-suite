@@ -17,11 +17,13 @@ from fish_audio_suite_voice.duplex import (
     _collect_reply,
     _HeardLine,
     _Loop,
+    _opening_history,
     _recognize,
     _remember_user,
     _speak_reply,
     _stream_turn,
     _TokenPipe,
+    _trim_history,
     duplex_turns,
 )
 from fish_audio_suite_voice.live import IsolatedFishTts, IsolatedResult
@@ -574,3 +576,39 @@ def test_stream_turn_speaks_the_finished_reply_when_fish_fails_before_audio(
     assert len(spoken) == 1
     assert "Hello" in spoken[0]
     assert loop.history[-1]["role"] == "assistant"
+
+
+def test_default_prompt_starts_with_a_pinned_multi_cue_exchange() -> None:
+    from fish_audio_suite_kit import DEFAULT_SYSTEM_PROMPT
+
+    history, pinned = _opening_history(DEFAULT_SYSTEM_PROMPT)
+    assert pinned == 3
+    assert [m["role"] for m in history] == ["system", "user", "assistant"]
+    assert history[2]["content"].count("[") >= 2
+
+
+def test_a_custom_prompt_gets_no_seed_exchange() -> None:
+    history, pinned = _opening_history("You are a pirate.")
+    assert pinned == 1
+    assert history == [{"role": "system", "content": "You are a pirate."}]
+
+
+def test_trimming_never_drops_the_pinned_seed() -> None:
+    from fish_audio_suite_kit import DEFAULT_SYSTEM_PROMPT
+
+    history, pinned = _opening_history(DEFAULT_SYSTEM_PROMPT)
+    for index in range(30):
+        _remember_user(history, f"question {index}", 3, pinned)
+        history.append({"role": "assistant", "content": f"[calm] answer {index}"})
+    assert history[:pinned] == _opening_history(DEFAULT_SYSTEM_PROMPT)[0]
+    assert len(history) == pinned + 3 * 2
+    assert history[-2]["content"] == "question 29"
+
+
+def test_trim_history_still_pairs_user_and_assistant_without_a_seed() -> None:
+    history = [{"role": "system", "content": "s"}]
+    for index in range(5):
+        history.append({"role": "user", "content": f"u{index}"})
+        history.append({"role": "assistant", "content": f"a{index}"})
+    _trim_history(history, 2)
+    assert [m["content"] for m in history] == ["s", "u3", "a3", "u4", "a4"]

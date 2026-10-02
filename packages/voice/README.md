@@ -71,6 +71,15 @@ The barge floor follows the room: it is the quiet-percentile of recent mic frame
 
 The chat history gets only what you probably heard. For PCM that is a word-aligned estimate from the bytes played, the speed, and the device buffer. Encoded playback (`mpv`) cannot be cut by length, so an interrupted or failed reply is left out of history.
 
+### Cues in replies
+
+A model copies the pattern of its own earlier replies. Without help a conversation settles on one
+`[cue]` per reply, whatever the prompt says. With the default system prompt the session therefore
+starts with one pinned exchange that shows several cues (`DEFAULT_SEED_EXCHANGE` in the kit). It
+costs about 40 tokens per request and is never trimmed from the history. In a test on two models
+that took the average from 1.0 to about 2 cues per reply. A custom `FISH_SYSTEM_PROMPT` gets no
+seed, so it stays in control of the replies.
+
 ### LLM backends
 
 `FISH_LLM_BACKEND` picks `openai` (any chat-completions server over one pooled httpx client) or `openrouter` (the SDK). Unset, it follows the host of `FISH_LLM_BASE`. A key never crosses providers: `OPENROUTER_API_KEY` is only a fallback for the OpenRouter backend and `OPENAI_API_KEY` only for the other. OpenRouter-only options: `FISH_LLM_NITRO=1` adds `:nitro` to the model and sorts providers by `FISH_LLM_PROVIDER_SORT`, and `FISH_LLM_REFERER`, `FISH_LLM_TITLE`, `FISH_LLM_CATEGORIES` set the attribution (empty disables one). The OpenAI backend sends none of those headers.

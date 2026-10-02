@@ -14,6 +14,8 @@ from typing import Literal
 import httpx
 
 from fish_audio_suite_kit import (
+    DEFAULT_SEED_EXCHANGE,
+    DEFAULT_SYSTEM_PROMPT,
     FishHttpError,
     LatencySnapshot,
     elapsed_ms,
@@ -106,6 +108,7 @@ class _Loop:
     asr_http: httpx.AsyncClient
     history: list[dict[str, str]]
     barge_prefix: bytes = b""
+    pinned: int = _KEEP_SYSTEM
 
 
 async def _collect_reply(
@@ -513,25 +516,59 @@ def bye() -> int:
     return EXIT_OK
 
 
-def _trim_history(history: list[dict[str, str]], turns: int) -> None:
-    cap = _KEEP_SYSTEM + turns * _ROLES_PER_TURN
+def _opening_history(system_prompt: str) -> tuple[list[dict[str, str]], int]:
+    """Build the starting history and say how many leading messages stay pinned.
+
+    Parameters
+    ----------
+    system_prompt : str
+        The system prompt for this session.
+
+    Returns
+    -------
+    tuple of list and int
+        The history and the count of messages that trimming never drops. With
+        the default prompt, one opening exchange with several cues is pinned
+        after the system message, because the model copies the pattern of the
+        replies it sees. A custom prompt gets no seed, so it stays in control
+        of how the model replies.
+    """
+    history = [{"role": "system", "content": system_prompt}]
+    if system_prompt == DEFAULT_SYSTEM_PROMPT:
+        for user, assistant in DEFAULT_SEED_EXCHANGE:
+            history.append({"role": "user", "content": user})
+            history.append({"role": "assistant", "content": assistant})
+    return history, len(history)
+
+
+def _trim_history(
+    history: list[dict[str, str]],
+    turns: int,
+    pinned: int = _KEEP_SYSTEM,
+) -> None:
+    cap = pinned + turns * _ROLES_PER_TURN
     while len(history) > cap:
         # Drop the oldest user and assistant together. Popping one message
         # leaves that assistant answering the next user.
         paired = (
-            len(history) > _KEEP_SYSTEM + 1
-            and history[_KEEP_SYSTEM]["role"] == "user"
-            and history[_KEEP_SYSTEM + 1]["role"] == "assistant"
+            len(history) > pinned + 1
+            and history[pinned]["role"] == "user"
+            and history[pinned + 1]["role"] == "assistant"
         )
         if paired:
-            del history[_KEEP_SYSTEM : _KEEP_SYSTEM + _ROLES_PER_TURN]
+            del history[pinned : pinned + _ROLES_PER_TURN]
             continue
-        del history[_KEEP_SYSTEM]
+        del history[pinned]
 
 
-def _remember_user(history: list[dict[str, str]], text: str, turns: int) -> None:
+def _remember_user(
+    history: list[dict[str, str]],
+    text: str,
+    turns: int,
+    pinned: int = _KEEP_SYSTEM,
+) -> None:
     history.append({"role": "user", "content": text})
-    _trim_history(history, turns)
+    _trim_history(history, turns, pinned)
 
 
 async def _answer_line(loop: _Loop, heard: _HeardLine) -> int | None:
@@ -619,6 +656,7 @@ async def duplex_turns(
     session = session or DuplexSession(aec=EchoCanceller(c.aec))
     async with AsyncExitStack() as stack:
         asr_http = await stack.enter_async_context(asr_client())
+        history, pinned = _opening_history(c.system_prompt)
         loop = _Loop(
             config=c,
             tts=tts,
@@ -626,7 +664,8 @@ async def duplex_turns(
             backend=backend,
             session=session,
             asr_http=asr_http,
-            history=[{"role": "system", "content": c.system_prompt}],
+            history=history,
+            pinned=pinned,
         )
         last_user = ""
         while True:
@@ -638,7 +677,7 @@ async def duplex_turns(
             if heard.kind == "again":
                 continue
             last_user = heard.text
-            _remember_user(loop.history, heard.text, c.history_turns)
+            _remember_user(loop.history, heard.text, c.history_turns, loop.pinned)
             code = await _answer_line(loop, heard)
             if code is not None:
                 return code
