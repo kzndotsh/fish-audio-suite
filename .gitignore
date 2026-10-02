@@ -14,6 +14,5 @@ result-*
 .direnv/
 *.wav
 *.mp3
-tts-sweep/
-.python-version.bak
+.vscode/settings.json
 .env
