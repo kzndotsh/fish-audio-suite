@@ -119,11 +119,11 @@ def _quiet_result(cancelled: bool) -> IsolatedResult:
     )
 
 
-@dataclass(kw_only=True, repr=False, eq=False)
+@dataclass(kw_only=True, eq=False)
 class IsolatedFishTts:
     """Fish `stream_websocket` on a fresh loop. Do not merge the LLM socket onto this WS."""
 
-    api_key: str
+    api_key: str = field(repr=False)
     voice_id: str
     model: str = _STOCK.tts_model
     latency: str = _STOCK.latency

@@ -51,6 +51,7 @@ from fish_audio_suite_voice.live import IsolatedFishTts, IsolatedResult, is_canc
 from fish_audio_suite_voice.llm import ChatBackend
 from fish_audio_suite_voice.playback import PortAudioMissingError, make_sink
 from fish_audio_suite_voice.signals import DuplexSession
+from fish_audio_suite_voice.wire import own_cancel
 
 EXIT_OK = 0
 EXIT_FATAL = 2
@@ -136,7 +137,12 @@ async def _collect_reply(
                 write_reply_token(tok)
             if on_token is not None:
                 on_token(tok)
-    except (asyncio.CancelledError, BaseExceptionGroup, RuntimeError) as e:
+    except asyncio.CancelledError:
+        # Our own cancel flag ends the reply early. Any other cancellation
+        # (asyncio.timeout, a task group, an outer cancel) must propagate.
+        if not own_cancel(llm_cancel):
+            raise
+    except (BaseExceptionGroup, RuntimeError) as e:
         if not is_cancel_noise(e, cancelled=llm_cancel.is_set()):
             warn(f"[llm] {e}")
     finally:
@@ -460,7 +466,9 @@ async def _recognize(
         if e.status in _FATAL_FISH:
             return _HeardLine("fatal", code=EXIT_FATAL)
         return _HeardLine("again")
-    except Exception as e:
+    except (httpx.HTTPError, OSError) as e:
+        # A network failure is worth another try on the next utterance. Any
+        # other error is a bug and propagates instead of looping silently.
         if loop.session.stop.is_set():
             return _HeardLine("bye")
         warn(f"[asr] {e}")

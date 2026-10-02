@@ -113,9 +113,7 @@ async def _one_attempt(turn: _Turn, events: AsyncIterator[Any], attempt: int) ->
         if run.cancel.is_set() or is_cancel_noise(exc):
             return True
         raise
-    except BaseException as exc:
-        if isinstance(exc, (KeyboardInterrupt, SystemExit)):
-            raise
+    except (Exception, BaseExceptionGroup) as exc:
         fate = turn_failure(
             exc,
             attempt=attempt,
@@ -240,9 +238,13 @@ def run_isolated(coro: Coroutine[Any, Any, IsolatedResult]) -> IsolatedResult:
     try:
         return loop.run_until_complete(coro)
     finally:
-        if not loop.is_closed() and not loop.is_running():
-            with contextlib.suppress(BaseException):
-                loop.run_until_complete(quiet_shutdown(loop))
-        if not loop.is_closed():
-            loop.close()
-        asyncio.set_event_loop(None)
+        try:
+            if not loop.is_closed() and not loop.is_running():
+                # KeyboardInterrupt and SystemExit are not suppressed here, but
+                # the loop is still closed below.
+                with contextlib.suppress(Exception, BaseExceptionGroup, asyncio.CancelledError):
+                    loop.run_until_complete(quiet_shutdown(loop))
+        finally:
+            if not loop.is_closed():
+                loop.close()
+            asyncio.set_event_loop(None)

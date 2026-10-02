@@ -452,7 +452,10 @@ def test_barge_watch_logs_a_mic_failure_without_cancelling(
     gate.watch(cancel)
     assert not cancel.is_set()
     assert gate.captured == b""
-    assert "no device" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "no device" in err
+    assert "off for this reply" in err
+    assert isinstance(gate.failure, OSError)
 
 
 def test_bleed_thread_skips_the_mic_when_already_cancelled(

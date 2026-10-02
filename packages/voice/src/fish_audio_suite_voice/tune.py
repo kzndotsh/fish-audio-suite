@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import math
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
 from fish_audio_suite_kit import env_token, strip_base
@@ -374,7 +374,7 @@ class LlmTune:
 
     backend: str = "openrouter"
     base: str = OPENROUTER_API_BASE
-    key: str = ""
+    key: str = field(default="", repr=False)
     model: str = ""
     temperature: float = DEFAULT_LLM_TEMPERATURE
     timeout_s: float = DEFAULT_LLM_TIMEOUT_S

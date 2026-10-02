@@ -29,7 +29,7 @@ from fish_audio_suite_kit import (
     strip_base,
     without_watermark_segments,
 )
-from fish_audio_suite_voice.debug import debug, public_meta
+from fish_audio_suite_voice.debug import debug, public_meta, with_detail
 from fish_audio_suite_voice.pause import header_retry_after, sleep_unless
 
 _ASR_TIMEOUT_S = 60.0
@@ -72,7 +72,7 @@ async def _post_fish(
             response = await client.post(url, **kwargs)
         except httpx.RequestError as exc:
             status, message = fish_request_error(exc, httpx.TimeoutException)
-            last_error = FishHttpError(status, message)
+            last_error = FishHttpError(status, with_detail(message, exc))
             if await _pause_or_raise(attempt, last_error, exc, cancel):
                 return None
             continue

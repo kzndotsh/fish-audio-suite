@@ -21,9 +21,11 @@ from fish_audio_suite_kit import (
     env_int,
     env_text,
     env_token,
+    is_insecure_fish_base,
     known_latency,
     known_tts_model,
 )
+from fish_audio_suite_voice.debug import warn
 from fish_audio_suite_voice.playback import DEFAULT_PLAYBACK, playback_key
 from fish_audio_suite_voice.tune import (
     DEFAULT_HISTORY_TURNS,
@@ -41,7 +43,7 @@ from fish_audio_suite_voice.tune import (
 # the minimum voiced time. A faster clip is mostly pre-roll or leftover audio.
 DEFAULT_REPEAT_WINDOW_S = 1.5
 
-__all__ = ["OPENROUTER_API_BASE", "VoiceCliConfig", "cfg"]
+__all__ = ["OPENROUTER_API_BASE", "VoiceCliConfig", "cfg", "warn_if_insecure_base"]
 
 
 @dataclass(frozen=True)
@@ -77,7 +79,7 @@ class VoiceCliConfig:
         Drop stage-direction lines such as ``She smiles.`` before TTS.
     """
 
-    fish_api_key: str
+    fish_api_key: str = field(repr=False)
     fish_base: str
     fish_voice_id: str
     fish_asr_language: str
@@ -110,6 +112,36 @@ def _asr_model(default: str) -> str:
     # Voice only runs the two native ids. Anything else would 4xx on every turn.
     chosen = env_token("FISH_ASR_MODEL", default).lower()
     return chosen if chosen in {"transcribe-1", "transcribe-1-pro"} else default
+
+
+def warn_if_insecure_base(c: VoiceCliConfig) -> bool:
+    """Warn when an API key would travel over plain http to a non-loopback host.
+
+    Parameters
+    ----------
+    c : VoiceCliConfig
+        The settings built by ``cfg``.
+
+    Returns
+    -------
+    bool
+        True when at least one warning was printed. Self-hosting over http on a
+        LAN is legitimate, so this only warns and never stops the run.
+    """
+    warned = False
+    if c.fish_api_key and is_insecure_fish_base(c.fish_base):
+        warn(
+            f"[fish] FISH_BASE {c.fish_base} is plain http, so FISH_API_KEY is sent "
+            "unencrypted. Use https unless this host is on a network you trust."
+        )
+        warned = True
+    if c.llm.key and is_insecure_fish_base(c.llm.base):
+        warn(
+            f"[llm] FISH_LLM_BASE {c.llm.base} is plain http, so the LLM key is sent "
+            "unencrypted. Use https unless this host is on a network you trust."
+        )
+        warned = True
+    return warned
 
 
 def cfg() -> VoiceCliConfig:

@@ -29,6 +29,7 @@ from fish_audio_suite_voice.transports import (
     openrouter_client,
 )
 from fish_audio_suite_voice.tune import LlmTune, openrouter_host
+from fish_audio_suite_voice.wire import own_cancel, reap
 
 # A longer Retry-After than this ends the reply instead of stalling the turn.
 _LLM_429_CAP_S = 15.0
@@ -307,8 +308,7 @@ async def _consume_chat_events(
     finally:
         if not pending.done():
             pending.cancel()
-            with contextlib.suppress(BaseException):
-                await pending
+            await reap(pending)
 
 
 async def _event_or_cancel(pending: asyncio.Task[object], cancel: asyncio.Event | None) -> bool:
@@ -327,8 +327,7 @@ async def _event_or_cancel(pending: asyncio.Task[object], cancel: asyncio.Event 
     finally:
         if not stopped.done():
             stopped.cancel()
-            with contextlib.suppress(BaseException):
-                await stopped
+            await reap(stopped)
     return pending in done
 
 
@@ -670,7 +669,14 @@ async def _stream_generation(
             )
             async for piece in _consume_chat_events(events, cancel, stats):
                 yield piece
-        except (asyncio.CancelledError, GeneratorExit):
+        except asyncio.CancelledError:
+            held.stopped = "cancel"
+            # Only our own cancel flag may end the stream quietly. An outer
+            # cancellation (asyncio.timeout, a task group) has to propagate.
+            if not own_cancel(cancel):
+                raise
+            return
+        except GeneratorExit:
             held.stopped = "cancel"
             return
         except BaseExceptionGroup as exc:

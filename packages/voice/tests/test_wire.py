@@ -3,8 +3,9 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import AsyncIterator, Iterable
 from dataclasses import replace
+from typing import Any
 
 import httpx
 import ormsgpack
@@ -1407,3 +1408,73 @@ def test_a_mood_word_inside_a_long_sentence_is_not_rewritten_as_a_cue() -> None:
     spoken = asyncio.run(run())
     assert "[excited]" not in spoken.lower()
     assert "Excited" in spoken
+
+
+def test_pump_waits_for_the_cancelled_reader_to_unwind() -> None:
+    run, sink = _run()
+    cleaned: list[str] = []
+    original_write = sink.write
+
+    def write_then_cancel(chunk: bytes) -> None:
+        original_write(chunk)
+        run.cancel.set()
+
+    sink.write = write_then_cancel
+
+    async def close_client() -> None:
+        return None
+
+    async def chunks() -> AsyncIterator[bytes]:
+        try:
+            yield b"\x01\x02"
+            await asyncio.sleep(30)
+        finally:
+            # A slow teardown. The pump must not return before it ends.
+            await asyncio.sleep(0.05)
+            cleaned.append("done")
+
+    async def pump() -> None:
+        await _pump_ws_audio(chunks(), run, close_client)
+        assert cleaned == ["done"]
+
+    asyncio.run(pump())
+
+
+def test_a_keyboard_interrupt_in_a_turn_is_not_treated_as_a_fish_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fish_audio_suite_voice.session import _HeldClient, _one_attempt, _Turn
+
+    run, _sink = _run()
+    held = _HeldClient()
+    monkeypatch.setattr(held, "open", lambda *_a, **_k: object())
+
+    async def interrupted(*_args: Any, **_kwargs: Any) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("fish_audio_suite_voice.session.send_turn", interrupted)
+    turn = _Turn(run=run, held=held, headers={})
+    with pytest.raises(KeyboardInterrupt):
+        asyncio.run(_one_attempt(turn, text_events("hi", run.cancel, 40), 0))
+
+
+def test_run_isolated_does_not_swallow_a_keyboard_interrupt_but_still_closes_the_loop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from fish_audio_suite_voice.session import run_isolated
+
+    seen: list[asyncio.AbstractEventLoop] = []
+
+    async def interrupted_shutdown(loop: asyncio.AbstractEventLoop) -> None:
+        seen.append(loop)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("fish_audio_suite_voice.session.quiet_shutdown", interrupted_shutdown)
+
+    async def work() -> Any:
+        return None
+
+    with pytest.raises(KeyboardInterrupt):
+        run_isolated(work())
+    assert seen
+    assert seen[0].is_closed()

@@ -183,6 +183,7 @@ class BargeGate:
         self.min_rms = self.tune.min_rms
         self._heard: deque[bytes] = deque(maxlen=BARGE_LOOKBACK_FRAMES)
         self.captured = b""
+        self.failure: Exception | None = None
 
     def _bleed_wait(self) -> float:
         if self._bleed_override is not None:
@@ -257,7 +258,11 @@ class BargeGate:
                     cancel.set()
                     return
         except Exception as e:
-            warn(f"[barge-in] {e}")
+            # A missing PortAudio or a dead device ends this watcher thread. The
+            # reply goes on without barge-in, so the user is told and the
+            # failure is kept for the thread that started the gate.
+            self.failure = e
+            warn(f"[barge-in] off for this reply: {e}")
 
     def start_after_bleed(self, cancel: threading.Event) -> threading.Thread:
         """Sleep out speaker bleed, then start ``watch`` unless already cancelled.
