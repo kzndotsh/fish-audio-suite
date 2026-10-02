@@ -361,7 +361,7 @@ def _finish_llm(stats: _ChatStats, route_model: str) -> None:
     if stats.aborted:
         return
     debug(
-        "llm.done finish={} {} chunks={} provider={} model={}",
+        "llm.stream_end finish={} {} chunks={} provider={} model={}",
         stats.last_finish,
         _usage_brief(stats.last_usage),
         stats.yielded,

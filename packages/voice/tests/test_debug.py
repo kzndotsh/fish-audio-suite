@@ -62,11 +62,11 @@ def test_debug_closes_reply_before_the_log(
 ) -> None:
     configure_voice_logging(debug=True)
     write_reply_token("[calm] hey")
-    debug("llm.done finish=stop")
+    debug("llm.stream_end finish=stop")
     captured = capsys.readouterr()
     assert captured.out == "[calm] hey\n"
     assert "llm" in captured.err
-    assert "done finish=stop" in captured.err
+    assert "stream_end finish=stop" in captured.err
     assert not captured.err.startswith("[calm]")
 
 
