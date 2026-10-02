@@ -13,7 +13,7 @@ Part of [fish-audio-suite](../../README.md). Unofficial.
 
 Default bind is `127.0.0.1:8849`. One worker. Fish 429 and 5xx are retried. Other 4xx are returned as-is.
 
-**Security.** With no `FISH_PROXY_API_KEYS`, the proxy accepts any client. Anyone who can reach the port spends your Fish credits. Keep the default loopback bind, or set `FISH_PROXY_API_KEYS` before you listen on another address. The proxy logs a warning at startup when it does not.
+**Security.** With no `FISH_PROXY_API_KEYS`, the proxy accepts any client. Anyone who can reach the port spends your Fish credits. Keep the default loopback bind, or set `FISH_PROXY_API_KEYS` before you listen on another address. The proxy logs a warning at startup when it does not. If `FISH_PROXY_API_KEYS` is set but holds no key (for example `" , "`), the proxy refuses to start instead of silently running without auth. Unset it, or leave it empty, to run without client auth. A `FISH_BASE` that is plain `http` to a non-loopback host also logs a warning, because the Fish key would travel in cleartext.
 
 ## Quick start
 
@@ -122,7 +122,7 @@ Read once at startup. `GET /health` shows the values in effect, never a key.
 | `FISH_TTS_DIALOGUE_ONLY` | off | |
 | `FISH_MOOD_LEAD` | off | |
 | `FISH_DROP_NARRATION` | off | |
-| `FISH_PROXY_API_KEYS` | none | Comma list. Clients send one as a Bearer token |
+| `FISH_PROXY_API_KEYS` | none | Comma list. Clients send one as a Bearer token. Set but without a key: the proxy will not start |
 | `FISH_PROXY_MAX_BODY_BYTES` | `26214400` | 25 MiB. 0 turns the cap off |
 | `FISH_PROXY_MAX_INPUT_CHARS` | `4096` | 0 turns the cap off |
 | `FISH_PROXY_LOG_TEXT` | off | Log a preview of spoken text |

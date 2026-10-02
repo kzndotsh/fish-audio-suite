@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.datastructures import UploadFile
 from starlette.responses import JSONResponse
 
 from fish_audio_suite_kit import (
@@ -300,3 +301,36 @@ def test_json_transcription(monkeypatch: pytest.MonkeyPatch) -> None:
     assert name == "utterance.wav"
     assert data == b"RIFF"
     assert content_type == "audio/wav"
+
+
+def _spy_on_upload_close(monkeypatch: pytest.MonkeyPatch) -> list[str | None]:
+    closed: list[str | None] = []
+    original = UploadFile.close
+
+    async def spy(self: UploadFile) -> None:
+        closed.append(self.filename)
+        await original(self)
+
+    monkeypatch.setattr(UploadFile, "close", spy)
+    return closed
+
+
+def test_transcription_closes_the_uploaded_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    closed = _spy_on_upload_close(monkeypatch)
+    capture_upstream(monkeypatch, AsrJson())
+    with TestClient(app) as client:
+        response = client.post("/v1/audio/transcriptions", files=WAV_UPLOAD)
+    assert response.status_code == 200
+    assert closed == ["a.wav"]
+
+
+def test_transcription_closes_an_empty_upload_on_the_early_return(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed = _spy_on_upload_close(monkeypatch)
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/audio/transcriptions", files={"file": ("empty.wav", b"", "audio/wav")}
+        )
+    assert response.status_code == 400
+    assert closed == ["empty.wav"]
