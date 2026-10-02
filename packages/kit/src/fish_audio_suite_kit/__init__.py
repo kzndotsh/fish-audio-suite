@@ -17,6 +17,7 @@ from fish_audio_suite_kit.cuts import ends_sentence, next_tts_cut, split_tts_pie
 from fish_audio_suite_kit.defaults import (
     CHUNK_LENGTH_LO,
     CLOUD_CHUNK_HI,
+    DEFAULT_SEED_EXCHANGE,
     DEFAULT_SYSTEM_PROMPT,
     FISH_TTS_MODEL_IDS,
     MIN_CHUNK_HI,
@@ -85,6 +86,7 @@ __all__ = [
     "CLOUD_CHUNK_HI",
     "DEFAULT_BACKCHANNELS",
     "DEFAULT_QUIT_PHRASES",
+    "DEFAULT_SEED_EXCHANGE",
     "DEFAULT_SHORT_WORDS",
     "DEFAULT_SYSTEM_PROMPT",
     "FISH_ASR_PATH",
