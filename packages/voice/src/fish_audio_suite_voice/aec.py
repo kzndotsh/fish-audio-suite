@@ -1,7 +1,8 @@
 """Optional in-process AEC3. Far-end is speaker PCM; near-end is the mic.
 
-Missing extra, FISH_VOICE_AEC=0, empty far-end, or FileSink: return mic unchanged.
-Bleed delay stays the fallback. PipeWire echo-cancel is a host trick, not this module.
+Missing extra, ``AecTune.enabled`` False, empty far-end, or FileSink: return mic
+unchanged. Bleed delay stays the fallback. PipeWire echo-cancel is a host trick,
+not this module.
 """
 
 from __future__ import annotations
@@ -12,8 +13,8 @@ from typing import Any
 
 import numpy as np
 
-from fish_audio_suite_kit import env_bool, env_float
 from fish_audio_suite_voice.debug import debug
+from fish_audio_suite_voice.tune import DEFAULT_AEC_BLEED_S, AecTune
 
 AEC_RATE = 16_000
 SAMPLE_BYTES = 2
@@ -22,24 +23,7 @@ FAR_HOLD_SAMPLES = AEC_RATE * _FAR_HOLD_S
 _FAR_RECENT_S = 0.4
 _RMS_FLOOR = 1e-9
 FAR_SILENCE_RMS = 40.0
-DEFAULT_AEC_BLEED_S = 0.3
-DEFAULT_AEC_WET = 0.85
 _FULL_WET = 0.999
-
-
-class _ProcHolder:
-    proc: Any = None
-    tried: bool = False
-    import_fail: bool = False
-
-
-_HOLDER = _ProcHolder()
-_PROC_LOCK = threading.Lock()
-
-
-def aec_wanted() -> bool:
-    """Return whether FISH_VOICE_AEC asks for in-process echo cancellation."""
-    return env_bool("FISH_VOICE_AEC", default=True)
 
 
 def even_pcm(pcm: bytes) -> bytes:
@@ -130,29 +114,23 @@ class FarEndTap:
                 return b""
             return self._drop_front(n_bytes)
 
+    def keep_last(self, seconds: float) -> None:
+        """Drop all but the newest ``seconds`` of far-end audio.
+
+        Parameters
+        ----------
+        seconds : float
+            Audio to keep, at the 16 kHz far-end rate.
+        """
+        keep = max(0, int(seconds * AEC_RATE)) * SAMPLE_BYTES
+        with self._lock:
+            extra = len(self._pcm) - keep
+            if extra > 0:
+                self._drop_front(extra)
+
     def playing_recently(self, window_s: float = _FAR_RECENT_S) -> bool:
         """Return whether playback ended inside the recent window."""
         return time.monotonic() < (self._playing_until + window_s)
-
-
-TAP = FarEndTap()
-
-
-def tap_playback(pcm: bytes, sample_rate: int) -> None:
-    """Record speaker PCM as far-end when AEC is enabled."""
-    if not aec_wanted():
-        return
-    TAP.push(pcm, sample_rate)
-
-
-def tap_clear() -> None:
-    """Clear the process-wide far-end ring."""
-    TAP.clear()
-
-
-def far_end_playing(window_s: float = _FAR_RECENT_S) -> bool:
-    """Return whether the speaker was still playing inside ``window_s``."""
-    return TAP.playing_recently(window_s)
 
 
 def pcm_rms(frame: bytes) -> float:
@@ -163,93 +141,159 @@ def pcm_rms(frame: bytes) -> float:
     return float(np.sqrt(np.mean(samples * samples)) + _RMS_FLOOR)
 
 
-def load_processor() -> Any | None:
-    """Load the optional AEC3 processor once. Import failure returns None."""
-    if not aec_wanted():
-        return None
-    with _PROC_LOCK:
-        if _HOLDER.tried:
-            return _HOLDER.proc
-        _HOLDER.tried = True
-        try:
-            from pywebrtc_audio import AudioProcessor
-        except ImportError:
-            _HOLDER.import_fail = True
-            debug("aec.skip extra pywebrtc-audio not installed")
-            return None
-        _HOLDER.proc = AudioProcessor(
-            sample_rate=AEC_RATE,
-            num_channels=1,
-            echo_cancellation=True,
-            noise_suppression=False,
-            high_pass_filter=True,
-            auto_gain_control=False,
-            stream_delay_ms=0,
-        )
-        debug(
-            "aec.on AEC3 16k wet={}",
-            env_float("FISH_VOICE_AEC_WET", DEFAULT_AEC_WET),
-        )
-        return _HOLDER.proc
+_ALIGN_MIN_S = 0.06
+_ALIGN_MARGIN_S = 0.06
+_DEFAULT_OUTPUT_LATENCY_S = 0.0
 
 
-def aec_available() -> bool:
-    """Return whether AEC3 loaded.
-
-    Returns
-    -------
-    bool
-        False when ``FISH_VOICE_AEC=0``, the extra is missing, or the
-        processor failed to construct. The mic is then passed through.
-    """
-    return load_processor() is not None
-
-
-def effective_bleed_s(fallback_s: float) -> float:
-    """Seconds to ignore the mic after TTS starts, so speaker bleed is not speech.
+class EchoCanceller:
+    """One session's far-end tap, AEC3 processor, and tuning.
 
     Parameters
     ----------
-    fallback_s : float
-        ``FISH_VOICE_BLEED_DELAY`` (0.9 by default). Used when AEC is off.
+    tune : AecTune or None, optional
+        Echo settings. None uses the defaults.
 
-    Returns
-    -------
-    float
-        ``FISH_VOICE_AEC_BLEED`` (0.3 by default) when AEC3 is loaded.
-        Negative values are replaced with 0 or the AEC default.
+    Notes
+    -----
+    The processor loads on first use. A missing ``pywebrtc-audio`` extra is
+    remembered for this instance and the mic passes through unchanged.
     """
-    if not aec_available():
-        return fallback_s if fallback_s >= 0 else 0.0
-    bleed = env_float("FISH_VOICE_AEC_BLEED", DEFAULT_AEC_BLEED_S)
-    return bleed if bleed >= 0 else DEFAULT_AEC_BLEED_S
 
+    def __init__(self, tune: AecTune | None = None) -> None:
+        self.tune = tune or AecTune()
+        self.tap = FarEndTap()
+        self.output_latency_s = _DEFAULT_OUTPUT_LATENCY_S
+        self._proc: Any = None
+        self._tried = False
+        self._lock = threading.Lock()
 
-def clean_mic_frame(near: bytes) -> bytes:
-    """AEC when far-end has energy; otherwise return near (no AEC on silence)."""
-    proc = load_processor()
-    if proc is None or len(near) < SAMPLE_BYTES:
-        return near
-    far = TAP.pop(len(near))
-    if not far or pcm_rms(far) < FAR_SILENCE_RMS:
-        return near
-    wet = env_float("FISH_VOICE_AEC_WET", DEFAULT_AEC_WET)
-    wet = min(1.0, max(0.0, wet))
-    near_a = np.frombuffer(near, dtype=np.int16)
-    far_a = np.frombuffer(far, dtype=np.int16)
-    if near_a.size != far_a.size:
-        return near
-    try:
-        clean = proc.process(near_a, far_a)
-    except Exception as exc:
-        debug("aec.fail {}", exc)
-        return near
-    clean_a = np.asarray(clean)
-    # A short or wide result would change the mic frame size and break VAD.
-    if clean_a.shape != near_a.shape:
-        debug("aec.fail shape {} != {}", clean_a.shape, near_a.shape)
-        return near
-    if wet >= _FULL_WET:
-        return _int16_bytes(clean_a)
-    mixed = (1.0 - wet) * near_a.astype(np.float32) + wet * clean_a.astype(np.float32)
-    return _int16_bytes(mixed)
+    def load(self) -> Any | None:
+        """Load the optional AEC3 processor once.
+
+        Returns
+        -------
+        Any or None
+            The processor, or None when AEC is off or the extra is missing.
+        """
+        if not self.tune.enabled:
+            return None
+        with self._lock:
+            if self._tried:
+                return self._proc
+            self._tried = True
+            try:
+                from pywebrtc_audio import AudioProcessor
+            except ImportError:
+                debug("aec.skip extra pywebrtc-audio not installed")
+                return None
+            self._proc = AudioProcessor(
+                sample_rate=AEC_RATE,
+                num_channels=1,
+                echo_cancellation=True,
+                noise_suppression=False,
+                high_pass_filter=True,
+                auto_gain_control=False,
+                stream_delay_ms=0,
+            )
+            debug("aec.on AEC3 16k wet={}", self.tune.wet)
+            return self._proc
+
+    def available(self) -> bool:
+        """Return whether AEC3 loaded and is enabled."""
+        return self.load() is not None
+
+    def tap_playback(self, pcm: bytes, sample_rate: int) -> None:
+        """Record speaker PCM as far-end, or only the playing mark when AEC is off.
+
+        Parameters
+        ----------
+        pcm : bytes
+            Mono int16 PCM about to reach the speaker.
+        sample_rate : int
+            Rate of ``pcm``.
+        """
+        if self.tune.enabled:
+            self.tap.push(pcm, sample_rate)
+        elif sample_rate > 0:
+            self.tap.mark_playing(len(even_pcm(pcm)) / SAMPLE_BYTES / sample_rate)
+
+    def clear(self) -> None:
+        """Drop stored far-end audio."""
+        self.tap.clear()
+
+    def far_end_playing(self, window_s: float = _FAR_RECENT_S) -> bool:
+        """Return whether the speaker was still playing inside ``window_s``."""
+        return self.tap.playing_recently(window_s)
+
+    def align(self) -> None:
+        """Keep only far-end audio that is about to be heard.
+
+        Notes
+        -----
+        The sink pushes PCM when it hands it to PortAudio. It reaches the air
+        ``output_latency_s`` later. The barge gate starts reading the ring
+        after the bleed delay, so without this the reference would trail the
+        mic by that whole delay for the rest of the reply.
+        """
+        keep_s = max(self.output_latency_s, _ALIGN_MIN_S) + _ALIGN_MARGIN_S
+        self.tap.keep_last(keep_s)
+
+    def effective_bleed_s(self, fallback_s: float) -> float:
+        """Seconds to ignore the mic after TTS starts, so speaker bleed is not speech.
+
+        Parameters
+        ----------
+        fallback_s : float
+            Delay used when AEC3 is not loaded.
+
+        Returns
+        -------
+        float
+            ``AecTune.bleed_s`` when AEC3 is loaded, otherwise ``fallback_s``.
+            Negative values become 0 or the AEC default.
+        """
+        if not self.available():
+            return fallback_s if fallback_s >= 0 else 0.0
+        bleed = self.tune.bleed_s
+        return bleed if bleed >= 0 else DEFAULT_AEC_BLEED_S
+
+    def clean(self, near: bytes) -> bytes:
+        """Cancel echo when far-end has energy; otherwise return ``near``.
+
+        Parameters
+        ----------
+        near : bytes
+            One 16 kHz int16 mic frame.
+
+        Returns
+        -------
+        bytes
+            Cleaned frame, or ``near`` when AEC is off, far-end is silent, or
+            the processor failed.
+        """
+        proc = self.load()
+        if proc is None or len(near) < SAMPLE_BYTES:
+            return near
+        far = self.tap.pop(len(near))
+        if not far or pcm_rms(far) < FAR_SILENCE_RMS:
+            return near
+        wet = min(1.0, max(0.0, self.tune.wet))
+        near_a = np.frombuffer(near, dtype=np.int16)
+        far_a = np.frombuffer(far, dtype=np.int16)
+        if near_a.size != far_a.size:
+            return near
+        try:
+            clean = proc.process(near_a, far_a)
+        except Exception as exc:
+            debug("aec.fail {}", exc)
+            return near
+        clean_a = np.asarray(clean)
+        # A short or wide result would change the mic frame size and break VAD.
+        if clean_a.shape != near_a.shape:
+            debug("aec.fail shape {} != {}", clean_a.shape, near_a.shape)
+            return near
+        if wet >= _FULL_WET:
+            return _int16_bytes(clean_a)
+        mixed = (1.0 - wet) * near_a.astype(np.float32) + wet * clean_a.astype(np.float32)
+        return _int16_bytes(mixed)

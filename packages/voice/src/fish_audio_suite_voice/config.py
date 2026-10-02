@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from fish_audio_suite_kit import (
     CHUNK_LENGTH_LO,
@@ -23,11 +23,20 @@ from fish_audio_suite_kit import (
     env_token,
     known_latency,
     known_tts_model,
-    strip_base,
 )
 from fish_audio_suite_voice.playback import DEFAULT_PLAYBACK, playback_key
+from fish_audio_suite_voice.tune import (
+    DEFAULT_HISTORY_TURNS,
+    OPENROUTER_API_BASE,
+    AecTune,
+    BargeTune,
+    ListenTune,
+    LlmTune,
+    read_flag,
+    read_int,
+)
 
-OPENROUTER_API_BASE = "https://openrouter.ai/api/v1"
+__all__ = ["OPENROUTER_API_BASE", "VoiceCliConfig", "cfg"]
 
 
 @dataclass(frozen=True)
@@ -37,8 +46,25 @@ class VoiceCliConfig:
     Notes
     -----
     ``fish_api_key`` and ``fish_voice_id`` are empty unless the env sets them.
-    ``llm_backend`` is only the label printed on the ready line. The transport
-    is chosen from ``llm_base``. Process env wins over ``--env-file``.
+    The four tune objects are read once here and passed down, so nothing below
+    this layer reads the environment. Process env wins over ``--env-file``.
+
+    Attributes
+    ----------
+    llm : LlmTune
+        Chat backend and request settings.
+    listen : ListenTune
+        Microphone capture limits.
+    barge : BargeTune
+        Barge-in gate and the pauses around a reply.
+    aec : AecTune
+        Echo cancellation.
+    history_turns : int
+        User and assistant pairs kept in the chat history.
+    mood_lead : bool
+        Rewrite a sentence-leading mood word into a ``[cue]``.
+    drop_narration : bool
+        Drop stage-direction lines such as ``She smiles.`` before TTS.
     """
 
     fish_api_key: str
@@ -58,37 +84,20 @@ class VoiceCliConfig:
     playback: str
     system_prompt: str
     device: str | None
-    llm_backend: str
-    llm_base: str
-    llm_key: str
-    llm_model: str
+    asr_model: str = "transcribe-1"
+    llm: LlmTune = field(default_factory=LlmTune)
+    listen: ListenTune = field(default_factory=ListenTune)
+    barge: BargeTune = field(default_factory=BargeTune)
+    aec: AecTune = field(default_factory=AecTune)
+    history_turns: int = DEFAULT_HISTORY_TURNS
+    mood_lead: bool = False
+    drop_narration: bool = False
 
 
-def _existing(default: str, *names: str) -> str:
-    """First key that exists wins, including a blank value. Surrounding space is removed."""
-    for name in names:
-        if name in os.environ:
-            return os.environ[name].strip()
-    return default
-
-
-def _base_url(default: str, *names: str) -> str:
-    """First non-blank URL. A blank value is not a host, so the next key is used."""
-    for name in names:
-        if name not in os.environ:
-            continue
-        text = strip_base(os.environ[name])
-        if text:
-            return text
-    return strip_base(default)
-
-
-def _model_name(*names: str) -> str:
-    for name in names:
-        raw = env_token(name, "")
-        if raw:
-            return raw
-    return ""
+def _asr_model(default: str) -> str:
+    # Voice only runs the two native ids. Anything else would 4xx on every turn.
+    chosen = env_token("FISH_ASR_MODEL", default).lower()
+    return chosen if chosen in {"transcribe-1", "transcribe-1-pro"} else default
 
 
 def cfg() -> VoiceCliConfig:
@@ -150,12 +159,12 @@ def cfg() -> VoiceCliConfig:
         playback=playback_key(env_token("FISH_PLAYBACK", DEFAULT_PLAYBACK)),
         system_prompt=os.environ.get("FISH_SYSTEM_PROMPT", d.system_prompt),
         device=os.environ.get("FISH_VOICE_DEVICE"),
-        llm_backend=env_token("FISH_LLM_BACKEND", "openrouter"),
-        llm_base=_base_url(
-            OPENROUTER_API_BASE,
-            "FISH_LLM_BASE",
-            "OPENROUTER_BASE_URL",
-        ),
-        llm_key=_existing("", "FISH_LLM_KEY", "OPENROUTER_API_KEY", "OPENAI_API_KEY"),
-        llm_model=_model_name("FISH_LLM_MODEL", "OPENROUTER_MODEL"),
+        asr_model=_asr_model(d.asr_model),
+        llm=LlmTune.from_env(),
+        listen=ListenTune.from_env(),
+        barge=BargeTune.from_env(),
+        aec=AecTune.from_env(),
+        history_turns=read_int("FISH_HISTORY_TURNS", DEFAULT_HISTORY_TURNS, lo=1),
+        mood_lead=read_flag("FISH_MOOD_LEAD", default=False),
+        drop_narration=read_flag("FISH_DROP_NARRATION", default=False),
     )

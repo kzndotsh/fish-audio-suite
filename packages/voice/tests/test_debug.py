@@ -111,3 +111,14 @@ def test_header_meta_keeps_x_headers() -> None:
     body = public_meta({"api_key": "sk-secret", "language": "en"})
     assert "api_key" not in body
     assert body["language"] == "en"
+
+
+def test_debug_flag_does_not_write_the_process_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("FISH_VOICE_DEBUG", raising=False)
+    configure_voice_logging(debug=True)
+    assert env_debug()
+    assert "FISH_VOICE_DEBUG" not in os.environ
+    configure_voice_logging(debug=False)
+    assert not env_debug()

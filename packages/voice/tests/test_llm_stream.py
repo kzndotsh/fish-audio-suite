@@ -19,13 +19,28 @@ from fish_audio_suite_voice.llm import (
     llm_token_stream,
 )
 from fish_audio_suite_voice.transports import (
+    ChatCall,
     _abort_http,
     _chat_body,
     _feed_sse,
     openrouter_client,
 )
+from fish_audio_suite_voice.tune import LlmTune, openrouter_host
 
 OR_BASE = "https://openrouter.ai/api/v1"
+
+
+def _tune(**kw: Any) -> LlmTune:
+    fields: dict[str, Any] = {
+        "backend": "openrouter",
+        "base": OR_BASE,
+        "key": "sk-test",
+        "model": "org/model",
+        "nitro": True,
+        "continuation": True,
+    }
+    fields.update(kw)
+    return LlmTune(**fields)
 
 
 def test_openrouter_client_drops_a_key_that_breaks_the_header(
@@ -46,7 +61,7 @@ def test_openrouter_client_drops_a_key_that_breaks_the_header(
     monkeypatch.setattr("openrouter.OpenRouter", _Client)
 
     async def open_with(key: str) -> None:
-        async with openrouter_client(key, OR_BASE):
+        async with openrouter_client(_tune(key=key)):
             pass
 
     asyncio.run(open_with("sk-good"))
@@ -56,12 +71,17 @@ def test_openrouter_client_drops_a_key_that_breaks_the_header(
 
 
 def test_surrogate_in_chat_messages_still_encodes() -> None:
-    body = _chat_body(
-        [{"role": "system", "content": "Be brief. \ud800 Answer plainly."}],
-        "model",
-        100,
-        "max_tokens",
+    call = ChatCall(
+        messages=[{"role": "system", "content": "Be brief. \ud800 Answer plainly."}],
+        tune=_tune(max_tokens=100),
+        route_model="model",
+        client=None,
+        http=None,
+        session_id=None,
+        trace_id=None,
+        stats=_ChatStats(),
     )
+    body = _chat_body(call, "max_tokens")
     request = httpx.Request(
         "POST",
         "https://example.com/v1/chat/completions",
@@ -166,30 +186,34 @@ def test_split_sse_data_lines_stay_one_event() -> None:
 
 
 def _tokens(**extra: Any):
-    return llm_token_stream(
-        [{"role": "user", "content": "hi"}],
-        base=OR_BASE,
-        key="sk-test",
-        model="org/model",
-        **extra,
-    )
+    tune = extra.pop("tune", None) or _tune()
+    return llm_token_stream([{"role": "user", "content": "hi"}], tune=tune, **extra)
 
 
 def test_want_nitro_slash_model_on_openrouter() -> None:
-    assert _want_nitro("org/model", OR_BASE)
+    assert _want_nitro("org/model", _tune())
 
 
 def test_want_nitro_false_when_suffix_present() -> None:
-    assert not _want_nitro("org/model:nitro", OR_BASE)
+    assert not _want_nitro("org/model:nitro", _tune())
 
 
-def test_want_nitro_false_when_env_off(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("FISH_LLM_NITRO", "0")
-    assert not _want_nitro("org/model", OR_BASE)
+def test_want_nitro_is_off_unless_asked() -> None:
+    assert not _want_nitro("org/model", _tune(nitro=False))
+    assert not LlmTune().nitro
 
 
-def test_want_nitro_false_for_non_openrouter_base() -> None:
-    assert not _want_nitro("org/model", "https://api.example.com/v1")
+def test_want_nitro_false_for_non_openrouter_backend() -> None:
+    other = _tune(backend="openai", base="https://api.example.com/v1")
+    assert not _want_nitro("org/model", other)
+
+
+def test_openrouter_host_checks_the_hostname_not_the_text() -> None:
+    assert openrouter_host("https://openrouter.ai/api/v1")
+    assert openrouter_host("https://eu.openrouter.ai/api/v1")
+    assert not openrouter_host("https://api.example.com/v1?via=openrouter.ai")
+    assert not openrouter_host("https://notopenrouter.ai/v1")
+    assert not openrouter_host("http://localhost:11434/v1")
 
 
 def test_model_author_slug_splits_variant() -> None:
@@ -290,25 +314,52 @@ def test_openrouter_stream_joins_tokens(fake_openrouter: type[_FakeOpenRouter]) 
     assert fake_openrouter.last_init["x_open_router_categories"] == "cli-agent"
 
 
-def test_max_tokens_must_be_positive(
+def test_request_settings_come_from_the_tune(
     fake_openrouter: type[_FakeOpenRouter],
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def run() -> None:
-        async for _tok in _tokens():
+    async def run(tune: LlmTune) -> None:
+        async for _tok in _tokens(tune=tune):
             pass
 
-    monkeypatch.setenv("FISH_LLM_MAX_TOKENS", "0")
-    asyncio.run(run())
+    asyncio.run(run(_tune(max_tokens=128, temperature=0.2, timeout_s=30.0, provider_sort="price")))
     assert _FakeChat.last_kw is not None
-    assert _FakeChat.last_kw["max_completion_tokens"] == 1200
-    monkeypatch.setenv("FISH_LLM_MAX_TOKENS", "-5")
-    asyncio.run(run())
-    assert _FakeChat.last_kw["max_completion_tokens"] == 1200
-    monkeypatch.setenv("FISH_LLM_MAX_TOKENS", "128")
-    asyncio.run(run())
     assert _FakeChat.last_kw["max_completion_tokens"] == 128
+    assert _FakeChat.last_kw["temperature"] == 0.2
+    assert _FakeChat.last_kw["timeout_ms"] == 30_000
+    assert _FakeChat.last_kw["provider"] == {"sort": "price"}
+    asyncio.run(run(_tune(nitro=False)))
+    assert "provider" not in _FakeChat.last_kw
+    assert _FakeChat.last_kw["model"] == "org/model"
     assert fake_openrouter.last_init is not None
+
+
+def test_openrouter_attribution_is_configurable(
+    fake_openrouter: type[_FakeOpenRouter],
+) -> None:
+    async def run(tune: LlmTune) -> None:
+        async for _tok in _tokens(tune=tune):
+            pass
+
+    asyncio.run(run(_tune(referer="https://example.test/app", title="my-app", categories="")))
+    init = fake_openrouter.last_init
+    assert init is not None
+    assert init["http_referer"] == "https://example.test/app"
+    assert init["x_open_router_title"] == "my-app"
+    assert init["x_open_router_categories"] is None
+
+
+def test_llm_env_numbers_must_be_usable(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("FISH_LLM_MAX_TOKENS", "0")
+    assert LlmTune.from_env().max_tokens == 1200
+    monkeypatch.setenv("FISH_LLM_MAX_TOKENS", "-5")
+    assert LlmTune.from_env().max_tokens == 1200
+    monkeypatch.setenv("FISH_LLM_MAX_TOKENS", "128")
+    assert LlmTune.from_env().max_tokens == 128
+    monkeypatch.setenv("FISH_LLM_TIMEOUT", "0")
+    assert LlmTune.from_env().timeout_s == 120.0
+    assert "FISH_LLM_MAX_TOKENS" in capsys.readouterr().err
 
 
 def test_content_parts_keep_text_and_skip_reasoning(
@@ -725,7 +776,7 @@ def test_check_openrouter_model_calls_get_with_nitro() -> None:
         )
 
     client = SimpleNamespace(models=SimpleNamespace(get_async=get_async))
-    asyncio.run(check_openrouter_model(client, "org/model", OR_BASE))
+    asyncio.run(check_openrouter_model(client, _tune()))
     assert seen == {"author": "org", "slug": "model:nitro"}
 
 
@@ -735,7 +786,7 @@ def test_check_openrouter_model_404(capsys: pytest.CaptureFixture[str]) -> None:
         raise OpenRouterError("missing", httpx.Response(404, request=req), body="nope")
 
     client = SimpleNamespace(models=SimpleNamespace(get_async=get_async))
-    asyncio.run(check_openrouter_model(client, "org/missing", OR_BASE))
+    asyncio.run(check_openrouter_model(client, _tune(model="org/missing")))
     assert "unknown model org/missing:nitro" in capsys.readouterr().err
 
 
@@ -744,7 +795,7 @@ def test_check_openrouter_model_skips_unsplit_slug() -> None:
         raise AssertionError("must not call get")
 
     client = SimpleNamespace(models=SimpleNamespace(get_async=get_async))
-    asyncio.run(check_openrouter_model(client, "norgslash", OR_BASE))
+    asyncio.run(check_openrouter_model(client, _tune(model="norgslash")))
 
 
 def _events_once_429(wait: float | None, then: list[str]):

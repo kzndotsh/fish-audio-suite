@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-import uuid
+from contextlib import AsyncExitStack
 from dataclasses import dataclass, replace
-from typing import Any, Literal
+from typing import Literal
+
+import httpx
 
 from fish_audio_suite_kit import (
     FishHttpError,
@@ -24,8 +26,9 @@ from fish_audio_suite_kit import (
     scrub_tts,
     trace_id_of,
 )
-from fish_audio_suite_voice.asr import fish_asr
-from fish_audio_suite_voice.barge import BargeGate, post_speak_cooldown_s
+from fish_audio_suite_voice.aec import EchoCanceller
+from fish_audio_suite_voice.asr import asr_client, fish_asr
+from fish_audio_suite_voice.barge import BargeGate
 from fish_audio_suite_voice.config import VoiceCliConfig
 from fish_audio_suite_voice.debug import (
     console_print,
@@ -36,9 +39,9 @@ from fish_audio_suite_voice.debug import (
 )
 from fish_audio_suite_voice.listen import record_utterance
 from fish_audio_suite_voice.live import IsolatedFishTts, IsolatedResult, is_cancel_noise
-from fish_audio_suite_voice.llm import llm_token_stream
+from fish_audio_suite_voice.llm import ChatBackend
 from fish_audio_suite_voice.playback import PortAudioMissingError, make_sink
-from fish_audio_suite_voice.signals import HISTORY_TURNS, STOP_RECORD, TURN
+from fish_audio_suite_voice.signals import DuplexSession
 
 EXIT_OK = 0
 EXIT_FATAL = 2
@@ -55,9 +58,10 @@ class _Loop:
     config: VoiceCliConfig
     tts: IsolatedFishTts
     device: str | int | None
-    or_client: Any | None
+    backend: ChatBackend
+    session: DuplexSession
+    asr_http: httpx.AsyncClient
     history: list[dict[str, str]]
-    llm_session: str
     barge_prefix: bytes = b""
 
 
@@ -70,18 +74,8 @@ async def _collect_reply(
 ) -> tuple[str, float | None]:
     parts: list[str] = []
     ttft_ms: float | None = None
-    c = loop.config
     try:
-        async for tok in llm_token_stream(
-            loop.history,
-            base=c.llm_base,
-            key=c.llm_key,
-            model=c.llm_model,
-            cancel=llm_cancel,
-            client=loop.or_client,
-            session_id=loop.llm_session,
-            trace_id=trace_id,
-        ):
+        async for tok in loop.backend.stream(loop.history, cancel=llm_cancel, trace_id=trace_id):
             if ttft_ms is None:
                 ttft_ms = elapsed_ms(started)
                 console_print(f"  [llm ttft {ttft_ms:.0f}ms]", flush=True)
@@ -89,7 +83,7 @@ async def _collect_reply(
             parts.append(tok)
             write_reply_token(tok)
     except (asyncio.CancelledError, BaseExceptionGroup, RuntimeError) as e:
-        if not is_cancel_noise(e):
+        if not is_cancel_noise(e, cancelled=llm_cancel.is_set()):
             warn(f"[llm] {e}")
     finally:
         end_reply_line()
@@ -155,12 +149,12 @@ async def _speak_reply(
     started: float,
     trace_id: str | None,
 ) -> tuple[LatencySnapshot, int | None]:
-    scrubbed = ensure_lead_cue(normalize_cues(scrub_tts(reply)))
-    if is_tts_junk(scrubbed):
+    c = loop.config
+    scrubbed = ensure_lead_cue(normalize_cues(scrub_tts(reply), lead=c.mood_lead))
+    if is_tts_junk(scrubbed, drop_narration=c.drop_narration):
         console_print("  (skip junk TTS)", flush=True)
         return snapshot, None
-    c = loop.config
-    barge = BargeGate(device=loop.device)
+    barge = BargeGate(device=loop.device, tune=c.barge, aec=loop.session.aec)
     thread = barge.start_after_bleed(cancel)
     sink = make_sink(
         c.playback,
@@ -168,6 +162,7 @@ async def _speak_reply(
         sample_rate=c.sample_rate,
         device=loop.device,
         cancel=cancel,
+        aec=loop.session.aec,
     )
     loop.tts.trace_headers = {"traceparent": make_traceparent(trace_id=trace_id)}
     try:
@@ -224,21 +219,24 @@ async def _recognize(loop: _Loop, wav: bytes, last_user: str) -> _HeardLine:
             c.fish_api_key,
             base=c.fish_base,
             language=c.fish_asr_language,
+            model=c.asr_model,
             extra_headers={"traceparent": asr_parent},
+            cancel=loop.session.stop,
+            client=loop.asr_http,
         )
     except FishHttpError as e:
-        if STOP_RECORD.is_set():
+        if loop.session.stop.is_set():
             return _HeardLine("bye")
         warn(f"[asr] {e.status} {e.message}")
         if e.status in _FATAL_FISH:
             return _HeardLine("fatal", code=EXIT_FATAL)
         return _HeardLine("again")
     except Exception as e:
-        if STOP_RECORD.is_set():
+        if loop.session.stop.is_set():
             return _HeardLine("bye")
         warn(f"[asr] {e}")
         return _HeardLine("again")
-    if STOP_RECORD.is_set():
+    if loop.session.stop.is_set():
         return _HeardLine("bye")
     asr_ms = elapsed_ms(started)
     decision = _accept_asr(text, last_user)
@@ -262,11 +260,18 @@ async def _hear_line(loop: _Loop, last_user: str) -> _HeardLine:
     try:
         prefix = loop.barge_prefix
         loop.barge_prefix = b""
-        wav = await asyncio.to_thread(record_utterance, loop.device, STOP_RECORD, prefix=prefix)
+        wav = await asyncio.to_thread(
+            record_utterance,
+            loop.device,
+            loop.session.stop,
+            prefix=prefix,
+            tune=loop.config.listen,
+            aec=loop.session.aec,
+        )
     except PortAudioMissingError as e:
         warn(str(e))
         return _HeardLine("fatal", code=EXIT_FATAL)
-    if STOP_RECORD.is_set():
+    if loop.session.stop.is_set():
         return _HeardLine("bye")
     if not wav:
         debug("listen.dropped (too short or none)")
@@ -275,7 +280,7 @@ async def _hear_line(loop: _Loop, last_user: str) -> _HeardLine:
     heard = await _recognize(loop, wav, last_user)
     # Quit during the Fish request used to come back as a normal line, so
     # the LLM still answered after Ctrl+C.
-    if STOP_RECORD.is_set():
+    if loop.session.stop.is_set():
         return _HeardLine("bye")
     return heard
 
@@ -292,8 +297,8 @@ def bye() -> int:
     return EXIT_OK
 
 
-def _trim_history(history: list[dict[str, str]]) -> None:
-    cap = _KEEP_SYSTEM + HISTORY_TURNS * _ROLES_PER_TURN
+def _trim_history(history: list[dict[str, str]], turns: int) -> None:
+    cap = _KEEP_SYSTEM + turns * _ROLES_PER_TURN
     while len(history) > cap:
         # Drop the oldest user and assistant together. Popping one message
         # leaves that assistant answering the next user.
@@ -308,15 +313,15 @@ def _trim_history(history: list[dict[str, str]]) -> None:
         del history[_KEEP_SYSTEM]
 
 
-def _remember_user(history: list[dict[str, str]], text: str) -> None:
+def _remember_user(history: list[dict[str, str]], text: str, turns: int) -> None:
     history.append({"role": "user", "content": text})
-    _trim_history(history)
+    _trim_history(history, turns)
 
 
 async def _answer_line(loop: _Loop, heard: _HeardLine) -> int | None:
     cancel = threading.Event()
     llm_cancel = asyncio.Event()
-    TURN.bind(cancel, llm_cancel)
+    loop.session.turn.bind(cancel, llm_cancel)
     reply, ttft_ms = await _collect_reply(
         loop,
         llm_cancel=llm_cancel,
@@ -324,7 +329,7 @@ async def _answer_line(loop: _Loop, heard: _HeardLine) -> int | None:
         started=time.perf_counter(),
     )
     snapshot = LatencySnapshot(asr_ms=heard.asr_ms, llm_ttft=ttft_ms, trace_id=heard.trace_id)
-    if STOP_RECORD.is_set():
+    if loop.session.stop.is_set():
         return bye()
     if reply:
         snapshot, fatal = await _speak_reply(
@@ -338,11 +343,12 @@ async def _answer_line(loop: _Loop, heard: _HeardLine) -> int | None:
         if fatal is not None:
             return fatal
     console_print(f"  {snapshot.log_line()}", flush=True)
-    TURN.fire()
-    TURN.clear()
+    stop = loop.session.stop
+    loop.session.turn.fire()
+    loop.session.turn.clear()
     barged = bool(loop.barge_prefix)
-    if STOP_RECORD.is_set() or (
-        not barged and await asyncio.to_thread(STOP_RECORD.wait, post_speak_cooldown_s())
+    if stop.is_set() or (
+        not barged and await asyncio.to_thread(stop.wait, loop.config.barge.cooldown_s)
     ):
         return bye()
     return None
@@ -352,7 +358,8 @@ async def duplex_turns(
     c: VoiceCliConfig,
     tts: IsolatedFishTts,
     device: str | int | None,
-    or_client: Any | None,
+    backend: ChatBackend,
+    session: DuplexSession | None = None,
 ) -> int:
     """Mic, Fish ASR, LLM, then one isolated TTS turn, until quit.
 
@@ -364,8 +371,11 @@ async def duplex_turns(
         Live TTS client. Each reply uses ``speak_isolated``.
     device : str or int or None
         Mic and speaker device, or None for the host default.
-    or_client : Any or None
-        OpenRouter client when the base is openrouter.ai. Other bases use httpx.
+    backend : ChatBackend
+        Open chat backend, usually from ``open_chat_backend``.
+    session : DuplexSession or None, optional
+        Cancel flags and the echo canceller. A new one is created when omitted.
+        Pass your own to wire ``request_quit`` to a signal handler.
 
     Returns
     -------
@@ -377,27 +387,32 @@ async def duplex_turns(
     -----
     One sampled trace id is shared by ASR and the TTS websocket for that turn.
     Barge-in keeps the audio that tripped the gate and skips the post-speak
-    cooldown. Ctrl+C sets ``STOP_RECORD`` and cancels the in-flight TTS task.
+    cooldown. ``session.request_quit`` cancels the in-flight reply and ends
+    the loop.
     """
-    loop = _Loop(
-        config=c,
-        tts=tts,
-        device=device,
-        or_client=or_client,
-        history=[{"role": "system", "content": c.system_prompt}],
-        llm_session=uuid.uuid4().hex,
-    )
-    last_user = ""
-    while True:
-        heard = await _hear_line(loop, last_user)
-        if heard.kind == "bye":
-            return bye()
-        if heard.kind == "fatal":
-            return heard.code
-        if heard.kind == "again":
-            continue
-        last_user = heard.text
-        _remember_user(loop.history, heard.text)
-        code = await _answer_line(loop, heard)
-        if code is not None:
-            return code
+    session = session or DuplexSession(aec=EchoCanceller(c.aec))
+    async with AsyncExitStack() as stack:
+        asr_http = await stack.enter_async_context(asr_client())
+        loop = _Loop(
+            config=c,
+            tts=tts,
+            device=device,
+            backend=backend,
+            session=session,
+            asr_http=asr_http,
+            history=[{"role": "system", "content": c.system_prompt}],
+        )
+        last_user = ""
+        while True:
+            heard = await _hear_line(loop, last_user)
+            if heard.kind == "bye":
+                return bye()
+            if heard.kind == "fatal":
+                return heard.code
+            if heard.kind == "again":
+                continue
+            last_user = heard.text
+            _remember_user(loop.history, heard.text, c.history_turns)
+            code = await _answer_line(loop, heard)
+            if code is not None:
+                return code

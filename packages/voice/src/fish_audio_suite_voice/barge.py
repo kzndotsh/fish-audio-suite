@@ -5,34 +5,47 @@ from __future__ import annotations
 import queue
 import threading
 from collections import deque
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
+from dataclasses import replace
 from typing import Any
 
-from fish_audio_suite_kit import MS_PER_S, env_float, env_int
+from fish_audio_suite_kit import MS_PER_S
 from fish_audio_suite_voice.aec import (
     AEC_RATE,
     SAMPLE_BYTES,
-    aec_available,
-    clean_mic_frame,
-    effective_bleed_s,
-    far_end_playing,
+    EchoCanceller,
     pcm_rms,
-    tap_clear,
 )
 from fish_audio_suite_voice.debug import debug, heartbeat_due, warn
+from fish_audio_suite_voice.floor import AdaptiveFloor
 from fish_audio_suite_voice.playback import load_sounddevice, pcm_stream_kwargs
+from fish_audio_suite_voice.tune import (
+    DEFAULT_BARGE_HIT_FRAMES,
+    DEFAULT_BARGE_OVER,
+    DEFAULT_BARGE_RMS,
+    DEFAULT_BLEED_DELAY_S,
+    DEFAULT_POST_SPEAK_COOLDOWN_S,
+    BargeTune,
+)
+
+__all__ = [
+    "DEFAULT_BARGE_HIT_FRAMES",
+    "DEFAULT_BARGE_OVER",
+    "DEFAULT_BARGE_RMS",
+    "DEFAULT_BLEED_DELAY_S",
+    "DEFAULT_POST_SPEAK_COOLDOWN_S",
+    "BargeGate",
+    "barge_rms_need",
+    "frame_is_speech",
+    "mic_frames",
+]
 
 SAMPLE_RATE = AEC_RATE
 FRAME_MS = 30
 FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // MS_PER_S
 FRAME_BYTES = FRAME_SAMPLES * SAMPLE_BYTES
 LISTEN_HEARTBEAT_FRAMES = 20
-DEFAULT_BARGE_HIT_FRAMES = 10
-DEFAULT_BARGE_RMS = 220.0
-DEFAULT_BARGE_OVER = 2.2
 BARGE_MISS_DECAY_FRAMES = 3
-DEFAULT_BLEED_DELAY_S = 0.9
-DEFAULT_POST_SPEAK_COOLDOWN_S = 0.8
 BARGE_LOOKBACK_FRAMES = 20
 _BARGE_POLL_S = 0.2
 # Mode 3 dropped frames listen already accepted (RMS above the floor, hit stayed 0).
@@ -88,26 +101,6 @@ def barge_rms_need(
     return min_rms
 
 
-def post_speak_cooldown_s() -> float:
-    """Return the post-playback cooldown from FISH_VOICE_COOLDOWN."""
-    delay = env_float("FISH_VOICE_COOLDOWN", DEFAULT_POST_SPEAK_COOLDOWN_S)
-    # A negative wait returns immediately, so the mic opens on the playback tail.
-    if delay < 0:
-        return DEFAULT_POST_SPEAK_COOLDOWN_S
-    return delay
-
-
-def _or_env[T: int | float](
-    value: T | None,
-    name: str,
-    default: T,
-    read: Callable[[str, T], T],
-) -> T:
-    if value is not None:
-        return value
-    return read(name, default)
-
-
 def _barge_heartbeat(
     *,
     idle_frames: int,
@@ -132,72 +125,99 @@ def _barge_heartbeat(
 class BargeGate:
     """Interrupt TTS when the mic stays above the floor for enough frames.
 
+    Parameters
+    ----------
+    device : str or int or None, optional
+        PortAudio input. None uses the host default.
+    tune : BargeTune or None, optional
+        Gate settings. None uses the defaults.
+    aec : EchoCanceller or None, optional
+        The session's echo canceller, shared with the playback sink so the
+        far-end reference is the audio that sink played. None runs without AEC.
+    bleed_delay_s, hit_frames, min_rms : optional
+        Per-gate overrides of the matching ``tune`` fields.
+
     Notes
     -----
-    The bleed delay is short when AEC3 is loaded and 0.9 seconds otherwise,
-    so the speaker's own voice is not treated as the user. The barge floor is
-    raised while audio is playing only when AEC is off. A trip keeps the last
-    20 frames; the next listen starts from that clip and skips the post-speak
-    cooldown. Speech is scored with the same VAD mode as listen. Hits decay
-    after 3 missed frames so a short gap does not reset the phrase.
+    The bleed delay is short when AEC3 is loaded and ``BargeTune.bleed_delay_s``
+    otherwise, so the speaker's own voice is not treated as the user. The floor
+    follows the room: it is the quiet-percentile of recent frames, never below
+    ``min_rms``. It is multiplied by ``over`` while audio is playing only when
+    AEC is off. A trip keeps the last 20 frames; the next listen starts from
+    that clip and skips the post-speak cooldown. Speech is scored with the same
+    VAD mode as listen. Hits decay after 3 missed frames so a short gap does
+    not reset the phrase.
     """
 
     def __init__(
         self,
         *,
         device: str | int | None = None,
+        tune: BargeTune | None = None,
+        aec: EchoCanceller | None = None,
         bleed_delay_s: float | None = None,
         hit_frames: int | None = None,
         min_rms: float | None = None,
     ) -> None:
+        base = tune or BargeTune()
         self.device = device
-        self._bleed_override = bleed_delay_s
-        delay = _or_env(bleed_delay_s, "FISH_VOICE_BLEED_DELAY", DEFAULT_BLEED_DELAY_S, env_float)
-        self.bleed_delay_s = delay if delay >= 0 else DEFAULT_BLEED_DELAY_S
-        hits = _or_env(hit_frames, "FISH_VOICE_BARGE_FRAMES", DEFAULT_BARGE_HIT_FRAMES, env_int)
-        self.hit_frames = hits if hits > 0 else DEFAULT_BARGE_HIT_FRAMES
-        rms = _or_env(min_rms, "FISH_VOICE_BARGE_RMS", DEFAULT_BARGE_RMS, env_float)
-        # A non-positive floor matches every frame and trips on quiet VAD noise.
-        self.min_rms = rms if rms > 0 else DEFAULT_BARGE_RMS
+        self.tune = replace(
+            base,
+            bleed_delay_s=base.bleed_delay_s
+            if bleed_delay_s is None or bleed_delay_s < 0
+            else bleed_delay_s,
+            hit_frames=base.hit_frames if hit_frames is None or hit_frames < 1 else hit_frames,
+            min_rms=base.min_rms if min_rms is None or min_rms <= 0 else min_rms,
+        )
+        self.aec = aec or EchoCanceller()
+        self.bleed_delay_s = self.tune.bleed_delay_s
+        self.hit_frames = self.tune.hit_frames
+        self.min_rms = self.tune.min_rms
         self._heard: deque[bytes] = deque(maxlen=BARGE_LOOKBACK_FRAMES)
         self.captured = b""
 
     def _bleed_wait(self) -> float:
-        if self._bleed_override is not None:
-            delay = self._bleed_override
-            return delay if delay >= 0 else DEFAULT_BLEED_DELAY_S
-        delay = env_float("FISH_VOICE_BLEED_DELAY", DEFAULT_BLEED_DELAY_S)
-        if delay < 0:
-            delay = DEFAULT_BLEED_DELAY_S
-        return effective_bleed_s(delay)
+        return self.aec.effective_bleed_s(self.tune.bleed_delay_s)
 
     def watch(self, cancel: threading.Event) -> None:
-        """Listen on the mic and set ``cancel`` after enough speech frames."""
+        """Listen on the mic and set ``cancel`` after enough speech frames.
+
+        Parameters
+        ----------
+        cancel : threading.Event
+            Set by the caller to stop watching. Set here on a trip.
+        """
         import webrtcvad
 
         vad = webrtcvad.Vad(_BARGE_VAD)
         hit = 0
         miss = 0
-        over = env_float("FISH_VOICE_BARGE_OVER", DEFAULT_BARGE_OVER)
-        aec_on = aec_available()
+        floor = AdaptiveFloor(self.min_rms)
+        aec_on = self.aec.available()
         debug(
             "barge.arm delay_s={delay} hit_frames={hits} min_rms={min_rms} over={over} "
             "aec={aec} vad={vad}",
             delay=self.bleed_delay_s,
             hits=self.hit_frames,
             min_rms=self.min_rms,
-            over=over,
+            over=self.tune.over,
             aec=aec_on,
             vad=_BARGE_VAD,
         )
+        # The ring still holds audio from before the bleed delay. Keep only
+        # what is about to reach the mic.
+        self.aec.align()
 
         try:
             for idle_frames, frame in enumerate(
-                mic_frames(self.device, cancel, timeout=_BARGE_POLL_S), start=1
+                mic_frames(self.device, cancel, timeout=_BARGE_POLL_S, aec=self.aec), start=1
             ):
                 rms = pcm_rms(frame)
-                far = far_end_playing()
-                need = barge_rms_need(self.min_rms, far_playing=far, over=over, aec_on=aec_on)
+                far = self.aec.far_end_playing()
+                base_need = floor.value()
+                need = barge_rms_need(
+                    base_need, far_playing=far, over=self.tune.over, aec_on=aec_on
+                )
                 _barge_heartbeat(
                     idle_frames=idle_frames,
                     rms=rms,
@@ -208,6 +228,9 @@ class BargeGate:
                 )
                 self._heard.append(frame)
                 voiced = rms >= need and frame_is_speech(vad, frame)
+                # A frame under the floor is room hiss. Loud ones must not
+                # raise it, or the same voice could never trip the gate.
+                floor.observe(rms, quiet=rms < need)
                 hit, miss, tripped = _barge_step(
                     hit=hit,
                     miss=miss,
@@ -219,7 +242,7 @@ class BargeGate:
                 )
                 if tripped:
                     self.captured = b"".join(self._heard)
-                    tap_clear()
+                    self.aec.clear()
                     debug("barge.keep frames={} bytes={}", len(self._heard), len(self.captured))
                     cancel.set()
                     return
@@ -227,7 +250,18 @@ class BargeGate:
             warn(f"[barge-in] {e}")
 
     def start_after_bleed(self, cancel: threading.Event) -> threading.Thread:
-        """Sleep out speaker bleed, then start ``watch`` unless already cancelled."""
+        """Sleep out speaker bleed, then start ``watch`` unless already cancelled.
+
+        Parameters
+        ----------
+        cancel : threading.Event
+            Ends the sleep and the watch.
+
+        Returns
+        -------
+        threading.Thread
+            The started daemon thread.
+        """
 
         def _run() -> None:
             delay = self._bleed_wait()
@@ -269,8 +303,26 @@ def mic_frames(
     stop: threading.Event | None,
     *,
     timeout: float,
+    aec: EchoCanceller | None = None,
 ) -> Iterator[bytes]:
-    """Yield 16 kHz AEC-cleaned mic frames until ``stop`` is set."""
+    """Yield 16 kHz mic frames, AEC-cleaned when ``aec`` is given, until ``stop`` is set.
+
+    Parameters
+    ----------
+    device : str or int or None
+        PortAudio input.
+    stop : threading.Event or None
+        Ends the stream when set.
+    timeout : float
+        Seconds to wait for audio before checking ``stop`` again.
+    aec : EchoCanceller or None, optional
+        Cleans each frame against the far-end tap.
+
+    Yields
+    ------
+    bytes
+        One 30 ms int16 frame.
+    """
     sd = load_sounddevice()
     audio: queue.Queue[bytes] = queue.Queue()
 
@@ -290,4 +342,4 @@ def mic_frames(
             except queue.Empty:
                 continue
             for frame in _take_full_frames(pending, chunk, FRAME_BYTES):
-                yield clean_mic_frame(frame)
+                yield aec.clean(frame) if aec is not None else frame

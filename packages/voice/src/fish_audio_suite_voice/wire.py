@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
-import re
 import threading
 from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
@@ -24,10 +22,9 @@ from fish_audio_suite_kit import (
     skip_empty_delta,
     split_tts_piece,
 )
-from fish_audio_suite_kit.cues import paren_cue_names
-from fish_audio_suite_voice.aec import SAMPLE_BYTES
 from fish_audio_suite_voice.debug import debug, warn
 from fish_audio_suite_voice.playback import PlaybackSink
+from fish_audio_suite_voice.spoken import spoken_prefix
 
 ANEXT_POLL_S = 0.25
 
@@ -186,6 +183,8 @@ async def as_async(deltas: Iterable[str] | AsyncIterable[str]) -> AsyncIterator[
         yield item
 
 
+# Last resort when a teardown error is not an exception type we know. Matching
+# on message text breaks when an SDK rewords it, so a hit is logged.
 _CANCEL_NOISE = (
     "athrow",
     "cancel scope",
@@ -194,24 +193,34 @@ _CANCEL_NOISE = (
 )
 
 
-def is_cancel_noise(exc: BaseException) -> bool:
+def is_cancel_noise(exc: BaseException, *, cancelled: bool = False) -> bool:
     """Return whether ``exc`` is a barge-in or Ctrl+C tear-down, not a Fish error.
 
     Parameters
     ----------
     exc : BaseException
         An error from the websocket task or a task group.
+    cancelled : bool, optional
+        True when the caller's cancel flag is already set. Any ordinary error
+        raised while the turn is being torn down is then expected noise.
 
     Returns
     -------
     bool
-        True for ``CancelledError``, ``GeneratorExit``, and a few anyio or
-        asyncio messages that show up when the client is closed mid-stream.
+        True for ``CancelledError`` and ``GeneratorExit``, and for any error
+        raised after cancel was requested. Without a cancel flag, a known
+        anyio or asyncio message still matches, and the match is logged at
+        debug so a reworded message shows up.
     """
     if isinstance(exc, (asyncio.CancelledError, GeneratorExit)):
         return True
+    if cancelled and isinstance(exc, (Exception, BaseExceptionGroup)):
+        return True
     msg = str(exc).lower()
-    return any(phrase in msg for phrase in _CANCEL_NOISE)
+    if any(phrase in msg for phrase in _CANCEL_NOISE):
+        debug("cancel.noise matched by message: {}", msg)
+        return True
+    return False
 
 
 async def send_turn(
@@ -268,38 +277,56 @@ def _note_first_audio(audio: Heard, chunk: bytes, t0: float) -> None:
     )
 
 
+_STREAM_END = object()
+
+
+async def _read_stream(stream: AsyncIterator[Any], queue: asyncio.Queue[Any]) -> None:
+    # One task owns the whole iterator. The SDK holds an anyio task group
+    # inside the generator, and exiting it from a task other than the one
+    # that entered it raises "cancel scope in a different task".
+    try:
+        async for chunk in stream:
+            await queue.put(chunk)
+    except asyncio.CancelledError:
+        raise
+    except BaseException as exc:
+        await queue.put(exc)
+    else:
+        await queue.put(_STREAM_END)
+
+
 async def _pump_ws_audio(
     stream: AsyncIterator[Any],
     run: TurnRun,
     close_client: Callable[[], Awaitable[None]],
 ) -> None:
-    it = aiter(stream)
-    pending: asyncio.Task[Any] = asyncio.create_task(_anext_chunk(it))
+    queue: asyncio.Queue[Any] = asyncio.Queue()
+    reader = asyncio.create_task(_read_stream(aiter(stream), queue))
     try:
         while True:
             if run.cancel.is_set():
                 debug("tts.cancel before/during stream")
                 await close_client()
                 return
-            if not await _wait_task(pending, ANEXT_POLL_S):
-                continue
             try:
-                chunk = pending.result()
-            except StopAsyncIteration:
-                return
-            pending = asyncio.create_task(_anext_chunk(it))
-            if not chunk:
+                # A timeout only re-checks cancel. It never touches the reader.
+                item = await asyncio.wait_for(queue.get(), ANEXT_POLL_S)
+            except TimeoutError:
                 continue
-            _note_first_audio(run.audio, chunk, run.t0)
+            if item is _STREAM_END:
+                return
+            if isinstance(item, BaseException):
+                raise item
+            if not item:
+                continue
+            _note_first_audio(run.audio, item, run.t0)
             if run.cancel.is_set():
                 await close_client()
                 return
-            run.sink.write(chunk)
+            run.sink.write(item)
     finally:
-        if not pending.done():
-            pending.cancel()
-            with contextlib.suppress(BaseException):
-                await pending
+        if not reader.done():
+            reader.cancel()
 
 
 def _remember_event(ev: Any, acc: EventAcc, t0: float) -> None:
@@ -344,7 +371,7 @@ def isolated_result(run: TurnRun) -> IsolatedResult:
         warn(f"[tts] no audio voice={spec.voice_id} model={spec.model}")
     played = run.sink.bytes_played()
     full = run.sent_text or "".join(run.acc.flushed)
-    spoken = _spoken_prefix(
+    spoken = spoken_prefix(
         full,
         bytes_played=played,
         sample_rate=spec.sample_rate,
@@ -353,6 +380,8 @@ def isolated_result(run: TurnRun) -> IsolatedResult:
         cancelled=run.cancel.is_set(),
         # A socket drop has no HTTP status. The message is still a failed turn.
         failed=run.err_status is not None or bool(run.err_message),
+        speed=spec.speed,
+        output_latency_s=float(getattr(run.sink, "output_latency_s", 0.0) or 0.0),
     )
     return IsolatedResult(
         spoken_so_far=spoken,
@@ -366,157 +395,6 @@ def isolated_result(run: TurnRun) -> IsolatedResult:
     )
 
 
-_CHARS_PER_S = 16
-
-
-# Fish does not speak a lead tag. Counting "[clear] " as audio spent the
-# barge budget on silence, so the heard word was missing from history.
-# "a[i][j]" is an index the speaker did say. Stripping every bracket
-# forgot it, and the next turn said the index again.
-_UNSPOKEN_CUES = paren_cue_names()
-# A model can still write [clear]. That is a throat-clear, not words, so it
-# stays out of the next turn's history.
-_CLEAR_TAG_RE = re.compile(r"\[clear\]", re.IGNORECASE)
-_CUE_TOKEN_RE = re.compile(
-    r"\[(?:"
-    + "|".join(re.escape(tag) for tag in sorted(_UNSPOKEN_CUES, key=len, reverse=True))
-    + r")\]",
-    re.IGNORECASE,
-)
-
-
-def _audible_text(text: str) -> str:
-    return " ".join(_CUE_TOKEN_RE.sub(" ", text).split())
-
-
-def _pcm_chars(bytes_played: int, sample_rate: int) -> int:
-    secs = bytes_played / max(sample_rate * SAMPLE_BYTES, 1)
-    return max(1, int(secs * _CHARS_PER_S))
-
-
-def _cjk_char(ch: str) -> bool:
-    code = ord(ch)
-    return (
-        0x3040 <= code < 0x3100
-        or 0x3400 <= code < 0x4DC0
-        or 0x4E00 <= code < 0xA000
-        or 0xF900 <= code < 0xFB00
-        or 0xAC00 <= code < 0xD7B0
-    )
-
-
-def _word_char(ch: str) -> bool:
-    return ch.isalnum() and not _cjk_char(ch)
-
-
-def _extends_tail(tail: str, nxt: str) -> bool:
-    # "there" is finished when the next character is "." or a space.
-    # "ther" is not finished when the next character is "e". A Cyrillic
-    # letter continues the word too. "there.Friend" has finished "there":
-    # the period is not part of the next word. Keeping only "Hello" made
-    # the next turn say "there" again.
-    if not tail or _cjk_char(nxt):
-        return False
-    last = tail[-1]
-    if nxt.isalnum():
-        if _word_char(last):
-            return True
-        # "3.14" is one number. "there.Friend" is two words.
-        if last == "." and nxt.isdigit() and len(tail) > 1 and tail[-2].isdigit():
-            return True
-        return last in "'’-" and len(tail) > 1 and _word_char(tail[-2])
-    return nxt in "'’-" and _word_char(last)
-
-
-def _boundary_finished(prefix: str, nxt: str) -> bool:
-    if not prefix or _extends_tail(prefix, nxt):
-        return False
-    # "3" before "." is the start of "3.14", not a finished word.
-    return not (nxt == "." and prefix[-1].isdigit())
-
-
-def _finished_prefix(text: str, nxt: str) -> str:
-    if _boundary_finished(text, nxt):
-        return text
-    for index in range(len(text) - 1, 0, -1):
-        if _boundary_finished(text[:index], text[index]):
-            return text[:index]
-    return ""
-
-
-def _word_prefix(text: str, n: int) -> str:
-    if n >= len(text):
-        return text.strip()
-    cut = text[:n]
-    # A newline or a non-breaking space is a word boundary. Splitting on
-    # ASCII space only kept "Hello there" and dropped "friend." once the
-    # next line had started. "Hello\u00a0there" has no ASCII space, so a
-    # cut in "there" forgot "Hello" and the next turn said it again.
-    last = -1
-    for index, ch in enumerate(cut):
-        if ch.isspace():
-            last = index
-    if last < 0:
-        # A cut with no space is the middle of the first English word. History
-        # should not record that fragment. CJK has no spaces, including after
-        # an English word ("Hello你好"). Dropping that cut forgot speech the
-        # speaker had already played, so the next turn said it again.
-        stripped = cut.strip()
-        if any(_cjk_char(ch) for ch in stripped):
-            return stripped
-        # "Hello there" cut on the last letter of "Hello" has no space yet.
-        # The next character is the space, so that word was played. Dropping
-        # it made the next turn say "Hello" again.
-        if stripped and not _extends_tail(stripped, text[n]):
-            return stripped
-        # "Hello.Friend" has no space yet. The cut is inside "Friend",
-        # so the finished "Hello." was dropped and the next turn said it again.
-        return _finished_prefix(stripped, text[n])
-    head = cut[:last].strip()
-    tail = cut[last + 1 :]
-    if not tail:
-        return head
-    # "Hello there" has finished "there" when the next character is a space
-    # or a period. Stopping at the space before it made the next turn say
-    # "there" again. "Hello 你" has finished "你" even when "好" is still coming.
-    if not _extends_tail(tail, text[n]):
-        return f"{head} {tail}".strip()
-    # "there.Frien" still extends into "d", but "there." was already played.
-    # Returning only "Hello" made the next turn say "there" again.
-    for index in range(len(tail) - 1, 0, -1):
-        if not _extends_tail(tail[:index], tail[index]):
-            return f"{head} {tail[:index]}".strip()
-    extra = []
-    for ch in tail:
-        if not _cjk_char(ch):
-            break
-        extra.append(ch)
-    if extra:
-        return f"{head} {''.join(extra)}".strip()
-    return head
-
-
-def _spoken_prefix(
-    sent_text: str,
-    *,
-    bytes_played: int,
-    sample_rate: int,
-    audio_format: str,
-    got_audio: bool,
-    cancelled: bool,
-    failed: bool = False,
-) -> str:
-    if not sent_text.strip() or not got_audio or bytes_played <= 0:
-        # Fish can deliver a chunk the sink then drops, such as a dead mpv
-        # pipe. History should not record a reply the speaker never played.
-        return ""
-    # A disconnect after the first audio byte is not a finished sentence.
-    # Recording the unplayed tail makes the next turn assume the user heard it.
-    if audio_format == "pcm" and (cancelled or failed):
-        return _word_prefix(_audible_text(sent_text), _pcm_chars(bytes_played, sample_rate))
-    return " ".join(_CLEAR_TAG_RE.sub(" ", sent_text).split())
-
-
 def _root_exc(exc: BaseException) -> BaseException:
     # The first entry is often the cancel from a sibling task. Stopping there
     # hid a 503, so a turn with no audio was not retried.
@@ -527,19 +405,6 @@ def _root_exc(exc: BaseException) -> BaseException:
                 return found
         return _root_exc(exc.exceptions[0])
     return exc
-
-
-async def _anext_chunk(it: AsyncIterator[Any]) -> Any:
-    return await anext(it)
-
-
-async def _wait_task(task: asyncio.Task[Any], wait_s: float) -> bool:
-    """Return whether the task finished.
-
-    A timeout must not cancel the task. ``asyncio.wait_for`` would kill the Fish websocket.
-    """
-    done, _ = await asyncio.wait({task}, timeout=wait_s)
-    return bool(done)
 
 
 async def quiet_shutdown(loop: asyncio.AbstractEventLoop) -> None:

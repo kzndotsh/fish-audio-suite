@@ -1,4 +1,9 @@
-"""Duplex LLM token stream. OpenRouter SDK, or httpx SSE for any other base."""
+"""Duplex LLM token stream behind a swappable ``ChatBackend``.
+
+Two backends ship: an OpenAI-compatible httpx client for any chat-completions
+server, and the OpenRouter SDK as an opt-in adapter. ``LlmTune.backend`` picks
+one. Both share the event consumer, the 429 retry, and the cut-off continuation.
+"""
 
 from __future__ import annotations
 
@@ -6,18 +11,28 @@ import asyncio
 import contextlib
 import math
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
-from fish_audio_suite_kit import MS_PER_S, ends_sentence, env_int, env_off, utf8_text
+import httpx
+
+from fish_audio_suite_kit import MS_PER_S, ends_sentence, utf8_text
 from fish_audio_suite_voice.debug import console_print, debug, warn
 from fish_audio_suite_voice.live import is_cancel_noise
-from fish_audio_suite_voice.transports import ChatCall, chat_completions_url, chat_events
+from fish_audio_suite_voice.pause import sleep_unless
+from fish_audio_suite_voice.transports import (
+    ChatCall,
+    chat_completions_url,
+    chat_events,
+    http_client,
+    openrouter_client,
+)
+from fish_audio_suite_voice.tune import LlmTune, openrouter_host
 
-_DEFAULT_MAX_TOKENS = 1200
+# A longer Retry-After than this ends the reply instead of stalling the turn.
 _LLM_429_CAP_S = 15.0
-_RETRY_POLL_S = 0.05
 # A cue after a finished sentence is not a cut-off. "Hello. [break]" is done.
 _TRAIL_CUE_RE = re.compile(r"(?:\s*\[[^\[\]]{0,80}\])+\s*$")
 # A follow-up with no sentence end past this is a runaway, not the missing words.
@@ -28,29 +43,12 @@ _MODEL_LOOKUP_MS = _MODEL_LOOKUP_S * MS_PER_S
 _LOOKUP_BODY_CHARS = 200
 
 
-def openrouter_base(base: str) -> bool:
-    """Return whether chat should use the OpenRouter SDK.
-
-    Parameters
-    ----------
-    base : str
-        LLM API base URL.
-
-    Returns
-    -------
-    bool
-        True when the base contains ``openrouter.ai``. Any other base uses
-        httpx server-sent events.
-    """
-    return "openrouter.ai" in base
-
-
 def _route_suffix(model: str) -> str:
     return model.rsplit("/", maxsplit=1)[-1]
 
 
-def _want_nitro(model: str, base: str) -> bool:
-    if not openrouter_base(base) or env_off("FISH_LLM_NITRO"):
+def _want_nitro(model: str, tune: LlmTune) -> bool:
+    if not tune.openrouter or not tune.nitro:
         return False
     return ":" not in _route_suffix(model)
 
@@ -70,9 +68,17 @@ def _model_author_slug(model: str) -> tuple[str, str] | None:
     return author, slug
 
 
-async def check_openrouter_model(client: Any, model: str, base: str) -> None:
-    """Resolve FISH_LLM_MODEL via models.get. Warn on 404; never abort duplex."""
-    route = _nitro_route(model, nitro=_want_nitro(model, base))
+async def check_openrouter_model(client: Any, tune: LlmTune) -> None:
+    """Resolve the configured model via ``models.get``. Warn on 404; never abort duplex.
+
+    Parameters
+    ----------
+    client : Any
+        An open OpenRouter SDK client.
+    tune : LlmTune
+        Supplies the model id and whether ``:nitro`` is added.
+    """
+    route = _nitro_route(tune.model, nitro=_want_nitro(tune.model, tune))
     parts = _model_author_slug(route)
     if parts is None:
         return
@@ -104,7 +110,7 @@ async def check_openrouter_model(client: Any, model: str, base: str) -> None:
         requested=route,
     )
     if isinstance(mid, str) and mid and mid != route:
-        print(f"  [llm model {route} → {mid}]", flush=True)
+        console_print(f"  [llm model {route} → {mid}]", flush=True)
 
 
 def _event_field(event: object, name: str) -> Any:
@@ -348,12 +354,14 @@ def _finish_llm(stats: _ChatStats, route_model: str) -> None:
         warn(f"[llm] empty reply (model={route_model} finish={stats.last_finish!r})")
 
 
-def _cancel_group(exc: BaseException) -> bool:
+def _cancel_group(exc: BaseException, *, cancelled: bool = False) -> bool:
     # A task group on barge-in is only cancel noise. A group that holds a
     # provider error was swallowed, so the reply stopped and nothing was logged.
     if isinstance(exc, BaseExceptionGroup):
-        return bool(exc.exceptions) and all(_cancel_group(item) for item in exc.exceptions)
-    return is_cancel_noise(exc)
+        return bool(exc.exceptions) and all(
+            _cancel_group(item, cancelled=cancelled) for item in exc.exceptions
+        )
+    return is_cancel_noise(exc, cancelled=cancelled)
 
 
 def _group_text(exc: BaseException) -> str:
@@ -365,14 +373,131 @@ def _group_text(exc: BaseException) -> str:
     return str(exc)
 
 
+class ChatBackend(Protocol):
+    """A chat-completions provider the duplex loop can stream from.
+
+    Notes
+    -----
+    ``stream`` yields text deltas for one reply and ends on cancel, an error
+    that was already logged, or the end of the reply. ``aclose`` releases the
+    connection pool or SDK client.
+    """
+
+    def stream(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        cancel: asyncio.Event | None = None,
+        trace_id: str | None = None,
+    ) -> AsyncIterator[str]:
+        """Stream assistant text for ``messages``.
+
+        Parameters
+        ----------
+        messages : list of dict
+            OpenAI-style chat messages, including the system prompt.
+        cancel : asyncio.Event or None, optional
+            Stops the stream. Cancel is not a fatal duplex error.
+        trace_id : str or None, optional
+            Logged with the request.
+
+        Returns
+        -------
+        AsyncIterator
+            Text deltas. Empty deltas are omitted.
+        """
+        ...
+
+    async def aclose(self) -> None:
+        """Release the client held for this session."""
+        ...
+
+
+class _Backend:
+    """Shared plumbing: one tune, one session id, one pooled client."""
+
+    def __init__(
+        self,
+        tune: LlmTune,
+        *,
+        session_id: str | None = None,
+        client: Any | None = None,
+        http: httpx.AsyncClient | None = None,
+    ) -> None:
+        self.tune = tune
+        self.session_id = session_id
+        self._client = client
+        self._http = http
+
+    def stream(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        cancel: asyncio.Event | None = None,
+        trace_id: str | None = None,
+    ) -> AsyncIterator[str]:
+        """Stream assistant text. See ``ChatBackend.stream``."""
+        return llm_token_stream(
+            messages,
+            tune=self.tune,
+            cancel=cancel,
+            client=self._client,
+            http=self._http,
+            session_id=self.session_id,
+            trace_id=trace_id,
+        )
+
+    async def aclose(self) -> None:
+        """Close the pooled httpx client if this backend opened one."""
+        http, self._http = self._http, None
+        if http is not None:
+            with contextlib.suppress(Exception):
+                await http.aclose()
+
+
+@asynccontextmanager
+async def open_chat_backend(
+    tune: LlmTune,
+    *,
+    session_id: str | None = None,
+) -> AsyncGenerator[ChatBackend, None]:
+    """Open the backend that ``tune.backend`` names for one duplex session.
+
+    Parameters
+    ----------
+    tune : LlmTune
+        Backend, base URL, key, model, and request settings.
+    session_id : str or None, optional
+        Sent with every OpenRouter request so its logs group by session.
+
+    Yields
+    ------
+    ChatBackend
+        Ready to stream. Closed when the context exits. The OpenRouter backend
+        also resolves the model once and warns when it is unknown.
+    """
+    if tune.openrouter:
+        async with openrouter_client(tune) as sdk:
+            await check_openrouter_model(sdk, tune)
+            yield _Backend(tune, session_id=session_id, client=sdk)
+        return
+    backend = _Backend(tune, session_id=session_id, http=http_client(tune))
+    try:
+        yield backend
+    finally:
+        await backend.aclose()
+
+
 async def llm_token_stream(
     messages: list[dict[str, str]],
     *,
-    base: str,
-    key: str,
-    model: str,
+    tune: LlmTune | None = None,
+    base: str = "",
+    key: str = "",
+    model: str = "",
     cancel: asyncio.Event | None = None,
     client: Any | None = None,
+    http: httpx.AsyncClient | None = None,
     session_id: str | None = None,
     trace_id: str | None = None,
 ) -> AsyncIterator[str]:
@@ -382,19 +507,21 @@ async def llm_token_stream(
     ----------
     messages : list of dict
         OpenAI-style chat messages, including the system prompt.
-    base : str
-        API origin. ``openrouter.ai`` selects the SDK.
-    key : str
-        Bearer token.
-    model : str
-        Model id. An OpenRouter ``:nitro`` suffix is added when the base is
-        OpenRouter and the id does not already request a provider sort.
+    tune : LlmTune or None, optional
+        Backend and request settings. When omitted one is built from ``base``,
+        ``key`` and ``model``, choosing OpenRouter only for an ``openrouter.ai``
+        host.
+    base, key, model : str, optional
+        Used only to build ``tune`` when it is omitted.
     cancel : asyncio.Event or None, optional
         Stops the stream. Cancel is not a fatal duplex error.
     client : Any or None, optional
         An already-open OpenRouter client. Created when omitted.
+    http : httpx.AsyncClient or None, optional
+        A pooled client for the OpenAI-compatible backend. A one-shot client
+        is used when omitted.
     session_id : str or None, optional
-        One duplex session id sent on every call.
+        One duplex session id sent on every OpenRouter call.
     trace_id : str or None, optional
         Logged with the request. Not an OpenTelemetry span.
 
@@ -405,36 +532,36 @@ async def llm_token_stream(
 
     Notes
     -----
-    ``models.get`` 404 warns and does not abort. A 429 waits for ``Retry-After``
-    and tries once more when that wait is at most 15 seconds. A longer wait, a
-    missing wait, or cancel ends the iterator. Any other stream error is logged
-    and ends the iterator. A ``stop`` before a sentence end sends one more
-    request with that text as the assistant line. Only a suffix that continues
-    that sentence is yielded. OpenRouter requests do not set ``reasoning``. A
-    ``reasoning`` field on a stream event is not spoken. Both transports share
-    one event consumer.
+    A 429 waits for ``Retry-After`` and tries once more when that wait is at
+    most 15 seconds. A longer wait, a missing wait, or cancel ends the
+    iterator. Any other stream error is logged and ends the iterator. With
+    ``tune.continuation`` on, a ``stop`` before a sentence end sends one more
+    request with that text as the assistant line, and only a suffix that
+    continues the sentence is yielded. A ``reasoning`` field on a stream event
+    is not spoken.
     """
-    nitro = _want_nitro(model, base)
-    route_model = _nitro_route(model, nitro=nitro)
-    max_tokens = env_int("FISH_LLM_MAX_TOKENS", _DEFAULT_MAX_TOKENS)
-    if max_tokens <= 0:
-        max_tokens = _DEFAULT_MAX_TOKENS
+    tune = tune or LlmTune(
+        backend="openrouter" if openrouter_host(base) else "openai",
+        base=base,
+        key=key,
+        model=model,
+    )
+    route_model = _nitro_route(tune.model, nitro=_want_nitro(tune.model, tune))
     batch = messages
     spoken: list[str] = []
-    for generation in (1, 2):
+    generations = (1, 2) if tune.continuation else (1,)
+    for generation in generations:
         if generation == 2:
             console_print("  [llm cut off, continuing]", flush=True)
         held = _HeldStats()
         extra: list[str] = []
         async for piece in _stream_generation(
             batch,
-            base=base,
-            key=key,
+            tune=tune,
             route_model=route_model,
-            max_tokens=max_tokens,
-            nitro=nitro,
             cancel=cancel,
             client=client,
+            http=http,
             session_id=session_id,
             trace_id=trace_id,
             held=held,
@@ -492,22 +619,20 @@ def _first_sentence(text: str) -> str:
 async def _stream_generation(
     messages: list[dict[str, str]],
     *,
-    base: str,
-    key: str,
+    tune: LlmTune,
     route_model: str,
-    max_tokens: int,
-    nitro: bool,
     cancel: asyncio.Event | None,
     client: Any | None,
+    http: httpx.AsyncClient | None,
     session_id: str | None,
     trace_id: str | None,
     held: _HeldStats,
 ) -> AsyncIterator[str]:
     debug(
         "llm.request url={} model={} nitro={} msgs={}",
-        chat_completions_url(base),
+        chat_completions_url(tune.base),
         route_model,
-        nitro,
+        tune.nitro,
         len(messages),
     )
     for attempt in (1, 2):
@@ -517,16 +642,13 @@ async def _stream_generation(
             events = chat_events(
                 ChatCall(
                     messages=messages,
-                    base=base,
-                    key=key,
+                    tune=tune,
                     route_model=route_model,
-                    max_tokens=max_tokens,
-                    nitro=nitro,
                     client=client,
+                    http=http,
                     session_id=session_id,
                     trace_id=trace_id,
                     stats=stats,
-                    use_openrouter=openrouter_base(base),
                 )
             )
             async for piece in _consume_chat_events(events, cancel, stats):
@@ -535,12 +657,12 @@ async def _stream_generation(
             held.stopped = "cancel"
             return
         except BaseExceptionGroup as exc:
-            if _cancel_group(exc):
+            if _cancel_group(exc, cancelled=cancel is not None and cancel.is_set()):
                 held.stopped = "cancel"
                 return
             warn(f"[llm] {_group_text(exc)}")
         except Exception as e:
-            if is_cancel_noise(e):
+            if is_cancel_noise(e, cancelled=cancel is not None and cancel.is_set()):
                 held.stopped = "cancel"
                 return
             warn(f"[llm] {e}")
@@ -569,14 +691,9 @@ def _wait_label(seconds: float) -> str:
 
 
 async def _pause_for_retry(cancel: asyncio.Event | None, seconds: float) -> bool:
-    left = seconds
-    while left > 0:
-        if cancel is not None and cancel.is_set():
-            return True
-        step = min(_RETRY_POLL_S, left)
-        await asyncio.sleep(step)
-        left -= step
-    return cancel is not None and cancel.is_set()
+    """Wait out a 429. True means cancel landed first."""
+    stopped = cancel.is_set if cancel is not None else (lambda: False)
+    return await sleep_unless(seconds, stopped)
 
 
 async def _maybe_retry_429(stats: _ChatStats, cancel: asyncio.Event | None) -> bool:

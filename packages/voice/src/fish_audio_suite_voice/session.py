@@ -17,9 +17,10 @@ from fishaudio.exceptions import AuthenticationError
 from fish_audio_suite_kit import (
     FISH_RETRY_ATTEMPTS,
     ensure_trace_headers,
-    fish_backoff_seconds,
+    fish_backoff_s,
 )
 from fish_audio_suite_voice.debug import debug
+from fish_audio_suite_voice.pause import sleep_unless
 from fish_audio_suite_voice.playback import PlaybackSink
 from fish_audio_suite_voice.wire import (
     EventAcc,
@@ -37,7 +38,6 @@ from fish_audio_suite_voice.wire import (
 )
 
 _WS_TIMEOUT_S = 240.0
-_RETRY_POLL_S = 0.05
 
 __all__ = [
     "IsolatedResult",
@@ -93,18 +93,11 @@ class _Turn:
     headers: dict[str, str]
 
 
-async def _retry_pause(cancel: threading.Event, seconds: float) -> bool:
-    """Wait out a Fish backoff. True means the turn was cancelled."""
+async def _retry_pause(cancel: threading.Event, attempt: int) -> bool:
+    """Wait out a Fish backoff with jitter. True means the turn was cancelled."""
     # One sleep ignores barge-in. The next attempt would speak after the
     # user already interrupted, or Ctrl+C would wait out the full backoff.
-    left = seconds
-    while left > 0:
-        if cancel.is_set():
-            return True
-        step = min(_RETRY_POLL_S, left)
-        await asyncio.sleep(step)
-        left -= step
-    return cancel.is_set()
+    return await sleep_unless(fish_backoff_s(attempt), cancel.is_set)
 
 
 async def _one_attempt(turn: _Turn, events: AsyncIterator[Any], attempt: int) -> bool:
@@ -135,7 +128,7 @@ async def _one_attempt(turn: _Turn, events: AsyncIterator[Any], attempt: int) ->
             run.err_status = fate.err_status
             run.err_message = fate.err_message
             return True
-        return await _retry_pause(run.cancel, fish_backoff_seconds(attempt))
+        return await _retry_pause(run.cancel, attempt)
     return True
 
 

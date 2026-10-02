@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from collections.abc import Iterable
 from dataclasses import replace
 
 import httpx
@@ -15,6 +16,7 @@ from fishaudio.types import TTSConfig
 from fish_audio_suite_kit import FISH_RETRY_ATTEMPTS, SuiteDefaults, normalize_cues, scrub_tts
 from fish_audio_suite_voice.live import IsolatedFishTts
 from fish_audio_suite_voice.session import _HeldClient, run_turn
+from fish_audio_suite_voice.stream_scrub import delta_events
 from fish_audio_suite_voice.wire import (
     EventAcc,
     FlushEvent,
@@ -23,7 +25,8 @@ from fish_audio_suite_voice.wire import (
     TurnRun,
     TurnSpec,
     _pump_ws_audio,
-    _spoken_prefix,
+    is_cancel_noise,
+    isolated_result,
     quiet_shutdown,
     text_events,
     turn_failure,
@@ -31,6 +34,8 @@ from fish_audio_suite_voice.wire import (
 
 
 class _Sink:
+    output_latency_s = 0.0
+
     def __init__(self) -> None:
         self.chunks: list[bytes] = []
 
@@ -81,6 +86,10 @@ def _events(prepared: str, cancel: threading.Event, partial: int) -> list[TextEv
     return asyncio.run(collect())
 
 
+def _delta_events(tts: IsolatedFishTts, deltas: Iterable[str], cancel: threading.Event):
+    return delta_events(deltas, cancel, partial_chars=tts.partial_chars, mood_lead=True)
+
+
 def test_text_events_flush_only_after_text() -> None:
     cancel = threading.Event()
     assert _events("", cancel, 40) == []
@@ -111,7 +120,7 @@ def _delta_text(deltas: list[str], partial_chars: int) -> str:
     tts = IsolatedFishTts(api_key="k", voice_id="v", partial_chars=partial_chars)
 
     async def collect() -> str:
-        events = [event async for event in tts._delta_events(deltas, threading.Event())]
+        events = [event async for event in _delta_events(tts, deltas, threading.Event())]
         return "".join(event.text for event in events if isinstance(event, TextEvent))
 
     return asyncio.run(collect())
@@ -128,7 +137,7 @@ def test_split_markup_matches_a_one_shot_scrub() -> None:
     for sample in samples:
         parts = [sample[index : index + 3] for index in range(0, len(sample), 3)]
         streamed = _delta_text(parts, 24)
-        assert streamed.split() == normalize_cues(scrub_tts(sample)).split()
+        assert streamed.split() == normalize_cues(scrub_tts(sample), lead=True).split()
 
 
 def test_split_strikethrough_is_not_spoken() -> None:
@@ -246,7 +255,7 @@ def test_streaming_deltas_keep_a_split_span_intact() -> None:
         "Hello। Excited, yes today friend.",
         "Hello۔ Excited, yes today friend.",
     ):
-        one_shot = normalize_cues(scrub_tts(sample))
+        one_shot = normalize_cues(scrub_tts(sample), lead=True)
         for size in (1, 2, 3):
             chunks = [sample[i : i + size] for i in range(0, len(sample), size)]
             assert _delta_text(chunks, 40).split() == one_shot.split()
@@ -310,7 +319,7 @@ def test_partial_cut_does_not_split_a_cue() -> None:
     tts = IsolatedFishTts(api_key="k", voice_id="v", partial_chars=40)
 
     async def pieces_of(sample: str) -> list[str]:
-        events = [event async for event in tts._delta_events([sample], threading.Event())]
+        events = [event async for event in _delta_events(tts, [sample], threading.Event())]
         return [event.text for event in events if isinstance(event, TextEvent)]
 
     pieces = asyncio.run(pieces_of("x" * 36 + "[whispering] come closer today friend please."))
@@ -330,7 +339,7 @@ def test_held_span_longer_than_the_window_is_still_spoken() -> None:
     kept = "Unclosed (555 and then the rest of the sentence today."
     dropped = "Unclosed (aside and then the rest of the sentence today."
     for sample in (kept, dropped):
-        once = normalize_cues(scrub_tts(sample)).split()
+        once = normalize_cues(scrub_tts(sample), lead=True).split()
         for size in (1, 2, 3):
             chunks = [sample[i : i + size] for i in range(0, len(sample), size)]
             assert _delta_text(chunks, 40).split() == once
@@ -343,7 +352,7 @@ def test_a_streamed_url_keeps_the_period_on_the_word() -> None:
         "打开 https://example.com，然后关门今天朋友。",
     )
     for sample in samples:
-        once = normalize_cues(scrub_tts(sample))
+        once = normalize_cues(scrub_tts(sample), lead=True)
         for size in (1, 2, 3):
             chunks = [sample[index : index + size] for index in range(0, len(sample), size)]
             spoken = _delta_text(chunks, 24)
@@ -363,7 +372,7 @@ def test_a_streamed_entity_stop_still_cues_the_next_mood() -> None:
         "Please open the door today friend&#10;then close it today.",
     )
     for sample in samples:
-        once = normalize_cues(scrub_tts(sample)).split()
+        once = normalize_cues(scrub_tts(sample), lead=True).split()
         for size in (1, 2, 4):
             chunks = [sample[index : index + size] for index in range(0, len(sample), size)]
             assert _delta_text(chunks, 80).split() == once
@@ -377,7 +386,7 @@ def test_a_streamed_line_separator_still_cues_the_next_mood() -> None:
         "Please open the door today friend\rthen close it today.",
     )
     for sample in samples:
-        once = normalize_cues(scrub_tts(sample)).split()
+        once = normalize_cues(scrub_tts(sample), lead=True).split()
         for size in (1, 2, 4):
             chunks = [sample[index : index + size] for index in range(0, len(sample), size)]
             assert _delta_text(chunks, 80).split() == once
@@ -390,7 +399,7 @@ def test_a_streamed_quote_after_a_stop_still_cues_the_next_mood() -> None:
         "Hello」 there today friend please.",
     )
     for sample in samples:
-        once = normalize_cues(scrub_tts(sample)).split()
+        once = normalize_cues(scrub_tts(sample), lead=True).split()
         for size in (1, 3, 5):
             chunks = [sample[index : index + size] for index in range(0, len(sample), size)]
             assert _delta_text(chunks, 80).split() == once
@@ -398,7 +407,7 @@ def test_a_streamed_quote_after_a_stop_still_cues_the_next_mood() -> None:
 
 def test_a_streamed_ref_note_is_not_spoken() -> None:
     sample = "Open the door today friend.<ref>secret note</ref> Then wait please."
-    once = normalize_cues(scrub_tts(sample)).split()
+    once = normalize_cues(scrub_tts(sample), lead=True).split()
     assert "secret" not in once
     for size in (1, 3):
         chunks = [sample[index : index + size] for index in range(0, len(sample), size)]
@@ -411,35 +420,35 @@ def test_a_streamed_url_mark_does_not_eat_the_next_word() -> None:
         "See https://example.com/a;today friend please.",
     )
     for sample in samples:
-        once = normalize_cues(scrub_tts(sample)).split()
+        once = normalize_cues(scrub_tts(sample), lead=True).split()
         assert once == ["See", "today", "friend", "please."]
         assert _delta_text(list(sample), 40).split() == once
 
 
 def test_a_streamed_escaped_break_tag_is_not_spoken() -> None:
     sample = "Open the door&lt;br&gt;today friend please."
-    once = normalize_cues(scrub_tts(sample)).split()
+    once = normalize_cues(scrub_tts(sample), lead=True).split()
     assert once == ["Open", "the", "door", "today", "friend", "please."]
     assert _delta_text(list(sample), 40).split() == once
 
 
 def test_a_streamed_spaced_break_tag_is_not_spoken() -> None:
     sample = "Open the door</ p>today friend please."
-    once = normalize_cues(scrub_tts(sample)).split()
+    once = normalize_cues(scrub_tts(sample), lead=True).split()
     assert "<" not in once
     assert _delta_text(list(sample), 40).split() == once
 
 
 def test_a_streamed_details_block_does_not_join_the_words() -> None:
     sample = "<details><summary>Open the door</summary>secret note today friend</details>"
-    once = normalize_cues(scrub_tts(sample)).split()
+    once = normalize_cues(scrub_tts(sample), lead=True).split()
     assert "doorsecret" not in once
     assert _delta_text(list(sample), 40).split() == once
 
 
 def test_a_streamed_footnote_definition_is_the_note() -> None:
     sample = "Open the door today friend.\n\n[^1]: the secret note is here today\n"
-    once = normalize_cues(scrub_tts(sample)).split()
+    once = normalize_cues(scrub_tts(sample), lead=True).split()
     assert ":" not in once
     assert "secret" in once
     assert _delta_text(list(sample), 40).split() == once
@@ -447,7 +456,7 @@ def test_a_streamed_footnote_definition_is_the_note() -> None:
 
 def test_a_streamed_tilde_fence_is_not_spoken() -> None:
     sample = "Open the door~~~\nprint(1)\n~~~today friend please."
-    once = normalize_cues(scrub_tts(sample)).split()
+    once = normalize_cues(scrub_tts(sample), lead=True).split()
     assert "print" not in once
     assert _delta_text(list(sample), 40).split() == once
 
@@ -460,7 +469,7 @@ def test_a_streamed_rule_or_quote_matches_one_shot() -> None:
         "Wait---then open the door today friend.",
     )
     for sample in samples:
-        once = normalize_cues(scrub_tts(sample)).split()
+        once = normalize_cues(scrub_tts(sample), lead=True).split()
         assert _delta_text(list(sample), 40).split() == once
 
 
@@ -471,7 +480,7 @@ def test_a_streamed_image_or_script_does_not_join_the_words() -> None:
         "Open the door<style>body{}</style>today friend please.",
     )
     for sample in samples:
-        once = normalize_cues(scrub_tts(sample)).split()
+        once = normalize_cues(scrub_tts(sample), lead=True).split()
         assert "doortoday" not in once
         assert "doorthe" not in once
         assert _delta_text(list(sample), 40).split() == once
@@ -483,7 +492,7 @@ def test_a_streamed_hidden_span_does_not_join_the_words() -> None:
         "Open the door<https://example.com>today friend please.",
     )
     for sample in samples:
-        once = normalize_cues(scrub_tts(sample)).split()
+        once = normalize_cues(scrub_tts(sample), lead=True).split()
         assert "doortoday" not in once
         assert _delta_text(list(sample), 40).split() == once
 
@@ -494,7 +503,7 @@ def test_a_streamed_removed_span_does_not_join_the_words() -> None:
         "Open the door```print(1)```today friend please.",
     )
     for sample in samples:
-        once = normalize_cues(scrub_tts(sample)).split()
+        once = normalize_cues(scrub_tts(sample), lead=True).split()
         assert "doortoday" not in once
         chunks = list(sample)
         assert _delta_text(chunks, 40).split() == once
@@ -507,7 +516,7 @@ def test_a_streamed_glued_mark_does_not_join_the_words() -> None:
         "Open the door[^1]today friend please.",
     )
     for sample in samples:
-        once = normalize_cues(scrub_tts(sample)).split()
+        once = normalize_cues(scrub_tts(sample), lead=True).split()
         assert "doortoday" not in once
         assert "secret" not in once
         chunks = list(sample)
@@ -516,7 +525,7 @@ def test_a_streamed_glued_mark_does_not_join_the_words() -> None:
 
 def test_a_streamed_speaker_mark_does_not_join_the_words() -> None:
     sample = "Open the door[S1]today friend please."
-    once = normalize_cues(scrub_tts(sample)).split()
+    once = normalize_cues(scrub_tts(sample), lead=True).split()
     assert "doortoday" not in once
     chunks = list(sample)
     assert _delta_text(chunks, 40).split() == once
@@ -528,7 +537,7 @@ def test_a_streamed_link_does_not_join_the_next_word() -> None:
         "See ![the door](https://example.com/a.png)today friend please.",
     )
     for sample in samples:
-        once = normalize_cues(scrub_tts(sample)).split()
+        once = normalize_cues(scrub_tts(sample), lead=True).split()
         assert "docstoday" not in once
         assert "doortoday" not in once
         chunks = list(sample)
@@ -537,7 +546,7 @@ def test_a_streamed_link_does_not_join_the_next_word() -> None:
 
 def test_a_streamed_reference_link_keeps_the_words() -> None:
     sample = "See the [docs][ref] today friend please."
-    once = normalize_cues(scrub_tts(sample)).split()
+    once = normalize_cues(scrub_tts(sample), lead=True).split()
     for size in (1, 3):
         chunks = [sample[index : index + size] for index in range(0, len(sample), size)]
         assert _delta_text(chunks, 40).split() == once
@@ -550,7 +559,7 @@ def test_a_streamed_fullwidth_aside_does_not_join_the_words() -> None:
         "Call （555） today friend please.",
     )
     for sample in samples:
-        once = normalize_cues(scrub_tts(sample)).split()
+        once = normalize_cues(scrub_tts(sample), lead=True).split()
         for size in (1, 3):
             chunks = [sample[index : index + size] for index in range(0, len(sample), size)]
             assert _delta_text(chunks, 40).split() == once
@@ -568,7 +577,7 @@ def test_a_break_tag_keeps_the_word_boundary() -> None:
         "hello<pre>code</pre>there today friend.",
     )
     for sample in samples:
-        once = normalize_cues(scrub_tts(sample)).split()
+        once = normalize_cues(scrub_tts(sample), lead=True).split()
         for size in (1, 2, 3):
             chunks = [sample[index : index + size] for index in range(0, len(sample), size)]
             assert _delta_text(chunks, 24).split() == once
@@ -620,7 +629,7 @@ def test_three_character_chunks_match_a_one_shot_scrub() -> None:
         "Phoneme <|phoneme|> stays today friend.",
     )
     for sample in samples:
-        once = normalize_cues(scrub_tts(sample))
+        once = normalize_cues(scrub_tts(sample), lead=True)
         for size in (1, 2, 3):
             chunks = [sample[i : i + size] for i in range(0, len(sample), size)]
             heard = _delta_text(chunks, 40)
@@ -696,7 +705,7 @@ def test_streaming_space_token_stays_between_words() -> None:
         deltas.append(" ")
 
     async def collect(pieces: list[str]) -> str:
-        events = [event async for event in tts._delta_events(pieces, threading.Event())]
+        events = [event async for event in _delta_events(tts, pieces, threading.Event())]
         return "".join(event.text for event in events if isinstance(event, TextEvent))
 
     assert asyncio.run(collect(deltas)).split() == sentence.split()
@@ -708,7 +717,7 @@ def test_streaming_deltas_cut_inside_the_window() -> None:
     cancel = threading.Event()
 
     async def collect() -> list[TextEvent | FlushEvent]:
-        return [event async for event in tts._delta_events(["word "] * 30, cancel)]
+        return [event async for event in _delta_events(tts, ["word "] * 30, cancel)]
 
     events = asyncio.run(collect())
     texts = [event.text for event in events if isinstance(event, TextEvent)]
@@ -718,7 +727,7 @@ def test_streaming_deltas_cut_inside_the_window() -> None:
     assert isinstance(events[-1], FlushEvent)
 
     async def cancelled() -> list[TextEvent | FlushEvent]:
-        stream = tts._delta_events(["word "] * 30, cancel)
+        stream = _delta_events(tts, ["word "] * 30, cancel)
         first = await anext(stream)
         cancel.set()
         rest = [event async for event in stream]
@@ -727,48 +736,6 @@ def test_streaming_deltas_cut_inside_the_window() -> None:
     stopped = asyncio.run(cancelled())
     assert len(stopped) == 1
     assert isinstance(stopped[0], TextEvent)
-
-
-def test_cancelled_pcm_keeps_only_the_played_words() -> None:
-    spoken = _spoken_prefix(
-        "hello there friend",
-        bytes_played=12_000,
-        sample_rate=16_000,
-        audio_format="pcm",
-        got_audio=True,
-        cancelled=True,
-    )
-    assert spoken == "hello"
-    partial = _spoken_prefix(
-        "hello there friend",
-        bytes_played=10,
-        sample_rate=16_000,
-        audio_format="pcm",
-        got_audio=True,
-        cancelled=True,
-    )
-    assert partial == ""
-    assert (
-        _spoken_prefix(
-            "hello there friend",
-            bytes_played=10,
-            sample_rate=16_000,
-            audio_format="mp3",
-            got_audio=True,
-            cancelled=True,
-        )
-        == "hello there friend"
-    )
-    failed = _spoken_prefix(
-        "hello there friend",
-        bytes_played=12_000,
-        sample_rate=16_000,
-        audio_format="pcm",
-        got_audio=True,
-        cancelled=False,
-        failed=True,
-    )
-    assert failed == "hello"
 
 
 def test_turn_failure_retries_only_before_audio(capsys: pytest.CaptureFixture[str]) -> None:
@@ -867,6 +834,7 @@ def test_pump_does_not_play_audio_that_arrives_after_cancel(
 
     async def chunks():
         yield b"\x01\x02"
+        await asyncio.sleep(0.05)
         run.cancel.set()
         yield b"\x03\x04"
         yield b""
@@ -1050,7 +1018,7 @@ def test_run_turn_retries_before_audio_and_stops_after(
         run.audio.got_audio = True
         run.sink.write(b"abcd")
 
-    monkeypatch.setattr("fish_audio_suite_voice.session.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("fish_audio_suite_voice.pause.asyncio.sleep", fake_sleep)
     monkeypatch.setattr("fish_audio_suite_voice.session.send_turn", send_turn)
     run, sink = _run()
 
@@ -1062,7 +1030,8 @@ def test_run_turn_retries_before_audio_and_stops_after(
         run_turn(run.spec, no_events(), sink, threading.Event(), sent_text="hello")
     )
     assert calls["n"] == 2
-    assert sum(slept) == pytest.approx(1.0)
+    # Jitter: half to all of the 2**0 base.
+    assert 0.5 <= sum(slept) <= 1.0
     assert result.got_audio is True
     assert result.spoken_so_far == "hello"
 
@@ -1186,7 +1155,7 @@ def test_retry_backoff_does_not_replay_after_cancel(
     async def fake_sleep(_seconds: float) -> None:
         cancel.set()
 
-    monkeypatch.setattr("fish_audio_suite_voice.session.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("fish_audio_suite_voice.pause.asyncio.sleep", fake_sleep)
     monkeypatch.setattr("fish_audio_suite_voice.session.send_turn", send_turn)
     run, sink = _run()
 
@@ -1209,3 +1178,99 @@ def test_quiet_shutdown_cancels_leftover_tasks() -> None:
         return hung.cancelled()
 
     assert asyncio.run(scene()) is True
+
+
+def test_pump_runs_the_whole_stream_in_one_task() -> None:
+    run, sink = _run()
+    tasks: set[asyncio.Task[object] | None] = set()
+
+    async def close_client() -> None:
+        return None
+
+    async def chunks():
+        for piece in (b"\x01\x02", b"\x03\x04"):
+            tasks.add(asyncio.current_task())
+            yield piece
+        tasks.add(asyncio.current_task())
+
+    asyncio.run(_pump_ws_audio(chunks(), run, close_client))
+    assert sink.chunks == [b"\x01\x02", b"\x03\x04"]
+    assert len(tasks) == 1
+
+
+def test_cancelled_encoded_turn_leaves_history_empty() -> None:
+    run, sink = _run()
+    run.spec = replace(run.spec, audio_format="mp3")
+    run.sent_text = "hello there friend"
+    run.audio.got_audio = True
+    run.cancel.set()
+    sink.chunks.append(b"x" * 100)
+    result = isolated_result(run)
+    assert result.cancelled
+    assert result.spoken_so_far == ""
+
+
+def test_spoken_estimate_uses_speed_and_the_sinks_output_latency() -> None:
+    run, sink = _run()
+    run.sent_text = "hello there friend how are you today"
+    run.audio.got_audio = True
+    run.cancel.set()
+    sink.chunks.append(b"\x00" * 44100 * 2)  # one second at 44.1 kHz int16
+    base = isolated_result(run).spoken_so_far
+    sink.output_latency_s = 0.5
+    buffered = isolated_result(run).spoken_so_far
+    assert 0 < len(buffered) < len(base)
+    sink.output_latency_s = 2.0
+    assert isolated_result(run).spoken_so_far == ""
+
+
+def test_cancel_noise_checks_types_and_the_cancel_flag_before_message_text(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert is_cancel_noise(asyncio.CancelledError())
+    assert is_cancel_noise(GeneratorExit())
+    odd = RuntimeError("some brand new anyio wording")
+    assert not is_cancel_noise(odd)
+    assert is_cancel_noise(odd, cancelled=True)
+    assert is_cancel_noise(ExceptionGroup("g", [odd]), cancelled=True)
+    assert not is_cancel_noise(ExceptionGroup("g", [odd]))
+    assert not is_cancel_noise(KeyError("auth"))
+
+
+def test_cancel_noise_falls_back_to_the_message_and_logs_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[str] = []
+    monkeypatch.setattr("fish_audio_suite_voice.wire.debug", lambda msg, *a: seen.append(msg))
+    assert is_cancel_noise(RuntimeError("Attempted to exit cancel scope in a different task"))
+    assert seen
+    assert "message" in seen[0]
+
+
+def test_stream_scrub_leaves_a_mood_word_alone_by_default() -> None:
+    tts = IsolatedFishTts(api_key="k", voice_id="v", partial_chars=40)
+
+    async def collect(mood_lead: bool) -> str:
+        events = delta_events(
+            ["Curious, ", "isn't it today my friend."],
+            threading.Event(),
+            partial_chars=tts.partial_chars,
+            mood_lead=mood_lead,
+        )
+        return "".join([e.text async for e in events if isinstance(e, TextEvent)])
+
+    assert asyncio.run(collect(False)).split()[:2] == ["Curious,", "isn't"]
+    assert asyncio.run(collect(True)).split()[0] == "[curious]"
+
+
+def test_tts_spec_warns_once_when_it_swaps_a_format_or_latency(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    IsolatedFishTts(api_key="k", voice_id="v", audio_format="flac")._spec()
+    IsolatedFishTts(api_key="k", voice_id="v", audio_format="flac")._spec()
+    IsolatedFishTts(api_key="k", voice_id="v", audio_format="ogg")._spec()
+    IsolatedFishTts(api_key="k", voice_id="v", latency="low")._spec()
+    err = capsys.readouterr().err
+    assert err.count("'flac'") == 1
+    assert "'ogg'" in err
+    assert "'low'" in err

@@ -4,13 +4,14 @@ import asyncio
 import sys
 import threading
 import time
+from collections.abc import AsyncIterator, Callable
 
+import httpx
 import pytest
 
 from fish_audio_suite_kit import FishHttpError, LatencySnapshot
 from fish_audio_suite_voice.config import VoiceCliConfig
 from fish_audio_suite_voice.duplex import (
-    HISTORY_TURNS,
     _accept_asr,
     _after_speech,
     _collect_reply,
@@ -22,7 +23,10 @@ from fish_audio_suite_voice.duplex import (
 )
 from fish_audio_suite_voice.live import IsolatedFishTts, IsolatedResult
 from fish_audio_suite_voice.playback import PortAudioMissingError
-from fish_audio_suite_voice.signals import STOP_RECORD
+from fish_audio_suite_voice.signals import DuplexSession
+from fish_audio_suite_voice.tune import DEFAULT_HISTORY_TURNS, LlmTune
+
+HISTORY_TURNS = DEFAULT_HISTORY_TURNS
 
 
 def _config() -> VoiceCliConfig:
@@ -44,21 +48,45 @@ def _config() -> VoiceCliConfig:
         playback="stdout",
         system_prompt="be brief",
         device=None,
-        llm_backend="openrouter",
-        llm_base="https://example.test/v1",
-        llm_key="lk",
-        llm_model="m",
+        llm=LlmTune(backend="openai", base="https://example.test/v1", key="lk", model="m"),
     )
 
 
-def _loop() -> _Loop:
+class _FakeBackend:
+    def __init__(self, tokens: Callable[..., AsyncIterator[str]] | None = None) -> None:
+        self._tokens = tokens
+
+    def stream(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        cancel: asyncio.Event | None = None,
+        trace_id: str | None = None,
+    ) -> AsyncIterator[str]:
+        if self._tokens is not None:
+            return self._tokens(messages, cancel=cancel, trace_id=trace_id)
+        return self._empty()
+
+    async def _empty(self) -> AsyncIterator[str]:
+        if False:
+            yield ""
+
+    async def aclose(self) -> None:
+        return None
+
+
+def _loop(
+    tokens: Callable[..., AsyncIterator[str]] | None = None,
+    session: DuplexSession | None = None,
+) -> _Loop:
     return _Loop(
         config=_config(),
         tts=IsolatedFishTts(api_key="k", voice_id="voice"),
         device=None,
-        or_client=None,
+        backend=_FakeBackend(tokens),
+        session=session or DuplexSession(),
+        asr_http=httpx.AsyncClient(),
         history=[{"role": "system", "content": "be brief"}],
-        llm_session="s",
     )
 
 
@@ -77,7 +105,7 @@ def test_accept_asr_drops_echoes_and_keeps_a_real_line() -> None:
 def test_history_keeps_the_system_prompt_and_drops_the_oldest_turn() -> None:
     history = [{"role": "system", "content": "be brief"}]
     for i in range(HISTORY_TURNS * 2 + 1):
-        _remember_user(history, f"u{i}")
+        _remember_user(history, f"u{i}", HISTORY_TURNS)
     assert history[0] == {"role": "system", "content": "be brief"}
     assert history[1]["content"] == "u1"
     assert history[-1]["content"] == f"u{HISTORY_TURNS * 2}"
@@ -87,9 +115,9 @@ def test_history_keeps_the_system_prompt_and_drops_the_oldest_turn() -> None:
 def test_history_drops_a_whole_turn_so_roles_stay_paired() -> None:
     history = [{"role": "system", "content": "be brief"}]
     for i in range(HISTORY_TURNS):
-        _remember_user(history, f"u{i}")
+        _remember_user(history, f"u{i}", HISTORY_TURNS)
         history.append({"role": "assistant", "content": f"a{i}"})
-    _remember_user(history, "newest")
+    _remember_user(history, "newest", HISTORY_TURNS)
     assert history[1] == {"role": "user", "content": "u1"}
     assert history[2] == {"role": "assistant", "content": "a1"}
     history.append({"role": "assistant", "content": "answer"})
@@ -177,33 +205,35 @@ def test_quit_during_asr_does_not_ask_the_llm(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    STOP_RECORD.clear()
+    session = DuplexSession()
     asked = {"n": 0}
 
     def wav(*_args: object, **_kwargs: object) -> bytes:
         return b"RIFFwav"
 
     async def asr(*_args: object, **_kwargs: object) -> str:
-        STOP_RECORD.set()
+        session.stop.set()
         return "hello there friend"
 
-    async def tokens(*_args: object, **_kwargs: object):
+    async def tokens(*_args: object, **_kwargs: object) -> AsyncIterator[str]:
         asked["n"] += 1
         if False:
             yield ""
 
     monkeypatch.setattr("fish_audio_suite_voice.duplex.record_utterance", wav)
     monkeypatch.setattr("fish_audio_suite_voice.duplex.fish_asr", asr)
-    monkeypatch.setattr("fish_audio_suite_voice.duplex.llm_token_stream", tokens)
-    try:
-        code = asyncio.run(
-            asyncio.wait_for(
-                duplex_turns(_config(), IsolatedFishTts(api_key="k", voice_id="voice"), None, None),
-                1,
-            )
+    code = asyncio.run(
+        asyncio.wait_for(
+            duplex_turns(
+                _config(),
+                IsolatedFishTts(api_key="k", voice_id="voice"),
+                None,
+                _FakeBackend(tokens),
+                session,
+            ),
+            1,
         )
-    finally:
-        STOP_RECORD.clear()
+    )
     assert code == 0
     assert asked["n"] == 0
     assert "you:" not in capsys.readouterr().out
@@ -220,12 +250,10 @@ class _ClosedStdout:
 def test_collect_reply_survives_a_closed_stdout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    loop = _loop()
-
-    async def tokens(*_args: object, **_kwargs: object):
+    async def tokens(*_args: object, **_kwargs: object) -> AsyncIterator[str]:
         yield "Open the door today friend."
 
-    monkeypatch.setattr("fish_audio_suite_voice.duplex.llm_token_stream", tokens)
+    loop = _loop(tokens)
     monkeypatch.setattr(sys, "stdout", _ClosedStdout())
     reply, ttft = asyncio.run(
         _collect_reply(loop, llm_cancel=asyncio.Event(), trace_id=None, started=0.0)
@@ -238,13 +266,11 @@ def test_collect_reply_keeps_partial_text_on_cancel(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    loop = _loop()
-
-    async def tokens(*_args: object, **_kwargs: object):
+    async def tokens(*_args: object, **_kwargs: object) -> AsyncIterator[str]:
         yield "Hi"
         raise asyncio.CancelledError
 
-    monkeypatch.setattr("fish_audio_suite_voice.duplex.llm_token_stream", tokens)
+    loop = _loop(tokens)
     reply, ttft = asyncio.run(
         _collect_reply(loop, llm_cancel=asyncio.Event(), trace_id=None, started=0.0)
     )
@@ -393,3 +419,13 @@ def test_speak_reply_releases_the_mic_before_returning(
     assert loop.history[-1]["content"] == "hello there"
     assert held["thread"].is_alive() is False
     assert time.monotonic() - started < 1
+
+
+def test_history_cap_follows_the_configured_turns() -> None:
+    history = [{"role": "system", "content": "be brief"}]
+    for i in range(5):
+        _remember_user(history, f"u{i}", 2)
+        history.append({"role": "assistant", "content": f"a{i}"})
+    _remember_user(history, "newest", 2)
+    # The oldest user and assistant leave together, so roles stay paired.
+    assert [m["content"] for m in history] == ["be brief", "u4", "a4", "newest"]

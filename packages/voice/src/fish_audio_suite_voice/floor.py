@@ -1,0 +1,51 @@
+"""Quiet-percentile RMS floor shared by the listen and barge gates."""
+
+from __future__ import annotations
+
+import collections
+
+import numpy as np
+
+_FLOOR_WINDOW = 80
+_FLOOR_FILL = 25
+_FLOOR_PERCENTILE = 20.0
+_FLOOR_GAIN = 2.5
+_FLOOR_LO = 80.0
+_FLOOR_HI = 450.0
+
+
+class AdaptiveFloor:
+    """Quiet-percentile RMS gate. ``default`` is the seed until the window fills."""
+
+    def __init__(
+        self,
+        default: float,
+        *,
+        window: int = _FLOOR_WINDOW,
+        percentile: float = _FLOOR_PERCENTILE,
+        gain: float = _FLOOR_GAIN,
+        lo: float = _FLOOR_LO,
+        hi: float = _FLOOR_HI,
+    ) -> None:
+        self.default = default
+        self.percentile = percentile
+        self.gain = gain
+        self.lo = lo
+        self.hi = hi
+        self.window: collections.deque[float] = collections.deque(maxlen=window)
+
+    def observe(self, rms: float, *, quiet: bool) -> None:
+        """Record RMS while the room is quiet so the floor can track hiss."""
+        if quiet:
+            self.window.append(rms)
+
+    def value(self) -> float:
+        """Return the raised noise floor, or the seed until the window fills."""
+        if len(self.window) < _FLOOR_FILL:
+            return self.default
+        quiet = np.fromiter(self.window, dtype=np.float64)
+        est = float(np.percentile(quiet, self.percentile) * self.gain)
+        # The high cap limits the estimate. It must not undercut the seed,
+        # or a loud FISH_VOICE_MIN_RMS starts accepting quieter frames.
+        capped = min(self.hi, max(self.lo, est))
+        return float(max(self.default, capped))

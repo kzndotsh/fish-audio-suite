@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import sys
 from typing import Any
 
@@ -80,9 +79,25 @@ def end_reply_line() -> None:
     _REPLY.open = False
 
 
+class _Debug:
+    """True after ``configure_voice_logging(debug=True)``. Avoids writing os.environ."""
+
+    on: bool = False
+
+
+_DEBUG = _Debug()
+
+
 def env_debug() -> bool:
-    """Return whether FISH_VOICE_DEBUG is on."""
-    return env_bool("FISH_VOICE_DEBUG")
+    """Return whether debug logging is on.
+
+    Returns
+    -------
+    bool
+        True after ``configure_voice_logging(debug=True)``, or when
+        ``FISH_VOICE_DEBUG`` is set to a true value.
+    """
+    return _DEBUG.on or env_bool("FISH_VOICE_DEBUG")
 
 
 def debug(message: str, *args: Any, **fields: Any) -> None:
@@ -165,8 +180,7 @@ def _stderr_logger(level: str) -> None:
 
 def configure_voice_logging(*, debug: bool) -> None:
     """Idempotent stderr sink. DEBUG when on; otherwise WARNING. Call from the CLI only."""
-    if debug:
-        os.environ["FISH_VOICE_DEBUG"] = "1"
+    _DEBUG.on = debug
     _stderr_logger("DEBUG" if debug else "WARNING")
     _CONFIGURED.on = True
     _intercept_libraries(debug=debug)
