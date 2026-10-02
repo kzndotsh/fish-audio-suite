@@ -5,14 +5,27 @@ description = "OpenAI-compatible Fish Audio TTS/ASR HTTP proxy"
 readme = "README.md"
 authors = [{ name = "Logan Honeycutt", email = "admin@kzn.sh" }]
 requires-python = ">=3.12"
-license = { text = "MIT" }
+license = "MIT"
+license-files = ["LICENSE"]
+keywords = ["fish-audio","tts","asr","openai","proxy","fastapi"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Framework :: FastAPI",
+    "Topic :: Multimedia :: Sound/Audio :: Speech",
+    "Topic :: Internet :: WWW/HTTP",
+]
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.32",
     "httpx>=0.28",
     "ormsgpack>=1.5",
     "python-multipart>=0.0.12",
-    "fish-audio-suite-kit",
+    "fish-audio-suite-kit>=0.1,<0.2",
 ]
 
 [project.scripts]
@@ -21,8 +34,13 @@ fish-audio-suite-proxy = "fish_audio_suite_proxy.server:main"
 [tool.uv.sources]
 fish-audio-suite-kit = { workspace = true }
 
+[project.urls]
+Homepage = "https://github.com/kzndotsh/fish-audio-suite"
+Source = "https://github.com/kzndotsh/fish-audio-suite"
+Issues = "https://github.com/kzndotsh/fish-audio-suite/issues"
+
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
