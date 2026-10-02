@@ -36,11 +36,13 @@ async def sleep_unless(
     One long ``asyncio.sleep`` ignores barge-in and Ctrl+C. The next attempt
     would then run after the user already interrupted.
     """
+    # A zero or negative poll would never shrink ``left``.
+    poll = poll_s if math.isfinite(poll_s) and poll_s > 0 else POLL_S
     left = seconds
     while left > 0:
         if cancelled():
             return True
-        step = min(poll_s, left)
+        step = min(poll, left)
         await asyncio.sleep(step)
         left -= step
     return cancelled()
@@ -62,7 +64,10 @@ def seconds_value(raw: object) -> float | None:
     if isinstance(raw, bool):
         return None
     if isinstance(raw, (int, float)):
-        value = float(raw)
+        try:
+            value = float(raw)
+        except OverflowError:
+            return None
     elif isinstance(raw, str):
         try:
             value = float(raw.strip())

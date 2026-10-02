@@ -61,3 +61,21 @@ def test_apply_cli_env_files_warns_for_a_missing_required_file(
     assert "not found" in capsys.readouterr().err
     assert apply_cli_env_files([tmp_path / "nope.env"], required=False) == []
     assert capsys.readouterr().err == ""
+
+
+def test_dotenv_skips_a_value_with_a_nul_byte_and_keeps_loading(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    for name in ("ENVF_NUL_A", "ENVF_NUL_B", "ENVF_NUL_C"):
+        monkeypatch.delenv(name, raising=False)
+    path = tmp_path / "nul.env"
+    path.write_text("ENVF_NUL_A=1\nENVF_NUL_B=bad\x00value\nENVF_NUL_C=3\n", encoding="utf-8")
+    try:
+        assert load_dotenv(path)
+        assert os.environ["ENVF_NUL_A"] == "1"
+        assert "ENVF_NUL_B" not in os.environ
+        assert os.environ["ENVF_NUL_C"] == "3"
+        assert "NUL" in capsys.readouterr().err
+    finally:
+        for name in ("ENVF_NUL_A", "ENVF_NUL_B", "ENVF_NUL_C"):
+            os.environ.pop(name, None)

@@ -182,22 +182,36 @@ def test_conversation_is_plain_on_stdout_without_debug(
     assert captured.err == ""
 
 
-def test_conversation_joins_the_timed_log_with_debug(
-    capsys: pytest.CaptureFixture[str],
+def test_conversation_on_a_terminal_with_debug_has_the_time_columns_on_stdout(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     configure_voice_logging(debug=1)
+    monkeypatch.setattr("fish_audio_suite_voice.debug._stdout_tty", lambda: True)
     mark_turn()
     capsys.readouterr()
     conversation("you", "Hey there")
     debug("llm.first_token 700ms")
     captured = capsys.readouterr()
-    assert captured.out == ""
-    lines = captured.err.splitlines()
+    lines = captured.out.splitlines()
+    assert len(lines) == 1
     assert "you \u25b8" in lines[0]
     assert "Hey there" in lines[0]
     assert "+0." in lines[0]
     assert lines[0][2] == ":"
-    assert "first_token" in lines[1]
+    # The log line stays on stderr.
+    assert "first_token" in captured.err
+    assert "Hey there" not in captured.err
+
+
+def test_piped_conversation_stays_plain_on_stdout_even_with_debug(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    configure_voice_logging(debug=1)
+    monkeypatch.setattr("fish_audio_suite_voice.debug._stdout_tty", lambda: False)
+    conversation("you", "Hey there")
+    captured = capsys.readouterr()
+    assert captured.out == "you \u25b8 Hey there\n"
+    assert "Hey there" not in captured.err
 
 
 def test_short_model_drops_only_the_vendor_prefix() -> None:

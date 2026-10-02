@@ -490,3 +490,29 @@ def test_stream_tts_is_off_unless_asked(monkeypatch: pytest.MonkeyPatch) -> None
     assert cfg().stream_tts is False
     monkeypatch.setenv("FISH_STREAM_TTS", "1")
     assert cfg().stream_tts is True
+
+
+def test_a_blank_llm_key_does_not_hide_the_provider_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    from fish_audio_suite_voice.tune import LlmTune
+
+    for name in ("FISH_LLM_BASE", "OPENROUTER_BASE_URL", "FISH_LLM_BACKEND", "OPENAI_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("FISH_LLM_KEY", "")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+    assert LlmTune.from_env().key == "or-key"
+    monkeypatch.setenv("FISH_LLM_KEY", "own-key")
+    assert LlmTune.from_env().key == "own-key"
+
+
+def test_a_malformed_llm_base_warns_and_falls_back(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from fish_audio_suite_voice.tune import LlmTune, openrouter_host
+
+    monkeypatch.delenv("FISH_LLM_BACKEND", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setenv("FISH_LLM_BASE", "http://[::1")
+    tune = LlmTune.from_env()
+    assert tune.base == OPENROUTER_API_BASE
+    assert "not a valid URL" in capsys.readouterr().err
+    assert openrouter_host("http://[::1") is False

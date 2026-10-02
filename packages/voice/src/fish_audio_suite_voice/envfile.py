@@ -163,7 +163,11 @@ def load_dotenv(path: Path) -> bool:
         key = key.strip()
         val = _env_value(val)
         if key and key not in os.environ:
-            os.environ[key] = val
+            try:
+                os.environ[key] = val
+            except ValueError:
+                # os.environ rejects an embedded NUL. Skip that key, keep the rest.
+                warn(f"fish-voice: skipped {key!r} in {path}: value or name has a NUL byte")
     return True
 
 

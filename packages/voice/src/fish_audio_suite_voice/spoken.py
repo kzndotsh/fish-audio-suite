@@ -102,7 +102,14 @@ def _word_prefix(text: str, n: int) -> str:
         # speaker had already played, so the next turn said it again.
         stripped = cut.strip()
         if any(_cjk_char(ch) for ch in stripped):
-            return stripped
+            if _cjk_char(stripped[-1]) or not _extends_tail(stripped, text[n]):
+                return stripped
+            # The cut is inside a Latin word that follows CJK text. Keep the
+            # CJK and drop the half word, or history records "你好H".
+            end = len(stripped)
+            while end > 0 and not _cjk_char(stripped[end - 1]):
+                end -= 1
+            return stripped[:end].strip()
         # "Hello there" cut on the last letter of "Hello" has no space yet.
         # The next character is the space, so that word was played. Dropping
         # it made the next turn say "Hello" again.

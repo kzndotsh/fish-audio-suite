@@ -672,3 +672,86 @@ def test_barge_floor_follows_the_room_noise_above_the_seed(
     gate3, cancel3 = _watch_with(monkeypatch, loud, aec=aec, tune=tune)
     gate3.watch(cancel3)
     assert cancel3.is_set()
+
+
+def _constant_frame(level: int) -> bytes:
+    return level.to_bytes(2, "little", signed=True) * (FRAME_BYTES // 2)
+
+
+def test_speech_between_the_floor_and_the_boosted_need_does_not_raise_the_floor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: list[tuple[float, bool]] = []
+
+    class Floor:
+        def __init__(self, default: float) -> None:
+            self.default = default
+
+        def value(self) -> float:
+            return self.default
+
+        def observe(self, rms: float, *, quiet: bool) -> None:
+            seen.append((rms, quiet))
+
+    class SilentVad:
+        def __init__(self, mode: int) -> None:
+            del mode
+
+        def is_speech(self, frame: bytes, rate: int) -> bool:
+            del frame, rate
+            return False
+
+    class Mod:
+        Vad = SilentVad
+
+    def mic(
+        device: str | int | None,
+        stop: threading.Event | None,
+        *,
+        timeout: float,
+        aec: object = None,
+    ) -> collections.abc.Iterator[bytes]:
+        del device, stop, timeout, aec
+        yield from [_constant_frame(300)] * 5
+
+    monkeypatch.setitem(sys.modules, "webrtcvad", Mod)
+    monkeypatch.setattr("fish_audio_suite_voice.barge.mic_frames", mic)
+    monkeypatch.setattr("fish_audio_suite_voice.barge.AdaptiveFloor", Floor)
+    aec = EchoCanceller(AecTune(enabled=False))
+    # The speaker is playing and AEC is off, so ``need`` is 220 x 2.2 = 484.
+    aec.tap_playback(b"\x00\x00" * 16000, 16000)
+    gate = BargeGate(tune=BargeTune(min_rms=220.0, over=2.2), aec=aec)
+    gate.watch(threading.Event())
+    assert len(seen) == 5
+    assert all(not quiet for _, quiet in seen)
+
+
+def test_a_gate_without_an_aec_runs_without_one() -> None:
+    gate = BargeGate()
+    assert gate.aec.available() is False
+    assert gate._bleed_wait() == gate.tune.bleed_delay_s
+
+
+def test_an_explicit_bleed_delay_wins_over_the_aec_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    aec = EchoCanceller(AecTune(enabled=True, bleed_s=0.3))
+    monkeypatch.setattr(aec, "available", lambda: True)
+    assert BargeGate(aec=aec)._bleed_wait() == 0.3
+    assert BargeGate(aec=aec, bleed_delay_s=1.5)._bleed_wait() == 1.5
+    assert BargeGate(aec=aec, bleed_delay_s=0.0)._bleed_wait() == 0.0
+    assert BargeGate(aec=aec, bleed_delay_s=-1.0)._bleed_wait() == 0.3
+
+
+def test_a_small_floor_window_still_warms_up() -> None:
+    from fish_audio_suite_voice.floor import AdaptiveFloor
+
+    floor = AdaptiveFloor(100.0, window=10)
+    assert floor.value() == 100.0
+    for _ in range(10):
+        floor.observe(50.0, quiet=True)
+    assert floor.value() == 125.0
+    # A zero window cannot hold a sample, so it is raised to one.
+    tiny = AdaptiveFloor(100.0, window=0)
+    tiny.observe(60.0, quiet=True)
+    assert tiny.value() == 150.0

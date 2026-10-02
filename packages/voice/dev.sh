@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Local duplex runner. Copies .env.example once, then execs fish-voice with --env-file .env.
-# NixOS: sounddevice needs PortAudio (and Pulse) on LD_LIBRARY_PATH — same wrap as flake.nix.
+# NixOS: sounddevice needs PortAudio (and Pulse) on LD_LIBRARY_PATH (DYLD_FALLBACK_LIBRARY_PATH on macOS), same wrap as flake.nix.
 # Other hosts use system PortAudio. Set FISH_VOICE_NIX=1 to build it with nix anyway.
 set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -25,7 +25,12 @@ if [[ -z "${FISH_VOICE_PORTAUDIO_LIB:-}" && "$want_nix" == "1" ]] && command -v 
   FISH_VOICE_PORTAUDIO_LIB="$libs"
 fi
 if [[ -n "${FISH_VOICE_PORTAUDIO_LIB:-}" ]]; then
-  export LD_LIBRARY_PATH="${FISH_VOICE_PORTAUDIO_LIB}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  # Same split as flake.nix: the loader variable differs on macOS.
+  if [[ "$(uname -s)" == "Darwin" ]]; then
+    export DYLD_FALLBACK_LIBRARY_PATH="${FISH_VOICE_PORTAUDIO_LIB}${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
+  else
+    export LD_LIBRARY_PATH="${FISH_VOICE_PORTAUDIO_LIB}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+  fi
 fi
 
 exec uv run --package fish-audio-suite-voice --extra cli fish-voice --env-file "$local_env" "$@"

@@ -258,7 +258,12 @@ def _end_llm_when_tts_stops(
     # A barge-in or a dead sink ends the reply, so the model should stop too.
     # A Fish failure before any audio leaves the model running. The finished
     # reply is spoken afterwards on the whole-string path.
-    if task.cancelled() or task.exception() is not None or task.result().cancelled:
+    if (
+        task.cancelled()
+        or task.exception() is not None
+        or task.result().cancelled
+        or task.result().error_status in _FATAL_FISH
+    ):
         llm_cancel.set()
 
 
@@ -330,6 +335,9 @@ async def _stream_turn(
         finally:
             pipe.close()
         snapshot = replace(snapshot, llm_ttft=ttft_ms)
+        if not reply.strip():
+            # Stop the turn before Fish is asked to flush nothing.
+            cancel.set()
         try:
             result = await tts_task
         except PortAudioMissingError as exc:
@@ -341,6 +349,11 @@ async def _stream_turn(
         cancel.set()
         for thread in barge_threads:
             thread.join(timeout=_BARGE_JOIN_S)
+    if not reply.strip():
+        # Nothing to say. The non-streaming path never opens a Fish turn for an
+        # empty reply, so skip the "silent" report and the history entry too.
+        debug("tts.stream empty reply, nothing to speak")
+        return snapshot, None
     failed_early = (
         not result.got_audio
         and not result.cancelled
@@ -351,6 +364,11 @@ async def _stream_turn(
         debug("tts.stream failed before audio, speaking the finished reply")
         retry_cancel = threading.Event()
         loop.session.turn.bind(retry_cancel, llm_cancel)
+        if loop.session.stop.is_set():
+            # Quit landed between the check above and the rebind, so the old
+            # cancel flag no longer reaches this turn. Stop is sticky.
+            retry_cancel.set()
+            return snapshot, None
         return await _speak_reply(
             loop, reply, retry_cancel, snapshot, started=heard.started, trace_id=heard.trace_id
         )

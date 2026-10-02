@@ -1323,3 +1323,87 @@ def test_early_flush_on_an_empty_reply_sends_nothing() -> None:
         ]
 
     assert asyncio.run(run()) == []
+
+
+def test_pump_stops_when_the_stream_itself_is_cancelled() -> None:
+    run, sink = _run()
+
+    async def close_client() -> None:
+        return None
+
+    async def chunks():
+        yield b"\x01\x02"
+        raise asyncio.CancelledError
+
+    async def pump() -> None:
+        await asyncio.wait_for(_pump_ws_audio(chunks(), run, close_client), timeout=5.0)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(pump())
+    assert sink.chunks == [b"\x01\x02"]
+
+
+def test_pump_does_not_let_the_reader_run_far_ahead_of_playback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run, sink = _run()
+    produced = 0
+    lead: list[int] = []
+
+    async def close_client() -> None:
+        return None
+
+    async def chunks():
+        nonlocal produced
+        for index in range(12):
+            produced += 1
+            yield bytes([index + 1]) * 4
+
+    original_write = sink.write
+
+    def slow_write(chunk: bytes) -> None:
+        lead.append(produced - len(sink.chunks))
+        time.sleep(0.01)
+        original_write(chunk)
+
+    monkeypatch.setattr(sink, "write", slow_write)
+    asyncio.run(_pump_ws_audio(chunks(), run, close_client))
+    assert len(sink.chunks) == 12
+    # One queued chunk plus the one being written plus one held by the reader.
+    assert max(lead) <= 4
+
+
+def test_early_flush_is_not_sent_after_a_cancel() -> None:
+    cancel = threading.Event()
+
+    async def run() -> list[str]:
+        kinds = []
+        async for event in delta_events(
+            ["Hello there my friend. ", "How are you doing today?"],
+            cancel,
+            partial_chars=40,
+            early_flush=True,
+        ):
+            kinds.append(type(event).__name__)
+            if type(event).__name__ == "TextEvent":
+                cancel.set()
+        return kinds
+
+    assert asyncio.run(run()) == ["TextEvent"]
+
+
+def test_a_mood_word_inside_a_long_sentence_is_not_rewritten_as_a_cue() -> None:
+    async def run() -> str:
+        # Exactly one full piece goes out, so nothing is left in the ready buffer
+        # when the next token starts with a mood word.
+        pieces = ["a " * 20, "Excited, people talk. "]
+        text = ""
+        async for event in delta_events(
+            pieces, threading.Event(), partial_chars=40, mood_lead=True
+        ):
+            text += getattr(event, "text", "") or ""
+        return text
+
+    spoken = asyncio.run(run())
+    assert "[excited]" not in spoken.lower()
+    assert "Excited" in spoken

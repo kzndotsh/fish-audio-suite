@@ -612,3 +612,110 @@ def test_trim_history_still_pairs_user_and_assistant_without_a_seed() -> None:
         history.append({"role": "assistant", "content": f"a{index}"})
     _trim_history(history, 2)
     assert [m["content"] for m in history] == ["s", "u3", "a3", "u4", "a4"]
+
+
+def test_a_fatal_fish_status_stops_the_llm_but_a_transient_one_does_not() -> None:
+    from fish_audio_suite_voice.duplex import _end_llm_when_tts_stops
+
+    async def scenario(status: int) -> bool:
+        loop = asyncio.get_running_loop()
+        done: asyncio.Future[IsolatedResult] = loop.create_future()
+        done.set_result(IsolatedResult("", 0, False, False, None, None, error_status=status))
+        llm_cancel = asyncio.Event()
+        _end_llm_when_tts_stops(done, llm_cancel)
+        return llm_cancel.is_set()
+
+    assert asyncio.run(scenario(401)) is True
+    assert asyncio.run(scenario(503)) is False
+
+
+def test_stream_turn_with_an_empty_reply_speaks_nothing_and_reports_nothing(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    async def no_tokens(*_args: object, **_kwargs: object) -> AsyncIterator[str]:
+        if False:
+            yield ""
+
+    loop = _loop(no_tokens)
+    monkeypatch.setattr("fish_audio_suite_voice.duplex.BargeGate", lambda **_kwargs: _StreamGate())
+    monkeypatch.setattr("fish_audio_suite_voice.duplex.make_sink", lambda *_a, **_k: _StreamSink())
+    seen_cancel: list[bool] = []
+
+    def speak_stream(
+        deltas: _TokenPipe,
+        sink: _StreamSink,
+        cancel: threading.Event,
+        on_first_audio: Callable[[], None] | None = None,
+    ) -> IsolatedResult:
+        async def drain() -> None:
+            async for _token in deltas:
+                pass
+
+        asyncio.run(drain())
+        seen_cancel.append(cancel.is_set())
+        return IsolatedResult("", 0, False, True, None, None)
+
+    def never(*_args: object, **_kwargs: object) -> IsolatedResult:
+        raise AssertionError("an empty reply must not be spoken")
+
+    loop.tts.speak_stream_isolated = speak_stream
+    loop.tts.speak_isolated = never
+    history_before = list(loop.history)
+    _snapshot, code = asyncio.run(
+        _stream_turn(
+            loop,
+            _HeardLine("line", text="hi", started=time.perf_counter()),
+            threading.Event(),
+            asyncio.Event(),
+        )
+    )
+    assert code is None
+    assert seen_cancel == [True]
+    assert loop.history == history_before
+    assert "silent" not in capsys.readouterr().out
+
+
+def test_quit_during_the_stream_fallback_rebind_does_not_speak(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop = _loop(_two_tokens)
+    monkeypatch.setattr("fish_audio_suite_voice.duplex.BargeGate", lambda **_kwargs: _StreamGate())
+    monkeypatch.setattr("fish_audio_suite_voice.duplex.make_sink", lambda *_a, **_k: _StreamSink())
+
+    def speak_stream(
+        deltas: _TokenPipe,
+        sink: _StreamSink,
+        cancel: threading.Event,
+        on_first_audio: Callable[[], None] | None = None,
+    ) -> IsolatedResult:
+        async def drain() -> None:
+            async for _token in deltas:
+                pass
+
+        asyncio.run(drain())
+        return IsolatedResult("", 0, False, False, None, None, error_status=503)
+
+    def never(*_args: object, **_kwargs: object) -> IsolatedResult:
+        raise AssertionError("nothing may be spoken after quit")
+
+    bind = loop.session.turn.bind
+
+    def bind_then_quit(cancel: threading.Event, llm_cancel: asyncio.Event, *a: object) -> None:
+        bind(cancel, llm_cancel)
+        # Ctrl+C lands right after the old flag was replaced.
+        loop.session.stop.set()
+
+    monkeypatch.setattr(loop.session.turn, "bind", bind_then_quit)
+    loop.tts.speak_stream_isolated = speak_stream
+    loop.tts.speak_isolated = never
+    _snapshot, code = asyncio.run(
+        _stream_turn(
+            loop,
+            _HeardLine("line", text="hi", started=time.perf_counter()),
+            threading.Event(),
+            asyncio.Event(),
+        )
+    )
+    assert code is None
+    assert loop.session.turn.cancel is not None
+    assert loop.session.turn.cancel.is_set()

@@ -334,7 +334,10 @@ def openrouter_host(base: str) -> bool:
         True for ``openrouter.ai`` and its subdomains. A look-alike path or
         query does not count.
     """
-    host = (urlsplit(base.strip()).hostname or "").lower()
+    try:
+        host = (urlsplit(base.strip()).hostname or "").lower()
+    except ValueError:
+        return False
     return host == "openrouter.ai" or host.endswith(".openrouter.ai")
 
 
@@ -432,15 +435,24 @@ def _first_base(*names: str) -> str:
         if raw is None:
             continue
         text = strip_base(raw)
-        if text:
-            return text
+        if not text:
+            continue
+        try:
+            urlsplit(text).hostname  # noqa: B018 - raises ValueError for a bad bracketed host
+        except ValueError:
+            warn(f"fish-voice: {name} is not a valid URL, trying the next base or the default")
+            continue
+        return text
     return ""
 
 
 def _first_text(*names: str) -> str:
+    # A blank value is skipped, so an empty FISH_LLM_KEY from the copied
+    # .env.example does not hide a real provider key.
     for name in names:
-        if name in os.environ:
-            return os.environ[name].strip()
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
     return ""
 
 

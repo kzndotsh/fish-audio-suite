@@ -61,11 +61,16 @@ class TurnSignals:
         if event is None:
             return
         loop = self._loop
-        if loop is not None and loop.is_running():
+        if loop is not None and not loop.is_closed():
+            # Also right for a stopped loop: the call is queued and runs when
+            # it resumes, instead of touching the event from this thread.
             with suppress(RuntimeError):
                 loop.call_soon_threadsafe(event.set)
                 return
-        event.set()
+        # No loop, or a closed one with nothing left to wake. The flag still
+        # sets; waking a waiter on a closed loop raises, so ignore that.
+        with suppress(RuntimeError):
+            event.set()
 
     def clear(self) -> None:
         """Forget the bound handles."""

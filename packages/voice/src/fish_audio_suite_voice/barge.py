@@ -25,6 +25,7 @@ from fish_audio_suite_voice.tune import (
     DEFAULT_BARGE_RMS,
     DEFAULT_BLEED_DELAY_S,
     DEFAULT_POST_SPEAK_COOLDOWN_S,
+    AecTune,
     BargeTune,
 )
 
@@ -169,7 +170,14 @@ class BargeGate:
             hit_frames=base.hit_frames if hit_frames is None or hit_frames < 1 else hit_frames,
             min_rms=base.min_rms if min_rms is None or min_rms <= 0 else min_rms,
         )
-        self.aec = aec or EchoCanceller()
+        # None means no AEC. A default EchoCanceller would load AEC3 and shorten
+        # the bleed delay without ever receiving the sink's far-end audio.
+        self.aec = aec if aec is not None else EchoCanceller(AecTune(enabled=False))
+        # An explicit delay is the caller's choice. It must win over the shorter
+        # AEC default, or a longer window could never be forced.
+        self._bleed_override = (
+            bleed_delay_s if bleed_delay_s is not None and bleed_delay_s >= 0 else None
+        )
         self.bleed_delay_s = self.tune.bleed_delay_s
         self.hit_frames = self.tune.hit_frames
         self.min_rms = self.tune.min_rms
@@ -177,6 +185,8 @@ class BargeGate:
         self.captured = b""
 
     def _bleed_wait(self) -> float:
+        if self._bleed_override is not None:
+            return self._bleed_override
         return self.aec.effective_bleed_s(self.tune.bleed_delay_s)
 
     def watch(self, cancel: threading.Event) -> None:
@@ -227,8 +237,10 @@ class BargeGate:
                 self._heard.append(frame)
                 voiced = rms >= need and frame_is_speech(vad, frame)
                 # A frame under the floor is room hiss. Loud ones must not
-                # raise it, or the same voice could never trip the gate.
-                floor.observe(rms, quiet=rms < need)
+                # raise it, or the same voice could never trip the gate. The test
+                # uses the floor itself: ``need`` is multiplied while the speaker
+                # plays, and speech between the two would otherwise count as hiss.
+                floor.observe(rms, quiet=rms < base_need)
                 hit, miss, tripped = _barge_step(
                     hit=hit,
                     miss=miss,

@@ -308,7 +308,9 @@ async def _pump_ws_audio(
     run: TurnRun,
     close_client: Callable[[], Awaitable[None]],
 ) -> None:
-    queue: asyncio.Queue[Any] = asyncio.Queue()
+    # One chunk of lookahead. A reader that runs ahead of playback keeps the
+    # rest of a long reply in memory.
+    queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=1)
     reader = asyncio.create_task(_read_stream(aiter(stream), queue))
     try:
         while True:
@@ -320,6 +322,11 @@ async def _pump_ws_audio(
                 # A timeout only re-checks cancel. It never touches the reader.
                 item = await asyncio.wait_for(queue.get(), ANEXT_POLL_S)
             except TimeoutError:
+                # The reader ends without a marker only when the stream itself
+                # was cancelled. Raise that instead of polling forever.
+                if reader.done() and queue.empty():
+                    reader.result()
+                    return
                 continue
             if item is _STREAM_END:
                 return

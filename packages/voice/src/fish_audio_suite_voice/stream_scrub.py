@@ -234,7 +234,9 @@ async def delta_events(
         # A space-only token is not a TextEvent, but it is the boundary
         # between words. Dropping it here joins those words.
         raw = _fold_stream_breaks(raw + tok)
-        sentence_start = not _continues_sentence(ready, raw)
+        # The line already sent counts too: once a piece leaves, ``ready`` is empty
+        # and a mood word inside a long sentence would look like a new one.
+        sentence_start = not _continues_sentence(sent_line + ready, raw)
         stable, raw = _stable_prefix(
             raw,
             line_start=_at_line_start(sent_line + ready),
@@ -266,12 +268,12 @@ async def delta_events(
             if event is not None:
                 yield event
                 since_flush += 1
-                if early_flush and not flushed_early:
+                if early_flush and not flushed_early and not cancel.is_set():
                     flushed_early = True
                     since_flush = 0
                     yield FlushEvent()
     if not cancel.is_set() and raw:
-        lead = not _continues_sentence(ready, raw)
+        lead = not _continues_sentence(sent_line + ready, raw)
         raw = _drop_orphan_closer(raw, ready)
         ready = _glue_sentence_stop(
             ready,
@@ -294,7 +296,7 @@ async def delta_events(
         if event is not None:
             yield event
             since_flush += 1
-            if early_flush and not flushed_early:
+            if early_flush and not flushed_early and not cancel.is_set():
                 flushed_early = True
                 since_flush = 0
                 yield FlushEvent()

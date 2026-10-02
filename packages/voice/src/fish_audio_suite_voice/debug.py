@@ -201,16 +201,17 @@ _TAG_COLORS = {
 }
 
 
-def _color_on() -> bool:
-    return sys.stderr.isatty() and "NO_COLOR" not in os.environ
+def _color_on(stream: Any = None) -> bool:
+    target = stream if stream is not None else sys.stderr
+    return bool(target.isatty()) and "NO_COLOR" not in os.environ
 
 
-def _dim(text: str) -> str:
-    return f"\x1b[2m{text}\x1b[0m" if _color_on() else text
+def _dim(text: str, stream: Any = None) -> str:
+    return f"\x1b[2m{text}\x1b[0m" if _color_on(stream) else text
 
 
-def _paint(code: str, text: str) -> str:
-    return f"\x1b[{code}m{text}\x1b[0m" if _color_on() else text
+def _paint(code: str, text: str, stream: Any = None) -> str:
+    return f"\x1b[{code}m{text}\x1b[0m" if _color_on(stream) else text
 
 
 def _split_tag(message: str, level: str) -> tuple[str, str]:
@@ -233,9 +234,9 @@ def _offset() -> str:
     return f"{time.perf_counter() - t0:+.2f}s".rjust(8)
 
 
-def _compose(stamp: str, tag: str, label: str, body: str) -> str:
-    tag_text = _paint(_TAG_COLORS.get(tag, "90"), label.ljust(_TAG_WIDTH))
-    return f"{_dim(stamp)} {_dim(_offset())}  {tag_text}{body}"
+def _compose(stamp: str, tag: str, label: str, body: str, stream: Any = None) -> str:
+    tag_text = _paint(_TAG_COLORS.get(tag, "90"), label.ljust(_TAG_WIDTH), stream)
+    return f"{_dim(stamp, stream)} {_dim(_offset(), stream)}  {tag_text}{body}"
 
 
 def _format_record(record: Any) -> str:
@@ -257,6 +258,10 @@ def _now_stamp() -> str:
 _ROLE_COLORS = {"you": "96", "llm": "95"}
 
 
+def _stdout_tty() -> bool:
+    return bool(sys.stdout.isatty())
+
+
 def conversation(role: str, text: str) -> None:
     """Print one line of the conversation, ``you`` or ``llm``.
 
@@ -269,18 +274,20 @@ def conversation(role: str, text: str) -> None:
 
     Notes
     -----
-    With debug on the line joins the log on stderr, with the same time columns,
-    so it stays in order with the lines around it. Otherwise it is a plain
-    ``role \u25b8 text`` line on stdout.
+    The conversation always goes to stdout, so piping it keeps the transcript.
+    On a terminal with debug on, the line carries the same time columns and
+    role tag as the log lines on stderr. Written and flushed in order, it stays
+    in sequence with them. Piped, or with debug off, it is a plain
+    ``role \u25b8 text`` line.
     """
     end_reply_line()
     label = f"{role} \u25b8"
-    if not env_debug():
+    if not (env_debug() and _stdout_tty()):
         console_print(f"{label} {text}", flush=True)
         return
     color = _ROLE_COLORS.get(role, "97")
-    body = _paint(f"1;{color}", text)
-    _write_stderr(_compose(_now_stamp(), role, label, body) + "\n")
+    body = _paint(f"1;{color}", text, sys.stdout)
+    console_print(_compose(_now_stamp(), role, label, body, sys.stdout), flush=True)
 
 
 def _write_stderr(message: str) -> None:

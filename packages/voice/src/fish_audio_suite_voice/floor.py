@@ -32,7 +32,8 @@ class AdaptiveFloor:
         self.gain = gain
         self.lo = lo
         self.hi = hi
-        self.window: collections.deque[float] = collections.deque(maxlen=window)
+        # A window smaller than the warm-up count could never fill.
+        self.window: collections.deque[float] = collections.deque(maxlen=max(1, window))
 
     def observe(self, rms: float, *, quiet: bool) -> None:
         """Record RMS while the room is quiet so the floor can track hiss."""
@@ -41,7 +42,7 @@ class AdaptiveFloor:
 
     def value(self) -> float:
         """Return the raised noise floor, or the seed until the window fills."""
-        if len(self.window) < _FLOOR_FILL:
+        if len(self.window) < min(_FLOOR_FILL, self.window.maxlen or _FLOOR_FILL):
             return self.default
         quiet = np.fromiter(self.window, dtype=np.float64)
         est = float(np.percentile(quiet, self.percentile) * self.gain)

@@ -272,3 +272,11 @@ def test_device_buffer_is_not_counted_as_heard() -> None:
     assert _cancelled_pcm(text, output_latency_s=0.0) == "hello"
     assert _cancelled_pcm(text, output_latency_s=0.375) == ""
     assert _cancelled_pcm(text, output_latency_s=5.0) == ""
+
+
+def test_a_cut_inside_a_latin_word_after_cjk_drops_the_half_word() -> None:
+    text = "你好Hello world"
+    assert _word_prefix(text, 2) == "你好"
+    assert _word_prefix(text, 3) == "你好"
+    assert _word_prefix(text, 4) == "你好"
+    assert _word_prefix(text, 7) == "你好Hello"
