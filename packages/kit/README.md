@@ -36,7 +36,7 @@ Two roleplay helpers are opt-in. `normalize_cues(text, lead=True)` turns a sente
 | ASR text | `scrub_asr`, `is_asr_hallucination`, `is_backchannel`, `is_quit_utterance` | Drop timestamps, speaker labels, nospeech, and caption boilerplate. Short answers (`no`, `ok`, `hi`) are kept. Quit and backchannel phrases are overridable with `phrases=` |
 | Cuts | `next_tts_cut`, `split_tts_piece` | Flush index, or `(piece, tail)` for a stream |
 | Defaults | `SuiteDefaults`, `clamp_num`, `known_tts_model`, `known_latency`, `chunk_length_hi` | Speed stays in 0.5–2. Cloud `chunk_length` stays in 100–300. Any other base allows up to 1000. Cloud is matched on the parsed hostname, and `self_hosted=` overrides |
-| Env | `env_text`, `env_bool`, `env_off`, `env_int`, `env_float`, `env_base` | Blank values keep the default. Flags are true only for `1` / `true` / `yes` / `on` |
+| Env | `env_text`, `env_bool`, `env_off`, `env_int`, `env_float`, `env_base`, `is_insecure_fish_base` | Blank values keep the default. Flags are true only for `1` / `true` / `yes` / `on`. Numbers must be plain ASCII decimals, so `"１０"` and `"1_000"` keep the default. `is_insecure_fish_base` is true for an `http` base on a non-loopback host |
 | Trace | `make_traceparent`, `w3c_trace_headers`, `ensure_trace_headers` | W3C `traceparent` only. No OpenTelemetry SDK |
 | HTTP shape | `parse_fish_error`, `should_retry_fish_status`, `fish_backoff_s`, `fish_sleep_before_retry`, `bearer` | Retry 429 and 5xx. Backoff is exponential with jitter and honors `Retry-After`. `bearer` always prefixes `Bearer ` |
 | Captions | `CaptionCue`, `format_as_srt`, `format_as_vtt` | Timed phrases to SubRip or WebVTT |

@@ -251,21 +251,21 @@ def fish_transport_error(exc: BaseException | None, *, timed_out: bool) -> tuple
     Parameters
     ----------
     exc : BaseException or None
-        The caught error. A blank string falls back to ``fish_unreachable``.
+        The caught error. It is accepted so callers keep one call shape, and it is
+        never read: its text can name hosts, addresses or errno values, so it
+        must not reach a client. A caller that wants the detail logs ``exc``.
     timed_out : bool
         True when the caller already classified ``exc`` as its timeout type.
 
     Returns
     -------
     tuple of int and str
-        ``(504, "Fish request timed out")`` on timeout, otherwise 502 plus
-        ``str(exc)`` or the unreachable message.
+        ``(504, "Fish request timed out")`` on timeout, otherwise the fixed
+        ``fish_unreachable`` pair (502, "Fish upstream unreachable").
     """
+    del exc
     if timed_out:
         return FISH_TIMEOUT_STATUS, FISH_TIMEOUT_MESSAGE
-    text = str(exc).strip() if exc is not None else ""
-    if text:
-        return FISH_UNREACHABLE_STATUS, text
     return fish_unreachable()
 
 

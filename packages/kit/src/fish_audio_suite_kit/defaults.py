@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 import math
 import os
 import re
@@ -236,20 +237,26 @@ def number_or[T: int | float](value: Any, default: T, parse: Callable[[Any], T])
     return parsed
 
 
+# Plain ASCII decimals only. int() and float() also accept other scripts' digits
+# ("\uff11\uff10") and underscores ("1_000"), so a lookalike value would otherwise
+# pass for a limit setting.
+_ASCII_NUMBER_RE = re.compile(r"[+-]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
+
+
 def _env_num[T: int | float](name: str, default: T, parse: Callable[[str], T]) -> T:
     raw = os.environ.get(name, "").strip()
-    if not raw:
+    if not raw or not _ASCII_NUMBER_RE.fullmatch(raw):
         return default
     return number_or(raw, default, parse)
 
 
 def env_int(name: str, default: int) -> int:
-    """Process env int. Blank or non-numeric values keep the default."""
+    """Process env int. Blank, non-numeric or non-ASCII-digit values keep the default."""
     return _env_num(name, default, int)
 
 
 def env_float(name: str, default: float) -> float:
-    """Process env float. Blank or non-numeric values keep the default."""
+    """Process env float. Blank, non-numeric or non-ASCII-digit values keep the default."""
     return _env_num(name, default, float)
 
 
@@ -281,6 +288,41 @@ def _is_cloud_base(fish_base: str) -> bool:
     except ValueError:
         return False
     return host == _CLOUD_HOST or host.endswith(f".{_CLOUD_HOST}")
+
+
+def is_insecure_fish_base(base: str) -> bool:
+    """Return whether a Fish base URL would send the API key in cleartext.
+
+    Parameters
+    ----------
+    base : str
+        A ``FISH_BASE`` value such as ``http://10.0.0.5:8080``.
+
+    Returns
+    -------
+    bool
+        True when the scheme is ``http`` and the host is not loopback
+        (``localhost``, ``*.localhost``, ``127.0.0.0/8`` or ``::1``). False for
+        https, for a base with no scheme or host, and for one that does not parse.
+
+    Notes
+    -----
+    This only reports. LAN self-hosting over http is legitimate, so callers warn
+    and carry on.
+    """
+    try:
+        parts = urlsplit(base.strip())
+        host = (parts.hostname or "").lower()
+    except ValueError:
+        return False
+    if parts.scheme.lower() != "http" or not host:
+        return False
+    if host == "localhost" or host.endswith(".localhost"):
+        return False
+    try:
+        return not ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return True
 
 
 def chunk_length_hi(fish_base: str, *, self_hosted: bool | None = None) -> int:
