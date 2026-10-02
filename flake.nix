@@ -61,22 +61,27 @@
           )
       );
 
+      # One version for the wrapper, read from the voice package metadata.
+      voiceVersion = (builtins.fromTOML (builtins.readFile ./packages/voice/pyproject.toml)).project.version;
+
+      # sounddevice dlopens PortAudio. Linux also needs PulseAudio for it.
       wrapVoice =
         system: env:
         let
           pkgs = nixpkgs.legacyPackages.${system};
+          libs = [ pkgs.portaudio ] ++ lib.optional pkgs.stdenv.isLinux pkgs.libpulseaudio;
+          libVar = if pkgs.stdenv.isLinux then "LD_LIBRARY_PATH" else "DYLD_FALLBACK_LIBRARY_PATH";
+          wrap = bin: "makeWrapper ${env}/bin/${bin} $out/bin/${bin} --prefix ${libVar} : ${lib.makeLibraryPath libs}";
         in
         pkgs.stdenv.mkDerivation {
           pname = "fish-audio-suite-voice";
-          version = "0.1.0";
+          version = voiceVersion;
           dontUnpack = true;
           nativeBuildInputs = [ pkgs.makeWrapper ];
           installPhase = ''
             mkdir -p $out/bin
-            makeWrapper ${env}/bin/fish-audio-suite-voice $out/bin/fish-audio-suite-voice \
-              --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [ pkgs.portaudio pkgs.libpulseaudio ]}
-            makeWrapper ${env}/bin/fish-voice $out/bin/fish-voice \
-              --prefix LD_LIBRARY_PATH : ${lib.makeLibraryPath [ pkgs.portaudio pkgs.libpulseaudio ]}
+            ${wrap "fish-audio-suite-voice"}
+            ${wrap "fish-voice"}
           '';
         };
     in
@@ -114,10 +119,14 @@
         };
       });
 
-      nixosModules.default = import ./nix/module.nix;
+      nixosModules.default = import ./nix/module.nix self;
 
       checks = forAllSystems (system: {
-        packages = self.packages.${system}.fish-audio-suite-kit;
+        inherit (self.packages.${system})
+          fish-audio-suite-kit
+          fish-audio-suite-proxy
+          fish-audio-suite-voice
+          ;
       });
     };
 }
