@@ -1008,3 +1008,14 @@ def test_abort_http_ignores_retry_after_on_other_status() -> None:
     _abort_http(stats, 500, "org/model", '{"retry_after_seconds":2}', None)
     assert stats.http_status == 500
     assert stats.retry_after_s is None
+
+
+def test_log_briefs_show_the_provider_and_the_token_counts() -> None:
+    from fish_audio_suite_voice.llm import _provider_brief, _usage_brief
+
+    assert _provider_brief("available=1, selected=Venice") == "Venice"
+    assert _provider_brief("Venice") == "Venice"
+    assert _provider_brief(None) == ""
+    usage = {"prompt_tokens": 203, "completion_tokens": 20, "cost": 5.86e-05}
+    assert _usage_brief(usage) == "in=203 out=20 cost=$0.00006"
+    assert _usage_brief(None) == "usage=?"

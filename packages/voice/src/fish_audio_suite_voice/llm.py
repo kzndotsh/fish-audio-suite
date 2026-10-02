@@ -14,7 +14,7 @@ import re
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 import httpx
 
@@ -24,7 +24,6 @@ from fish_audio_suite_voice.live import is_cancel_noise
 from fish_audio_suite_voice.pause import sleep_unless
 from fish_audio_suite_voice.transports import (
     ChatCall,
-    chat_completions_url,
     chat_events,
     http_client,
     openrouter_client,
@@ -102,13 +101,8 @@ async def check_openrouter_model(client: Any, tune: LlmTune) -> None:
     mid = _event_field(data, "id")
     name = _event_field(data, "name")
     ctx = _event_field(data, "context_length")
-    debug(
-        "llm.model id={mid} display={display} context={ctx} requested={requested}",
-        mid=mid,
-        display=name,
-        ctx=ctx,
-        requested=route,
-    )
+    routed = f", routed from {route}" if isinstance(mid, str) and mid and mid != route else ""
+    debug("llm.model {} ({} token context){}", name or mid or route, ctx, routed)
     if isinstance(mid, str) and mid and mid != route:
         console_print(f"  [llm model {route} → {mid}]", flush=True)
 
@@ -337,18 +331,41 @@ async def _event_or_cancel(pending: asyncio.Task[object], cancel: asyncio.Event 
     return pending in done
 
 
+_SELECTED_PROVIDER = re.compile(r"selected=([^,]+)")
+
+
+def _provider_brief(provider: object) -> str:
+    """Return the provider that served the reply from OpenRouter's routing text."""
+    text = str(provider or "")
+    found = _SELECTED_PROVIDER.search(text)
+    return found.group(1).strip() if found else text
+
+
+def _usage_brief(usage: object) -> str:
+    """Render token counts and cost from an OpenRouter usage dict, or ``usage=?``."""
+    if not isinstance(usage, dict):
+        return "usage=?"
+    fields = cast(dict[str, Any], usage)
+    parts = [
+        f"in={fields.get('prompt_tokens')}",
+        f"out={fields.get('completion_tokens')}",
+    ]
+    cost = fields.get("cost")
+    if isinstance(cost, (int, float)):
+        parts.append(f"cost=${cost:.5f}")
+    return " ".join(parts)
+
+
 def _finish_llm(stats: _ChatStats, route_model: str) -> None:
     if stats.aborted:
         return
     debug(
-        "llm.done id={} model={} provider={} finish={} native_finish={} usage={} deltas={}",
-        stats.last_id,
-        stats.last_model or route_model,
-        stats.last_provider,
+        "llm.done finish={} {} chunks={} provider={} model={}",
         stats.last_finish,
-        stats.last_native,
-        stats.last_usage,
+        _usage_brief(stats.last_usage),
         stats.yielded,
+        _provider_brief(stats.last_provider),
+        stats.last_model or route_model,
     )
     if stats.yielded == 0:
         warn(f"[llm] empty reply (model={route_model} finish={stats.last_finish!r})")
@@ -629,11 +646,10 @@ async def _stream_generation(
     held: _HeldStats,
 ) -> AsyncIterator[str]:
     debug(
-        "llm.request url={} model={} nitro={} msgs={}",
-        chat_completions_url(tune.base),
+        "llm.request model={} msgs={} nitro={}",
         route_model,
-        tune.nitro,
         len(messages),
+        tune.nitro,
     )
     for attempt in (1, 2):
         stats = _ChatStats()

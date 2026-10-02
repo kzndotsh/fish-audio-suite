@@ -11,7 +11,7 @@ from typing import Any, Protocol
 import httpx
 
 from fish_audio_suite_kit import MS_PER_S, bearer, strip_base, utf8_text
-from fish_audio_suite_voice.debug import debug, env_debug, header_meta, warn
+from fish_audio_suite_voice.debug import debug, env_debug, warn
 from fish_audio_suite_voice.pause import header_retry_after, seconds_value
 from fish_audio_suite_voice.tune import LlmTune
 
@@ -300,11 +300,7 @@ async def _iter_httpx_sse_events(call: ChatCall) -> AsyncIterator[object]:
             body = _abort_text(await resp.aread())
             _abort_http(call.stats, resp.status_code, call.route_model, body, resp.headers)
             return
-        debug(
-            "llm.response status={} headers={}",
-            resp.status_code,
-            header_meta(resp.headers),
-        )
+        debug("llm.response status={}", resp.status_code)
         buf = ""
         async for line in resp.aiter_lines():
             buf, parsed, stop = _feed_sse(buf, line)

@@ -16,7 +16,7 @@ from fish_audio_suite_voice.aec import (
     EchoCanceller,
     pcm_rms,
 )
-from fish_audio_suite_voice.debug import debug, heartbeat_due, warn
+from fish_audio_suite_voice.debug import debug, heartbeat_due, trace, warn
 from fish_audio_suite_voice.floor import AdaptiveFloor
 from fish_audio_suite_voice.playback import load_sounddevice, pcm_stream_kwargs
 from fish_audio_suite_voice.tune import (
@@ -195,14 +195,12 @@ class BargeGate:
         floor = AdaptiveFloor(self.min_rms)
         aec_on = self.aec.available()
         debug(
-            "barge.arm delay_s={delay} hit_frames={hits} min_rms={min_rms} over={over} "
-            "aec={aec} vad={vad}",
+            "barge.arm after {delay}s bleed, {hits} loud frames of rms>={min_rms:.0f} interrupt, "
+            "aec={aec}",
             delay=self.bleed_delay_s,
             hits=self.hit_frames,
             min_rms=self.min_rms,
-            over=self.tune.over,
-            aec=aec_on,
-            vad=_BARGE_VAD,
+            aec="on" if aec_on else "off",
         )
         # The ring still holds audio from before the bleed delay. Keep only
         # what is about to reach the mic.
@@ -266,7 +264,7 @@ class BargeGate:
         def _run() -> None:
             delay = self._bleed_wait()
             self.bleed_delay_s = delay
-            debug("barge.bleed sleep_s={}", delay)
+            trace("barge.bleed sleep_s={}", delay)
             # sleep() ignores cancel. A finished turn would wait out the rest
             # of the bleed, or the next listen would open the mic twice.
             if cancel.wait(timeout=delay):

@@ -17,7 +17,7 @@ from fish_audio_suite_voice.barge import (
     frame_is_speech,
     mic_frames,
 )
-from fish_audio_suite_voice.debug import debug, heartbeat_due
+from fish_audio_suite_voice.debug import debug, heartbeat_due, trace
 from fish_audio_suite_voice.floor import AdaptiveFloor
 from fish_audio_suite_voice.playback import write_mono_wav
 from fish_audio_suite_voice.tune import (
@@ -249,13 +249,10 @@ def _clip_wav(heard: _Listen, tune: ListenTune) -> bytes | None:
         return None
     pcm = b"".join(heard.voiced)
     debug(
-        "listen.end frames={} wav_bytes={} silence={} voiced_hits={} peak_rms={} duration_ms={}",
-        len(heard.voiced),
-        len(pcm) + _WAV_HEADER_BYTES,
-        heard.silence,
+        "listen.end {:.2f}s clip, {} voiced frames, peak rms {}",
+        len(heard.voiced) * FRAME_MS / 1000,
         heard.speech_hits,
         round(heard.clip_peak),
-        len(heard.voiced) * FRAME_MS,
     )
     return _encode_wav(pcm)
 
@@ -320,7 +317,7 @@ def record_utterance(
     tune = tune or ListenTune()
     heard = _Listen(tune, webrtcvad.Vad(tune.vad_aggressiveness))
     prime_listen(heard, prefix)
-    debug(
+    trace(
         "listen.open vad={} start_frames={} min_rms={} min_voiced={} pre_pad={} silence_end={} prefix_frames={}",
         tune.vad_aggressiveness,
         tune.speech_frames_start,

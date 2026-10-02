@@ -1,9 +1,16 @@
-"""Opt-in duplex debug logs. Off unless FISH_VOICE_DEBUG or --debug."""
+"""Opt-in duplex debug logs. Off unless FISH_VOICE_DEBUG or --debug.
+
+Level 1 (``--debug``) logs events. Level 2 (``--trace`` or ``FISH_VOICE_DEBUG=2``)
+adds the mic heartbeats, raw websocket audio and HTTP request lines.
+"""
 
 from __future__ import annotations
 
 import logging
+import os
+import re
 import sys
+import time
 from typing import Any
 
 from fishaudio.resources import realtime as _fish_rt
@@ -80,12 +87,30 @@ def end_reply_line() -> None:
 
 
 class _Debug:
-    """True after ``configure_voice_logging(debug=True)``. Avoids writing os.environ."""
+    """Debug level set by ``configure_voice_logging``. Avoids writing os.environ."""
 
-    on: bool = False
+    level: int = 0
 
 
 _DEBUG = _Debug()
+_TRACE_WORDS = frozenset({"2", "trace"})
+
+
+def debug_level() -> int:
+    """Return the debug level: 0 off, 1 events, 2 events plus heartbeats and raw traffic.
+
+    Returns
+    -------
+    int
+        The level set by ``configure_voice_logging``, or the one
+        ``FISH_VOICE_DEBUG`` asks for when that is higher. ``2`` or ``trace``
+        is level 2, any other true value is level 1.
+    """
+    raw = os.environ.get("FISH_VOICE_DEBUG", "").strip().lower()
+    from_env = int(env_bool("FISH_VOICE_DEBUG"))
+    if raw in _TRACE_WORDS:
+        from_env = 2
+    return max(_DEBUG.level, from_env)
 
 
 def env_debug() -> bool:
@@ -97,7 +122,7 @@ def env_debug() -> bool:
         True after ``configure_voice_logging(debug=True)``, or when
         ``FISH_VOICE_DEBUG`` is set to a true value.
     """
-    return _DEBUG.on or env_bool("FISH_VOICE_DEBUG")
+    return debug_level() >= 1
 
 
 def debug(message: str, *args: Any, **fields: Any) -> None:
@@ -107,9 +132,97 @@ def debug(message: str, *args: Any, **fields: Any) -> None:
         logger.debug(message, *args, **fields)
 
 
+def trace(message: str, *args: Any, **fields: Any) -> None:
+    """Log only at level 2. Use for per-frame and per-chunk detail."""
+    if debug_level() >= 2:
+        end_reply_line()
+        logger.debug(message, *args, **fields)
+
+
 def heartbeat_due(idle_frames: int, every: int) -> bool:
-    """Return whether a debug heartbeat should print on this idle frame."""
-    return env_debug() and idle_frames % every == 0
+    """Return whether a heartbeat should print on this idle frame (level 2 only)."""
+    return debug_level() >= 2 and idle_frames % every == 0
+
+
+class _Turn:
+    t0: float | None = None
+    count: int = 0
+
+
+_TURN = _Turn()
+_RULE_WIDTH = 56
+
+
+def mark_turn() -> None:
+    """Start the per-turn clock and print a rule. Later debug lines show seconds since now."""
+    _TURN.t0 = time.perf_counter()
+    _TURN.count += 1
+    if env_debug():
+        end_reply_line()
+        title = f" turn {_TURN.count} "
+        _write_stderr(_dim(title.center(_RULE_WIDTH, "\u2500")) + "\n")
+
+
+def clear_turn() -> None:
+    """Stop the per-turn clock, so listening lines carry no stale offset."""
+    _TURN.t0 = None
+
+
+_TAGGED = re.compile(r"^([a-z]+)\.([a-z_]+)\b ?(.*)$", re.DOTALL)
+_BRACKETED = re.compile(r"^\[([A-Za-z-]+)\]\s*(.*)$", re.DOTALL)
+_TAG_WIDTH = 7
+_TAG_COLORS = {
+    "listen": "36",
+    "asr": "33",
+    "llm": "35",
+    "tts": "32",
+    "barge": "31",
+    "aec": "34",
+    "warn": "93",
+}
+
+
+def _color_on() -> bool:
+    return sys.stderr.isatty() and "NO_COLOR" not in os.environ
+
+
+def _dim(text: str) -> str:
+    return f"\x1b[2m{text}\x1b[0m" if _color_on() else text
+
+
+def _paint(code: str, text: str) -> str:
+    return f"\x1b[{code}m{text}\x1b[0m" if _color_on() else text
+
+
+def _split_tag(message: str, level: str) -> tuple[str, str]:
+    tagged = _TAGGED.match(message)
+    if tagged:
+        tag, name, rest = tagged.groups()
+        return tag, f"{name} {rest}".rstrip()
+    bracketed = _BRACKETED.match(message)
+    if bracketed:
+        return bracketed.group(1).lower(), bracketed.group(2)
+    if message.startswith("HTTP Request:"):
+        return "http", message.removeprefix("HTTP Request:").strip()
+    return ("warn" if level == "WARNING" else "log"), message
+
+
+def _offset() -> str:
+    t0 = _TURN.t0
+    if t0 is None:
+        return " " * 8
+    return f"{time.perf_counter() - t0:+.2f}s".rjust(8)
+
+
+def _format_record(record: Any) -> str:
+    stamp = record["time"].strftime("%H:%M:%S.") + f"{record['time'].microsecond // 1000:03d}"
+    tag, body = _split_tag(str(record["message"]), record["level"].name)
+    if record["level"].name == "WARNING":
+        tag = "warn" if tag == "log" else tag
+        body = _paint("93", body)
+    tag_text = _paint(_TAG_COLORS.get(tag, "90"), tag.ljust(_TAG_WIDTH))
+    record["extra"]["line"] = f"{_dim(stamp)} {_dim(_offset())}  {tag_text}{body}"
+    return "{extra[line]}\n{exception}"
 
 
 def _write_stderr(message: str) -> None:
@@ -155,14 +268,14 @@ _INTERCEPTED = ("httpx", "httpcore", "websockets", "asyncio")
 _HTTPX_DEBUG_LEVEL = logging.INFO
 
 
-def _intercept_libraries(*, debug: bool) -> None:
+def _intercept_libraries(*, level: int) -> None:
     handler = _InterceptHandler()
     for name in _INTERCEPTED:
         lib = logging.getLogger(name)
         lib.handlers.clear()
         lib.addHandler(handler)
         lib.propagate = False
-        if name == "httpx" and debug:
+        if name == "httpx" and level >= 2:
             lib.setLevel(_HTTPX_DEBUG_LEVEL)
         else:
             lib.setLevel(logging.WARNING)
@@ -173,20 +286,29 @@ def _stderr_logger(level: str) -> None:
     logger.add(
         _write_stderr,
         level=level,
-        format="{time:HH:mm:ss.SSS} | {level:<5} | {message}",
+        format=_format_record,
         colorize=False,
     )
 
 
-def configure_voice_logging(*, debug: bool) -> None:
-    """Idempotent stderr sink. DEBUG when on; otherwise WARNING. Call from the CLI only."""
-    _DEBUG.on = debug
-    _stderr_logger("DEBUG" if debug else "WARNING")
+def configure_voice_logging(*, debug: bool | int) -> None:
+    """Idempotent stderr sink. DEBUG when on; otherwise WARNING. Call from the CLI only.
+
+    Parameters
+    ----------
+    debug : bool or int
+        ``False`` or 0 logs warnings only. ``True`` or 1 adds events. 2 adds the
+        heartbeats, raw websocket audio and HTTP request lines.
+    """
+    level = int(debug)
+    _DEBUG.level = level
+    _stderr_logger("DEBUG" if level >= 1 else "WARNING")
     _CONFIGURED.on = True
-    _intercept_libraries(debug=debug)
-    if debug:
+    _intercept_libraries(level=level)
+    if level >= 1:
         install_fish_ws_tap()
-        logger.debug("debug on (Fish WS tap + listen/barge/llm meta)")
+        shown = "events, heartbeats and raw traffic" if level >= 2 else "events (--trace adds more)"
+        logger.debug("debug.on {}", shown)
 
 
 def install_fish_ws_tap() -> None:
@@ -197,11 +319,17 @@ def install_fish_ws_tap() -> None:
     orig_proc = _fish_realtime._process_audio_event
 
     def stop(data: dict[str, Any]) -> bool:
-        logger.debug("fish.ws {}", ws_event_view(data))
+        kind = data.get("event")
+        if kind == "audio":
+            trace("tts.audio {} bytes", len(data.get("audio") or b""))
+        elif kind == "finish":
+            logger.debug("tts.finish reason={}", data.get("reason"))
+        else:
+            logger.debug("fish.ws {}", ws_event_view(data))
         return orig_stop(data)
 
     def proc(data: dict[str, Any]) -> bytes | None:
-        if data.get("event") != "audio":
+        if data.get("event") not in {"audio", "finish"}:
             logger.debug("fish.ws {}", ws_event_view(data))
         return orig_proc(data)
 

@@ -19,8 +19,8 @@ from fish_audio_suite_voice.config import VoiceCliConfig, cfg
 from fish_audio_suite_voice.debug import (
     configure_voice_logging,
     console_print,
+    debug_level,
     end_reply_line,
-    env_debug,
     warn,
 )
 from fish_audio_suite_voice.duplex import EXIT_FATAL, EXIT_OK, bye, duplex_turns
@@ -220,7 +220,12 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--debug",
         action="store_true",
-        help="verbose stderr logs: VAD, barge, Fish WS events, ASR/LLM meta (or FISH_VOICE_DEBUG=1)",
+        help="stderr event log: listen, ASR, LLM, TTS and barge-in steps (or FISH_VOICE_DEBUG=1)",
+    )
+    p.add_argument(
+        "--trace",
+        action="store_true",
+        help="--debug plus mic heartbeats, raw audio events and HTTP lines (or FISH_VOICE_DEBUG=2)",
     )
     return p
 
@@ -252,8 +257,10 @@ def main(argv: list[str] | None = None) -> int:
         loaded = apply_cli_env_files([DEFAULT_ENV_FILE], required=False)
     if loaded:
         print("env: " + " ".join(str(p) for p in loaded), flush=True)
-    debug = bool(args.debug or env_debug())
-    configure_voice_logging(debug=debug)
+    level = 2 if args.trace else int(bool(args.debug))
+    level = max(level, debug_level())
+    debug = level >= 1
+    configure_voice_logging(debug=level)
     c = cfg()
     if args.playback:
         c = replace(c, playback=playback_key(args.playback))

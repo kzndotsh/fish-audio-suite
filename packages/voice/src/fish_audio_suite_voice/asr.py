@@ -29,7 +29,7 @@ from fish_audio_suite_kit import (
     strip_base,
     without_watermark_segments,
 )
-from fish_audio_suite_voice.debug import debug, header_meta, public_meta
+from fish_audio_suite_voice.debug import debug, public_meta
 from fish_audio_suite_voice.pause import header_retry_after, sleep_unless
 
 _ASR_TIMEOUT_S = 60.0
@@ -184,12 +184,15 @@ async def fish_asr(
         status, message = fish_non_json()
         raise FishHttpError(status, message) from exc
     if isinstance(body, dict):
+        meta = public_meta(body)
         debug(
-            "fish.asr status={} language_sent={!r} headers={} meta={}",
+            "asr.done status={} audio={}s lang={} sent={} chars={} trace={}",
             response.status_code,
+            meta.get("duration"),
+            meta.get("language_code"),
             language or "auto",
-            header_meta(dict(response.headers)),
-            public_meta(body),
+            meta.get("text_chars"),
+            response.headers.get("x-fish-trace-id", "")[:12],
         )
     data, raw_text = parse_asr_body(body)
     text = scrub_asr(raw_text.strip(), strip_cues=True)
