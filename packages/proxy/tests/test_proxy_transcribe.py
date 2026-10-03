@@ -446,3 +446,29 @@ def test_fish_send_sets_the_read_timeout_on_that_request_only() -> None:
     asyncio.run(run())
     assert seen[0] == {"connect": 10.0, "read": 120.0, "write": 120.0, "pool": 5.0}
     assert seen[1] == {"connect": 10.0, "read": 900.0, "write": 900.0, "pool": 5.0}
+
+
+@pytest.mark.parametrize(
+    ("client_hint", "env_hint", "sent"),
+    [
+        ("en-US", "", "en"),
+        ("EN", "", "en"),
+        ("zh_CN", "", "zh"),
+        ("English", "", None),
+        ("", "", None),
+        ("", "ja-JP", "ja"),
+        ("English", "de", "de"),
+        ("en\r\nx", "", "en"),
+    ],
+)
+def test_the_language_hint_sent_to_fish_is_a_two_letter_code(
+    monkeypatch: pytest.MonkeyPatch, client_hint: str, env_hint: str, sent: str | None
+) -> None:
+    monkeypatch.setenv("FISH_ASR_LANGUAGE", env_hint)
+    captured = capture_upstream(monkeypatch, AsrJson())
+    with TestClient(app) as client:
+        reply = client.post(
+            "/v1/audio/transcriptions", files=WAV_UPLOAD, data={"language": client_hint}
+        )
+    assert reply.status_code == 200
+    assert captured["data"].get("language") == sent

@@ -19,6 +19,7 @@ from fish_audio_suite_kit import (
     AsrFormat,
     CaptionCue,
     SuiteDefaults,
+    asr_language_hint,
     ends_sentence,
     format_as_srt,
     format_as_vtt,
@@ -728,8 +729,10 @@ def asr_upload(
     -------
     tuple
         httpx ``files``, form fields, and the language sent upstream. The
-        language is ``""`` when both the client and ``FISH_ASR_LANGUAGE``
-        are blank, and that key is then left out of the form.
+        language is reduced to its ISO 639-1 code (``en-US`` becomes ``en``)
+        and is ``""`` when neither the client nor ``FISH_ASR_LANGUAGE`` gives
+        one Fish accepts, such as ``English``. That key is then left out of the
+        form and Fish detects the language.
 
     Notes
     -----
@@ -739,7 +742,9 @@ def asr_upload(
     form = {"ignore_timestamps": "false" if want_ts else "true"}
     # A newline in a form value starts another part. "en\r\n..." was sent
     # to Fish as a second field, and the language itself was only "en".
-    lang = _single_line(inbound.language or defaults.asr_language or "", "")
+    lang = asr_language_hint(_single_line(inbound.language, "")) or asr_language_hint(
+        _single_line(defaults.asr_language, "")
+    )
     if lang:
         form["language"] = lang
     files = {"audio": (inbound.filename, inbound.audio, inbound.content_type)}

@@ -15,6 +15,7 @@ from fish_audio_suite_kit import (
     AsrBody,
     FishHttpError,
     SuiteDefaults,
+    asr_language_hint,
     bearer,
     describe_request_error,
     fish_attempt_exhausted,
@@ -131,7 +132,9 @@ async def fish_asr(
     base : str
         Fish origin without a trailing slash.
     language : str, optional
-        Hint. Empty omits the field. Fish may still return ``zh`` on noise.
+        Hint, reduced to its ISO 639-1 code (``en-US`` is sent as ``en``).
+        Empty, or a value with no such code, omits the field so Fish detects
+        the language. Fish may still return ``zh`` on noise.
     model : str, optional
         Fish ASR model id. Empty uses the ``SuiteDefaults`` model.
     extra_headers : dict or None, optional
@@ -168,8 +171,9 @@ async def fish_asr(
     }
     files = {"audio": ("utterance.wav", audio_wav, "audio/wav")}
     form: dict[str, str] = {}
-    # A newline in the language value starts another multipart part.
-    lang = _form_language(language)
+    # A newline in the language value starts another multipart part, and Fish
+    # may answer 400 to a hint that is not a two-letter code.
+    lang = asr_language_hint(_form_language(language))
     if lang:
         form["language"] = lang
     async with AsyncExitStack() as stack:
@@ -195,7 +199,7 @@ async def fish_asr(
             response.status_code,
             meta.get("duration"),
             meta.get("language_code"),
-            language or "auto",
+            lang or "auto",
             meta.get("text_chars"),
             response.headers.get("x-fish-trace-id", "")[:12],
         )

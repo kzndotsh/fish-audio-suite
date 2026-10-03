@@ -424,3 +424,29 @@ def test_default_model_is_pro_and_its_markers_never_reach_the_llm(
     assert heard == "你好。 很开心认识你。 我也是。"
     assert "<|" not in heard
     assert "[" not in heard
+
+
+@pytest.mark.parametrize(
+    ("hint", "sent"),
+    [
+        ("en-US", {"language": "en"}),
+        ("EN", {"language": "en"}),
+        ("zh_CN", {"language": "zh"}),
+        ("English", None),
+        ("", None),
+    ],
+)
+def test_asr_language_is_reduced_to_a_two_letter_code(
+    monkeypatch: pytest.MonkeyPatch, hint: str, sent: dict[str, str] | None
+) -> None:
+    seen: dict[str, Any] = {}
+
+    class _RecordingClient(_FakeAsrClient):
+        async def post(self, *_args: object, **kwargs: object) -> _FakeAsrResponse:
+            seen.update(kwargs)
+            return await super().post(*_args, **kwargs)
+
+    client = _RecordingClient([_FakeAsrResponse(200, payload={"text": "hello there"})])
+    monkeypatch.setattr("fish_audio_suite_voice.asr.httpx.AsyncClient", lambda **_kwargs: client)
+    asyncio.run(fish_asr(b"wav", "key", base="https://api.fish.audio", language=hint))
+    assert seen["data"] == sent

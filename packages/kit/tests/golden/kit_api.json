@@ -149,6 +149,7 @@
     "TTS_SPEED_LO": "float=0.5",
     "UNIT_INTERVAL_HI": "float=1.0",
     "UNIT_INTERVAL_LO": "float=0.0",
+    "asr_language_hint": "def(value: str) -> str",
     "bearer": "def(key: str) -> str",
     "chunk_length_hi": "def(fish_base: str, *, self_hosted: bool | None = None) -> int",
     "clamp_number": "def(value: Any, lo: T, hi: T, default: T, parse: Callable[[Any], T]) -> T",
