@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from fishaudio.exceptions import AuthenticationError, RateLimitError
+from voice_fakes import make_result
 
 from fish_audio_suite_kit import SuiteDefaults
 from fish_audio_suite_voice.live import IsolatedFishTts, IsolatedResult, is_cancel_noise
@@ -122,7 +123,7 @@ def test_duplex_playback_problem(monkeypatch: pytest.MonkeyPatch) -> None:
     assert duplex_playback_problem("MPV") is None
 
 
-def test_mpv_kill_does_not_close_stdin_first() -> None:
+def test_mpv_kill_does_not_close_stdin_first(monkeypatch: pytest.MonkeyPatch) -> None:
     class Stdin:
         closed = False
 
@@ -144,14 +145,14 @@ def test_mpv_kill_does_not_close_stdin_first() -> None:
 
     proc = Proc()
     sink = MpvSink()
-    sink.proc = proc
+    monkeypatch.setattr(sink, "proc", proc)
     sink.finish(kill=True)
     assert proc.order == ["kill", "wait"]
     assert proc.stdin.closed is False
     assert sink.proc is None
 
     proc = Proc()
-    sink.proc = proc
+    monkeypatch.setattr(sink, "proc", proc)
     sink.finish(kill=False)
     assert proc.order == ["wait"]
     assert proc.stdin.closed is True
@@ -283,7 +284,7 @@ def test_speak_isolated_works_inside_asyncio_run(
         sink.start()
         sink.write(b"\x00\x00" * 64)
         sink.finish()
-        return IsolatedResult("ok", 128, True, False, 1.0, 1.0)
+        return make_result("ok", bytes_played=128, got_audio=True, ttfa_ms=1.0, llm_ttfs_ms=1.0)
 
     monkeypatch.setattr(IsolatedFishTts, "speak", fake_speak)
     tts = IsolatedFishTts(api_key="k", voice_id="v")

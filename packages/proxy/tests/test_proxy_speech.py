@@ -5,14 +5,13 @@ import base64
 import ormsgpack
 import pytest
 from fastapi.testclient import TestClient
+from proxy_helpers import AsrJson, capture_upstream, post_speech
 
 from fish_audio_suite_proxy.server import app
 from fish_audio_suite_proxy.speech import (
     _scrub_pronunciation_dictionary,
     _seed,
 )
-
-from .helpers import AsrJson, capture_upstream, post_speech
 
 
 def test_data_uri_scheme_is_case_insensitive(monkeypatch: pytest.MonkeyPatch) -> None:

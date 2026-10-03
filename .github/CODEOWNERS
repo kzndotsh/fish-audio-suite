@@ -1,0 +1,13 @@
+# Pull requests that touch these paths ask the owner for review.
+# Everything is owned by the maintainer. The paths that can ship code or spend
+# credentials are listed on their own so they stay owned if the default changes.
+*                      @kzndotsh
+/.github/              @kzndotsh
+/.github/workflows/release.yml  @kzndotsh
+/Dockerfile            @kzndotsh
+/nix/                  @kzndotsh
+/flake.nix             @kzndotsh
+/SECURITY.md           @kzndotsh
+/packages/proxy/       @kzndotsh
+/packages/kit/         @kzndotsh
+/packages/voice/       @kzndotsh

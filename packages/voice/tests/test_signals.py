@@ -52,7 +52,7 @@ def test_install_sigint_falls_back_to_signal_signal_without_loop_support(
         def refuse(*_args: Any) -> None:
             raise NotImplementedError
 
-        loop.add_signal_handler = refuse
+        monkeypatch.setattr(loop, "add_signal_handler", refuse)
         monkeypatch.setattr(
             "fish_audio_suite_voice.signals.signal.signal",
             lambda sig, handler: installed.update(sig=sig, handler=handler),

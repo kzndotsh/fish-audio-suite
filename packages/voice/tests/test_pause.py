@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import time
 
+import pytest
+
 from fish_audio_suite_voice.pause import seconds_value, sleep_unless
 
 
@@ -14,6 +16,7 @@ def test_seconds_value_ignores_an_integer_too_large_for_a_float() -> None:
     assert seconds_value(True) is None
 
 
+@pytest.mark.perf
 def test_sleep_unless_with_a_bad_poll_still_finishes() -> None:
     async def run(poll: float) -> bool:
         return await asyncio.wait_for(sleep_unless(0.05, lambda: False, poll_s=poll), timeout=2.0)

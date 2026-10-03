@@ -346,9 +346,15 @@ class MpvSink(_Played):
         """Kill any previous mpv and start a new stdin player."""
         self.finish(kill=True)
         self._reset_played()
-        self.proc = subprocess.Popen(
+        mpv = shutil.which("mpv")
+        if mpv is None:
+            raise FileNotFoundError(
+                "mpv is not on PATH. Install mpv or pick another sink with --playback."
+            )
+        # A fixed argument list with the resolved binary and no shell.
+        self.proc = subprocess.Popen(  # noqa: S603
             [
-                "mpv",
+                mpv,
                 "--no-terminal",
                 "--really-quiet",
                 f"--audio-buffer={_MPV_BUFFER_S}",

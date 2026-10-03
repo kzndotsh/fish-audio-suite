@@ -13,8 +13,8 @@ members = ["packages/*"]
 
 [dependency-groups]
 dev = [
-    "pytest>=8.3",
-    "ruff>=0.8",
+    "pytest>=9.0",
+    "ruff>=0.13",
     "basedpyright==1.40.1",
     "pydoclint>=0.7.3",
 ]
@@ -26,15 +26,24 @@ test = [
 ]
 
 [tool.pytest.ini_options]
-testpaths = ["packages"]
+testpaths = ["packages", "tests"]
+# Shared test helpers live next to the tests under unique module names, so two
+# packages can never both claim a package called "tests".
+pythonpath = ["packages/kit/tests", "packages/proxy/tests", "packages/voice/tests"]
+markers = [
+    "perf: timing guards. A slow runner can trip them, so run `-m 'not perf'` to skip them.",
+]
 strict = true
 timeout = 60
 # Every warning is an error, so a leaked file or an unawaited coroutine fails CI.
 # Each ignore below names a third-party warning and the code that raises it.
 filterwarnings = [
     "error",
-    # Starlette's TestClient still imports httpx and warns about httpx2 on import.
-    "ignore:Using .httpx. with .starlette.testclient. is deprecated:starlette.exceptions.StarletteDeprecationWarning",
+    # Starlette's TestClient still imports httpx and warns about httpx2 on import. The
+    # class (StarletteDeprecationWarning, a UserWarning) only exists from starlette
+    # 1.2, and pytest cannot parse a filter naming a missing class, so the category
+    # is the base class and the message keeps the filter narrow.
+    "ignore:Using .httpx. with .starlette.testclient. is deprecated:UserWarning",
     # Starlette's TestClient reads an anyio alias that anyio has deprecated.
     "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning:starlette.testclient",
 ]
@@ -110,18 +119,13 @@ fixable = ["ALL"]
 unfixable = []
 ignore = [
     "E501",    # line-too-long (formatter owns wrap)
-    "B008",    # FastAPI File()/Form() defaults
-    "PLC0415", # extras imported inside speakers/vad helpers
-    "PLR0911", # too-many-return-statements
-    "PLR0912", # too-many-branches
-    "PLR0913", # too-many-arguments (TTS/ASR knobs)
-    "PLR0915", # too-many-statements
-    "PLR0917", # too-many-positional-arguments
-    "PLR2004", # magic-value-comparison
-    "RUF001",  # unicode dashes/quotes in cue and ASR regex
-    "TRY003",  # vanilla exception messages
-    "EM101",   # string literal in exception
-    "EM102",   # f-string in exception
+    "ANN401",  # any-type: JSON bodies and SDK payloads are untyped at the boundary
+    "PLR0911", # too-many-return-statements: scrubbers and parsers return early on purpose
+    "PLR0913", # too-many-arguments: TTS and ASR knobs map one to one onto Fish request fields
+    "PLR2004", # magic-value-comparison: audio sample sizes and HTTP statuses read better inline
+    "TRY003",  # vanilla exception messages: the message carries the request detail
+    "EM101",   # string literal in exception: same reason as TRY003
+    "EM102",   # f-string in exception: same reason as TRY003
 ]
 select = [
     "I",     # isort
@@ -150,7 +154,23 @@ select = [
     "PT",    # flake8-pytest-style
     "RUF",   # ruff
     "D",     # pydocstyle (numpy)
+    "S",     # flake8-bandit
+    "BLE",   # flake8-blind-except
+    "SLF",   # flake8-self (private member access)
+    "T20",   # flake8-print
+    "ERA",   # eradicate (commented-out code)
+    "PGH",   # pygrep-hooks
+    "LOG",   # flake8-logging
+    "G",     # flake8-logging-format
+    "SLOT",  # flake8-slots
+    "ARG",   # flake8-unused-arguments
+    "ANN",   # flake8-annotations (ANN401 is ignored above)
 ]
+# Left off on purpose:
+#   FBT  - public helpers such as env_bool(name, default) take a positional default
+#   TC   - FastAPI needs runtime annotations, so most moves would break routes
+#   C90  - PLR0912 and PLR0915 already cover branch and statement counts
+
 
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"
@@ -162,8 +182,44 @@ known-first-party = [
     "fish_audio_suite_voice",
 ]
 
+[tool.ruff.lint.pylint]
+# The scrubbers and the stream scrubber branch on many text cases. 15 keeps the
+# worst of them in bounds without a noqa per function.
+max-branches = 15
+
 [tool.ruff.lint.per-file-ignores]
-"packages/*/tests/**" = ["INP001", "PLR2004", "D"]
+"packages/*/tests/**" = [
+    "INP001",  # tests are not packages
+    "PLR2004", # expected values are literals
+    "PLR0915", # long scenario tests
+    "PLC0415", # tests import inside the test on purpose
+    "D",
+    "S101",    # assert is the point
+    "S104",    # a bind-all address in a settings test
+    "S105",    # fake keys
+    "S106",
+    "SLF001",  # tests reach into private helpers
+    "ARG",     # fixtures and fakes with unused arguments
+    "ANN",
+]
+"conftest.py" = ["ANN", "ARG"]
+# Repo-level tests: they read source and docs, not product code.
+"tests/**" = [
+    "INP001", # tests are not packages
+    "D",      # test names and messages carry the intent
+    "S101",   # assert is the point
+    "PLR2004", # expected values are literals
+]
+# Cue and ASR text patterns use the real unicode quotes and dashes.
+"packages/kit/src/fish_audio_suite_kit/{asr_text,_charsets,cues,cuts,dialogue,_linear,scrub_markdown,stream_holds}.py" = ["RUF001"]
+"packages/voice/src/fish_audio_suite_voice/{spoken,stream_scrub}.py" = ["RUF001"]
+"packages/kit/tests/{test_asr_text,test_cues,test_dialogue,test_scrub_tts}.py" = ["RUF001"]
+"packages/voice/tests/test_wire.py" = ["RUF001"]
+# These modules import the optional extras (sounddevice, webrtcvad, pywebrtc_audio,
+# openrouter) inside functions, so the base install imports without them.
+"packages/voice/src/fish_audio_suite_voice/{aec,barge,listen,llm,playback,transports}.py" = ["PLC0415"]
+# Both print to the terminal on purpose.
+"packages/voice/src/fish_audio_suite_voice/{debug,cli}.py" = ["T20"]
 
 [tool.pydoclint]
 style = "numpy"
@@ -193,7 +249,7 @@ pythonPlatform = "All"
 venvPath = "."
 venv = ".venv"
 typeCheckingMode = "strict"
-include = ["packages"]
+include = ["packages", "tests"]
 exclude = [".venv", "dist", "**/__pycache__"]
 extraPaths = [
     "packages/kit/src",
@@ -205,43 +261,22 @@ reportMissingTypeStubs = "none"
 allowedUntypedLibraries = ["sounddevice", "webrtcvad", "fishaudio", "pywebrtc_audio"]
 
 [[tool.basedpyright.executionEnvironments]]
-root = "packages/kit/tests"
-reportUnknownMemberType = "none"
-reportUnknownArgumentType = "none"
-reportUnknownParameterType = "none"
-reportMissingParameterType = "none"
-reportUnknownVariableType = "none"
-reportPrivateUsage = "none"
-reportUnusedImport = "none"
-reportAttributeAccessIssue = "none"
-reportUnknownLambdaType = "none"
-reportMissingTypeStubs = "none"
-
-[[tool.basedpyright.executionEnvironments]]
 root = "packages/proxy/tests"
+# 170 hits, all from Starlette's TestClient: post, get and friends are only
+# partially typed upstream, so every call result is "partially unknown".
 reportUnknownMemberType = "none"
-reportUnknownArgumentType = "none"
-reportUnknownParameterType = "none"
-reportMissingParameterType = "none"
 reportUnknownVariableType = "none"
-reportPrivateUsage = "none"
-reportUnusedImport = "none"
-reportAttributeAccessIssue = "none"
-reportUnknownLambdaType = "none"
-reportMissingTypeStubs = "none"
+# Tests reach into a few private helpers on purpose. Each use is a warning.
+reportPrivateUsage = "warning"
 
 [[tool.basedpyright.executionEnvironments]]
 root = "packages/voice/tests"
-reportUnknownMemberType = "none"
-reportUnknownArgumentType = "none"
-reportUnknownParameterType = "none"
-reportMissingParameterType = "none"
-reportUnknownVariableType = "none"
-reportPrivateUsage = "none"
-reportUnusedImport = "none"
-reportAttributeAccessIssue = "none"
+# 35 lambda hits and 28 argument hits, all lambdas handed to monkeypatch.setattr,
+# which gives them no type to infer from.
 reportUnknownLambdaType = "none"
-reportMissingTypeStubs = "none"
+reportUnknownArgumentType = "none"
+# Tests reach into a few private helpers on purpose. Each use is a warning.
+reportPrivateUsage = "warning"
 
 [[tool.basedpyright.executionEnvironments]]
 root = "packages/kit/src"

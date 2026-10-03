@@ -3,7 +3,7 @@
         <a href="https://github.com/kzndotsh/fish-audio-suite/actions/workflows/ci.yml">
             <img alt="CI" src="https://github.com/kzndotsh/fish-audio-suite/actions/workflows/ci.yml/badge.svg"></a>
         <a href="https://www.python.org/downloads/">
-            <img alt="Python" src="https://img.shields.io/badge/python-3.12%20%7C%203.13-3776AB?logo=python&logoColor=white"></a>
+            <img alt="Python" src="https://img.shields.io/badge/python-3.12%20%7C%203.13%20%7C%203.14-3776AB?logo=python&logoColor=white"></a>
         <a href="https://docs.astral.sh/uv/">
             <img alt="uv" src="https://img.shields.io/badge/uv-package%20manager-DE5FE9?logo=uv&logoColor=white"></a>
         <a href="LICENSE">

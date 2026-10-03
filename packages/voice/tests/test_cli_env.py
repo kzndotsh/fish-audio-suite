@@ -17,6 +17,7 @@ from fish_audio_suite_voice.cli import (
 )
 from fish_audio_suite_voice.config import OPENROUTER_API_BASE
 from fish_audio_suite_voice.duplex import EXIT_FATAL
+from fish_audio_suite_voice.playback import PlaybackSink
 from fish_audio_suite_voice.signals import DuplexSession, TurnSignals
 
 
@@ -446,7 +447,7 @@ def test_asr_model_env_accepts_only_native_ids(monkeypatch: pytest.MonkeyPatch) 
 
 
 class _SmokeTts:
-    def speak_isolated(self, text: str, sink: object) -> object:
+    def speak_isolated(self, text: str, sink: PlaybackSink) -> object:
         sink.start()
         sink.write(b"\x00\x01" * 2000)
         sink.finish()

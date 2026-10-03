@@ -257,7 +257,7 @@ class BargeGate:
                     debug("barge.keep frames={} bytes={}", len(self._heard), len(self.captured))
                     cancel.set()
                     return
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - daemon-thread boundary, kept in self.failure and reported
             # A missing PortAudio or a dead device ends this watcher thread. The
             # reply goes on without barge-in, so the user is told and the
             # failure is kept for the thread that started the gate.
@@ -289,7 +289,7 @@ class BargeGate:
                     debug("barge.bleed skipped (already cancelled)")
                     return
                 self.watch(cancel)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - daemon-thread boundary, kept in self.failure and reported
                 # Setup can fail before watch() has its own handler, for
                 # example loading AEC or the VAD. Without this the thread
                 # would die silently and the reply would play with no barge-in.

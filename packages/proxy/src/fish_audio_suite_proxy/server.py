@@ -14,7 +14,7 @@ import hmac
 import json
 import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
@@ -87,7 +87,7 @@ def _user_agent() -> str:
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     """Open one Fish httpx client for the process and close it on shutdown.
 
     Parameters
@@ -199,6 +199,7 @@ def _spoken_line(body: dict[str, Any], settings: ProxySettings) -> tuple[str, st
 def _asr_text(
     data: dict[str, Any],
     transcript: str,
+    *,
     lang: str,
     asr_model: str,
     traceparent: str,
@@ -267,7 +268,7 @@ def _policy(settings: ProxySettings) -> RetryPolicy:
 
 
 @app.post("/v1/audio/speech")
-async def speech(request: Request):
+async def speech(request: Request) -> Response:
     """OpenAI ``/v1/audio/speech`` forwarded to Fish ``POST /v1/tts``.
 
     Parameters
@@ -345,8 +346,8 @@ async def speech(request: Request):
     return StreamingResponse(_iter_upstream(upstream), media_type=packed.media_type)
 
 
-@app.post("/v1/audio/transcriptions")
-async def transcriptions(request: Request):
+@app.post("/v1/audio/transcriptions", response_model=None)
+async def transcriptions(request: Request) -> Response | dict[str, Any]:
     """OpenAI ``/v1/audio/transcriptions`` forwarded to Fish ``POST /v1/asr``.
 
     Parameters
@@ -401,7 +402,14 @@ async def transcriptions(request: Request):
         data, transcript = parse_asr_body(raw)
     except FishHttpError as exc:
         return json_error(exc.status, exc.message)
-    text, cues = _asr_text(data, transcript, lang, asr_model, asr_headers["traceparent"], settings)
+    text, cues = _asr_text(
+        data,
+        transcript,
+        lang=lang,
+        asr_model=asr_model,
+        traceparent=asr_headers["traceparent"],
+        settings=settings,
+    )
     return transcription_body(
         fmt,
         text,
@@ -414,8 +422,8 @@ async def transcriptions(request: Request):
     )
 
 
-@app.get("/v1/models")
-async def models(request: Request):
+@app.get("/v1/models", response_model=None)
+async def models(request: Request) -> Response | dict[str, Any]:
     """List the model ids the routes accept.
 
     Parameters
@@ -443,7 +451,7 @@ async def models(request: Request):
 
 
 @app.get("/health")
-async def health(request: Request):
+async def health(request: Request) -> dict[str, Any]:
     """Liveness plus the clamped runtime defaults. Does not call Fish.
 
     Parameters

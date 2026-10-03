@@ -828,10 +828,11 @@ def test_429_within_cap_retries_once(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", events)
     monkeypatch.setattr("fish_audio_suite_voice.llm._pause_for_retry", pause)
-    monkeypatch.setattr(
-        "fish_audio_suite_voice.llm.console_print",
-        lambda *args, **_kwargs: printed.append(" ".join(str(arg) for arg in args)),
-    )
+
+    def record_print(*args: object, **_kwargs: object) -> None:
+        printed.append(" ".join(str(arg) for arg in args))
+
+    monkeypatch.setattr("fish_audio_suite_voice.llm.console_print", record_print)
 
     async def collect() -> list[str]:
         return [

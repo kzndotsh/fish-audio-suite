@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from kit_timing import assert_linear_time
 
 from fish_audio_suite_kit import (
     hold_tts,
@@ -629,13 +630,13 @@ def test_a_removed_aside_leaves_one_space(text: str, expected: str) -> None:
     ],
     ids=lambda text: f"{text[:10]!r}x{len(text)}",
 )
+@pytest.mark.perf
 def test_hostile_input_is_scrubbed_in_linear_time(hostile: str) -> None:
-    import time
+    def run(text: str) -> None:
+        scrub_tts(text)
+        hold_tts(text, line_start=True, sentence_start=True)
 
-    started = time.perf_counter()
-    scrub_tts(hostile)
-    hold_tts(hostile, line_start=True, sentence_start=True)
-    assert time.perf_counter() - started < 1.0
+    assert_linear_time(run, hostile)
 
 
 @pytest.mark.parametrize(
@@ -643,12 +644,9 @@ def test_hostile_input_is_scrubbed_in_linear_time(hostile: str) -> None:
     ["\t" * 20_000 + ".", " " * 20_000 + "?", "|a|" + "a|" * 20_000, "<" + "\t" * 20_000],
     ids=lambda text: f"{text[:6]!r}x{len(text)}",
 )
+@pytest.mark.perf
 def test_hostile_input_is_scrubbed_for_asr_in_linear_time(hostile: str) -> None:
-    import time
-
-    started = time.perf_counter()
-    scrub_asr(hostile)
-    assert time.perf_counter() - started < 1.0
+    assert_linear_time(scrub_asr, hostile)
 
 
 def test_an_html_comment_can_end_with_bang_dash_dash_gt() -> None:

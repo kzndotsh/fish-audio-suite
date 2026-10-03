@@ -1,0 +1,41 @@
+name: Audit
+# Checks the locked dependencies against known vulnerabilities. It runs when a
+# change touches the lock or a pyproject, and weekly, because a new advisory can
+# land against a version that has not changed.
+on:
+  pull_request:
+    paths:
+      - uv.lock
+      - pyproject.toml
+      - packages/*/pyproject.toml
+      - .github/workflows/audit.yml
+  schedule:
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  pip-audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          python-version: "3.12"
+          enable-cache: false
+      - name: Export the locked requirements
+        # Hashed, so pip-audit checks exactly what uv.lock installs. The workspace
+        # packages are ours and not on PyPI, so they are left out.
+        run: uv export --frozen --all-packages --no-emit-workspace --extra cli --group dev --group test --output-file requirements-audit.txt
+      - name: Audit
+        # Fails the job when a pinned version has a known vulnerability.
+        run: uvx pip-audit==2.10.1 --requirement requirements-audit.txt --disable-pip --progress-spinner off

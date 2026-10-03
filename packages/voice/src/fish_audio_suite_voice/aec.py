@@ -285,7 +285,7 @@ class EchoCanceller:
             return near
         try:
             clean = proc.process(near_a, far_a)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - native AEC boundary, any failure falls back to the raw mic
             debug("aec.fail {}", exc)
             return near
         clean_a = np.asarray(clean)

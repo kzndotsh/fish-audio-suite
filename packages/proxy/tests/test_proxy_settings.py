@@ -10,6 +10,14 @@ import httpx
 import ormsgpack
 import pytest
 from fastapi.testclient import TestClient
+from proxy_helpers import (
+    AsrJson,
+    FakeUpstream,
+    capture_upstream,
+    fresh_app_env,
+    post_speech,
+    run_fish_send,
+)
 
 from fish_audio_suite_proxy.fields import (
     SILENT_MP3,
@@ -20,15 +28,6 @@ from fish_audio_suite_proxy.server import _uvicorn_run_kwargs, app
 from fish_audio_suite_proxy.settings import ProxySettings, SettingsError, load_settings
 from fish_audio_suite_proxy.transcribe import transcription_body
 from fish_audio_suite_proxy.upstream import RetryPolicy, fish_send, retry_after_s
-
-from .helpers import (
-    AsrJson,
-    FakeUpstream,
-    capture_upstream,
-    fresh_app_env,
-    post_speech,
-    run_fish_send,
-)
 
 
 def test_proxy_listens_on_loopback_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -146,9 +145,9 @@ def test_speech_without_clips_is_json_and_with_clips_is_msgpack(
 def test_models_have_the_openai_fields_and_list_aliases(monkeypatch: pytest.MonkeyPatch) -> None:
     fresh_app_env(monkeypatch, FISH_TTS_ALIASES="my-voice=s2-pro, broken ,=x")
     with TestClient(app) as client:
-        data = client.get("/v1/models").json()["data"]
+        data: list[dict[str, Any]] = client.get("/v1/models").json()["data"]
     assert data
-    assert all(m["object"] == "model" and m["owned_by"] == "fish-audio" for m in data)
+    assert all((m["object"], m["owned_by"]) == ("model", "fish-audio") for m in data)
     assert all(isinstance(m["created"], int) for m in data)
     ids = {m["id"] for m in data}
     assert {"tts-1", "my-voice", "whisper-1", "fish-audio/s2.1-pro"} <= ids
@@ -314,6 +313,7 @@ class _StalledClient:
         await asyncio.Event().wait()
 
 
+@pytest.mark.perf
 def test_the_deadline_cuts_off_a_stalled_request() -> None:
     client = _StalledClient()
 
