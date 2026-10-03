@@ -20,6 +20,9 @@ An opinionated Python toolkit for Fish Audio TTS, ASR, and live speech.
 > [!NOTE]
 > Unofficial. Not affiliated with, endorsed by, or a product of Fish Audio.
 
+> [!WARNING]
+> Pre-1.0 and under active development. Anything could change at any moment and nothing is guaranteed. This notice will be left here until a stable release is published.
+
 ```text
 you ▸  Hey, can you hear me?
 llm ▸  [happy] Yes, I can hear you! [curious] What's on your mind today?
