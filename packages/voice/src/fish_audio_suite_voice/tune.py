@@ -546,6 +546,14 @@ class LlmTune:
             key_env = provider.key_env
         else:
             key_env = "OPENROUTER_API_KEY" if backend == "openrouter" else "OPENAI_API_KEY"
+        key_names = ["FISH_LLM_KEY"]
+        if provider is None or _is_https(base):
+            key_names.append(key_env)
+        elif _raw(key_env) is not None:
+            warn(
+                f"fish-voice: {key_env} is not used because the base is not https, which would "
+                f"send it unencrypted. Use an https base, or set FISH_LLM_KEY to send a key anyway."
+            )
         model_names = [provider.model_env] if provider is not None else []
         model_names.append("FISH_LLM_MODEL")
         if provider is None or provider.name == "openrouter":
@@ -553,7 +561,7 @@ class LlmTune:
         return cls(
             backend=backend,
             base=base,
-            key=_first_text("FISH_LLM_KEY", key_env),
+            key=_first_text(*key_names),
             model=_first_token(*model_names),
             temperature=read_float(
                 "FISH_LLM_TEMPERATURE", DEFAULT_LLM_TEMPERATURE, lo=0.0, hi=_LLM_TEMPERATURE_HI
@@ -582,6 +590,13 @@ def _named_provider() -> LlmProvider | None:
         names = ", ".join(provider.name for provider in LLM_PROVIDERS)
         warn(f"fish-voice: unknown FISH_LLM_PROVIDER={raw!r} (use {names}), reading FISH_LLM_BASE")
     return None
+
+
+def _is_https(base: str) -> bool:
+    try:
+        return urlsplit(base.strip()).scheme.lower() == "https"
+    except ValueError:
+        return False
 
 
 def _reasoning_effort() -> str:

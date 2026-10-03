@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 import pytest
 
+from fish_audio_suite_voice.cli import llm_setting_names
 from fish_audio_suite_voice.debug import configure_voice_logging
 from fish_audio_suite_voice.llm import open_chat_backend
 from fish_audio_suite_voice.tune import (
@@ -315,3 +316,45 @@ def test_the_openrouter_backend_setting_still_holds_for_openrouter_and_custom_ho
     env.setenv("FISH_LLM_BASE", "https://proxy.example.test/v1")
     assert LlmTune.from_env().backend == "openrouter"
     assert capsys.readouterr().err == ""
+
+
+def test_a_named_providers_key_is_not_picked_up_for_a_plain_http_base(
+    env: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    env.setenv("EXPLABS_API_KEY", "xpl_from_env")
+    env.setenv("FISH_LLM_BASE", "http://api.experientiallabs.ai/v1")
+    tune = LlmTune.from_env()
+    assert tune.provider == "experiential"
+    assert tune.key == ""
+    assert "not https" in capsys.readouterr().err
+
+
+def test_an_explicit_key_still_goes_to_a_plain_http_named_base(env: pytest.MonkeyPatch) -> None:
+    env.setenv("EXPLABS_API_KEY", "xpl_from_env")
+    env.setenv("FISH_LLM_KEY", "explicit")
+    env.setenv("FISH_LLM_BASE", "http://api.experientiallabs.ai/v1")
+    assert LlmTune.from_env().key == "explicit"
+
+
+def test_a_custom_http_base_keeps_its_key(env: pytest.MonkeyPatch) -> None:
+    env.setenv("OPENAI_API_KEY", "local-key")
+    env.setenv("FISH_LLM_BASE", "http://127.0.0.1:11434/v1")
+    assert LlmTune.from_env().key == "local-key"
+
+
+def test_the_startup_blockers_name_the_selected_providers_variables(
+    env: pytest.MonkeyPatch,
+) -> None:
+    env.setenv("FISH_LLM_PROVIDER", "experiential")
+    assert llm_setting_names(LlmTune.from_env()) == (
+        "EXPLABS_API_KEY",
+        "FISH_LLM_MODEL_EXPERIENTIAL",
+    )
+    env.setenv("FISH_LLM_PROVIDER", "openrouter")
+    assert llm_setting_names(LlmTune.from_env()) == (
+        "OPENROUTER_API_KEY",
+        "FISH_LLM_MODEL_OPENROUTER / OPENROUTER_MODEL",
+    )
+    env.setenv("FISH_LLM_PROVIDER", "custom")
+    env.setenv("FISH_LLM_BASE", "http://127.0.0.1:11434/v1")
+    assert llm_setting_names(LlmTune.from_env()) == ("OPENAI_API_KEY", "OPENROUTER_MODEL")
