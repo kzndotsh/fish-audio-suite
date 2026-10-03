@@ -685,6 +685,7 @@ _TTS_MODEL_BY_NAME: Final[dict[str, TtsModel]] = {
     "s2-pro": "s2-pro",
     "s2.1-pro": "s2.1-pro",
     "s2.1-pro-free": "s2.1-pro-free",
+    "drama-3-preview": "drama-3-preview",
 }
 
 
@@ -700,7 +701,7 @@ def normalize_tts_model(name: str) -> str:
     -------
     str
         The lowercase catalog id, the stripped id when it is a single printable
-        token that Fish may know (a new model, ``drama-3-preview``), or the
+        token that Fish may know (a model newer than the catalog), or the
         default model when ``name`` is blank or could split a header. The result is
         ``str`` and not ``TtsModel`` because other ids pass through; use
         ``catalog_tts_model`` to narrow.
@@ -727,13 +728,15 @@ def catalog_tts_model(name: str) -> TtsModel | None:
     Returns
     -------
     TtsModel or None
-        The catalog id, or None for any other id, including ``drama-3-preview``.
+        The catalog id, or None for any other id.
 
     Examples
     --------
     >>> catalog_tts_model(" S2-Pro ")
     's2-pro'
-    >>> catalog_tts_model("drama-3-preview") is None
+    >>> catalog_tts_model("Drama-3-Preview")
+    'drama-3-preview'
+    >>> catalog_tts_model("mystery") is None
     True
     """
     return _TTS_MODEL_BY_NAME.get(name.strip().lower())
