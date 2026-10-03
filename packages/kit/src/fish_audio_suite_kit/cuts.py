@@ -28,8 +28,40 @@ _SENT_END = re.compile(
     rf"|[{SPACED_STOPS}]+[{re.escape(SENTENCE_CLOSER_CHARS)}]*\s"
     rf"|[{IDEOGRAPHIC_STOPS}]+[{re.escape(SENTENCE_CLOSER_CHARS)}]*\s?)"
 )
-# The token immediately before a period: abbreviation, initial, or "1.".
-_TRAIL_WORD = re.compile(r"(\d+|[A-Za-z]+)\s*$")
+
+
+def _trailing_word(text: str) -> tuple[int, str] | None:
+    """Find the token just before a period: an abbreviation, an initial or a number.
+
+    Parameters
+    ----------
+    text : str
+        Text that ends where the period starts.
+
+    Returns
+    -------
+    tuple of int and str, or None
+        The start index and the last run of digits, or of ASCII letters, once
+        trailing whitespace is ignored. None when the text does not end in one.
+    """
+    end = len(text)
+    while end and text[end - 1].isspace():
+        end -= 1
+    if not end:
+        return None
+    last = text[end - 1]
+    if last.isdecimal():
+        start = end
+        while start and text[start - 1].isdecimal():
+            start -= 1
+    elif "A" <= last <= "Z" or "a" <= last <= "z":
+        start = end
+        while start and ("A" <= text[start - 1] <= "Z" or "a" <= text[start - 1] <= "z"):
+            start -= 1
+    else:
+        return None
+    return start, text[start:end]
+
 
 # Titles and Latin-script abbreviations whose period is not a sentence end. A
 # one-letter initial is handled separately. Words that are also common sentence
@@ -84,12 +116,12 @@ def _skip_abbreviation(buf: str, end_start: int) -> bool:
     # in a long reply of short sentences.
     window_start = max(0, end_start - _LOOKBACK)
     before = buf[window_start:end_start]
-    m = _TRAIL_WORD.search(before)
-    if not m:
+    found = _trailing_word(before)
+    if found is None:
         return False
-    w = m.group(1)
+    word_start, w = found
     # A word that fills the window began before it. It is too long to be a title.
-    if window_start and m.start() == 0 and not w.isdigit():
+    if window_start and word_start == 0 and not w.isdigit():
         return False
     if w.isdigit():
         # "3.14" is one number. A leading "1." is a list marker, so it is
@@ -100,7 +132,7 @@ def _skip_abbreviation(buf: str, end_start: int) -> bool:
             index += 1
         if index < len(buf) and buf[index].isdigit():
             return True
-        prefix = before[: m.start()]
+        prefix = before[:word_start]
         newline = prefix.rfind("\n")
         if newline >= 0:
             prefix = prefix[newline + 1 :]

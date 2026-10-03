@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from kit_timing import assert_linear_time
 
 from fish_audio_suite_kit import (
     ensure_lead_cue,
@@ -269,3 +270,26 @@ def test_strip_cue_tags_keeps_a_tag_nested_in_a_larger_bracket() -> None:
     assert strip_cue_tags("[[happy]] hi") == "[[happy]] hi"
     assert strip_cue_tags("[happy] hi [calm] there") == "hi there"
     assert strip_cue_tags("[sad][whispering] hi") == "hi"
+
+
+@pytest.mark.perf
+@pytest.mark.parametrize(
+    "text",
+    [
+        "<whisper>" + "<whisper>a" * 8_000,
+        "[" + "[\\" * 8_000,
+        "[" * 20_000,
+        "[ " * 10_000,
+        "<whisper " * 8_000,
+    ],
+)
+def test_cue_rewriting_is_linear_on_hostile_input(text: str) -> None:
+    assert_linear_time(normalize_cues, text)
+    assert_linear_time(strip_cue_tags, text)
+
+
+def test_a_cue_or_whisper_longer_than_the_cap_is_left_as_text() -> None:
+    long_cue = "[" + "x" * 250 + "]"
+    assert normalize_cues(long_cue) == long_cue
+    assert normalize_cues("<whisper>hush</whisper>") == "[whispering] hush"
+    assert normalize_cues("[happy] hi") == "[happy] hi"

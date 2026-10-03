@@ -84,11 +84,16 @@ _LEAD_PUNCT = frozenset(",:!-\u2013\u2014\uff0c\uff01\uff1a")
 # Closing emphasis still belongs to the mood word: "Excited*" is not done.
 _LEAD_WRAP = frozenset("*_~`")
 
+# Longest cue text and longest whispered span the patterns look at. Each pattern
+# scans at most this far from a bracket or tag, so a long run of openers with no
+# closer costs a fixed amount per opener instead of the rest of the text.
+_MAX_CUE_CHARS = 200
+_MAX_WHISPER_CHARS = 1000
 # Any [cue], including free-form S2 text. A newline ends the tag.
-_CUE_RE = re.compile(r"\[([^\]\n]+)\]")
+_CUE_RE = re.compile(rf"\[([^\]\n]{{1,{_MAX_CUE_CHARS}}})\]")
 # Some models write <whisper>...</whisper> instead of a Fish cue.
 _WHISPER_XML_RE = re.compile(
-    r"<\s*whisper\s*>(.*?)<\s*/\s*whisper\s*>",
+    rf"<\s{{0,8}}whisper\s{{0,8}}>(.{{0,{_MAX_WHISPER_CHARS}}}?)<\s{{0,8}}/\s{{0,8}}whisper\s{{0,8}}>",
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -167,7 +172,7 @@ _LEAD_MARK_RE = re.compile(
 # A cue body cannot contain "[", so "[[page]]" is not a stack.
 _LEAD_STACK_RE = re.compile(r"^((?:\[[^\[\]]+\]\s*)+)(.*)$", re.DOTALL)
 # Each cue inside that stack, so [sad][whispering] stays two tags.
-_INNER_CUE_RE = re.compile(r"\[([^\]]+)\]")
+_INNER_CUE_RE = re.compile(rf"\[([^\]]{{1,{_MAX_CUE_CHARS}}})\]")
 # Keep the newlines, so a blank line is not folded into the next sentence.
 _LINE_SPLIT_RE = re.compile(r"(\n+)")
 

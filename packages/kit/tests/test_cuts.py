@@ -167,7 +167,9 @@ def test_no_and_co_before_a_word_still_end_the_sentence() -> None:
 
 
 @pytest.mark.perf
-@pytest.mark.parametrize("text", ["a. " * 7_000, "Dr. " * 5_000, "No. 5 " * 3_000])
+@pytest.mark.parametrize(
+    "text", ["a. " * 7_000, "Dr. " * 5_000, "No. 5 " * 3_000, "0" * 50_000 + ". ", "x1 " * 20_000]
+)
 def test_many_short_sentences_are_cut_in_linear_time(text: str) -> None:
     def run(chunk: str) -> None:
         next_tts_cut(chunk)
