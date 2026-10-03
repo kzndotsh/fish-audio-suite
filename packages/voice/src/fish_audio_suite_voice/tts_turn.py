@@ -23,17 +23,17 @@ from fish_audio_suite_voice.debug import debug
 from fish_audio_suite_voice.pause import sleep_unless
 from fish_audio_suite_voice.playback import PlaybackSink
 from fish_audio_suite_voice.wire import (
-    EventAcc,
-    Heard,
+    AudioArrival,
     IsolatedResult,
+    SentText,
     TurnRun,
     TurnSpec,
     as_async,
     is_cancel_noise,
-    isolated_result,
     quiet_shutdown,
     send_turn,
     text_events,
+    tts_result,
     turn_failure,
 )
 
@@ -123,8 +123,8 @@ async def _one_attempt(turn: _Turn, events: AsyncIterator[Any], attempt: int) ->
         )
         await turn.held.close()
         if not fate.retry:
-            run.err_status = fate.err_status
-            run.err_message = fate.err_message
+            run.error_status = fate.error_status
+            run.error_message = fate.error_message
             return True
         return await _retry_pause(run.cancel, attempt)
     return True
@@ -189,9 +189,9 @@ async def run_turn(
         sink=sink,
         cancel=cancel,
         sent_text=sent_text,
-        acc=EventAcc(),
+        acc=SentText(),
         t0=time.perf_counter(),
-        audio=Heard(),
+        audio=AudioArrival(),
         on_first_audio=on_first_audio,
     )
     turn = _Turn(run=run, held=_HeldClient(), headers=_turn_headers(spec, sent_text))
@@ -211,7 +211,7 @@ async def run_turn(
             # would stay open until the process exits.
             await turn.held.close()
 
-    return isolated_result(run)
+    return tts_result(run)
 
 
 def run_isolated(coro: Coroutine[Any, Any, IsolatedResult]) -> IsolatedResult:

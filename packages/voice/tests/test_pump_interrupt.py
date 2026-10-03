@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator
 import pytest
 from fishaudio.types import TTSConfig
 
-from fish_audio_suite_voice.wire import EventAcc, Heard, TurnRun, TurnSpec, _pump_ws_audio
+from fish_audio_suite_voice.wire import AudioArrival, SentText, TurnRun, TurnSpec, _pump_ws_audio
 
 
 class _Sink:
@@ -49,9 +49,9 @@ def _turn() -> TurnRun:
         sink=_Sink(),
         cancel=threading.Event(),
         sent_text="",
-        acc=EventAcc(),
+        acc=SentText(),
         t0=time.perf_counter(),
-        audio=Heard(),
+        audio=AudioArrival(),
     )
 
 

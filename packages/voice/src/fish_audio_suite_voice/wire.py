@@ -36,25 +36,25 @@ from fish_audio_suite_voice.playback import PlaybackSink
 from fish_audio_suite_voice.spoken import spoken_prefix
 
 __all__ = [
-    "EventAcc",
-    "Heard",
+    "AudioArrival",
     "IsolatedResult",
+    "SentText",
     "TtsFailure",
     "TurnRun",
     "TurnSpec",
     "as_async",
     "flush_if_sent",
     "is_cancel_noise",
-    "isolated_result",
-    "own_cancel",
+    "is_own_cancel",
     "quiet_shutdown",
     "reap",
     "send_turn",
     "text_events",
+    "tts_result",
     "turn_failure",
 ]
 
-ANEXT_POLL_S: Final = 0.25
+QUEUE_POLL_S: Final = 0.25
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,7 +128,7 @@ class TurnSpec:
 
 
 @dataclass(slots=True)
-class Heard:
+class AudioArrival:
     """Audio that actually arrived on this Fish websocket."""
 
     got_audio: bool = False
@@ -136,10 +136,10 @@ class Heard:
 
 
 @dataclass(slots=True)
-class EventAcc:
-    """Text events and first-sentence timing collected during one turn."""
+class SentText:
+    """Every text piece sent to Fish during one turn, and when the first one went out."""
 
-    flushed: list[str] = field(default_factory=list)
+    pieces: list[str] = field(default_factory=list)
     ttfs_ms: float | None = None
 
 
@@ -151,11 +151,11 @@ class TurnRun:
     sink: PlaybackSink
     cancel: threading.Event
     sent_text: str
-    acc: EventAcc
+    acc: SentText
     t0: float
-    audio: Heard
-    err_status: int | None = None
-    err_message: str | None = None
+    audio: AudioArrival
+    error_status: int | None = None
+    error_message: str | None = None
     on_first_audio: Callable[[], None] | None = None
 
 
@@ -270,7 +270,7 @@ def is_cancel_noise(exc: BaseException, *, cancelled: bool = False) -> bool:
     return False
 
 
-def own_cancel(flag: asyncio.Event | threading.Event | None) -> bool:
+def is_own_cancel(flag: asyncio.Event | threading.Event | None) -> bool:
     """Return whether a ``CancelledError`` here comes from our own cancel flag.
 
     Parameters
@@ -343,7 +343,7 @@ async def send_turn(
     ``TTSConfig`` has no ``features``. Quality-guard stays on the proxy HTTP path.
     """
     spec = run.spec
-    run.acc.flushed.clear()
+    run.acc.pieces.clear()
     run.acc.ttfs_ms = None
     replay = text_events(run.sent_text, run.cancel, spec.partial_chars) if run.sent_text else events
     stream = client.tts.stream_websocket(
@@ -359,7 +359,7 @@ async def send_turn(
 
 
 def _note_first_audio(
-    audio: Heard,
+    audio: AudioArrival,
     chunk: bytes,
     t0: float,
     on_first_audio: Callable[[], None] | None = None,
@@ -417,7 +417,7 @@ async def _pump_ws_audio(
                 return
             try:
                 # A timeout only re-checks cancel. It never touches the reader.
-                item = await asyncio.wait_for(queue.get(), ANEXT_POLL_S)
+                item = await asyncio.wait_for(queue.get(), QUEUE_POLL_S)
             except TimeoutError:
                 # The reader ends without a marker only when the stream itself
                 # was cancelled. Raise that instead of polling forever.
@@ -442,10 +442,10 @@ async def _pump_ws_audio(
             await reap(reader, wait_s=_REAP_TIMEOUT_S)
 
 
-def _remember_event(ev: Any, acc: EventAcc, t0: float) -> None:
+def _remember_event(ev: Any, acc: SentText, t0: float) -> None:
     if isinstance(ev, TextEvent) and ev.text:
         text = ev.text
-        acc.flushed.append(text)
+        acc.pieces.append(text)
         if acc.ttfs_ms is None:
             acc.ttfs_ms = elapsed_ms(t0)
             debug(
@@ -464,26 +464,26 @@ def _remember_event(ev: Any, acc: EventAcc, t0: float) -> None:
 async def _tee_text_events(
     events: AsyncIterator[Any],
     t0: float,
-    acc: EventAcc,
+    acc: SentText,
 ) -> AsyncIterator[Any]:
     async for ev in events:
         _remember_event(ev, acc, t0)
         yield ev
 
 
-def isolated_result(run: TurnRun) -> IsolatedResult:
+def tts_result(run: TurnRun) -> IsolatedResult:
     """Build the result returned after an isolated speak finishes."""
     spec = run.spec
     audio = run.audio
     if (
         not audio.got_audio
         and not run.cancel.is_set()
-        and run.err_status is None
-        and not run.err_message
+        and run.error_status is None
+        and not run.error_message
     ):
         warn(f"[tts] no audio voice={spec.voice_id} model={spec.model}")
     played = run.sink.bytes_played()
-    full = run.sent_text or "".join(run.acc.flushed)
+    full = run.sent_text or "".join(run.acc.pieces)
     spoken = spoken_prefix(
         full,
         bytes_played=played,
@@ -492,7 +492,7 @@ def isolated_result(run: TurnRun) -> IsolatedResult:
         got_audio=audio.got_audio,
         cancelled=run.cancel.is_set(),
         # A socket drop has no HTTP status. The message is still a failed turn.
-        failed=run.err_status is not None or bool(run.err_message),
+        failed=run.error_status is not None or bool(run.error_message),
         speed=spec.speed,
         # A sink written against the older protocol has no latency attribute,
         # and a turn that already played must not fail on it.
@@ -505,12 +505,12 @@ def isolated_result(run: TurnRun) -> IsolatedResult:
         cancelled=run.cancel.is_set(),
         ttfa_ms=audio.ttfa_ms,
         llm_ttfs_ms=run.acc.ttfs_ms,
-        error_status=run.err_status,
-        error_message=run.err_message,
+        error_status=run.error_status,
+        error_message=run.error_message,
         error=(
             None
-            if run.err_status is None
-            else FishHttpError.from_status(run.err_status, run.err_message or "")
+            if run.error_status is None
+            else FishHttpError.from_status(run.error_status, run.error_message or "")
         ),
     )
 
@@ -552,15 +552,15 @@ class TtsFailure:
     ----------
     retry : bool
         Whether the turn should be tried again.
-    err_status : int or None
+    error_status : int or None
         Fish HTTP status, when the failure had one.
-    err_message : str or None
+    error_message : str or None
         Text to report. None when the failure was a barge-in.
     """
 
     retry: bool
-    err_status: int | None = None
-    err_message: str | None = None
+    error_status: int | None = None
+    error_message: str | None = None
 
 
 def turn_failure(
@@ -600,17 +600,17 @@ def turn_failure(
     # The socket died after audio started, and the turn was not cancelled.
     # Recording the unplayed tail makes the next turn assume it was heard.
     if is_cancel_noise(root):
-        err_message = str(root)
-        warn(f"[tts] {err_message}")
-        return TtsFailure(retry=False, err_message=err_message)
+        error_message = str(root)
+        warn(f"[tts] {error_message}")
+        return TtsFailure(retry=False, error_message=error_message)
     last = fish_attempt_exhausted(attempt)
     can_replay = bool(sent_text) and not got_audio
     if retry and not last and can_replay:
         warn(f"[tts] retry status={status} attempt={attempt + 1}/{FISH_RETRY_ATTEMPTS}")
         return TtsFailure(retry=True)
-    err_message = message or str(root)
-    warn(f"[tts] {status} {err_message}" if status is not None else f"[tts] {err_message}")
-    return TtsFailure(retry=False, err_status=status, err_message=err_message)
+    error_message = message or str(root)
+    warn(f"[tts] {status} {error_message}" if status is not None else f"[tts] {error_message}")
+    return TtsFailure(retry=False, error_status=status, error_message=error_message)
 
 
 def _classify_fish_exc(exc: BaseException) -> tuple[bool, int | None, str]:

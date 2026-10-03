@@ -11,8 +11,8 @@ from fish_audio_suite_kit import LatencySnapshot
 from fish_audio_suite_voice.aec import EchoCanceller
 from fish_audio_suite_voice.asr import asr_client
 from fish_audio_suite_voice.config import VoiceCliConfig
-from fish_audio_suite_voice.debug import console_print, debug, env_debug, trace
-from fish_audio_suite_voice.duplex_state import EXIT_FATAL, EXIT_OK, DuplexState
+from fish_audio_suite_voice.debug import console_print, debug, debug_enabled, trace
+from fish_audio_suite_voice.duplex_state import EXIT_FATAL, EXIT_OK, DuplexContext
 from fish_audio_suite_voice.hearing import HeardLine, hear_line
 from fish_audio_suite_voice.history import opening_history, remember_user
 from fish_audio_suite_voice.live import IsolatedFishTts
@@ -40,17 +40,17 @@ def bye() -> int:
     return EXIT_OK
 
 
-async def _answer_line(loop: DuplexState, heard: HeardLine) -> int | None:
+async def _answer_line(ctx: DuplexContext, heard: HeardLine) -> int | None:
     cancel = threading.Event()
     llm_cancel = asyncio.Event()
-    loop.session.turn.bind(cancel, llm_cancel)
-    if loop.config.stream_tts:
-        snapshot, fatal = await stream_turn(loop, heard, cancel, llm_cancel)
+    ctx.session.turn.bind(cancel, llm_cancel)
+    if ctx.config.stream_tts:
+        snapshot, fatal = await stream_turn(ctx, heard, cancel, llm_cancel)
         if fatal is not None:
             return fatal
     else:
         reply, ttft_ms = await collect_reply(
-            loop,
+            ctx,
             llm_cancel=llm_cancel,
             trace_id=heard.trace_id,
             started=time.perf_counter(),
@@ -58,11 +58,11 @@ async def _answer_line(loop: DuplexState, heard: HeardLine) -> int | None:
         snapshot = LatencySnapshot(
             asr_ms=heard.asr_ms, llm_first_token_ms=ttft_ms, trace_id=heard.trace_id
         )
-        if loop.session.stop.is_set():
+        if ctx.session.stop.is_set():
             return bye()
         if reply:
             snapshot, fatal = await speak_reply(
-                loop,
+                ctx,
                 reply,
                 cancel,
                 snapshot,
@@ -72,17 +72,17 @@ async def _answer_line(loop: DuplexState, heard: HeardLine) -> int | None:
             if fatal is not None:
                 return fatal
     summary = turn_summary(snapshot)
-    if env_debug():
+    if debug_enabled():
         debug("turn.summary {}", summary.strip().removeprefix("\u21b3 "))
         trace("turn.timing {}", snapshot.log_line())
     else:
         console_print(summary, flush=True)
-    stop = loop.session.stop
-    loop.session.turn.fire()
-    loop.session.turn.clear()
-    barged = bool(loop.barge_prefix)
+    stop = ctx.session.stop
+    ctx.session.turn.fire()
+    ctx.session.turn.clear()
+    barged = bool(ctx.barge_prefix)
     if stop.is_set() or (
-        not barged and await asyncio.to_thread(stop.wait, loop.config.barge.cooldown_s)
+        not barged and await asyncio.to_thread(stop.wait, ctx.config.barge.cooldown_s)
     ):
         return bye()
     return None
@@ -128,7 +128,7 @@ async def duplex_turns(
     async with AsyncExitStack() as stack:
         asr_http = await stack.enter_async_context(asr_client())
         history, pinned = opening_history(c.system_prompt)
-        loop = DuplexState(
+        ctx = DuplexContext(
             config=c,
             tts=tts,
             device=device,
@@ -140,7 +140,7 @@ async def duplex_turns(
         )
         last_user = ""
         while True:
-            heard = await hear_line(loop, last_user)
+            heard = await hear_line(ctx, last_user)
             if heard.kind == "bye":
                 return bye()
             if heard.kind == "fatal":
@@ -148,7 +148,7 @@ async def duplex_turns(
             if heard.kind == "again":
                 continue
             last_user = heard.text
-            remember_user(loop.history, heard.text, c.history_turns, loop.pinned)
-            code = await _answer_line(loop, heard)
+            remember_user(ctx.history, heard.text, c.history_turns, ctx.pinned)
+            code = await _answer_line(ctx, heard)
             if code is not None:
                 return code

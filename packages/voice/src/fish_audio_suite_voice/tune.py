@@ -41,7 +41,7 @@ __all__ = [
     "LlmProvider",
     "LlmProviderName",
     "LlmTune",
-    "openrouter_host",
+    "is_openrouter_host",
     "provider_for_base",
     "read_flag",
     "read_float",
@@ -437,7 +437,7 @@ class AecTune:
         )
 
 
-def openrouter_host(base: str) -> bool:
+def is_openrouter_host(base: str) -> bool:
     """Return whether ``base`` is hosted on ``openrouter.ai``.
 
     Parameters
@@ -664,4 +664,4 @@ def _backend(base: str) -> LlmBackendName:
                 return "openai"
             return "openrouter"
         warn(f"fish-voice: unknown FISH_LLM_BACKEND={raw!r}, choosing from the base URL")
-    return "openrouter" if openrouter_host(base) else "openai"
+    return "openrouter" if is_openrouter_host(base) else "openai"

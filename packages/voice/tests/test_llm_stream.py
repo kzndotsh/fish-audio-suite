@@ -26,7 +26,7 @@ from fish_audio_suite_voice.transports import (
     _feed_sse,
     openrouter_client,
 )
-from fish_audio_suite_voice.tune import LlmTune, openrouter_host
+from fish_audio_suite_voice.tune import LlmTune, is_openrouter_host
 
 OR_BASE = "https://openrouter.ai/api/v1"
 
@@ -210,11 +210,11 @@ def test_want_nitro_false_for_non_openrouter_backend() -> None:
 
 
 def test_openrouter_host_checks_the_hostname_not_the_text() -> None:
-    assert openrouter_host("https://openrouter.ai/api/v1")
-    assert openrouter_host("https://eu.openrouter.ai/api/v1")
-    assert not openrouter_host("https://api.example.com/v1?via=openrouter.ai")
-    assert not openrouter_host("https://notopenrouter.ai/v1")
-    assert not openrouter_host("http://localhost:11434/v1")
+    assert is_openrouter_host("https://openrouter.ai/api/v1")
+    assert is_openrouter_host("https://eu.openrouter.ai/api/v1")
+    assert not is_openrouter_host("https://api.example.com/v1?via=openrouter.ai")
+    assert not is_openrouter_host("https://notopenrouter.ai/v1")
+    assert not is_openrouter_host("http://localhost:11434/v1")
 
 
 def test_model_author_slug_splits_variant() -> None:

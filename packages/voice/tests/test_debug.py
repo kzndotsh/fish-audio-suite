@@ -11,8 +11,8 @@ from fish_audio_suite_voice.debug import (
     configure_voice_logging,
     conversation,
     debug,
+    debug_enabled,
     debug_level,
-    env_debug,
     header_meta,
     heartbeat_due,
     mark_turn,
@@ -70,15 +70,15 @@ def test_debug_closes_reply_before_the_log(
     assert not captured.err.startswith("[calm]")
 
 
-def test_env_debug_truthy(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_debug_enabled_truthy(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("FISH_VOICE_DEBUG", raising=False)
-    assert not env_debug()
+    assert not debug_enabled()
     monkeypatch.setenv("FISH_VOICE_DEBUG", "1")
-    assert env_debug()
+    assert debug_enabled()
     monkeypatch.setenv("FISH_VOICE_DEBUG", "true")
-    assert env_debug()
+    assert debug_enabled()
     monkeypatch.setenv("FISH_VOICE_DEBUG", "0")
-    assert not env_debug()
+    assert not debug_enabled()
 
 
 def test_debug_level_and_trace_gating(
@@ -166,10 +166,10 @@ def test_debug_flag_does_not_write_the_process_environment(
 ) -> None:
     monkeypatch.delenv("FISH_VOICE_DEBUG", raising=False)
     configure_voice_logging(debug=True)
-    assert env_debug()
+    assert debug_enabled()
     assert "FISH_VOICE_DEBUG" not in os.environ
     configure_voice_logging(debug=False)
-    assert not env_debug()
+    assert not debug_enabled()
 
 
 def test_conversation_is_plain_on_stdout_without_debug(

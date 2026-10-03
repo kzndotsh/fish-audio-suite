@@ -28,8 +28,8 @@ from fish_audio_suite_voice.transports import (
     http_client,
     openrouter_client,
 )
-from fish_audio_suite_voice.tune import LlmTune, openrouter_host
-from fish_audio_suite_voice.wire import own_cancel, reap
+from fish_audio_suite_voice.tune import LlmTune, is_openrouter_host
+from fish_audio_suite_voice.wire import is_own_cancel, reap
 
 __all__ = [
     "ChatBackend",
@@ -565,7 +565,7 @@ async def llm_token_stream(
     is not spoken.
     """
     tune = tune or LlmTune(
-        backend="openrouter" if openrouter_host(base) else "openai",
+        backend="openrouter" if is_openrouter_host(base) else "openai",
         base=base,
         key=key,
         model=model,
@@ -680,7 +680,7 @@ async def _stream_generation(
             held.stopped = "cancel"
             # Only our own cancel flag may end the stream quietly. An outer
             # cancellation (asyncio.timeout, a task group) has to propagate.
-            if not own_cancel(cancel):
+            if not is_own_cancel(cancel):
                 raise
             return
         except GeneratorExit:

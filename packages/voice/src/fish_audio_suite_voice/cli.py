@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Final
 
 from fish_audio_suite_voice.aec import EchoCanceller
-from fish_audio_suite_voice.config import VoiceCliConfig, cfg, warn_if_insecure_base
+from fish_audio_suite_voice.config import VoiceCliConfig, load_config, warn_if_insecure_base
 from fish_audio_suite_voice.debug import (
     DebugLevel,
     configure_voice_logging,
@@ -41,7 +41,7 @@ from fish_audio_suite_voice.tune import LlmTune, provider_for_base
 
 __all__ = [
     "apply_cli_env_files",
-    "cfg",
+    "load_config",
     "main",
     "run_loop",
     "smoke_test",
@@ -282,7 +282,7 @@ def main(argv: list[str] | None = None) -> int:
     level = max(level, debug_level())
     debug = level >= DebugLevel.EVENTS
     configure_voice_logging(debug=level)
-    c = cfg()
+    c = load_config()
     warn_if_insecure_base(c)
     if args.playback:
         c = replace(c, playback=playback_key(args.playback))

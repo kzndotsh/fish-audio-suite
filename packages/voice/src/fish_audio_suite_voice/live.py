@@ -32,7 +32,8 @@ from fish_audio_suite_kit import (
 )
 from fish_audio_suite_voice.debug import warn
 from fish_audio_suite_voice.playback import PlaybackSink
-from fish_audio_suite_voice.session import (
+from fish_audio_suite_voice.stream_scrub import delta_events
+from fish_audio_suite_voice.tts_turn import (
     IsolatedResult,
     TurnSpec,
     is_cancel_noise,
@@ -40,7 +41,6 @@ from fish_audio_suite_voice.session import (
     run_turn,
     text_events,
 )
-from fish_audio_suite_voice.stream_scrub import delta_events
 
 _STOCK: Final = SuiteDefaults()
 # The installed SDK Prosody model rejects anything outside this range.

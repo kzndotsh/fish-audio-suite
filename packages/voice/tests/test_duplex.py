@@ -13,8 +13,8 @@ from voice_fakes import FakeGate, FakeSink, install_audio, make_result, set_tts
 from fish_audio_suite_kit import ChatMessage, FishHttpError, LatencySnapshot
 from fish_audio_suite_voice.config import VoiceCliConfig
 from fish_audio_suite_voice.duplex import duplex_turns
-from fish_audio_suite_voice.duplex_state import DuplexState
-from fish_audio_suite_voice.hearing import HeardLine, accept_asr, recognize
+from fish_audio_suite_voice.duplex_state import DuplexContext
+from fish_audio_suite_voice.hearing import HeardLine, classify_transcript, recognize
 from fish_audio_suite_voice.history import opening_history, remember_user, trim_history
 from fish_audio_suite_voice.live import IsolatedFishTts, IsolatedResult
 from fish_audio_suite_voice.playback import PortAudioMissingError
@@ -77,11 +77,11 @@ class _FakeBackend:
         return None
 
 
-def _loop(
+def _ctx(
     tokens: Callable[..., AsyncIterator[str]] | None = None,
     session: DuplexSession | None = None,
-) -> DuplexState:
-    return DuplexState(
+) -> DuplexContext:
+    return DuplexContext(
         config=_config(),
         tts=IsolatedFishTts(api_key="k", voice_id="voice"),
         device=None,
@@ -92,16 +92,16 @@ def _loop(
     )
 
 
-def test_accept_asr_drops_echoes_and_keeps_a_real_line() -> None:
-    assert accept_asr("yeah", "") == "skip"
-    assert accept_asr("thanks for watching", "") == "skip"
-    assert accept_asr("goodbye", "") == "quit"
-    assert accept_asr("hello there", "hello there") == "skip"
-    assert accept_asr("hello there.", "hello there") == "skip"
-    assert accept_asr("Hello There!", "hello there") == "skip"
-    assert accept_asr("bye.", "bye") == "quit"
-    assert accept_asr("I said hello there", "hello there") == "ok"
-    assert accept_asr("hello there", "earlier") == "ok"
+def test_classify_transcript_drops_echoes_and_keeps_a_real_line() -> None:
+    assert classify_transcript("yeah", "") == "skip"
+    assert classify_transcript("thanks for watching", "") == "skip"
+    assert classify_transcript("goodbye", "") == "quit"
+    assert classify_transcript("hello there", "hello there") == "skip"
+    assert classify_transcript("hello there.", "hello there") == "skip"
+    assert classify_transcript("Hello There!", "hello there") == "skip"
+    assert classify_transcript("bye.", "bye") == "quit"
+    assert classify_transcript("I said hello there", "hello there") == "ok"
+    assert classify_transcript("hello there", "earlier") == "ok"
 
 
 def test_history_keeps_the_system_prompt_and_drops_the_oldest_turn() -> None:
@@ -129,30 +129,30 @@ def test_history_drops_a_whole_turn_so_roles_stay_paired() -> None:
 
 
 def test_after_speech_records_only_audio_that_was_played() -> None:
-    loop = _loop()
+    ctx = _ctx()
     snapshot = LatencySnapshot()
     fatal, code = after_speech(
-        loop,
+        ctx,
         snapshot,
         make_result(error_status=401, error_message="no"),
         started=0.0,
     )
     assert code == 2
-    assert len(loop.history) == 1
+    assert len(ctx.history) == 1
     assert fatal.tts_first_audio_ms is None
 
-    loop = _loop()
+    ctx = _ctx()
     after_speech(
-        loop,
+        ctx,
         snapshot,
         make_result(cancelled=True),
         started=0.0,
     )
-    assert len(loop.history) == 1
+    assert len(ctx.history) == 1
 
-    loop = _loop()
+    ctx = _ctx()
     updated, code = after_speech(
-        loop,
+        ctx,
         snapshot,
         make_result(
             "hello", bytes_played=8, got_audio=True, cancelled=True, ttfa_ms=12.0, llm_ttfs_ms=4.0
@@ -160,39 +160,39 @@ def test_after_speech_records_only_audio_that_was_played() -> None:
         started=0.0,
     )
     assert code is None
-    assert loop.history[-1] == {"role": "assistant", "content": "hello"}
+    assert ctx.history[-1] == {"role": "assistant", "content": "hello"}
     assert updated.tts_first_audio_ms == 12.0
 
-    loop = _loop()
-    loop.history.append({"role": "user", "content": "Hey! Can you hear me?"})
+    ctx = _ctx()
+    ctx.history.append({"role": "user", "content": "Hey! Can you hear me?"})
     after_speech(
-        loop,
+        ctx,
         snapshot,
         make_result(
             "Hey! Can you hear me?", bytes_played=8, got_audio=True, ttfa_ms=12.0, llm_ttfs_ms=4.0
         ),
         started=0.0,
     )
-    assert loop.history[-1]["role"] == "user"
+    assert ctx.history[-1]["role"] == "user"
     after_speech(
-        loop,
+        ctx,
         snapshot,
         make_result(
             "Yeah. What's up?", bytes_played=8, got_audio=True, ttfa_ms=12.0, llm_ttfs_ms=4.0
         ),
         started=0.0,
     )
-    assert loop.history[-1] == {"role": "assistant", "content": "Yeah. What's up?"}
+    assert ctx.history[-1] == {"role": "assistant", "content": "Yeah. What's up?"}
 
 
 def test_recognize_fatal_again_and_quit(monkeypatch: pytest.MonkeyPatch) -> None:
-    loop = _loop()
+    ctx = _ctx()
 
     async def denied(*_args: object, **_kwargs: object) -> str:
         raise FishHttpError.from_status(401, "nope")
 
     monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", denied)
-    fatal = asyncio.run(recognize(loop, b"wav", ""))
+    fatal = asyncio.run(recognize(ctx, b"wav", ""))
     assert fatal.kind == "fatal"
     assert fatal.code == 2
 
@@ -200,13 +200,13 @@ def test_recognize_fatal_again_and_quit(monkeypatch: pytest.MonkeyPatch) -> None
         raise TimeoutError("late")
 
     monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", down)
-    assert asyncio.run(recognize(loop, b"wav", "")).kind == "again"
+    assert asyncio.run(recognize(ctx, b"wav", "")).kind == "again"
 
     async def bye_text(*_args: object, **_kwargs: object) -> str:
         return "goodbye"
 
     monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", bye_text)
-    assert asyncio.run(recognize(loop, b"wav", "")).kind == "bye"
+    assert asyncio.run(recognize(ctx, b"wav", "")).kind == "bye"
 
 
 def test_quit_during_asr_does_not_ask_the_llm(
@@ -261,10 +261,10 @@ def test_collect_reply_survives_a_closed_stdout(
     async def tokens(*_args: object, **_kwargs: object) -> AsyncIterator[str]:
         yield "Open the door today friend."
 
-    loop = _loop(tokens)
+    ctx = _ctx(tokens)
     monkeypatch.setattr(sys, "stdout", _ClosedStdout())
     reply, ttft = asyncio.run(
-        collect_reply(loop, llm_cancel=asyncio.Event(), trace_id=None, started=0.0)
+        collect_reply(ctx, llm_cancel=asyncio.Event(), trace_id=None, started=0.0)
     )
     assert reply == "Open the door today friend."
     assert ttft is not None
@@ -282,8 +282,8 @@ def test_collect_reply_keeps_partial_text_on_cancel(
         cancel.set()
         raise asyncio.CancelledError
 
-    loop = _loop(tokens)
-    reply, ttft = asyncio.run(collect_reply(loop, llm_cancel=cancel, trace_id=None, started=0.0))
+    ctx = _ctx(tokens)
+    reply, ttft = asyncio.run(collect_reply(ctx, llm_cancel=cancel, trace_id=None, started=0.0))
     assert reply == "Hi"
     assert ttft is not None
     assert "[llm]" not in capsys.readouterr().err
@@ -294,11 +294,11 @@ def test_collect_reply_lets_an_outside_cancel_propagate() -> None:
         yield "Hi"
         await asyncio.sleep(30)
 
-    loop = _loop(tokens)
+    ctx = _ctx(tokens)
 
     async def run() -> None:
         task = asyncio.create_task(
-            collect_reply(loop, llm_cancel=asyncio.Event(), trace_id=None, started=0.0)
+            collect_reply(ctx, llm_cancel=asyncio.Event(), trace_id=None, started=0.0)
         )
         await asyncio.sleep(0.05)
         task.cancel()
@@ -314,11 +314,11 @@ def test_collect_reply_lets_asyncio_timeout_fire() -> None:
         yield "Hi"
         await asyncio.sleep(30)
 
-    loop = _loop(tokens)
+    ctx = _ctx(tokens)
 
     async def run() -> None:
         async with asyncio.timeout(0.1):
-            await collect_reply(loop, llm_cancel=asyncio.Event(), trace_id=None, started=0.0)
+            await collect_reply(ctx, llm_cancel=asyncio.Event(), trace_id=None, started=0.0)
 
     with pytest.raises(TimeoutError):
         asyncio.run(run())
@@ -327,16 +327,16 @@ def test_collect_reply_lets_asyncio_timeout_fire() -> None:
 def test_speak_reply_exits_when_playback_cannot_open(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    loop = _loop()
+    ctx = _ctx()
     install_audio(monkeypatch)
 
     def speak(*_args: object, **_kwargs: object) -> IsolatedResult:
         raise PortAudioMissingError("missing")
 
-    set_tts(monkeypatch, loop.tts, speak=speak)
+    set_tts(monkeypatch, ctx.tts, speak=speak)
     _snapshot, code = asyncio.run(
         speak_reply(
-            loop,
+            ctx,
             "Hello there friend",
             threading.Event(),
             LatencySnapshot(),
@@ -345,13 +345,13 @@ def test_speak_reply_exits_when_playback_cannot_open(
         )
     )
     assert code == 2
-    assert len(loop.history) == 1
+    assert len(ctx.history) == 1
 
 
 def test_cancelled_speak_keeps_the_audio_that_tripped_barge(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    loop = _loop()
+    ctx = _ctx()
 
     install_audio(monkeypatch, gate=FakeGate(captured=b"clip"))
 
@@ -366,10 +366,10 @@ def test_cancelled_speak_keeps_the_audio_that_tripped_barge(
             "hello", bytes_played=4, got_audio=True, cancelled=True, ttfa_ms=3.0, llm_ttfs_ms=2.0
         )
 
-    set_tts(monkeypatch, loop.tts, speak=speak)
+    set_tts(monkeypatch, ctx.tts, speak=speak)
     _snapshot, code = asyncio.run(
         speak_reply(
-            loop,
+            ctx,
             "Hello there friend",
             threading.Event(),
             LatencySnapshot(),
@@ -378,14 +378,14 @@ def test_cancelled_speak_keeps_the_audio_that_tripped_barge(
         )
     )
     assert code is None
-    assert loop.barge_prefix == b"clip"
-    assert loop.history[-1]["content"] == "hello"
+    assert ctx.barge_prefix == b"clip"
+    assert ctx.history[-1]["content"] == "hello"
 
 
 def test_speak_reply_releases_the_mic_before_returning(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    loop = _loop()
+    ctx = _ctx()
     gate, _sink = install_audio(monkeypatch, gate=FakeGate(hold=True), sink=FakeSink(played=8))
 
     def speak(*_args: object, **_kwargs: object) -> IsolatedResult:
@@ -393,10 +393,10 @@ def test_speak_reply_releases_the_mic_before_returning(
             "hello there", bytes_played=8, got_audio=True, ttfa_ms=3.0, llm_ttfs_ms=2.0
         )
 
-    set_tts(monkeypatch, loop.tts, speak=speak)
+    set_tts(monkeypatch, ctx.tts, speak=speak)
     _snapshot, code = asyncio.run(
         speak_reply(
-            loop,
+            ctx,
             "Hello there friend",
             threading.Event(),
             LatencySnapshot(),
@@ -405,7 +405,7 @@ def test_speak_reply_releases_the_mic_before_returning(
         )
     )
     assert code is None
-    assert loop.history[-1]["content"] == "hello there"
+    assert ctx.history[-1]["content"] == "hello there"
     # The watcher waits up to 30 s for the cancel flag, and the caller only joins
     # for about a second, so a thread that is already finished proves the caller
     # set the flag before it returned.
@@ -424,10 +424,10 @@ def test_history_cap_follows_the_configured_turns() -> None:
 
 
 def test_a_deliberate_repeat_is_kept_but_a_stale_copy_is_dropped() -> None:
-    assert accept_asr("no", "no", stale=False) == "ok"
-    assert accept_asr("No.", "no", stale=False) == "ok"
-    assert accept_asr("no", "no", stale=True) == "skip"
-    assert accept_asr("no", "yes", stale=True) == "ok"
+    assert classify_transcript("no", "no", stale=False) == "ok"
+    assert classify_transcript("No.", "no", stale=False) == "ok"
+    assert classify_transcript("no", "no", stale=True) == "skip"
+    assert classify_transcript("no", "yes", stale=True) == "ok"
 
 
 def test_token_pipe_hands_tokens_across_in_order() -> None:
@@ -451,7 +451,7 @@ async def _two_tokens(*_args: object, **_kwargs: object) -> AsyncIterator[str]:
 def test_stream_turn_feeds_tokens_to_tts_and_arms_barge_at_first_audio(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    loop = _loop(_two_tokens)
+    ctx = _ctx(_two_tokens)
     gate, _sink = install_audio(monkeypatch)
     heard_tokens: list[str] = []
     armed_before_audio: list[int] = []
@@ -473,10 +473,10 @@ def test_stream_turn_feeds_tokens_to_tts_and_arms_barge_at_first_audio(
             "Hello there friend.", bytes_played=4, got_audio=True, ttfa_ms=3.0, llm_ttfs_ms=2.0
         )
 
-    set_tts(monkeypatch, loop.tts, speak_stream=speak_stream)
+    set_tts(monkeypatch, ctx.tts, speak_stream=speak_stream)
     snapshot, code = asyncio.run(
         stream_turn(
-            loop,
+            ctx,
             HeardLine("line", text="hi", started=time.perf_counter()),
             threading.Event(),
             asyncio.Event(),
@@ -488,13 +488,13 @@ def test_stream_turn_feeds_tokens_to_tts_and_arms_barge_at_first_audio(
     assert gate.armed == 1
     assert snapshot.first_audio_ms is not None
     assert snapshot.llm_first_token_ms is not None
-    assert loop.history[-1] == {"role": "assistant", "content": "Hello there friend."}
+    assert ctx.history[-1] == {"role": "assistant", "content": "Hello there friend."}
 
 
 def test_stream_turn_speaks_the_finished_reply_when_fish_fails_before_audio(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    loop = _loop(_two_tokens)
+    ctx = _ctx(_two_tokens)
     install_audio(monkeypatch)
     spoken: list[str] = []
 
@@ -522,10 +522,10 @@ def test_stream_turn_speaks_the_finished_reply_when_fish_fails_before_audio(
             "Hello there friend.", bytes_played=4, got_audio=True, ttfa_ms=3.0, llm_ttfs_ms=2.0
         )
 
-    set_tts(monkeypatch, loop.tts, speak=speak_whole, speak_stream=speak_stream)
+    set_tts(monkeypatch, ctx.tts, speak=speak_whole, speak_stream=speak_stream)
     _snapshot, code = asyncio.run(
         stream_turn(
-            loop,
+            ctx,
             HeardLine("line", text="hi", started=time.perf_counter()),
             threading.Event(),
             asyncio.Event(),
@@ -534,7 +534,7 @@ def test_stream_turn_speaks_the_finished_reply_when_fish_fails_before_audio(
     assert code is None
     assert len(spoken) == 1
     assert "Hello" in spoken[0]
-    assert loop.history[-1]["role"] == "assistant"
+    assert ctx.history[-1]["role"] == "assistant"
 
 
 def test_default_prompt_starts_with_a_pinned_multi_cue_exchange() -> None:
@@ -595,7 +595,7 @@ def test_stream_turn_with_an_empty_reply_speaks_nothing_and_reports_nothing(
         if False:
             yield ""
 
-    loop = _loop(no_tokens)
+    ctx = _ctx(no_tokens)
     install_audio(monkeypatch)
     seen_cancel: list[bool] = []
 
@@ -616,11 +616,11 @@ def test_stream_turn_with_an_empty_reply_speaks_nothing_and_reports_nothing(
     def never(*_args: object, **_kwargs: object) -> IsolatedResult:
         raise AssertionError("an empty reply must not be spoken")
 
-    set_tts(monkeypatch, loop.tts, speak=never, speak_stream=speak_stream)
-    history_before = list(loop.history)
+    set_tts(monkeypatch, ctx.tts, speak=never, speak_stream=speak_stream)
+    history_before = list(ctx.history)
     _snapshot, code = asyncio.run(
         stream_turn(
-            loop,
+            ctx,
             HeardLine("line", text="hi", started=time.perf_counter()),
             threading.Event(),
             asyncio.Event(),
@@ -628,14 +628,14 @@ def test_stream_turn_with_an_empty_reply_speaks_nothing_and_reports_nothing(
     )
     assert code is None
     assert seen_cancel == [True]
-    assert loop.history == history_before
+    assert ctx.history == history_before
     assert "silent" not in capsys.readouterr().out
 
 
 def test_quit_during_the_stream_fallback_rebind_does_not_speak(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    loop = _loop(_two_tokens)
+    ctx = _ctx(_two_tokens)
     install_audio(monkeypatch)
 
     def speak_stream(
@@ -654,47 +654,47 @@ def test_quit_during_the_stream_fallback_rebind_does_not_speak(
     def never(*_args: object, **_kwargs: object) -> IsolatedResult:
         raise AssertionError("nothing may be spoken after quit")
 
-    bind = loop.session.turn.bind
+    bind = ctx.session.turn.bind
 
     def bind_then_quit(cancel: threading.Event, llm_cancel: asyncio.Event, *a: object) -> None:
         bind(cancel, llm_cancel)
         # Ctrl+C lands right after the old flag was replaced.
-        loop.session.stop.set()
+        ctx.session.stop.set()
 
-    monkeypatch.setattr(loop.session.turn, "bind", bind_then_quit)
-    set_tts(monkeypatch, loop.tts, speak=never, speak_stream=speak_stream)
+    monkeypatch.setattr(ctx.session.turn, "bind", bind_then_quit)
+    set_tts(monkeypatch, ctx.tts, speak=never, speak_stream=speak_stream)
     _snapshot, code = asyncio.run(
         stream_turn(
-            loop,
+            ctx,
             HeardLine("line", text="hi", started=time.perf_counter()),
             threading.Event(),
             asyncio.Event(),
         )
     )
     assert code is None
-    assert loop.session.turn.cancel is not None
-    assert loop.session.turn.cancel.is_set()
+    assert ctx.session.turn.cancel is not None
+    assert ctx.session.turn.cancel.is_set()
 
 
 def test_recognize_listens_again_after_a_network_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    loop = _loop()
+    ctx = _ctx()
 
     async def unreachable(*_args: object, **_kwargs: object) -> str:
         raise httpx.ConnectError("down")
 
     monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", unreachable)
-    assert asyncio.run(recognize(loop, b"wav", "")).kind == "again"
+    assert asyncio.run(recognize(ctx, b"wav", "")).kind == "again"
 
 
 @pytest.mark.parametrize("bug", [RuntimeError("bug"), ValueError("bad"), KeyError("k")])
 def test_recognize_does_not_hide_a_programming_error(
     monkeypatch: pytest.MonkeyPatch, bug: Exception
 ) -> None:
-    loop = _loop()
+    ctx = _ctx()
 
     async def broken(*_args: object, **_kwargs: object) -> str:
         raise bug
 
     monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", broken)
     with pytest.raises(type(bug)):
-        asyncio.run(recognize(loop, b"wav", ""))
+        asyncio.run(recognize(ctx, b"wav", ""))

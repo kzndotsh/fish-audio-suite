@@ -49,7 +49,7 @@ DEFAULT_REPEAT_WINDOW_S: Final = 1.5
 __all__ = [
     "OPENROUTER_API_BASE",
     "VoiceCliConfig",
-    "cfg",
+    "load_config",
     "warn_if_insecure_base",
 ]
 
@@ -137,7 +137,7 @@ def warn_if_insecure_base(c: VoiceCliConfig) -> bool:
     Parameters
     ----------
     c : VoiceCliConfig
-        The settings built by ``cfg``.
+        The settings built by ``load_config``.
 
     Returns
     -------
@@ -161,7 +161,7 @@ def warn_if_insecure_base(c: VoiceCliConfig) -> bool:
     return warned
 
 
-def cfg() -> VoiceCliConfig:
+def load_config() -> VoiceCliConfig:
     """Read ``VoiceCliConfig`` from the current process environment.
 
     Returns

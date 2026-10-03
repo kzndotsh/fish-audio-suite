@@ -11,7 +11,7 @@ import pytest
 from voice_fakes import make_result
 
 from fish_audio_suite_voice.live import IsolatedResult
-from fish_audio_suite_voice.session import run_isolated
+from fish_audio_suite_voice.tts_turn import run_isolated
 
 
 async def _ws_like() -> AsyncIterator[int]:

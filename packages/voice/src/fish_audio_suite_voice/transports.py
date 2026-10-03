@@ -18,7 +18,7 @@ from fish_audio_suite_kit import (
     strip_base,
     utf8_text,
 )
-from fish_audio_suite_voice.debug import debug, env_debug, warn
+from fish_audio_suite_voice.debug import debug, debug_enabled, warn
 from fish_audio_suite_voice.tune import LlmTune
 
 __all__ = [
@@ -159,7 +159,7 @@ def _send_kwargs(call: ChatCall) -> dict[str, Any]:
         send_kw["session_id"] = call.session_id
     if call.trace_id:
         send_kw["trace"] = {"trace_id": call.trace_id, "trace_name": tune.title or "fish-voice"}
-    if env_debug():
+    if debug_enabled():
         _note_usage(send_kw)
         send_kw["x_open_router_metadata"] = "enabled"
     return _json_ready(send_kw)
@@ -327,7 +327,7 @@ async def _iter_httpx_sse_events(call: ChatCall) -> AsyncIterator[object]:
         # Only the OpenAI-compatible path. The OpenRouter SDK has its own
         # reasoning object, and a provider rejects fields it does not know.
         payload["reasoning_effort"] = call.tune.reasoning_effort
-    if env_debug():
+    if debug_enabled():
         _note_usage(payload)
     async with (
         _pooled(call) as http,

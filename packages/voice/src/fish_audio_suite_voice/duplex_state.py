@@ -17,7 +17,7 @@ from fish_audio_suite_voice.signals import DuplexSession
 __all__ = [
     "EXIT_FATAL",
     "EXIT_OK",
-    "DuplexState",
+    "DuplexContext",
 ]
 
 EXIT_OK: Final = 0
@@ -25,7 +25,7 @@ EXIT_FATAL: Final = 2
 
 
 @dataclass(slots=True)
-class DuplexState:
+class DuplexContext:
     """Everything one duplex session shares between the listen, reply and history steps."""
 
     config: VoiceCliConfig
