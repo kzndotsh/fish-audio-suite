@@ -26,7 +26,7 @@ Public surface: every module lists its exports in `__all__`, and the package roo
 | `listen.py` | One utterance for ASR. Start = consecutive VAD+RMS at the newest pre-pad end; an 8x peak needs more hits; impulse reject; a VAD-true frame holds the turn. |
 | `asr.py` | Fish ASR over httpx. Takes `cancel` and a session `client` (`asr_client()`). 429/5xx wait with jitter and `Retry-After`. Cues are always stripped for the LLM. |
 | `llm.py` | `ChatBackend` protocol, `open_chat_backend(tune)`. One event consumer for both transports. 429 retries once when Retry-After ≤ 15 s. Continuation after a mid-sentence stop is opt-in (`FISH_LLM_CONTINUE`). |
-| `transports.py` | OpenRouter SDK (`send_async`, `session_id`) or one pooled httpx SSE client. Referer/title/categories and `:nitro` are OpenRouter-only; `FISH_LLM_NITRO` is off by default. `openrouter` stays imported inside helpers. |
+| `transports.py` | OpenRouter SDK (`send_async`, `session_id`) or one pooled httpx SSE client. Referer/title/categories and `:nitro` are OpenRouter-only; `FISH_LLM_NITRO` is off by default. `reasoning_effort` goes on the httpx path only. `openrouter` stays imported inside helpers. |
 | `envfile.py` | Minimal dotenv loader. Process env wins, then `--env-file`, else `./.env`. Non-UTF-8 files are skipped. |
 | `cli.py` | `fish-voice` entry, smoke test (`--out`, else a unique temp file), `run_loop`. Ctrl+C goes to `DuplexSession.request_quit` on the loop; a stray `CancelledError` exits 2, never restarts. |
 | `duplex.py` | Mic → Fish ASR → `ChatBackend` → `speak_isolated`. One W3C trace id per turn. ASR/TTS 401/402/403 exit 2. Quit is sticky. Junk and narration filtering use `c.drop_narration`; mood leads use `c.mood_lead`. Streaming TTS (`FISH_STREAM_TTS`) skips the whole-reply junk and `drop_narration` filters, because it never holds the whole reply. An empty streamed reply cancels the Fish turn and speaks nothing. |
@@ -39,6 +39,8 @@ Public surface: every module lists its exports in `__all__`, and the package roo
 | Local env | `cp .env.example .env` then `./packages/voice/dev.sh --smoke` / `./packages/voice/dev.sh` |
 
 `--smoke` uses `FileSink`; exits 2 if `FISH_API_KEY` or `FISH_VOICE_ID` is missing. Do not commit `.env`. `dev.sh` builds PortAudio + Pulse with nix only on NixOS or with `FISH_VOICE_NIX=1`, pinned to this flake's lock; override with `FISH_VOICE_PORTAUDIO_LIB`.
+
+LLM providers live in one table, `LLM_PROVIDERS` in `tune.py` (name, default base, host, key variable, model variable). A provider is always read from the **host of the final base URL**, never from `FISH_LLM_PROVIDER` alone, and each provider reads only its own key variable, so a key cannot go to another host. Add a provider by adding a row, a test in `test_llm_providers.py`, and its README table row. A provider that speaks the OpenAI chat-completions API needs no new backend.
 
 Extras `speakers` / `vad` / `aec` / `cli` are optional. `sounddevice`, `webrtcvad`, `pywebrtc_audio`, and `openrouter` stay imported inside the functions that need them so `import fish_audio_suite_voice` works without extras. The `vad` extra is **`webrtcvad-wheels`**, not PyPI `webrtcvad` (breaks on 3.12). Mic/speakers need system PortAudio; missing lib → `PortAudioMissingError` (CLI exits 2 with hints).
 

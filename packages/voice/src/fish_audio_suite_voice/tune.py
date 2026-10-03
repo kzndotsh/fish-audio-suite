@@ -28,15 +28,21 @@ __all__ = [
     "DEFAULT_POST_SPEAK_COOLDOWN_S",
     "DEFAULT_SILENCE_FRAMES_END",
     "DEFAULT_VAD_AGGRESSIVENESS",
+    "EXPERIENTIAL_API_BASE",
     "IMPULSE_START_EXTRA",
+    "LLM_PROVIDERS",
     "MAX_UTTERANCE_FRAMES",
     "OPENROUTER_API_BASE",
+    "REASONING_EFFORTS",
     "AecTune",
     "BargeTune",
     "ListenTune",
     "LlmBackendName",
+    "LlmProvider",
+    "LlmProviderName",
     "LlmTune",
     "openrouter_host",
+    "provider_for_base",
     "read_flag",
     "read_float",
     "read_int",
@@ -62,6 +68,10 @@ DEFAULT_AEC_BLEED_S: Final = 0.3
 DEFAULT_AEC_WET: Final = 0.85
 
 OPENROUTER_API_BASE: Final = "https://openrouter.ai/api/v1"
+EXPERIENTIAL_API_BASE: Final = "https://api.experientiallabs.ai/v1"
+# The values Experiential documents for reasoning_effort. OpenAI's own names are a
+# subset, so they pass too. Which of them a route accepts is the provider's call.
+REASONING_EFFORTS: Final = frozenset({"none", "minimal", "low", "medium", "high", "max"})
 DEFAULT_LLM_MAX_TOKENS: Final = 1200
 DEFAULT_LLM_TEMPERATURE: Final = 0.8
 DEFAULT_LLM_TIMEOUT_S: Final = 120.0
@@ -214,6 +224,83 @@ def read_text(name: str, default: str = "") -> str:
 
 
 LlmBackendName = Literal["openrouter", "openai"]
+LlmProviderName = Literal["openrouter", "experiential", "custom"]
+
+
+@dataclass(frozen=True, slots=True)
+class LlmProvider:
+    """A chat provider this project knows by name.
+
+    Attributes
+    ----------
+    name : {"openrouter", "experiential"}
+        Value of ``FISH_LLM_PROVIDER``.
+    base : str
+        Default API base, used when ``FISH_LLM_BASE`` is not set.
+    host : str
+        The domain the base lives on. Its subdomains count too. A base on this
+        host is this provider, which is what decides whose key it may receive.
+    key_env : str
+        The only environment variable, besides ``FISH_LLM_KEY``, that may supply
+        this provider's key.
+    model_env : str
+        Optional model for this provider, so two providers can share one ``.env``.
+    """
+
+    name: Literal["openrouter", "experiential"]
+    base: str
+    host: str
+    key_env: str
+    model_env: str
+
+
+LLM_PROVIDERS: Final[tuple[LlmProvider, ...]] = (
+    LlmProvider(
+        "openrouter",
+        OPENROUTER_API_BASE,
+        "openrouter.ai",
+        "OPENROUTER_API_KEY",
+        "FISH_LLM_MODEL_OPENROUTER",
+    ),
+    LlmProvider(
+        "experiential",
+        EXPERIENTIAL_API_BASE,
+        "experientiallabs.ai",
+        "EXPLABS_API_KEY",
+        "FISH_LLM_MODEL_EXPERIENTIAL",
+    ),
+)
+
+
+def provider_for_base(base: str) -> LlmProvider | None:
+    """Find the named provider that hosts ``base``.
+
+    Parameters
+    ----------
+    base : str
+        LLM API base URL.
+
+    Returns
+    -------
+    LlmProvider or None
+        The provider whose domain, or a subdomain of it, is the host. None for any
+        other host, and for a look-alike path or query.
+
+    Examples
+    --------
+    >>> provider_for_base("https://api.experientiallabs.ai/v1").name
+    'experiential'
+    >>> provider_for_base("https://example.test/experientiallabs.ai") is None
+    True
+    """
+    try:
+        host = (urlsplit(base.strip()).hostname or "").lower()
+    except ValueError:
+        return None
+    for provider in LLM_PROVIDERS:
+        if host == provider.host or host.endswith(f".{provider.host}"):
+            return provider
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -379,7 +466,7 @@ class LlmTune:
     ----------
     backend : {"openrouter", "openai"}
         ``openai`` (any chat-completions server over httpx) or ``openrouter``
-        (the OpenRouter SDK).
+        (the OpenRouter SDK). Experiential and any other server use ``openai``.
     base : str
         API origin without a trailing slash.
     key : str
@@ -400,6 +487,10 @@ class LlmTune:
         OpenRouter attribution. Empty disables the field.
     continuation : bool
         Send one more request when a reply stops before a sentence end.
+    reasoning_effort : str
+        Sent as ``reasoning_effort`` on the ``openai`` backend. Empty omits it, and
+        the provider's default applies. A reasoning model that defaults to a high
+        effort can take seconds to the first word, so voice use wants ``low``.
     """
 
     backend: LlmBackendName = "openrouter"
@@ -415,6 +506,13 @@ class LlmTune:
     title: str = DEFAULT_LLM_TITLE
     categories: str = DEFAULT_LLM_CATEGORIES
     continuation: bool = False
+    reasoning_effort: str = ""
+
+    @property
+    def provider(self) -> LlmProviderName:
+        """Which provider ``base`` belongs to, or ``custom`` for any other host."""
+        found = provider_for_base(self.base)
+        return found.name if found is not None else "custom"
 
     @property
     def openrouter(self) -> bool:
@@ -428,23 +526,43 @@ class LlmTune:
         Returns
         -------
         LlmTune
-            ``FISH_LLM_BACKEND`` picks the backend. Unset, it follows the base
-            URL host. ``OPENROUTER_API_KEY`` is only a key fallback for the
-            OpenRouter backend and ``OPENAI_API_KEY`` only for the other, so a
-            key never goes to the wrong provider.
+            ``FISH_LLM_PROVIDER`` names a provider and supplies its default base,
+            and ``FISH_LLM_BASE`` overrides the base. The provider is then read
+            from the final base's host, so a key can only come from the variable
+            that belongs to that host (``OPENROUTER_API_KEY``, ``EXPLABS_API_KEY``),
+            or ``OPENAI_API_KEY`` for any other server. ``FISH_LLM_BACKEND`` picks
+            the backend. Unset, it follows the base URL host.
         """
-        base = _first_base("FISH_LLM_BASE", "OPENROUTER_BASE_URL") or OPENROUTER_API_BASE
+        named = _named_provider()
+        if named is not None:
+            # A named provider is only overridden by FISH_LLM_BASE. The older
+            # OPENROUTER_BASE_URL alias must not point its key at another host.
+            base = _first_base("FISH_LLM_BASE") or named.base
+        else:
+            base = _first_base("FISH_LLM_BASE", "OPENROUTER_BASE_URL") or OPENROUTER_API_BASE
+        provider = provider_for_base(base)
         backend = _backend(base)
-        key_names = (
-            ("FISH_LLM_KEY", "OPENROUTER_API_KEY")
-            if backend == "openrouter"
-            else ("FISH_LLM_KEY", "OPENAI_API_KEY")
-        )
+        if provider is not None:
+            key_env = provider.key_env
+        else:
+            key_env = "OPENROUTER_API_KEY" if backend == "openrouter" else "OPENAI_API_KEY"
+        key_names = ["FISH_LLM_KEY"]
+        if provider is None or _is_https(base):
+            key_names.append(key_env)
+        elif _raw(key_env) is not None:
+            warn(
+                f"fish-voice: {key_env} is not used because the base is not https, which would "
+                f"send it unencrypted. Use an https base, or set FISH_LLM_KEY to send a key anyway."
+            )
+        model_names = [provider.model_env] if provider is not None else []
+        model_names.append("FISH_LLM_MODEL")
+        if provider is None or provider.name == "openrouter":
+            model_names.append("OPENROUTER_MODEL")
         return cls(
             backend=backend,
             base=base,
             key=_first_text(*key_names),
-            model=_first_token("FISH_LLM_MODEL", "OPENROUTER_MODEL"),
+            model=_first_token(*model_names),
             temperature=read_float(
                 "FISH_LLM_TEMPERATURE", DEFAULT_LLM_TEMPERATURE, lo=0.0, hi=_LLM_TEMPERATURE_HI
             ),
@@ -456,7 +574,41 @@ class LlmTune:
             title=read_text("FISH_LLM_TITLE", DEFAULT_LLM_TITLE),
             categories=read_text("FISH_LLM_CATEGORIES", DEFAULT_LLM_CATEGORIES),
             continuation=read_flag("FISH_LLM_CONTINUE", default=False),
+            reasoning_effort=_reasoning_effort(),
         )
+
+
+def _named_provider() -> LlmProvider | None:
+    raw = _raw("FISH_LLM_PROVIDER")
+    if raw is None:
+        return None
+    low = raw.lower()
+    for provider in LLM_PROVIDERS:
+        if provider.name == low:
+            return provider
+    if low != "custom":
+        names = ", ".join(provider.name for provider in LLM_PROVIDERS)
+        warn(f"fish-voice: unknown FISH_LLM_PROVIDER={raw!r} (use {names}), reading FISH_LLM_BASE")
+    return None
+
+
+def _is_https(base: str) -> bool:
+    try:
+        return urlsplit(base.strip()).scheme.lower() == "https"
+    except ValueError:
+        return False
+
+
+def _reasoning_effort() -> str:
+    raw = _raw("FISH_LLM_REASONING_EFFORT")
+    if raw is None:
+        return ""
+    low = raw.lower()
+    if low in REASONING_EFFORTS:
+        return low
+    values = ", ".join(sorted(REASONING_EFFORTS))
+    warn(f"fish-voice: FISH_LLM_REASONING_EFFORT={raw!r} is not one of {values}, leaving it unset")
+    return ""
 
 
 def _first_base(*names: str) -> str:
@@ -501,6 +653,15 @@ def _backend(base: str) -> LlmBackendName:
         if low == "openai":
             return "openai"
         if low == "openrouter":
+            host = provider_for_base(base)
+            if host is not None and host.name != "openrouter":
+                # The SDK backend only fits OpenRouter. A setting left over from
+                # before another provider existed must not point it elsewhere.
+                warn(
+                    f"fish-voice: FISH_LLM_BACKEND=openrouter does not fit {host.name}, "
+                    "using the openai backend"
+                )
+                return "openai"
             return "openrouter"
         warn(f"fish-voice: unknown FISH_LLM_BACKEND={raw!r}, choosing from the base URL")
     return "openrouter" if openrouter_host(base) else "openai"

@@ -37,6 +37,7 @@ from fish_audio_suite_voice.playback import (
     playback_key,
 )
 from fish_audio_suite_voice.signals import DuplexSession
+from fish_audio_suite_voice.tune import LlmTune, provider_for_base
 
 __all__ = [
     "apply_cli_env_files",
@@ -74,6 +75,17 @@ def _parse_device(raw: str | None) -> str | int | None:
         if value.is_integer():
             return int(value)
         return text
+
+
+def llm_setting_names(llm: LlmTune) -> tuple[str, str]:
+    """Name the key and model variables the selected provider reads."""
+    provider = provider_for_base(llm.base)
+    if provider is None:
+        return ("OPENROUTER_API_KEY" if llm.openrouter else "OPENAI_API_KEY"), "OPENROUTER_MODEL"
+    models = [provider.model_env]
+    if provider.name == "openrouter":
+        models.append("OPENROUTER_MODEL")
+    return provider.key_env, " / ".join(models)
 
 
 def _blocker(label: str) -> int:
@@ -170,11 +182,11 @@ async def run_loop(c: VoiceCliConfig) -> int:
     missing = _require_fish(c)
     if missing is not None:
         return missing
+    key_name, model_names = llm_setting_names(c.llm)
     if not c.llm.key:
-        names = "OPENROUTER_API_KEY" if c.llm.openrouter else "OPENAI_API_KEY"
-        return _blocker(f"FISH_LLM_KEY / {names}")
+        return _blocker(f"FISH_LLM_KEY / {key_name}")
     if not c.llm.model:
-        return _blocker("FISH_LLM_MODEL / OPENROUTER_MODEL")
+        return _blocker(f"FISH_LLM_MODEL / {model_names}")
     playback_problem = duplex_playback_problem(c.playback)
     if playback_problem is not None:
         warn(f"BLOCKER: {playback_problem}")
@@ -186,7 +198,7 @@ async def run_loop(c: VoiceCliConfig) -> int:
         f"fish-voice ready | tts={c.tts_model} voice={c.fish_voice_id} "
         f"asr_lang={c.fish_asr_language or 'auto'} latency={c.latency} "
         f"playback={playback} | "
-        f"llm={c.llm.backend}:{short_model(c.llm.model)} | Ctrl+C quit",
+        f"llm={c.llm.provider}:{short_model(c.llm.model)} | Ctrl+C quit",
         flush=True,
     )
 

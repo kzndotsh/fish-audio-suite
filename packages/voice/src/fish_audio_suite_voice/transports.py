@@ -289,6 +289,17 @@ def _feed_sse(buf: str, line: str) -> tuple[str, dict[str, Any] | None, bool]:
     return piece, None, False
 
 
+def _gateway_note(headers: httpx.Headers) -> str:
+    """Describe the request id and route a gateway reports, for the debug log."""
+    fields = (
+        ("request", "x-request-id"),
+        ("via", "x-gateway-provider"),
+        ("zdr", "x-gateway-zdr"),
+    )
+    found = [f"{label}={headers[name]}" for label, name in fields if name in headers]
+    return f" {' '.join(found)}" if found else ""
+
+
 def chat_completions_url(base: str) -> str:
     """Return the OpenAI-compatible chat completions URL for ``base``."""
     return f"{strip_base(base)}/chat/completions"
@@ -312,6 +323,10 @@ async def _iter_httpx_sse_events(call: ChatCall) -> AsyncIterator[object]:
         "Content-Type": "application/json",
     }
     payload = _chat_body(call, "max_tokens")
+    if call.tune.reasoning_effort:
+        # Only the OpenAI-compatible path. The OpenRouter SDK has its own
+        # reasoning object, and a provider rejects fields it does not know.
+        payload["reasoning_effort"] = call.tune.reasoning_effort
     if env_debug():
         _note_usage(payload)
     async with (
@@ -322,7 +337,7 @@ async def _iter_httpx_sse_events(call: ChatCall) -> AsyncIterator[object]:
             body = _abort_text(await resp.aread())
             _abort_http(call.stats, resp.status_code, call.route_model, body, resp.headers)
             return
-        debug("llm.response status={}", resp.status_code)
+        debug("llm.response status={}{}", resp.status_code, _gateway_note(resp.headers))
         buf = ""
         async for line in resp.aiter_lines():
             buf, parsed, stop = _feed_sse(buf, line)

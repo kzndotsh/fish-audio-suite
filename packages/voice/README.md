@@ -82,9 +82,49 @@ costs about 40 tokens per request and is never trimmed from the history. In a te
 that took the average from 1.0 to about 2 cues per reply. A custom `FISH_SYSTEM_PROMPT` gets no
 seed, so it stays in control of the replies.
 
-### LLM backends
+### LLM providers
 
-`FISH_LLM_BACKEND` picks `openai` (any chat-completions server over one pooled httpx client) or `openrouter` (the SDK). Unset, it follows the host of `FISH_LLM_BASE`. A key never crosses providers: `OPENROUTER_API_KEY` is only a fallback for the OpenRouter backend and `OPENAI_API_KEY` only for the other. OpenRouter-only options: `FISH_LLM_NITRO=1` adds `:nitro` to the model and sorts providers by `FISH_LLM_PROVIDER_SORT`, and `FISH_LLM_REFERER`, `FISH_LLM_TITLE`, `FISH_LLM_CATEGORIES` set the attribution (empty disables one). The OpenAI backend sends none of those headers.
+`FISH_LLM_PROVIDER` names the chat provider: `openrouter` (the default) or `experiential`. It
+supplies the default base URL, and `FISH_LLM_BASE` overrides it. The provider is always read from
+the host of the final base URL, and each provider has its own key variable, so a key never goes
+to the wrong host.
+
+| Provider | Default base | Key variable | Model variable |
+| --- | --- | --- | --- |
+| `openrouter` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | `FISH_LLM_MODEL_OPENROUTER` |
+| `experiential` | `https://api.experientiallabs.ai/v1` | `EXPLABS_API_KEY` | `FISH_LLM_MODEL_EXPERIENTIAL` |
+| any other host | `FISH_LLM_BASE` | `OPENAI_API_KEY` | `FISH_LLM_MODEL` |
+
+`FISH_LLM_KEY` and `FISH_LLM_MODEL` work for every provider. An explicit `FISH_LLM_KEY` wins, and
+the chosen provider's own model variable comes before `FISH_LLM_MODEL`. Keep both providers in one
+`.env` and switch with `FISH_LLM_PROVIDER`.
+
+Experiential speaks the OpenAI chat-completions API, so it runs on the `openai` backend (one pooled
+httpx client). `FISH_LLM_BACKEND` picks `openai` or `openrouter` (the SDK) explicitly; unset, it
+follows the host. What to know about Experiential, from its published contract:
+
+- **Reasoning.** `FISH_LLM_REASONING_EFFORT` (`none`, `minimal`, `low`, `medium`, `high` or `max`) is
+  sent as `reasoning_effort` on the `openai` backend. A reasoning model such as
+  `glm-5.3-flash-abliterated` defaults to `max` and can take seconds to its first word, so `low`
+  suits voice. Empty omits the field. The OpenRouter SDK backend never sends it.
+- **Fields.** Experiential answers 400 to a request field it does not know, so the request carries
+  only `model`, `messages`, `stream`, `temperature` and `max_tokens`, plus `reasoning_effort` when set.
+- **No `:nitro`.** That suffix is OpenRouter-only (`FISH_LLM_NITRO` never applies to Experiential).
+- **Errors.** A spent free allowance is a 429 `insufficient_quota` (for example `free_limit_reached`)
+  with no `Retry-After`. It is printed with its code and not retried.
+- **Debug log.** With `--debug` the response line shows the request id (`x-request-id`), the route
+  (`x-gateway-provider`) and the zero-data-retention posture (`x-gateway-zdr`), which support asks for.
+- **Privacy.** Platform-funded calls are captured: Experiential stores both the request and the
+  model's reply. A free organization cannot turn that off, and only a Pro organization can. Your
+  spoken conversation is the prompt, so do not use a free organization for anything private.
+- **Effort values differ by route.** `glm-5.3-flash-abliterated` takes only `low`, `high` and `max`
+  and answers 400 to `none`. The value is passed through unchanged.
+- **https only for the automatic key.** `EXPLABS_API_KEY` is picked up only when the base is
+  `https`. A plain `http` base would send it unencrypted, so use `FISH_LLM_KEY` to override.
+
+OpenRouter-only options: `FISH_LLM_NITRO=1` adds `:nitro` to the model and sorts providers by
+`FISH_LLM_PROVIDER_SORT`, and `FISH_LLM_REFERER`, `FISH_LLM_TITLE`, `FISH_LLM_CATEGORIES` set the
+attribution (empty disables one). The `openai` backend sends none of those headers.
 
 ### Streaming the reply
 
@@ -125,8 +165,8 @@ Required:
 | --- | --- |
 | `FISH_API_KEY` | none |
 | `FISH_VOICE_ID` | none |
-| `FISH_LLM_KEY` (fallback `OPENROUTER_API_KEY` or `OPENAI_API_KEY`, see above) | none. Duplex only |
-| `FISH_LLM_MODEL` (fallback `OPENROUTER_MODEL`) | none. Duplex only |
+| `FISH_LLM_KEY` (fallback: the provider's own key variable, see above) | none. Duplex only |
+| `FISH_LLM_MODEL` (the provider's model variable first; `OPENROUTER_MODEL` for OpenRouter and custom hosts) | none. Duplex only |
 
 Speech:
 
@@ -151,8 +191,10 @@ LLM:
 
 | Variable | Default | Effect |
 | --- | --- | --- |
+| `FISH_LLM_PROVIDER` | `openrouter` | `openrouter` or `experiential`. Sets the default base, key variable and model variable. See above |
 | `FISH_LLM_BACKEND` | from the base URL | `openai` or `openrouter` |
 | `FISH_LLM_BASE` (fallback `OPENROUTER_BASE_URL`) | `https://openrouter.ai/api/v1` | API origin |
+| `FISH_LLM_REASONING_EFFORT` | unset | `none`, `minimal`, `low`, `medium`, `high` or `max`. Sent on the `openai` backend only |
 | `FISH_LLM_TEMPERATURE` | `0.8` | 0 to 2 |
 | `FISH_LLM_TIMEOUT` | `120` | Seconds per request |
 | `FISH_LLM_MAX_TOKENS` | `1200` | Completion cap |

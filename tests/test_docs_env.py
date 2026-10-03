@@ -24,13 +24,13 @@ ENV_EXAMPLE = ROOT / ".env.example"
 DEV_SH = ROOT / "packages" / "voice" / "dev.sh"
 
 ENV_NAME = re.compile(r"^[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+$")
-OURS = re.compile(r"^(FISH|OPENROUTER|OPENAI)_[A-Z0-9_]+$")
+OURS = re.compile(r"^(FISH|OPENROUTER|OPENAI|EXPLABS)_[A-Z0-9_]+$")
 # Helpers that read an environment variable. A string argument is its name. If
 # someone adds a reader with another name, the guard in
 # test_no_prefixed_name_is_left_unexplained fails and says to add it here.
 READER_CALL = re.compile(
     r"^(env_\w+|read_\w+|_first_\w+|_existing|_non_negative|_positive_float|_positive_int"
-    r"|_deprecated|_raw)$"
+    r"|_deprecated|_raw|LlmProvider)$"
 )
 SHELL_REF = re.compile(r"\$\{?(FISH_[A-Z0-9_]+)")
 TICKED = re.compile(r"`([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)`")
