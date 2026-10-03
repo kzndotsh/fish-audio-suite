@@ -271,17 +271,54 @@ def test_collect_reply_keeps_partial_text_on_cancel(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    cancel = asyncio.Event()
+
     async def tokens(*_args: object, **_kwargs: object) -> AsyncIterator[str]:
         yield "Hi"
+        # A barge-in sets the flag, then the stream unwinds with a cancel.
+        cancel.set()
         raise asyncio.CancelledError
 
     loop = _loop(tokens)
-    reply, ttft = asyncio.run(
-        _collect_reply(loop, llm_cancel=asyncio.Event(), trace_id=None, started=0.0)
-    )
+    reply, ttft = asyncio.run(_collect_reply(loop, llm_cancel=cancel, trace_id=None, started=0.0))
     assert reply == "Hi"
     assert ttft is not None
     assert "[llm]" not in capsys.readouterr().err
+
+
+def test_collect_reply_lets_an_outside_cancel_propagate() -> None:
+    async def tokens(*_args: object, **_kwargs: object) -> AsyncIterator[str]:
+        yield "Hi"
+        await asyncio.sleep(30)
+
+    loop = _loop(tokens)
+
+    async def run() -> None:
+        task = asyncio.create_task(
+            _collect_reply(loop, llm_cancel=asyncio.Event(), trace_id=None, started=0.0)
+        )
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert task.cancelled()
+
+    asyncio.run(run())
+
+
+def test_collect_reply_lets_asyncio_timeout_fire() -> None:
+    async def tokens(*_args: object, **_kwargs: object) -> AsyncIterator[str]:
+        yield "Hi"
+        await asyncio.sleep(30)
+
+    loop = _loop(tokens)
+
+    async def run() -> None:
+        async with asyncio.timeout(0.1):
+            await _collect_reply(loop, llm_cancel=asyncio.Event(), trace_id=None, started=0.0)
+
+    with pytest.raises(TimeoutError):
+        asyncio.run(run())
 
 
 def test_speak_reply_exits_when_playback_cannot_open(
@@ -719,3 +756,27 @@ def test_quit_during_the_stream_fallback_rebind_does_not_speak(
     assert code is None
     assert loop.session.turn.cancel is not None
     assert loop.session.turn.cancel.is_set()
+
+
+def test_recognize_listens_again_after_a_network_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    loop = _loop()
+
+    async def unreachable(*_args: object, **_kwargs: object) -> str:
+        raise httpx.ConnectError("down")
+
+    monkeypatch.setattr("fish_audio_suite_voice.duplex.fish_asr", unreachable)
+    assert asyncio.run(_recognize(loop, b"wav", "")).kind == "again"
+
+
+@pytest.mark.parametrize("bug", [RuntimeError("bug"), ValueError("bad"), KeyError("k")])
+def test_recognize_does_not_hide_a_programming_error(
+    monkeypatch: pytest.MonkeyPatch, bug: Exception
+) -> None:
+    loop = _loop()
+
+    async def broken(*_args: object, **_kwargs: object) -> str:
+        raise bug
+
+    monkeypatch.setattr("fish_audio_suite_voice.duplex.fish_asr", broken)
+    with pytest.raises(type(bug)):
+        asyncio.run(_recognize(loop, b"wav", ""))

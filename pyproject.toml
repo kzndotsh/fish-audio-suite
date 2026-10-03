@@ -20,6 +20,7 @@ dev = [
 ]
 test = [
     "pytest-cov>=7",
+    "pytest-randomly>=3.16",
     "pytest-socket>=0.7",
     "pytest-timeout>=2.4",
 ]
@@ -28,6 +29,15 @@ test = [
 testpaths = ["packages"]
 strict = true
 timeout = 60
+# Every warning is an error, so a leaked file or an unawaited coroutine fails CI.
+# Each ignore below names a third-party warning and the code that raises it.
+filterwarnings = [
+    "error",
+    # Starlette's TestClient still imports httpx and warns about httpx2 on import.
+    "ignore:Using .httpx. with .starlette.testclient. is deprecated:starlette.exceptions.StarletteDeprecationWarning",
+    # Starlette's TestClient reads an anyio alias that anyio has deprecated.
+    "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning:starlette.testclient",
+]
 addopts = [
     "--import-mode=importlib",
     "--disable-socket",

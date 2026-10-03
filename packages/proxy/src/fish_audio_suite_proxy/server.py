@@ -18,6 +18,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 import uvicorn
@@ -34,6 +35,7 @@ from fish_audio_suite_kit import (
     fish_non_json,
     is_asr_hallucination,
     is_caption_watermark,
+    is_insecure_fish_base,
     is_tts_junk,
     parse_asr_body,
     scrub_asr,
@@ -109,6 +111,12 @@ async def lifespan(app: FastAPI):
         headers["Authorization"] = bearer(key)
     else:
         log.warning("FISH_API_KEY unset; speech/transcription routes will fail until set")
+    if is_insecure_fish_base(settings.defaults.fish_base):
+        log.warning(
+            "FISH_BASE host %s is plain http and not loopback; the Fish API key "
+            "travels in cleartext. Use https unless this network is trusted",
+            urlsplit(settings.defaults.fish_base).hostname,
+        )
     if settings.exposed and not settings.auth_required:
         log.warning(
             "listening on %s with no FISH_PROXY_API_KEYS; anyone who can reach this port "

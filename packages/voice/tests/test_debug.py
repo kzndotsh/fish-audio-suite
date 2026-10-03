@@ -221,3 +221,47 @@ def test_short_model_drops_only_the_vendor_prefix() -> None:
     assert short_model("openai/gpt-4o:nitro") == "gpt-4o:nitro"
     assert short_model("local-model") == "local-model"
     assert short_model(None) == ""
+
+
+def test_debug_level_is_fixed_when_logging_is_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("FISH_VOICE_DEBUG", raising=False)
+    configure_voice_logging(debug=1)
+    monkeypatch.setenv("FISH_VOICE_DEBUG", "2")
+    assert debug_level() == 1
+    assert not heartbeat_due(20, 20)
+
+
+def test_debug_level_never_reads_the_environment_after_configuring(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("FISH_VOICE_DEBUG", raising=False)
+    configure_voice_logging(debug=2)
+
+    def forbidden() -> int:
+        raise AssertionError("the environment was read")
+
+    monkeypatch.setattr("fish_audio_suite_voice.debug._env_level", forbidden)
+    for _ in range(100):
+        assert debug_level() == 2
+        assert heartbeat_due(20, 20)
+
+
+def test_configure_takes_the_higher_of_the_argument_and_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FISH_VOICE_DEBUG", "trace")
+    configure_voice_logging(debug=False)
+    assert debug_level() == 2
+    monkeypatch.delenv("FISH_VOICE_DEBUG", raising=False)
+    assert debug_level() == 2
+
+
+def test_debug_level_reads_the_environment_until_logging_is_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FISH_VOICE_DEBUG", "1")
+    assert debug_level() == 1
+    monkeypatch.setenv("FISH_VOICE_DEBUG", "2")
+    assert debug_level() == 2

@@ -15,6 +15,7 @@ from fish_audio_suite_kit import (
     env_off,
     env_text,
     env_token,
+    is_insecure_fish_base,
     known_latency,
     known_mp3_bitrate,
     known_opus_bitrate,
@@ -196,3 +197,59 @@ def test_the_package_root_still_exports_the_helpers_it_used_to() -> None:
     ):
         assert name in kit.__all__
         assert callable(getattr(kit, name)) or getattr(kit, name)
+
+
+@pytest.mark.parametrize(
+    ("base", "insecure"),
+    [
+        ("http://10.0.0.5:8080", True),
+        ("http://fish.internal", True),
+        ("HTTP://Fish.Example.com/v1", True),
+        ("https://api.fish.audio", False),
+        ("https://10.0.0.5:8080", False),
+        ("http://127.0.0.1:8080", False),
+        ("http://127.5.5.5", False),
+        ("http://localhost:8080", False),
+        ("http://api.localhost", False),
+        ("http://[::1]:8080", False),
+        ("http://[2001:db8::1]:8080", True),
+        ("api.fish.audio", False),
+        ("", False),
+        ("http://[::1", False),
+    ],
+)
+def test_is_insecure_fish_base(base: str, insecure: bool) -> None:
+    assert is_insecure_fish_base(base) is insecure
+
+
+@pytest.mark.parametrize(
+    "value",
+    ["\uff11\uff10", "\u0663", "1_000", "0x10", "1 000", "ten", "nan", "inf", "1e", "--5"],
+)
+def test_env_numbers_ignore_lookalike_and_malformed_values(
+    monkeypatch: pytest.MonkeyPatch, value: str
+) -> None:
+    monkeypatch.setenv("FISH_TEST_NUM", value)
+    assert env_int("FISH_TEST_NUM", 7) == 7
+    assert env_float("FISH_TEST_NUM", 7.5) == 7.5
+
+
+@pytest.mark.parametrize(
+    ("value", "as_int", "as_float"),
+    [
+        ("10", 10, 10.0),
+        (" 10 ", 10, 10.0),
+        ("-3", -3, -3.0),
+        ("+4", 4, 4.0),
+        ("16000.0", 16000, 16000.0),
+        ("1e3", 1000, 1000.0),
+        ("2.5", 7, 2.5),
+        (".5", 7, 0.5),
+    ],
+)
+def test_env_numbers_still_accept_ordinary_decimals(
+    monkeypatch: pytest.MonkeyPatch, value: str, as_int: int, as_float: float
+) -> None:
+    monkeypatch.setenv("FISH_TEST_NUM", value)
+    assert env_int("FISH_TEST_NUM", 7) == as_int
+    assert env_float("FISH_TEST_NUM", 7.5) == as_float

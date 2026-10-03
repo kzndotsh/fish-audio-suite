@@ -18,7 +18,7 @@ Import: `fish_audio_suite_kit`. Tests: `uv run pytest packages/kit`. `tests/` ha
 | `cues` | `normalize_cues`, `ensure_lead_cue`, `strip_cue_tags`, the S1 cue names |
 | `cuts` | `next_tts_cut`, `split_tts_piece`, `ends_sentence` |
 | `asr_text` | `scrub_asr`, `is_asr_hallucination`, backchannel and quit gates, watermarks |
-| `defaults` | `SuiteDefaults`, clamps, env readers, `chunk_length_hi` |
+| `defaults` | `SuiteDefaults`, clamps, env readers, `chunk_length_hi`, `is_insecure_fish_base` |
 | `http_errors` | Fish error shape, retry and backoff helpers |
 | `captions` | `CaptionCue`, `format_as_srt`, `format_as_vtt`. No network |
 | `trace_context` | W3C `traceparent` parse and make, `ensure_trace_headers`. No OpenTelemetry |
@@ -34,6 +34,7 @@ Import: `fish_audio_suite_kit`. Tests: `uv run pytest packages/kit`. `tests/` ha
 - A sentence stop, closer, CJK range, or thought-tag name is defined once in `_charsets`.
 - Retry is 429 and 5xx only, five attempts. `fish_backoff_s` adds jitter and honors `Retry-After`. `fish_sleep_before_retry` returns True when the caller should try again. `fish_retry_pause` is the legacy stop-flag form.
 - `FishHttpError.unreachable()` / `.timed_out()` / `.non_json()` / `.non_object()` build the 502 and 504 errors. The `fish_unreachable()` style tuple helpers stay for callers.
+- `fish_transport_error` never returns exception text; callers log `exc` themselves. `captions` compares integer milliseconds, not formatted clocks. `env_int` and `env_float` take ASCII decimals only.
 - `chunk_length_hi` decides cloud from the parsed hostname. `self_hosted=` overrides. Env is read by callers, never at import.
 - `scrub_asr` keeps `[cue]` annotations unless `strip_cues=True`. Digit-only brackets always stay.
 - A regex over model text is bounded or anchored: `_LABEL`, `_TAG` and `_ASIDE` in `scrub_markdown`, a run-start lookbehind for space runs, and `_erase_spans` for open-to-close blocks. An unbounded scan from every opener is quadratic. `test_scrub_tts.py` times hostile 20k-character inputs.

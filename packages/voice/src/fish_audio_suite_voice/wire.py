@@ -22,7 +22,7 @@ from fish_audio_suite_kit import (
     skip_empty_delta,
     split_tts_piece,
 )
-from fish_audio_suite_voice.debug import debug, warn
+from fish_audio_suite_voice.debug import debug, warn, with_detail
 from fish_audio_suite_voice.playback import PlaybackSink
 from fish_audio_suite_voice.spoken import spoken_prefix
 
@@ -68,7 +68,7 @@ class TurnSpec:
     socket. ``partial_chars`` is the cut size from ``SuiteDefaults``.
     """
 
-    api_key: str
+    api_key: str = field(repr=False)
     base_url: str
     voice_id: str
     model: str
@@ -224,6 +224,52 @@ def is_cancel_noise(exc: BaseException, *, cancelled: bool = False) -> bool:
     return False
 
 
+def own_cancel(flag: asyncio.Event | threading.Event | None) -> bool:
+    """Return whether a ``CancelledError`` here comes from our own cancel flag.
+
+    Parameters
+    ----------
+    flag : asyncio.Event or threading.Event or None
+        The cancel flag the caller was given. ``None`` means the caller has no flag.
+
+    Returns
+    -------
+    bool
+        True when the flag is set and the running task has no pending
+        cancellation request of its own. Only then may the caller turn a
+        ``CancelledError`` into a normal early stop. Anything else, such as
+        ``asyncio.timeout``, a task group or an outer ``task.cancel()``, must
+        propagate.
+    """
+    if flag is None or not flag.is_set():
+        return False
+    task = asyncio.current_task()
+    return task is None or task.cancelling() == 0
+
+
+async def reap(task: asyncio.Task[Any], *, wait_s: float | None = None) -> None:
+    """Wait for a task that was just cancelled and drop its outcome.
+
+    Parameters
+    ----------
+    task : asyncio.Task
+        A child task that ``task.cancel()`` was already called on.
+    wait_s : float or None, optional
+        Seconds to wait. None waits until the task finishes. A task that is
+        still running after that is left for the loop shutdown.
+
+    Notes
+    -----
+    Unlike ``suppress(BaseException)`` around ``await task``, this never
+    swallows ``KeyboardInterrupt``, ``SystemExit`` or a cancellation of the
+    caller. The child's own exception is read so asyncio does not report it
+    as never retrieved.
+    """
+    done, _pending = await asyncio.wait({task}, timeout=wait_s)
+    if task in done and not task.cancelled():
+        task.exception()
+
+
 async def send_turn(
     client: AsyncFishAudio,
     events: AsyncIterator[Any],
@@ -286,6 +332,9 @@ def _note_first_audio(
 
 
 _STREAM_END = object()
+# A cancelled reader unwinds in milliseconds. A longer wait means a stuck socket,
+# which the loop shutdown cleans up.
+_REAP_TIMEOUT_S = 2.0
 
 
 async def _read_stream(stream: AsyncIterator[Any], queue: asyncio.Queue[Any]) -> None:
@@ -342,6 +391,7 @@ async def _pump_ws_audio(
     finally:
         if not reader.done():
             reader.cancel()
+            await reap(reader, wait_s=_REAP_TIMEOUT_S)
 
 
 def _remember_event(ev: Any, acc: EventAcc, t0: float) -> None:
@@ -507,5 +557,5 @@ def _classify_fish_exc(exc: BaseException) -> tuple[bool, int | None, str]:
         return True, None, str(exc)
     if isinstance(exc, httpx.RequestError):
         status, message = fish_request_error(exc, httpx.TimeoutException)
-        return True, status, message
+        return True, status, with_detail(message, exc)
     return False, None, str(exc)

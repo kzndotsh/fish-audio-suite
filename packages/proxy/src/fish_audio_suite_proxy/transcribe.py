@@ -179,16 +179,19 @@ async def read_asr(request: Request) -> _InboundAsr | JSONResponse:
         return _asr_from_json(parsed)
 
     try:
-        form = await request.form()
+        # The context closes the form and every upload on all paths. A form that
+        # is only awaited leaves its SpooledTemporaryFile open until garbage
+        # collection. Everything the result needs is copied out before it closes.
+        async with request.form() as form:
+            upload = form.get("file")
+            if not isinstance(upload, UploadFile):
+                return _empty_upload()
+            audio = await upload.read()
+            if not audio:
+                return _empty_upload()
+            return _asr_from_form(form, audio, upload)
     except HTTPException as exc:
         return json_error(exc.status_code, _form_error_message(exc.status_code))
-    upload = form.get("file")
-    if not isinstance(upload, UploadFile):
-        return _empty_upload()
-    audio = await upload.read()
-    if not audio:
-        return _empty_upload()
-    return _asr_from_form(form, audio, upload)
 
 
 def form_strings(form: FormData, *names: str) -> list[str]:

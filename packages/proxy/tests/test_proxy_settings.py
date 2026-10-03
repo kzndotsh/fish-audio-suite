@@ -17,7 +17,7 @@ from fish_audio_suite_proxy.fields import (
 from fish_audio_suite_proxy.limits import _declared_too_large
 from fish_audio_suite_proxy.models import catalog_ids, resolve_tts_model
 from fish_audio_suite_proxy.server import _uvicorn_run_kwargs, app
-from fish_audio_suite_proxy.settings import load_settings
+from fish_audio_suite_proxy.settings import ProxySettings, SettingsError, load_settings
 from fish_audio_suite_proxy.transcribe import transcription_body
 from fish_audio_suite_proxy.upstream import RetryPolicy, fish_send, retry_after_s
 
@@ -458,3 +458,61 @@ def test_a_timeout_is_still_a_504_with_the_fixed_message(
     )
     assert out.status_code == 504
     assert b"10.0.0.5" not in out.body
+
+
+def test_api_keys_never_appear_in_the_settings_repr() -> None:
+    settings = ProxySettings(api_keys=("sk-PROXY-SECRET-1", "sk-PROXY-SECRET-2"))
+    assert settings.auth_required is True
+    for shown in (repr(settings), str(settings), f"{settings!r}", repr([settings])):
+        assert "sk-PROXY-SECRET" not in shown
+    assert "sk-PROXY-SECRET" not in json.dumps(settings.health())
+
+
+@pytest.mark.parametrize("raw", [" , ", ",", ",,  ,", " , , "])
+def test_a_key_list_with_no_key_fails_closed(monkeypatch: pytest.MonkeyPatch, raw: str) -> None:
+    monkeypatch.setenv("FISH_PROXY_API_KEYS", raw)
+    with pytest.raises(SettingsError, match="FISH_PROXY_API_KEYS"):
+        load_settings()
+
+
+def test_startup_stops_on_a_key_list_with_no_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    fresh_app_env(monkeypatch, FISH_PROXY_API_KEYS=" , ")
+    with pytest.raises(SettingsError), TestClient(app):
+        pass
+
+
+@pytest.mark.parametrize("raw", ["", "   "])
+def test_an_empty_key_list_still_means_auth_is_off(
+    monkeypatch: pytest.MonkeyPatch, raw: str
+) -> None:
+    monkeypatch.setenv("FISH_PROXY_API_KEYS", raw)
+    settings = load_settings()
+    assert settings.api_keys == ()
+    assert settings.auth_required is False
+
+
+def test_keys_are_split_and_stripped(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FISH_PROXY_API_KEYS", " one , two ,, three ")
+    assert load_settings().api_keys == ("one", "two", "three")
+
+
+def test_startup_warns_once_about_a_cleartext_fish_base(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    fresh_app_env(monkeypatch, FISH_BASE="http://user:pw@10.0.0.5:8080")
+    with caplog.at_level("WARNING", logger="fish-audio-suite-proxy"), TestClient(app):
+        pass
+    warnings = [r for r in caplog.records if "cleartext" in r.getMessage()]
+    assert len(warnings) == 1
+    assert "10.0.0.5" in warnings[0].getMessage()
+    assert "pw" not in warnings[0].getMessage()
+
+
+@pytest.mark.parametrize("base", ["https://api.fish.audio", "http://127.0.0.1:8080"])
+def test_startup_does_not_warn_for_https_or_loopback(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, base: str
+) -> None:
+    fresh_app_env(monkeypatch, FISH_BASE=base)
+    with caplog.at_level("WARNING", logger="fish-audio-suite-proxy"), TestClient(app):
+        pass
+    assert not [r for r in caplog.records if "cleartext" in r.getMessage()]

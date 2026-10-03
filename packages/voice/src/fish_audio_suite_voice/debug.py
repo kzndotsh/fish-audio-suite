@@ -56,6 +56,27 @@ class _ReplyLine:
 _REPLY = _ReplyLine()
 
 
+def with_detail(message: str, exc: BaseException) -> str:
+    """Add an error's own text to a fixed message, for the local terminal.
+
+    Parameters
+    ----------
+    message : str
+        The fixed message, for example the kit's ``Fish upstream unreachable``.
+    exc : BaseException
+        The error it stands for.
+
+    Returns
+    -------
+    str
+        ``message: text`` when the error has text of its own, otherwise
+        ``message``. Kit keeps client-facing messages free of exception text;
+        voice is a local tool, so the user sees the detail here.
+    """
+    detail = str(exc).strip()
+    return f"{message}: {detail}" if detail and detail != message else message
+
+
 def short_model(model: object) -> str:
     """Return a model id without its vendor prefix, for display only.
 
@@ -104,9 +125,15 @@ def end_reply_line() -> None:
 
 
 class _Debug:
-    """Debug level set by ``configure_voice_logging``. Avoids writing os.environ."""
+    """Debug level set by ``configure_voice_logging``. Avoids writing os.environ.
+
+    ``frozen`` is the effective level once logging is configured. Until then the
+    environment is read live, so library callers that never configure logging
+    still honor ``FISH_VOICE_DEBUG``.
+    """
 
     level: int = 0
+    frozen: int | None = None
 
 
 _DEBUG = _Debug()
@@ -119,15 +146,25 @@ def debug_level() -> int:
     Returns
     -------
     int
-        The level set by ``configure_voice_logging``, or the one
-        ``FISH_VOICE_DEBUG`` asks for when that is higher. ``2`` or ``trace``
-        is level 2, any other true value is level 1.
+        The level ``configure_voice_logging`` fixed, which is the higher of its
+        argument and ``FISH_VOICE_DEBUG`` at that moment. Before logging is
+        configured the environment is read on each call. ``2`` or ``trace`` is
+        level 2, any other true value is level 1.
+
+    Notes
+    -----
+    Mic frames call this up to every 30 ms on two threads, so after
+    ``configure_voice_logging`` it never touches ``os.environ``.
     """
-    raw = os.environ.get("FISH_VOICE_DEBUG", "").strip().lower()
-    from_env = int(env_bool("FISH_VOICE_DEBUG"))
-    if raw in _TRACE_WORDS:
-        from_env = 2
-    return max(_DEBUG.level, from_env)
+    if _DEBUG.frozen is not None:
+        return _DEBUG.frozen
+    return max(_DEBUG.level, _env_level())
+
+
+def _env_level() -> int:
+    if os.environ.get("FISH_VOICE_DEBUG", "").strip().lower() in _TRACE_WORDS:
+        return 2
+    return int(env_bool("FISH_VOICE_DEBUG"))
 
 
 def env_debug() -> bool:
@@ -365,8 +402,9 @@ def configure_voice_logging(*, debug: bool | int) -> None:
         ``False`` or 0 logs warnings only. ``True`` or 1 adds events. 2 adds the
         heartbeats, raw websocket audio and HTTP request lines.
     """
-    level = int(debug)
+    level = max(int(debug), _env_level())
     _DEBUG.level = level
+    _DEBUG.frozen = level
     _stderr_logger("DEBUG" if level >= 1 else "WARNING")
     _CONFIGURED.on = True
     _intercept_libraries(level=level)

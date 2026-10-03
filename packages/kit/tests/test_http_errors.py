@@ -62,7 +62,17 @@ def test_transport_error_timeout_and_blank() -> None:
     assert status == 502
     assert message == "Fish upstream unreachable"
     status, message = fish_transport_error(ConnectionError("reset"), timed_out=False)
-    assert message == "reset"
+    assert (status, message) == (502, "Fish upstream unreachable")
+
+
+def test_transport_error_text_never_reaches_the_message() -> None:
+    secret = "connect to 10.0.0.5:443 refused [Errno 111]"
+    status, message = fish_transport_error(ConnectionError(secret), timed_out=False)
+    assert status == 502
+    assert "10.0.0.5" not in message
+    assert "Errno" not in message
+    _status, timeout_message = fish_transport_error(TimeoutError(secret), timed_out=True)
+    assert "10.0.0.5" not in timeout_message
 
 
 def test_fish_error_ignores_a_body_status_that_is_not_an_error() -> None:

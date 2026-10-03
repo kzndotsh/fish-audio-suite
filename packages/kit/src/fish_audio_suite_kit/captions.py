@@ -32,13 +32,17 @@ _HOUR_MS = 60 * _MINUTE_MS
 _CUE_BLANK_RE = re.compile(r"\n(?:[ \t]*\n)+")
 
 
-def _clock(seconds: float, decimal: str) -> str:
+def _ms(seconds: float) -> int:
+    """Whole milliseconds for a clock. Non-finite and negative values are 0."""
     if not math.isfinite(seconds):
-        seconds = 0.0
+        return 0
     try:
-        ms = round(max(0.0, seconds) * MS_PER_S)
+        return round(max(0.0, seconds) * MS_PER_S)
     except OverflowError:
-        ms = 0
+        return 0
+
+
+def _clock(ms: int, decimal: str) -> str:
     hours, ms = divmod(ms, _HOUR_MS)
     minutes, ms = divmod(ms, _MINUTE_MS)
     secs, ms = divmod(ms, MS_PER_S)
@@ -62,17 +66,13 @@ def _span(cue: CaptionCue, decimal: str, *, escape: bool) -> tuple[str, str, str
     body = _cue_body(cue.text, escape=escape)
     if not body:
         return None
-    start_s = cue.start if math.isfinite(cue.start) else 0.0
-    end_s = cue.end if math.isfinite(cue.end) else start_s
-    end_s = max(end_s, start_s)
-    start = _clock(start_s, decimal)
-    end = _clock(end_s, decimal)
-    # WebVTT drops a cue whose end is not later than its start. An inverted
-    # segment, a zero-length one, and a clock that overflowed all rendered
-    # as the same timestamp twice, so the words never appeared.
-    if end <= start:
-        end = _clock(start_s + 0.001, decimal)
-    return start, end, body
+    start_ms = _ms(cue.start)
+    end_ms = _ms(cue.end) if math.isfinite(cue.end) else start_ms
+    # WebVTT drops a cue whose end is not later than its start, so an inverted
+    # or zero-length segment gets one millisecond. The comparison is on integers:
+    # formatted clocks do not sort as text once the hours reach three digits.
+    end_ms = max(end_ms, start_ms + 1)
+    return _clock(start_ms, decimal), _clock(end_ms, decimal), body
 
 
 def _spans(cues: list[CaptionCue], decimal: str, *, escape: bool) -> list[tuple[str, str, str]]:

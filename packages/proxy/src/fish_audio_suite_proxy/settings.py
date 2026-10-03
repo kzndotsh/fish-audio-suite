@@ -73,8 +73,37 @@ def _positive_float(name: str, default: float) -> float:
     return value if value > 0 else default
 
 
+class SettingsError(ValueError):
+    """The environment holds a value the proxy cannot start safely with."""
+
+
 def _api_keys(raw: str) -> tuple[str, ...]:
-    return tuple(key for key in (part.strip() for part in raw.split(",")) if key)
+    """Parse ``FISH_PROXY_API_KEYS``.
+
+    Parameters
+    ----------
+    raw : str
+        The stripped environment value. Empty means auth is off.
+
+    Returns
+    -------
+    tuple of str
+        The comma-separated keys, stripped.
+
+    Raises
+    ------
+    SettingsError
+        When ``raw`` is not empty but holds no usable key, such as ``" , "``.
+        Treating it as "no keys" would switch auth off without saying so.
+    """
+    keys = tuple(key for key in (part.strip() for part in raw.split(",")) if key)
+    if raw and not keys:
+        msg = (
+            "FISH_PROXY_API_KEYS is set but holds no key. "
+            "Unset it to run without client auth, or list at least one key."
+        )
+        raise SettingsError(msg)
+    return keys
 
 
 @dataclass(frozen=True)
@@ -97,7 +126,7 @@ class ProxySettings:
     tts_dialogue_only: bool = False
     tts_mood_lead: bool = False
     tts_drop_narration: bool = False
-    api_keys: tuple[str, ...] = ()
+    api_keys: tuple[str, ...] = field(default=(), repr=False)
     max_body_bytes: int = DEFAULT_MAX_BODY_BYTES
     max_input_chars: int = DEFAULT_MAX_INPUT_CHARS
     log_text: bool = False
@@ -242,6 +271,12 @@ def load_settings() -> ProxySettings:
     ProxySettings
         A bad value keeps its default. ``FISH_MODEL`` and ``FISH_SPEED_SCALE``
         still work and log a deprecation warning.
+
+    Raises
+    ------
+    SettingsError
+        When ``FISH_PROXY_API_KEYS`` is set but holds no key, so a typo cannot
+        switch client auth off.
     """
     defaults = _suite_defaults()
     aliases = {

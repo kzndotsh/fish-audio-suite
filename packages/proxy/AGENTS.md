@@ -25,6 +25,8 @@ CLI: `fish-audio-suite-proxy`. Import: `fish_audio_suite_proxy`. Start uvicorn w
 
 Invariants:
 - `FISH_API_KEY` is read in lifespan. Importing the app and `GET /health` must work with it unset. A missing key is 503 on any request that would call Fish, and a wrong client key is 401. Text that is only junk returns local silence first, so it never reaches the key check.
+- `FISH_PROXY_API_KEYS` set but with no key raises `SettingsError` at startup. Empty or unset means no client auth. Never let a typo turn auth off silently. Secret fields on settings use `repr=False`.
+- A transport error message never reaches a client: send the fixed 502 or 504 text and log the detail. Close every multipart form with `async with request.form()`.
 - Scrub and cue logic lives in kit. Do not copy it here.
 - Never log request text above DEBUG unless `FISH_PROXY_LOG_TEXT` is set. Never put a key in `/health`.
 - Retry only 429, 5xx, and connections that never opened. A read timeout is not repeated.

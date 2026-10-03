@@ -12,6 +12,10 @@ RUN uv sync --frozen --no-dev --no-editable --package fish-audio-suite-proxy \
 # port can reach it. It has no client auth unless FISH_PROXY_API_KEYS is set.
 # Publish on loopback (-p 127.0.0.1:8849:8849) or set FISH_PROXY_API_KEYS
 # before publishing on another address.
+# On stop the proxy lets in-flight replies finish for up to
+# FISH_PROXY_GRACEFUL_SHUTDOWN seconds (default 120). Docker kills a container
+# after 10 seconds unless told otherwise, so run it with --stop-timeout 130
+# (compose: stop_grace_period: 130s), which is that drain plus 10 seconds.
 ENV PATH="/app/.venv/bin:$PATH" \
     FISH_PROXY_HOST=0.0.0.0 \
     FISH_PROXY_PORT=8849

@@ -15,7 +15,7 @@ from dataclasses import replace
 from pathlib import Path
 
 from fish_audio_suite_voice.aec import EchoCanceller
-from fish_audio_suite_voice.config import VoiceCliConfig, cfg
+from fish_audio_suite_voice.config import VoiceCliConfig, cfg, warn_if_insecure_base
 from fish_audio_suite_voice.debug import (
     configure_voice_logging,
     console_print,
@@ -263,6 +263,7 @@ def main(argv: list[str] | None = None) -> int:
     debug = level >= 1
     configure_voice_logging(debug=level)
     c = cfg()
+    warn_if_insecure_base(c)
     if args.playback:
         c = replace(c, playback=playback_key(args.playback))
 

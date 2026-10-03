@@ -183,6 +183,7 @@ class BargeGate:
         self.min_rms = self.tune.min_rms
         self._heard: deque[bytes] = deque(maxlen=BARGE_LOOKBACK_FRAMES)
         self.captured = b""
+        self.failure: Exception | None = None
 
     def _bleed_wait(self) -> float:
         if self._bleed_override is not None:
@@ -257,7 +258,11 @@ class BargeGate:
                     cancel.set()
                     return
         except Exception as e:
-            warn(f"[barge-in] {e}")
+            # A missing PortAudio or a dead device ends this watcher thread. The
+            # reply goes on without barge-in, so the user is told and the
+            # failure is kept for the thread that started the gate.
+            self.failure = e
+            warn(f"[barge-in] off for this reply: {e}")
 
     def start_after_bleed(self, cancel: threading.Event) -> threading.Thread:
         """Sleep out speaker bleed, then start ``watch`` unless already cancelled.
@@ -274,15 +279,22 @@ class BargeGate:
         """
 
         def _run() -> None:
-            delay = self._bleed_wait()
-            self.bleed_delay_s = delay
-            trace("barge.bleed sleep_s={}", delay)
-            # sleep() ignores cancel. A finished turn would wait out the rest
-            # of the bleed, or the next listen would open the mic twice.
-            if cancel.wait(timeout=delay):
-                debug("barge.bleed skipped (already cancelled)")
-                return
-            self.watch(cancel)
+            try:
+                delay = self._bleed_wait()
+                self.bleed_delay_s = delay
+                trace("barge.bleed sleep_s={}", delay)
+                # sleep() ignores cancel. A finished turn would wait out the rest
+                # of the bleed, or the next listen would open the mic twice.
+                if cancel.wait(timeout=delay):
+                    debug("barge.bleed skipped (already cancelled)")
+                    return
+                self.watch(cancel)
+            except Exception as e:
+                # Setup can fail before watch() has its own handler, for
+                # example loading AEC or the VAD. Without this the thread
+                # would die silently and the reply would play with no barge-in.
+                self.failure = e
+                warn(f"[barge-in] off for this reply: {e}")
 
         thread = threading.Thread(target=_run, daemon=True)
         thread.start()

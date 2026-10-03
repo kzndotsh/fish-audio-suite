@@ -5,6 +5,7 @@ self:
   config,
   lib,
   pkgs,
+  utils,
   ...
 }:
 let
@@ -14,8 +15,12 @@ let
   # mapping both follow `port`, so a different value would leave it unreachable.
   env = cfg.environment // {
     FISH_PROXY_PORT = portStr;
+    FISH_PROXY_GRACEFUL_SHUTDOWN = toString cfg.gracefulShutdownSeconds;
   };
   lowPort = cfg.port < 1024;
+  # Both the service manager and the container runtime must wait longer than
+  # the proxy's own drain, or they kill it in the middle of a reply.
+  stopSeconds = cfg.gracefulShutdownSeconds + 10;
 in
 {
   options.services.fish-audio-suite-proxy = {
@@ -71,6 +76,17 @@ in
       description = "Open `port` in the firewall. Only useful when `host` is not loopback.";
     };
 
+    gracefulShutdownSeconds = lib.mkOption {
+      type = lib.types.ints.unsigned;
+      # Keep in step with DEFAULT_GRACEFUL_S in packages/proxy/.../settings.py.
+      default = 120;
+      description = ''
+        How long the proxy lets in-flight replies finish after a stop signal.
+        Sets `FISH_PROXY_GRACEFUL_SHUTDOWN`. The service (`TimeoutStopSec`) and the
+        container (`--stop-timeout`) wait this long plus 10 seconds before they kill it.
+      '';
+    };
+
     autoStart = lib.mkOption {
       type = lib.types.bool;
       default = true;
@@ -81,11 +97,12 @@ in
       type = lib.types.attrsOf lib.types.str;
       default = { };
       example = {
-        FISH_MODEL = "s2.1-pro";
+        FISH_TTS_MODEL = "s2.1-pro";
       };
       description = ''
         Extra `FISH_*` variables. Do not put secrets here; they land in the Nix
-        store. `FISH_PROXY_PORT` and `FISH_PROXY_HOST` are rejected: use `port` and `host`.
+        store. `FISH_PROXY_PORT`, `FISH_PROXY_HOST` and `FISH_PROXY_GRACEFUL_SHUTDOWN` are
+        rejected: use `port`, `host` and `gracefulShutdownSeconds`.
       '';
     };
 
@@ -93,9 +110,11 @@ in
       type = lib.types.listOf lib.types.path;
       default = [ ];
       description = ''
-        Files providing `FISH_API_KEY` (and optional `FISH_*` knobs). A file
-        that sets `FISH_PROXY_PORT` overrides `port` for the service but not
-        for the firewall or the published container port.
+        Files providing `FISH_API_KEY` (and optional `FISH_*` knobs). With the
+        `native` backend a file cannot change `FISH_PROXY_HOST`, `FISH_PROXY_PORT`
+        or `FISH_PROXY_GRACEFUL_SHUTDOWN`: the module sets them on the command
+        line. With `oci`, the container runtime decides which source wins, so
+        keep those three out of the files.
       '';
     };
   };
@@ -105,8 +124,11 @@ in
       {
         assertions = [
           {
-            assertion = !(cfg.environment ? FISH_PROXY_PORT) && !(cfg.environment ? FISH_PROXY_HOST);
-            message = "services.fish-audio-suite-proxy.environment must not set FISH_PROXY_PORT or FISH_PROXY_HOST. Use the `port` and `host` options.";
+            assertion =
+              !(cfg.environment ? FISH_PROXY_PORT)
+              && !(cfg.environment ? FISH_PROXY_HOST)
+              && !(cfg.environment ? FISH_PROXY_GRACEFUL_SHUTDOWN);
+            message = "services.fish-audio-suite-proxy.environment must not set FISH_PROXY_PORT, FISH_PROXY_HOST or FISH_PROXY_GRACEFUL_SHUTDOWN. Use the `port`, `host` and `gracefulShutdownSeconds` options.";
           }
           {
             assertion = cfg.backend != "oci" || cfg.image != null;
@@ -126,10 +148,20 @@ in
             FISH_PROXY_HOST = cfg.host;
           };
           serviceConfig = {
-            ExecStart = lib.getExe' cfg.package "fish-audio-suite-proxy";
+            # systemd lets an EnvironmentFile override Environment=, so the three
+            # values the firewall and the stop timeout depend on are set through
+            # `env`, which runs after the files are loaded and always wins.
+            ExecStart = utils.escapeSystemdExecArgs [
+              (lib.getExe' pkgs.coreutils "env")
+              "FISH_PROXY_HOST=${cfg.host}"
+              "FISH_PROXY_PORT=${portStr}"
+              "FISH_PROXY_GRACEFUL_SHUTDOWN=${toString cfg.gracefulShutdownSeconds}"
+              (lib.getExe' cfg.package "fish-audio-suite-proxy")
+            ];
             EnvironmentFile = cfg.environmentFiles;
             DynamicUser = true;
             Restart = "on-failure";
+            TimeoutStopSec = stopSeconds;
             NoNewPrivileges = true;
             PrivateTmp = true;
             PrivateDevices = true;
@@ -157,6 +189,7 @@ in
           environment = env;
           environmentFiles = cfg.environmentFiles;
           autoStart = cfg.autoStart;
+          extraOptions = [ "--stop-timeout=${toString stopSeconds}" ];
         };
       })
     ]

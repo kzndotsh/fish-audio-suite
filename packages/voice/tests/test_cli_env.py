@@ -304,6 +304,7 @@ def _stub_main(monkeypatch: pytest.MonkeyPatch, run: object) -> None:
     monkeypatch.setattr("fish_audio_suite_voice.cli.apply_cli_env_files", _no_env)
     monkeypatch.setattr("fish_audio_suite_voice.cli.configure_voice_logging", _no_log)
     monkeypatch.setattr("fish_audio_suite_voice.cli.cfg", _fake_cfg)
+    monkeypatch.setattr("fish_audio_suite_voice.cli.warn_if_insecure_base", lambda _c: False)
     monkeypatch.setattr("fish_audio_suite_voice.cli.run_loop", run)
 
 
@@ -516,3 +517,19 @@ def test_a_malformed_llm_base_warns_and_falls_back(
     assert tune.base == OPENROUTER_API_BASE
     assert "not a valid URL" in capsys.readouterr().err
     assert openrouter_host("http://[::1") is False
+
+
+def test_main_checks_the_fish_and_llm_base_urls_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def run(_config: object) -> int:
+        raise KeyboardInterrupt
+
+    _stub_main(monkeypatch, run)
+    seen: list[object] = []
+
+    def record(config: object) -> bool:
+        seen.append(config)
+        return False
+
+    monkeypatch.setattr("fish_audio_suite_voice.cli.warn_if_insecure_base", record)
+    assert main([]) == 0
+    assert len(seen) == 1
