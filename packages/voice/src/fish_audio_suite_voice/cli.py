@@ -186,7 +186,7 @@ async def run_loop(c: VoiceCliConfig) -> int:
         return missing
     key_name, model_names = llm_setting_names(c.llm)
     if not c.llm.api_key:
-        return _blocker(f"FISH_LLM_KEY / {key_name}")
+        return _blocker(f"FISH_LLM_API_KEY / {key_name}")
     if not c.llm.model:
         return _blocker(f"FISH_LLM_MODEL / {model_names}")
     playback_problem = duplex_playback_problem(c.playback)
@@ -230,7 +230,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--playback",
         default=None,
-        help="sounddevice | file | stdout | mpv (overrides FISH_PLAYBACK)",
+        help="sounddevice | file | stdout | mpv (overrides FISH_VOICE_PLAYBACK)",
     )
     p.add_argument(
         "--env-file",

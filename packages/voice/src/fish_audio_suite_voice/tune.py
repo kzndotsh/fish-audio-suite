@@ -13,7 +13,13 @@ from dataclasses import dataclass, field
 from typing import Final, Literal, Self
 from urllib.parse import urlsplit
 
-from fish_audio_suite_kit import deprecated, deprecated_fields, env_token, strip_base
+from fish_audio_suite_kit import (
+    deprecated,
+    deprecated_fields,
+    env_renamed,
+    env_token,
+    strip_base,
+)
 from fish_audio_suite_voice._aliases import resolve_alias
 from fish_audio_suite_voice.debug import warn
 
@@ -47,6 +53,7 @@ __all__ = [
     "read_flag",
     "read_float",
     "read_int",
+    "warn_renamed",
 ]
 
 DEFAULT_VAD_AGGRESSIVENESS: Final = 1
@@ -224,6 +231,19 @@ def read_text(name: str, default: str = "") -> str:
     return default if value is None else value.strip()
 
 
+def warn_renamed(message: str) -> None:
+    """Print the kit ``env_renamed`` notice for a renamed key, as a voice warning.
+
+    Parameters
+    ----------
+    message : str
+        ``"<old> is deprecated; use <new>"`` from ``env_renamed``. Every key
+        renamed in 0.2.0 is read as ``env_renamed(new, old, warn=warn_renamed)``,
+        so the old name keeps working for one minor release.
+    """
+    warn(f"fish-voice: {message}")
+
+
 LlmBackendName = Literal["openrouter", "openai"]
 LlmProviderName = Literal["openrouter", "experiential", "custom"]
 
@@ -242,7 +262,7 @@ class LlmProvider:
         The domain the base lives on. Its subdomains count too. A base on this
         host is this provider, which is what decides whose key it may receive.
     key_env : str
-        The only environment variable, besides ``FISH_LLM_KEY``, that may supply
+        The only environment variable, besides ``FISH_LLM_API_KEY``, that may supply
         this provider's key.
     model_env : str
         Optional model for this provider, so two providers can share one ``.env``.
@@ -354,7 +374,11 @@ class ListenTune:
             Validated tune. A bad value is replaced by its default with a warning.
         """
         start = read_int("FISH_VOICE_SPEECH_FRAMES", DEFAULT_SPEECH_FRAMES_START, lo=1)
-        pad = read_int("FISH_VOICE_PRE_PAD", DEFAULT_PRE_PAD_FRAMES, lo=0)
+        pad = read_int(
+            env_renamed("FISH_VOICE_PRE_PAD_FRAMES", "FISH_VOICE_PRE_PAD", warn=warn_renamed),
+            DEFAULT_PRE_PAD_FRAMES,
+            lo=0,
+        )
         return cls(
             vad_aggressiveness=read_int(
                 "FISH_VOICE_VAD", DEFAULT_VAD_AGGRESSIVENESS, lo=0, hi=VAD_MODE_HI
@@ -366,7 +390,9 @@ class ListenTune:
             min_speech_rms=read_float("FISH_VOICE_MIN_RMS", DEFAULT_MIN_SPEECH_RMS, positive=True),
             pre_pad_frames=max(pad, start + IMPULSE_START_EXTRA),
             min_voiced_frames=read_int(
-                "FISH_VOICE_MIN_VOICED",
+                env_renamed(
+                    "FISH_VOICE_MIN_VOICED_FRAMES", "FISH_VOICE_MIN_VOICED", warn=warn_renamed
+                ),
                 DEFAULT_MIN_VOICED_FRAMES,
                 lo=1,
                 hi=MAX_UTTERANCE_FRAMES,
@@ -412,7 +438,13 @@ class BargeTune:
         return cls(
             hit_frames=read_int("FISH_VOICE_BARGE_FRAMES", DEFAULT_BARGE_HIT_FRAMES, lo=1),
             min_rms=read_float("FISH_VOICE_BARGE_RMS", DEFAULT_BARGE_RMS, positive=True),
-            playing_gain=read_float("FISH_VOICE_BARGE_OVER", DEFAULT_BARGE_OVER, lo=1.0),
+            playing_gain=read_float(
+                env_renamed(
+                    "FISH_VOICE_BARGE_PLAYING_GAIN", "FISH_VOICE_BARGE_OVER", warn=warn_renamed
+                ),
+                DEFAULT_BARGE_OVER,
+                lo=1.0,
+            ),
             bleed_delay_s=read_float("FISH_VOICE_BLEED_DELAY", DEFAULT_BLEED_DELAY_S, lo=0.0),
             cooldown_s=read_float("FISH_VOICE_COOLDOWN", DEFAULT_POST_SPEAK_COOLDOWN_S, lo=0.0),
         )
@@ -441,7 +473,7 @@ class AecTune:
 
     @classmethod
     def from_env(cls) -> Self:
-        """Build from ``FISH_VOICE_AEC``, ``FISH_VOICE_AEC_WET``, ``FISH_VOICE_AEC_BLEED``.
+        """Build from ``FISH_VOICE_AEC``, ``FISH_VOICE_AEC_WET``, ``FISH_VOICE_AEC_BLEED_DELAY``.
 
         Returns
         -------
@@ -451,7 +483,13 @@ class AecTune:
         return cls(
             enabled=read_flag("FISH_VOICE_AEC", default=True),
             wet=read_float("FISH_VOICE_AEC_WET", DEFAULT_AEC_WET, lo=0.0, hi=1.0),
-            bleed_delay_s=read_float("FISH_VOICE_AEC_BLEED", DEFAULT_AEC_BLEED_S, lo=0.0),
+            bleed_delay_s=read_float(
+                env_renamed(
+                    "FISH_VOICE_AEC_BLEED_DELAY", "FISH_VOICE_AEC_BLEED", warn=warn_renamed
+                ),
+                DEFAULT_AEC_BLEED_S,
+                lo=0.0,
+            ),
         )
 
 
@@ -572,13 +610,13 @@ class LlmSettings:
             key_env = provider.key_env
         else:
             key_env = "OPENROUTER_API_KEY" if backend == "openrouter" else "OPENAI_API_KEY"
-        key_names = ["FISH_LLM_KEY"]
+        key_names = [env_renamed("FISH_LLM_API_KEY", "FISH_LLM_KEY", warn=warn_renamed)]
         if provider is None or _is_https(base):
             key_names.append(key_env)
         elif _raw(key_env) is not None:
             warn(
                 f"fish-voice: {key_env} is not used because the base is not https, which would "
-                f"send it unencrypted. Use an https base, or set FISH_LLM_KEY to send a key anyway."
+                f"send it unencrypted. Use an https base, or set FISH_LLM_API_KEY to send a key anyway."
             )
         model_names = [provider.model_env] if provider is not None else []
         model_names.append("FISH_LLM_MODEL")
@@ -655,7 +693,7 @@ def _first_base(*names: str) -> str:
 
 
 def _first_text(*names: str) -> str:
-    # A blank value is skipped, so an empty FISH_LLM_KEY from the copied
+    # A blank value is skipped, so an empty FISH_LLM_API_KEY from the copied
     # .env.example does not hide a real provider key.
     for name in names:
         value = os.environ.get(name, "").strip()

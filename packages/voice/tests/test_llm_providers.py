@@ -24,6 +24,7 @@ _ENV = (
     "FISH_LLM_BASE",
     "OPENROUTER_BASE_URL",
     "FISH_LLM_BACKEND",
+    "FISH_LLM_API_KEY",
     "FISH_LLM_KEY",
     "OPENROUTER_API_KEY",
     "OPENAI_API_KEY",
@@ -126,9 +127,9 @@ def test_the_old_openrouter_base_alias_cannot_redirect_a_named_provider(
 def test_an_explicit_key_wins_and_a_blank_one_falls_back(env: pytest.MonkeyPatch) -> None:
     env.setenv("FISH_LLM_PROVIDER", "experiential")
     env.setenv("EXPLABS_API_KEY", "xpl-key")
-    env.setenv("FISH_LLM_KEY", "")
+    env.setenv("FISH_LLM_API_KEY", "")
     assert LlmSettings.from_env().api_key == "xpl-key"
-    env.setenv("FISH_LLM_KEY", "explicit")
+    env.setenv("FISH_LLM_API_KEY", "explicit")
     assert LlmSettings.from_env().api_key == "explicit"
 
 
@@ -331,7 +332,7 @@ def test_a_named_providers_key_is_not_picked_up_for_a_plain_http_base(
 
 def test_an_explicit_key_still_goes_to_a_plain_http_named_base(env: pytest.MonkeyPatch) -> None:
     env.setenv("EXPLABS_API_KEY", "xpl_from_env")
-    env.setenv("FISH_LLM_KEY", "explicit")
+    env.setenv("FISH_LLM_API_KEY", "explicit")
     env.setenv("FISH_LLM_BASE", "http://api.experientiallabs.ai/v1")
     assert LlmSettings.from_env().api_key == "explicit"
 

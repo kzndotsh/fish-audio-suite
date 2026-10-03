@@ -79,11 +79,11 @@ def test_env_file_drops_an_unquoted_inline_comment(
 def test_quoted_prompt_keeps_the_following_line(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("FISH_SYSTEM_PROMPT", raising=False)
+    monkeypatch.delenv("FISH_VOICE_SYSTEM_PROMPT", raising=False)
     monkeypatch.delenv("FISH_VOICE_ID", raising=False)
     path = tmp_path / "voice.env"
     path.write_text(
-        'FISH_SYSTEM_PROMPT="You are helpful.\nBe brief."\nFISH_VOICE_ID=vid\n',
+        'FISH_VOICE_SYSTEM_PROMPT="You are helpful.\nBe brief."\nFISH_VOICE_ID=vid\n',
         encoding="utf-8",
     )
     apply_cli_env_files([path], required=True)
@@ -94,10 +94,12 @@ def test_quoted_prompt_keeps_the_following_line(
 def test_single_quoted_backslash_does_not_swallow_the_next_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("FISH_SYSTEM_PROMPT", raising=False)
+    monkeypatch.delenv("FISH_VOICE_SYSTEM_PROMPT", raising=False)
     monkeypatch.delenv("FISH_VOICE_ID", raising=False)
     path = tmp_path / "voice.env"
-    path.write_text("FISH_SYSTEM_PROMPT='C:\\\\temp\\\\'\nFISH_VOICE_ID=vid\n", encoding="utf-8")
+    path.write_text(
+        "FISH_VOICE_SYSTEM_PROMPT='C:\\\\temp\\\\'\nFISH_VOICE_ID=vid\n", encoding="utf-8"
+    )
     apply_cli_env_files([path], required=True)
     assert load_config().fish_voice_id == "vid"
     assert load_config().system_prompt == "C:\\\\temp\\\\"
@@ -106,21 +108,21 @@ def test_single_quoted_backslash_does_not_swallow_the_next_key(
 def test_escaped_quote_and_newline_stay_in_the_prompt(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.delenv("FISH_SYSTEM_PROMPT", raising=False)
+    monkeypatch.delenv("FISH_VOICE_SYSTEM_PROMPT", raising=False)
     monkeypatch.delenv("FISH_VOICE_ID", raising=False)
     path = tmp_path / "voice.env"
     path.write_text(
-        'FISH_SYSTEM_PROMPT="Say \\"hi\\"\\nthere."\nFISH_VOICE_ID=vid\n',
+        'FISH_VOICE_SYSTEM_PROMPT="Say \\"hi\\"\\nthere."\nFISH_VOICE_ID=vid\n',
         encoding="utf-8",
     )
     apply_cli_env_files([path], required=True)
     assert load_config().system_prompt == 'Say "hi"\nthere.'
     assert load_config().fish_voice_id == "vid"
-    monkeypatch.delenv("FISH_SYSTEM_PROMPT", raising=False)
+    monkeypatch.delenv("FISH_VOICE_SYSTEM_PROMPT", raising=False)
     monkeypatch.delenv("FISH_VOICE_ID", raising=False)
     split = tmp_path / "split.env"
     split.write_text(
-        'FISH_SYSTEM_PROMPT="Say \\"hi\nthere."\nFISH_VOICE_ID=vid\n',
+        'FISH_VOICE_SYSTEM_PROMPT="Say \\"hi\nthere."\nFISH_VOICE_ID=vid\n',
         encoding="utf-8",
     )
     apply_cli_env_files([split], required=True)
@@ -167,6 +169,7 @@ def test_llm_env_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (
         "FISH_LLM_BASE",
         "OPENROUTER_BASE_URL",
+        "FISH_LLM_API_KEY",
         "FISH_LLM_KEY",
         "OPENROUTER_API_KEY",
         "OPENAI_API_KEY",
@@ -182,7 +185,7 @@ def test_llm_env_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     assert c.llm.api_key == "openai-key"
     assert c.llm.model == "vendor/fallback"
     monkeypatch.setenv("FISH_LLM_BASE", "")
-    monkeypatch.setenv("FISH_LLM_KEY", "  fish-key  ")
+    monkeypatch.setenv("FISH_LLM_API_KEY", "  fish-key  ")
     monkeypatch.setenv("FISH_LLM_MODEL", "   ")
     c = load_config()
     assert c.llm.base == "https://example.test/v1"
@@ -239,7 +242,7 @@ def test_run_loop_rejects_bad_playback(
 ) -> None:
     monkeypatch.setenv("FISH_API_KEY", "k")
     monkeypatch.setenv("FISH_VOICE_ID", "v")
-    monkeypatch.setenv("FISH_LLM_KEY", "k")
+    monkeypatch.setenv("FISH_LLM_API_KEY", "k")
     monkeypatch.setenv("FISH_LLM_MODEL", "m")
     c = replace(load_config(), playback="nope")
     assert asyncio.run(run_loop(c)) == EXIT_FATAL
@@ -247,7 +250,7 @@ def test_run_loop_rejects_bad_playback(
 
 
 def test_playback_mode_is_lowercase(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("FISH_PLAYBACK", " MPV ")
+    monkeypatch.setenv("FISH_VOICE_PLAYBACK", " MPV ")
     assert load_config().playback == "mpv"
 
 
@@ -369,7 +372,7 @@ def test_llm_keys_never_cross_providers(monkeypatch: pytest.MonkeyPatch) -> None
     for name in (
         "FISH_LLM_BASE",
         "OPENROUTER_BASE_URL",
-        "FISH_LLM_KEY",
+        "FISH_LLM_API_KEY",
         "OPENROUTER_API_KEY",
         "OPENAI_API_KEY",
         "FISH_LLM_BACKEND",
@@ -414,24 +417,24 @@ def test_bad_numeric_env_warns_and_keeps_the_default(
 ) -> None:
     monkeypatch.setenv("FISH_VOICE_BARGE_FRAMES", "lots")
     monkeypatch.setenv("FISH_LLM_TEMPERATURE", "9")
-    monkeypatch.setenv("FISH_HISTORY_TURNS", "0")
+    monkeypatch.setenv("FISH_VOICE_HISTORY_TURNS", "0")
     c = load_config()
     assert c.barge.hit_frames == 10
     assert c.llm.temperature == 0.8
     assert c.history_turns == 20
     err = capsys.readouterr().err
-    for name in ("FISH_VOICE_BARGE_FRAMES", "FISH_LLM_TEMPERATURE", "FISH_HISTORY_TURNS"):
+    for name in ("FISH_VOICE_BARGE_FRAMES", "FISH_LLM_TEMPERATURE", "FISH_VOICE_HISTORY_TURNS"):
         assert name in err
 
 
 def test_roleplay_features_are_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("FISH_MOOD_LEAD", raising=False)
-    monkeypatch.delenv("FISH_DROP_NARRATION", raising=False)
+    monkeypatch.delenv("FISH_TTS_MOOD_LEAD", raising=False)
+    monkeypatch.delenv("FISH_TTS_DROP_NARRATION", raising=False)
     c = load_config()
     assert not c.mood_lead
     assert not c.drop_narration
-    monkeypatch.setenv("FISH_MOOD_LEAD", "1")
-    monkeypatch.setenv("FISH_DROP_NARRATION", "true")
+    monkeypatch.setenv("FISH_TTS_MOOD_LEAD", "1")
+    monkeypatch.setenv("FISH_TTS_DROP_NARRATION", "true")
     c = load_config()
     assert c.mood_lead
     assert c.drop_narration
@@ -479,18 +482,18 @@ def test_smoke_default_path_is_unique_and_not_a_shared_name(
 
 
 def test_repeat_window_env_is_read_and_clamped(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("FISH_VOICE_REPEAT_WINDOW_S", raising=False)
+    monkeypatch.delenv("FISH_VOICE_REPEAT_WINDOW", raising=False)
     assert load_config().repeat_window_s == 1.5
-    monkeypatch.setenv("FISH_VOICE_REPEAT_WINDOW_S", "0")
+    monkeypatch.setenv("FISH_VOICE_REPEAT_WINDOW", "0")
     assert load_config().repeat_window_s == 0.0
-    monkeypatch.setenv("FISH_VOICE_REPEAT_WINDOW_S", "-3")
+    monkeypatch.setenv("FISH_VOICE_REPEAT_WINDOW", "-3")
     assert load_config().repeat_window_s == 1.5
 
 
 def test_stream_tts_is_off_unless_asked(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("FISH_STREAM_TTS", raising=False)
+    monkeypatch.delenv("FISH_VOICE_STREAM_TTS", raising=False)
     assert load_config().stream_tts is False
-    monkeypatch.setenv("FISH_STREAM_TTS", "1")
+    monkeypatch.setenv("FISH_VOICE_STREAM_TTS", "1")
     assert load_config().stream_tts is True
 
 
@@ -499,10 +502,10 @@ def test_a_blank_llm_key_does_not_hide_the_provider_key(monkeypatch: pytest.Monk
 
     for name in ("FISH_LLM_BASE", "OPENROUTER_BASE_URL", "FISH_LLM_BACKEND", "OPENAI_API_KEY"):
         monkeypatch.delenv(name, raising=False)
-    monkeypatch.setenv("FISH_LLM_KEY", "")
+    monkeypatch.setenv("FISH_LLM_API_KEY", "")
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
     assert LlmSettings.from_env().api_key == "or-key"
-    monkeypatch.setenv("FISH_LLM_KEY", "own-key")
+    monkeypatch.setenv("FISH_LLM_API_KEY", "own-key")
     assert LlmSettings.from_env().api_key == "own-key"
 
 

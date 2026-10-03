@@ -51,21 +51,21 @@ from fish_audio_suite_voice.tune import (
 
 def test_listen_tune_keeps_vad_and_pre_pad_in_range(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FISH_VOICE_VAD", "9")
-    monkeypatch.setenv("FISH_VOICE_PRE_PAD", "-1")
+    monkeypatch.setenv("FISH_VOICE_PRE_PAD_FRAMES", "-1")
     tune = ListenTune.from_env()
     assert tune.vad_aggressiveness == 1
     assert tune.pre_pad_frames == 20
     monkeypatch.setenv("FISH_VOICE_VAD", "3")
-    monkeypatch.setenv("FISH_VOICE_PRE_PAD", "0")
+    monkeypatch.setenv("FISH_VOICE_PRE_PAD_FRAMES", "0")
     monkeypatch.setenv("FISH_VOICE_SPEECH_FRAMES", "0")
-    monkeypatch.setenv("FISH_VOICE_MIN_VOICED", "-1")
+    monkeypatch.setenv("FISH_VOICE_MIN_VOICED_FRAMES", "-1")
     tune = ListenTune.from_env()
     assert tune.vad_aggressiveness == 3
     assert tune.pre_pad_frames == tune.start_speech_frames + IMPULSE_START_EXTRA
     assert tune.start_speech_frames == 4
     assert tune.min_voiced_frames == 12
     monkeypatch.setenv("FISH_VOICE_SPEECH_FRAMES", "2")
-    monkeypatch.setenv("FISH_VOICE_MIN_VOICED", "6")
+    monkeypatch.setenv("FISH_VOICE_MIN_VOICED_FRAMES", "6")
     tune = ListenTune.from_env()
     assert tune.start_speech_frames == 2
     assert tune.min_voiced_frames == 6
@@ -75,14 +75,14 @@ def test_listen_tune_keeps_vad_and_pre_pad_in_range(monkeypatch: pytest.MonkeyPa
     assert ListenTune.from_env().end_silence_frames == DEFAULT_SILENCE_FRAMES_END
     monkeypatch.setenv("FISH_VOICE_SILENCE_FRAMES", "-3")
     assert ListenTune.from_env().end_silence_frames == DEFAULT_SILENCE_FRAMES_END
-    monkeypatch.setenv("FISH_VOICE_MIN_VOICED", str(MAX_UTTERANCE_FRAMES + 1))
+    monkeypatch.setenv("FISH_VOICE_MIN_VOICED_FRAMES", str(MAX_UTTERANCE_FRAMES + 1))
     assert ListenTune.from_env().min_voiced_frames == DEFAULT_MIN_VOICED_FRAMES
-    monkeypatch.setenv("FISH_VOICE_MIN_VOICED", "40")
+    monkeypatch.setenv("FISH_VOICE_MIN_VOICED_FRAMES", "40")
     assert ListenTune.from_env().min_voiced_frames == 40
 
 
 def test_pre_pad_zero_still_starts_on_speech(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("FISH_VOICE_PRE_PAD", "0")
+    monkeypatch.setenv("FISH_VOICE_PRE_PAD_FRAMES", "0")
     monkeypatch.setenv("FISH_VOICE_SPEECH_FRAMES", "2")
     monkeypatch.setenv("FISH_VOICE_MIN_RMS", "200")
 
@@ -511,9 +511,9 @@ def _install_listen_fakes(
     frames: list[bytes],
 ) -> ListenTune:
     monkeypatch.setenv("FISH_VOICE_SILENCE_FRAMES", "2")
-    monkeypatch.setenv("FISH_VOICE_MIN_VOICED", "2")
+    monkeypatch.setenv("FISH_VOICE_MIN_VOICED_FRAMES", "2")
     monkeypatch.setenv("FISH_VOICE_SPEECH_FRAMES", "2")
-    monkeypatch.setenv("FISH_VOICE_PRE_PAD", "2")
+    monkeypatch.setenv("FISH_VOICE_PRE_PAD_FRAMES", "2")
     monkeypatch.setenv("FISH_VOICE_MIN_RMS", "200")
 
     class SpeechVad:
