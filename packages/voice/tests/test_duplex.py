@@ -12,23 +12,19 @@ from voice_fakes import FakeGate, FakeSink, install_audio, make_result, set_tts
 
 from fish_audio_suite_kit import ChatMessage, FishHttpError, LatencySnapshot
 from fish_audio_suite_voice.config import VoiceCliConfig
-from fish_audio_suite_voice.duplex import (
-    _accept_asr,
-    _after_speech,
-    _collect_reply,
-    _HeardLine,
-    _Loop,
-    _opening_history,
-    _recognize,
-    _remember_user,
-    _speak_reply,
-    _stream_turn,
-    _TokenPipe,
-    _trim_history,
-    duplex_turns,
-)
+from fish_audio_suite_voice.duplex import duplex_turns
+from fish_audio_suite_voice.duplex_state import DuplexState
+from fish_audio_suite_voice.hearing import HeardLine, accept_asr, recognize
+from fish_audio_suite_voice.history import opening_history, remember_user, trim_history
 from fish_audio_suite_voice.live import IsolatedFishTts, IsolatedResult
 from fish_audio_suite_voice.playback import PortAudioMissingError
+from fish_audio_suite_voice.reply import (
+    _TokenPipe,
+    after_speech,
+    collect_reply,
+    speak_reply,
+    stream_turn,
+)
 from fish_audio_suite_voice.signals import DuplexSession
 from fish_audio_suite_voice.tune import DEFAULT_HISTORY_TURNS, LlmTune
 
@@ -84,8 +80,8 @@ class _FakeBackend:
 def _loop(
     tokens: Callable[..., AsyncIterator[str]] | None = None,
     session: DuplexSession | None = None,
-) -> _Loop:
-    return _Loop(
+) -> DuplexState:
+    return DuplexState(
         config=_config(),
         tts=IsolatedFishTts(api_key="k", voice_id="voice"),
         device=None,
@@ -97,21 +93,21 @@ def _loop(
 
 
 def test_accept_asr_drops_echoes_and_keeps_a_real_line() -> None:
-    assert _accept_asr("yeah", "") == "skip"
-    assert _accept_asr("thanks for watching", "") == "skip"
-    assert _accept_asr("goodbye", "") == "quit"
-    assert _accept_asr("hello there", "hello there") == "skip"
-    assert _accept_asr("hello there.", "hello there") == "skip"
-    assert _accept_asr("Hello There!", "hello there") == "skip"
-    assert _accept_asr("bye.", "bye") == "quit"
-    assert _accept_asr("I said hello there", "hello there") == "ok"
-    assert _accept_asr("hello there", "earlier") == "ok"
+    assert accept_asr("yeah", "") == "skip"
+    assert accept_asr("thanks for watching", "") == "skip"
+    assert accept_asr("goodbye", "") == "quit"
+    assert accept_asr("hello there", "hello there") == "skip"
+    assert accept_asr("hello there.", "hello there") == "skip"
+    assert accept_asr("Hello There!", "hello there") == "skip"
+    assert accept_asr("bye.", "bye") == "quit"
+    assert accept_asr("I said hello there", "hello there") == "ok"
+    assert accept_asr("hello there", "earlier") == "ok"
 
 
 def test_history_keeps_the_system_prompt_and_drops_the_oldest_turn() -> None:
     history: list[ChatMessage] = [{"role": "system", "content": "be brief"}]
     for i in range(HISTORY_TURNS * 2 + 1):
-        _remember_user(history, f"u{i}", HISTORY_TURNS)
+        remember_user(history, f"u{i}", HISTORY_TURNS)
     assert history[0] == {"role": "system", "content": "be brief"}
     assert history[1]["content"] == "u1"
     assert history[-1]["content"] == f"u{HISTORY_TURNS * 2}"
@@ -121,9 +117,9 @@ def test_history_keeps_the_system_prompt_and_drops_the_oldest_turn() -> None:
 def test_history_drops_a_whole_turn_so_roles_stay_paired() -> None:
     history: list[ChatMessage] = [{"role": "system", "content": "be brief"}]
     for i in range(HISTORY_TURNS):
-        _remember_user(history, f"u{i}", HISTORY_TURNS)
+        remember_user(history, f"u{i}", HISTORY_TURNS)
         history.append({"role": "assistant", "content": f"a{i}"})
-    _remember_user(history, "newest", HISTORY_TURNS)
+    remember_user(history, "newest", HISTORY_TURNS)
     assert history[1] == {"role": "user", "content": "u1"}
     assert history[2] == {"role": "assistant", "content": "a1"}
     history.append({"role": "assistant", "content": "answer"})
@@ -135,7 +131,7 @@ def test_history_drops_a_whole_turn_so_roles_stay_paired() -> None:
 def test_after_speech_records_only_audio_that_was_played() -> None:
     loop = _loop()
     snapshot = LatencySnapshot()
-    fatal, code = _after_speech(
+    fatal, code = after_speech(
         loop,
         snapshot,
         make_result(error_status=401, error_message="no"),
@@ -146,7 +142,7 @@ def test_after_speech_records_only_audio_that_was_played() -> None:
     assert fatal.ttfa is None
 
     loop = _loop()
-    _after_speech(
+    after_speech(
         loop,
         snapshot,
         make_result(cancelled=True),
@@ -155,7 +151,7 @@ def test_after_speech_records_only_audio_that_was_played() -> None:
     assert len(loop.history) == 1
 
     loop = _loop()
-    updated, code = _after_speech(
+    updated, code = after_speech(
         loop,
         snapshot,
         make_result(
@@ -169,7 +165,7 @@ def test_after_speech_records_only_audio_that_was_played() -> None:
 
     loop = _loop()
     loop.history.append({"role": "user", "content": "Hey! Can you hear me?"})
-    _after_speech(
+    after_speech(
         loop,
         snapshot,
         make_result(
@@ -178,7 +174,7 @@ def test_after_speech_records_only_audio_that_was_played() -> None:
         started=0.0,
     )
     assert loop.history[-1]["role"] == "user"
-    _after_speech(
+    after_speech(
         loop,
         snapshot,
         make_result(
@@ -195,22 +191,22 @@ def test_recognize_fatal_again_and_quit(monkeypatch: pytest.MonkeyPatch) -> None
     async def denied(*_args: object, **_kwargs: object) -> str:
         raise FishHttpError.from_status(401, "nope")
 
-    monkeypatch.setattr("fish_audio_suite_voice.duplex.fish_asr", denied)
-    fatal = asyncio.run(_recognize(loop, b"wav", ""))
+    monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", denied)
+    fatal = asyncio.run(recognize(loop, b"wav", ""))
     assert fatal.kind == "fatal"
     assert fatal.code == 2
 
     async def down(*_args: object, **_kwargs: object) -> str:
         raise TimeoutError("late")
 
-    monkeypatch.setattr("fish_audio_suite_voice.duplex.fish_asr", down)
-    assert asyncio.run(_recognize(loop, b"wav", "")).kind == "again"
+    monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", down)
+    assert asyncio.run(recognize(loop, b"wav", "")).kind == "again"
 
     async def bye_text(*_args: object, **_kwargs: object) -> str:
         return "goodbye"
 
-    monkeypatch.setattr("fish_audio_suite_voice.duplex.fish_asr", bye_text)
-    assert asyncio.run(_recognize(loop, b"wav", "")).kind == "bye"
+    monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", bye_text)
+    assert asyncio.run(recognize(loop, b"wav", "")).kind == "bye"
 
 
 def test_quit_during_asr_does_not_ask_the_llm(
@@ -232,8 +228,8 @@ def test_quit_during_asr_does_not_ask_the_llm(
         if False:
             yield ""
 
-    monkeypatch.setattr("fish_audio_suite_voice.duplex.record_utterance", wav)
-    monkeypatch.setattr("fish_audio_suite_voice.duplex.fish_asr", asr)
+    monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", wav)
+    monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", asr)
     code = asyncio.run(
         asyncio.wait_for(
             duplex_turns(
@@ -268,7 +264,7 @@ def test_collect_reply_survives_a_closed_stdout(
     loop = _loop(tokens)
     monkeypatch.setattr(sys, "stdout", _ClosedStdout())
     reply, ttft = asyncio.run(
-        _collect_reply(loop, llm_cancel=asyncio.Event(), trace_id=None, started=0.0)
+        collect_reply(loop, llm_cancel=asyncio.Event(), trace_id=None, started=0.0)
     )
     assert reply == "Open the door today friend."
     assert ttft is not None
@@ -287,7 +283,7 @@ def test_collect_reply_keeps_partial_text_on_cancel(
         raise asyncio.CancelledError
 
     loop = _loop(tokens)
-    reply, ttft = asyncio.run(_collect_reply(loop, llm_cancel=cancel, trace_id=None, started=0.0))
+    reply, ttft = asyncio.run(collect_reply(loop, llm_cancel=cancel, trace_id=None, started=0.0))
     assert reply == "Hi"
     assert ttft is not None
     assert "[llm]" not in capsys.readouterr().err
@@ -302,7 +298,7 @@ def test_collect_reply_lets_an_outside_cancel_propagate() -> None:
 
     async def run() -> None:
         task = asyncio.create_task(
-            _collect_reply(loop, llm_cancel=asyncio.Event(), trace_id=None, started=0.0)
+            collect_reply(loop, llm_cancel=asyncio.Event(), trace_id=None, started=0.0)
         )
         await asyncio.sleep(0.05)
         task.cancel()
@@ -322,7 +318,7 @@ def test_collect_reply_lets_asyncio_timeout_fire() -> None:
 
     async def run() -> None:
         async with asyncio.timeout(0.1):
-            await _collect_reply(loop, llm_cancel=asyncio.Event(), trace_id=None, started=0.0)
+            await collect_reply(loop, llm_cancel=asyncio.Event(), trace_id=None, started=0.0)
 
     with pytest.raises(TimeoutError):
         asyncio.run(run())
@@ -339,7 +335,7 @@ def test_speak_reply_exits_when_playback_cannot_open(
 
     set_tts(monkeypatch, loop.tts, speak=speak)
     _snapshot, code = asyncio.run(
-        _speak_reply(
+        speak_reply(
             loop,
             "Hello there friend",
             threading.Event(),
@@ -372,7 +368,7 @@ def test_cancelled_speak_keeps_the_audio_that_tripped_barge(
 
     set_tts(monkeypatch, loop.tts, speak=speak)
     _snapshot, code = asyncio.run(
-        _speak_reply(
+        speak_reply(
             loop,
             "Hello there friend",
             threading.Event(),
@@ -399,7 +395,7 @@ def test_speak_reply_releases_the_mic_before_returning(
 
     set_tts(monkeypatch, loop.tts, speak=speak)
     _snapshot, code = asyncio.run(
-        _speak_reply(
+        speak_reply(
             loop,
             "Hello there friend",
             threading.Event(),
@@ -420,18 +416,18 @@ def test_speak_reply_releases_the_mic_before_returning(
 def test_history_cap_follows_the_configured_turns() -> None:
     history: list[ChatMessage] = [{"role": "system", "content": "be brief"}]
     for i in range(5):
-        _remember_user(history, f"u{i}", 2)
+        remember_user(history, f"u{i}", 2)
         history.append({"role": "assistant", "content": f"a{i}"})
-    _remember_user(history, "newest", 2)
+    remember_user(history, "newest", 2)
     # The oldest user and assistant leave together, so roles stay paired.
     assert [m["content"] for m in history] == ["be brief", "u4", "a4", "newest"]
 
 
 def test_a_deliberate_repeat_is_kept_but_a_stale_copy_is_dropped() -> None:
-    assert _accept_asr("no", "no", stale=False) == "ok"
-    assert _accept_asr("No.", "no", stale=False) == "ok"
-    assert _accept_asr("no", "no", stale=True) == "skip"
-    assert _accept_asr("no", "yes", stale=True) == "ok"
+    assert accept_asr("no", "no", stale=False) == "ok"
+    assert accept_asr("No.", "no", stale=False) == "ok"
+    assert accept_asr("no", "no", stale=True) == "skip"
+    assert accept_asr("no", "yes", stale=True) == "ok"
 
 
 def test_token_pipe_hands_tokens_across_in_order() -> None:
@@ -479,9 +475,9 @@ def test_stream_turn_feeds_tokens_to_tts_and_arms_barge_at_first_audio(
 
     set_tts(monkeypatch, loop.tts, speak_stream=speak_stream)
     snapshot, code = asyncio.run(
-        _stream_turn(
+        stream_turn(
             loop,
-            _HeardLine("line", text="hi", started=time.perf_counter()),
+            HeardLine("line", text="hi", started=time.perf_counter()),
             threading.Event(),
             asyncio.Event(),
         )
@@ -528,9 +524,9 @@ def test_stream_turn_speaks_the_finished_reply_when_fish_fails_before_audio(
 
     set_tts(monkeypatch, loop.tts, speak=speak_whole, speak_stream=speak_stream)
     _snapshot, code = asyncio.run(
-        _stream_turn(
+        stream_turn(
             loop,
-            _HeardLine("line", text="hi", started=time.perf_counter()),
+            HeardLine("line", text="hi", started=time.perf_counter()),
             threading.Event(),
             asyncio.Event(),
         )
@@ -544,14 +540,14 @@ def test_stream_turn_speaks_the_finished_reply_when_fish_fails_before_audio(
 def test_default_prompt_starts_with_a_pinned_multi_cue_exchange() -> None:
     from fish_audio_suite_kit import DEFAULT_SYSTEM_PROMPT
 
-    history, pinned = _opening_history(DEFAULT_SYSTEM_PROMPT)
+    history, pinned = opening_history(DEFAULT_SYSTEM_PROMPT)
     assert pinned == 3
     assert [m["role"] for m in history] == ["system", "user", "assistant"]
     assert history[2]["content"].count("[") >= 2
 
 
 def test_a_custom_prompt_gets_no_seed_exchange() -> None:
-    history, pinned = _opening_history("You are a pirate.")
+    history, pinned = opening_history("You are a pirate.")
     assert pinned == 1
     assert history == [{"role": "system", "content": "You are a pirate."}]
 
@@ -559,11 +555,11 @@ def test_a_custom_prompt_gets_no_seed_exchange() -> None:
 def test_trimming_never_drops_the_pinned_seed() -> None:
     from fish_audio_suite_kit import DEFAULT_SYSTEM_PROMPT
 
-    history, pinned = _opening_history(DEFAULT_SYSTEM_PROMPT)
+    history, pinned = opening_history(DEFAULT_SYSTEM_PROMPT)
     for index in range(30):
-        _remember_user(history, f"question {index}", 3, pinned)
+        remember_user(history, f"question {index}", 3, pinned)
         history.append({"role": "assistant", "content": f"[calm] answer {index}"})
-    assert history[:pinned] == _opening_history(DEFAULT_SYSTEM_PROMPT)[0]
+    assert history[:pinned] == opening_history(DEFAULT_SYSTEM_PROMPT)[0]
     assert len(history) == pinned + 3 * 2
     assert history[-2]["content"] == "question 29"
 
@@ -573,12 +569,12 @@ def test_trim_history_still_pairs_user_and_assistant_without_a_seed() -> None:
     for index in range(5):
         history.append({"role": "user", "content": f"u{index}"})
         history.append({"role": "assistant", "content": f"a{index}"})
-    _trim_history(history, 2)
+    trim_history(history, 2)
     assert [m["content"] for m in history] == ["s", "u3", "a3", "u4", "a4"]
 
 
 def test_a_fatal_fish_status_stops_the_llm_but_a_transient_one_does_not() -> None:
-    from fish_audio_suite_voice.duplex import _end_llm_when_tts_stops
+    from fish_audio_suite_voice.reply import _end_llm_when_tts_stops
 
     async def scenario(status: int) -> bool:
         loop = asyncio.get_running_loop()
@@ -623,9 +619,9 @@ def test_stream_turn_with_an_empty_reply_speaks_nothing_and_reports_nothing(
     set_tts(monkeypatch, loop.tts, speak=never, speak_stream=speak_stream)
     history_before = list(loop.history)
     _snapshot, code = asyncio.run(
-        _stream_turn(
+        stream_turn(
             loop,
-            _HeardLine("line", text="hi", started=time.perf_counter()),
+            HeardLine("line", text="hi", started=time.perf_counter()),
             threading.Event(),
             asyncio.Event(),
         )
@@ -668,9 +664,9 @@ def test_quit_during_the_stream_fallback_rebind_does_not_speak(
     monkeypatch.setattr(loop.session.turn, "bind", bind_then_quit)
     set_tts(monkeypatch, loop.tts, speak=never, speak_stream=speak_stream)
     _snapshot, code = asyncio.run(
-        _stream_turn(
+        stream_turn(
             loop,
-            _HeardLine("line", text="hi", started=time.perf_counter()),
+            HeardLine("line", text="hi", started=time.perf_counter()),
             threading.Event(),
             asyncio.Event(),
         )
@@ -686,8 +682,8 @@ def test_recognize_listens_again_after_a_network_error(monkeypatch: pytest.Monke
     async def unreachable(*_args: object, **_kwargs: object) -> str:
         raise httpx.ConnectError("down")
 
-    monkeypatch.setattr("fish_audio_suite_voice.duplex.fish_asr", unreachable)
-    assert asyncio.run(_recognize(loop, b"wav", "")).kind == "again"
+    monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", unreachable)
+    assert asyncio.run(recognize(loop, b"wav", "")).kind == "again"
 
 
 @pytest.mark.parametrize("bug", [RuntimeError("bug"), ValueError("bad"), KeyError("k")])
@@ -699,6 +695,6 @@ def test_recognize_does_not_hide_a_programming_error(
     async def broken(*_args: object, **_kwargs: object) -> str:
         raise bug
 
-    monkeypatch.setattr("fish_audio_suite_voice.duplex.fish_asr", broken)
+    monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", broken)
     with pytest.raises(type(bug)):
-        asyncio.run(_recognize(loop, b"wav", ""))
+        asyncio.run(recognize(loop, b"wav", ""))

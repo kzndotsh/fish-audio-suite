@@ -229,6 +229,12 @@ def run_isolated(coro: Coroutine[Any, Any, IsolatedResult]) -> IsolatedResult:
 
     Notes
     -----
+    The loop is built and torn down by hand, not with ``asyncio.Runner`` or
+    ``asyncio.run``. Both finish with ``shutdown_asyncgens``, which calls
+    ``aclose()`` on the Fish websocket iterator. That iterator holds an anyio
+    task group, so closing it from another task raises "cancel scope in a
+    different task" and logs an error on every cancelled turn.
+
     ``asyncio.wait_for`` must not wrap the websocket read. A timeout cancels
     the generator, and ``aclose()`` on that iterator raises. Poll with
     ``asyncio.wait`` and close the client instead.

@@ -1,15 +1,16 @@
 """Incremental scrub for a streamed reply: hold unclosed spans, cut, then send.
 
-The duplex loop waits for the whole reply and does not use this. It backs
-``IsolatedFishTts.speak_deltas`` for callers that forward model tokens as they
-arrive.
+It backs ``IsolatedFishTts.speak_deltas``, and through it the duplex loop when
+``FISH_STREAM_TTS`` is on: tokens are cleaned and cut as they arrive, so Fish
+speaks the first sentence while the model is still writing. With streaming off,
+the loop scrubs the whole reply at once instead.
 """
 
 from __future__ import annotations
 
 import re
 import threading
-from collections.abc import AsyncIterable, AsyncIterator, Iterable
+from collections.abc import AsyncIterable, AsyncIterator, Iterable, Iterator
 from typing import Any, Final
 
 from fishaudio import FlushEvent, TextEvent
@@ -166,7 +167,139 @@ def _scrub_chunk(
     return spoken
 
 
-async def delta_events(  # noqa: PLR0915 - one state machine, waiting for the scrubber-class extraction
+# The early flush gives up waiting for a sentence end after this many send windows.
+_EARLY_FLUSH_WINDOWS: Final = 2
+
+
+class _StreamScrubber:
+    """State machine behind ``delta_events``: tokens in, Fish events out.
+
+    ``feed`` and ``finish`` are generators, so ``cancel`` is read at the same
+    points the consumer pulls an event, and a cancel set between two events
+    stops the next one.
+    """
+
+    def __init__(
+        self,
+        cancel: threading.Event,
+        *,
+        partial_chars: int,
+        mood_lead: bool,
+        early_flush: bool,
+    ) -> None:
+        self._cancel = cancel
+        self._partial_chars = partial_chars
+        self._mood_lead = mood_lead
+        self._early_flush = early_flush
+        self._raw = ""
+        self._ready = ""
+        # The last accepted character. ready is empty once that text is sent,
+        # and the next span still needs the neighbor so its gap survives.
+        self._last = ""
+        self._sent = 0
+        self._flushed_early = False
+        self._since_flush = 0
+        # Text sent since the last flush. The early flush waits for a sentence
+        # end, so Fish never gets half a sentence as a finished utterance, but
+        # not past this many characters, or a long run-on would hold the audio.
+        self._unflushed_chars = 0
+        self._early_flush_cap = _EARLY_FLUSH_WINDOWS * partial_chars
+        # Text already sent on this line. An empty ready buffer is not a new
+        # line, so a star after "Hello." must not be stripped as a bullet.
+        self._sent_line = ""
+
+    def _take_ready(self) -> str | None:
+        split = split_tts_piece(self._ready, self._partial_chars, flush_rest=False)
+        if split is None:
+            return None
+        piece, self._ready = split
+        return piece
+
+    def _emit(self, piece: str) -> Iterator[Any]:
+        event = _text_event(piece)
+        if event is None:
+            return
+        self._sent += 1
+        yield event
+        self._since_flush += 1
+        self._unflushed_chars += len(event.text)
+        if (
+            self._early_flush
+            and not self._flushed_early
+            and not self._cancel.is_set()
+            and (ends_sentence(event.text) or self._unflushed_chars >= self._early_flush_cap)
+        ):
+            self._flushed_early = True
+            self._since_flush = 0
+            self._unflushed_chars = 0
+            yield FlushEvent()
+
+    def feed(self, tok: str) -> Iterator[Any]:
+        """Take one model token and yield the events it makes ready."""
+        # A space-only token is not a TextEvent, but it is the boundary
+        # between words. Dropping it here joins those words.
+        self._raw = _fold_stream_breaks(self._raw + tok)
+        # The line already sent counts too: once a piece leaves, ``ready`` is empty
+        # and a mood word inside a long sentence would look like a new one.
+        sentence_start = not _continues_sentence(self._sent_line + self._ready, self._raw)
+        stable, self._raw = _stable_prefix(
+            self._raw,
+            line_start=_at_line_start(self._sent_line + self._ready),
+            sentence_start=sentence_start,
+            before=self._ready,
+            lead=self._mood_lead,
+        )
+        if stable:
+            stable = _drop_orphan_closer(stable, self._ready)
+            self._ready = _glue_sentence_stop(
+                self._ready,
+                _scrub_chunk(
+                    stable,
+                    lead=sentence_start and self._mood_lead,
+                    line_start=_at_line_start(self._sent_line + self._ready),
+                    before=self._ready[-1:] or self._last,
+                    after=self._raw[:1],
+                    continued=bool((self._sent_line + self._ready).strip()),
+                ),
+            )
+            if self._ready:
+                self._last = self._ready[-1]
+        while (piece := self._take_ready()) is not None:
+            self._sent_line = (self._sent_line + piece).rsplit("\n", 1)[-1]
+            yield from self._emit(piece)
+
+    def finish(self) -> Iterator[Any]:
+        """Scrub what is still held, send it, and yield the closing flush."""
+        if not self._cancel.is_set() and self._raw:
+            lead = not _continues_sentence(self._sent_line + self._ready, self._raw)
+            self._raw = _drop_orphan_closer(self._raw, self._ready)
+            self._ready = _glue_sentence_stop(
+                self._ready,
+                _scrub_chunk(
+                    self._raw,
+                    lead=lead,
+                    line_start=_at_line_start(self._sent_line + self._ready),
+                    before=self._ready[-1:] or self._last,
+                    continued=bool((self._sent_line + self._ready).strip()),
+                ),
+            )
+        # A span held until the end can be longer than the send window.
+        # One cut would speak the first words and drop the rest.
+        while self._ready and not self._cancel.is_set():
+            split = split_tts_piece(self._ready, self._partial_chars, flush_rest=True)
+            if split is None:
+                break
+            piece, self._ready = split
+            yield from self._emit(piece)
+        # A flush with no text after the early one would ask Fish to flush nothing.
+        flush = flush_if_sent(
+            self._since_flush if self._flushed_early else self._sent, self._cancel
+        )
+        if flush is not None:
+            yield flush
+
+
+async def delta_events(
     deltas: Iterable[str] | AsyncIterable[str],
     cancel: threading.Event,
     *,
@@ -187,16 +320,19 @@ async def delta_events(  # noqa: PLR0915 - one state machine, waiting for the sc
     mood_lead : bool, optional
         Rewrite a sentence-leading mood word into a ``[cue]``. Default False.
     early_flush : bool, optional
-        Flush once right after the first piece, so Fish speaks it while the
-        model is still writing. Default False. Fish holds text until a chunk
-        fills or a flush arrives, so without this a streamed reply is silent
-        until the model finishes.
+        Flush once at the end of the first sentence, so Fish speaks it while
+        the model is still writing. Default False. Fish holds text until a
+        chunk fills or a flush arrives, so without this a streamed reply is
+        silent until the model finishes. The flush waits for a sentence end,
+        because a flush mid-sentence makes Fish end that fragment as a finished
+        utterance and pause before the rest. After two send windows of text
+        with no sentence end it flushes anyway.
 
     Yields
     ------
     Any
         ``TextEvent`` pieces, then one ``FlushEvent`` when any text was sent.
-        With ``early_flush`` there is one more flush after the first piece,
+        With ``early_flush`` there is one more flush after the first sentence,
         and the final flush is sent only if text followed it.
 
     Notes
@@ -204,107 +340,13 @@ async def delta_events(  # noqa: PLR0915 - one state machine, waiting for the sc
     A thought, parenthesis, bracket, or URL stays buffered until it closes, so
     a cut cannot speak the inside of a span the closer would remove.
     """
-    raw = ""
-    ready = ""
-    # The last accepted character. ready is empty once that text is sent,
-    # and the next span still needs the neighbor so its gap survives.
-    last = ""
-    sent = 0
-    flushed_early = False
-    since_flush = 0
-    # Text already sent on this line. An empty ready buffer is not a new
-    # line, so a star after "Hello." must not be stripped as a bullet.
-    sent_line = ""
-
-    def counted(piece: str) -> TextEvent | None:
-        nonlocal sent
-        event = _text_event(piece)
-        if event is None:
-            return None
-        sent += 1
-        return event
-
-    def take_ready() -> str | None:
-        nonlocal ready
-        split = split_tts_piece(ready, partial_chars, flush_rest=False)
-        if split is None:
-            return None
-        piece, ready = split
-        return piece
-
+    scrubber = _StreamScrubber(
+        cancel, partial_chars=partial_chars, mood_lead=mood_lead, early_flush=early_flush
+    )
     async for tok in as_async(deltas):
         if cancel.is_set():
             break
-        # A space-only token is not a TextEvent, but it is the boundary
-        # between words. Dropping it here joins those words.
-        raw = _fold_stream_breaks(raw + tok)
-        # The line already sent counts too: once a piece leaves, ``ready`` is empty
-        # and a mood word inside a long sentence would look like a new one.
-        sentence_start = not _continues_sentence(sent_line + ready, raw)
-        stable, raw = _stable_prefix(
-            raw,
-            line_start=_at_line_start(sent_line + ready),
-            sentence_start=sentence_start,
-            before=ready,
-            lead=mood_lead,
-        )
-        if stable:
-            stable = _drop_orphan_closer(stable, ready)
-            ready = _glue_sentence_stop(
-                ready,
-                _scrub_chunk(
-                    stable,
-                    lead=sentence_start and mood_lead,
-                    line_start=_at_line_start(sent_line + ready),
-                    before=ready[-1:] or last,
-                    after=raw[:1],
-                    continued=bool((sent_line + ready).strip()),
-                ),
-            )
-            if ready:
-                last = ready[-1]
-        while True:
-            piece = take_ready()
-            if piece is None:
-                break
-            sent_line = (sent_line + piece).rsplit("\n", 1)[-1]
-            event = counted(piece)
-            if event is not None:
-                yield event
-                since_flush += 1
-                if early_flush and not flushed_early and not cancel.is_set():
-                    flushed_early = True
-                    since_flush = 0
-                    yield FlushEvent()
-    if not cancel.is_set() and raw:
-        lead = not _continues_sentence(sent_line + ready, raw)
-        raw = _drop_orphan_closer(raw, ready)
-        ready = _glue_sentence_stop(
-            ready,
-            _scrub_chunk(
-                raw,
-                lead=lead,
-                line_start=_at_line_start(sent_line + ready),
-                before=ready[-1:] or last,
-                continued=bool((sent_line + ready).strip()),
-            ),
-        )
-    # A span held until the end can be longer than the send window.
-    # One cut would speak the first words and drop the rest.
-    while ready and not cancel.is_set():
-        split = split_tts_piece(ready, partial_chars, flush_rest=True)
-        if split is None:
-            break
-        piece, ready = split
-        event = counted(piece)
-        if event is not None:
+        for event in scrubber.feed(tok):
             yield event
-            since_flush += 1
-            if early_flush and not flushed_early and not cancel.is_set():
-                flushed_early = True
-                since_flush = 0
-                yield FlushEvent()
-    # A flush with no text after the early one would ask Fish to flush nothing.
-    flush = flush_if_sent(since_flush if flushed_early else sent, cancel)
-    if flush is not None:
-        yield flush
+    for event in scrubber.finish():
+        yield event

@@ -15,7 +15,7 @@ from typing import Any
 import pytest
 
 from fish_audio_suite_kit import FishHttpError
-from fish_audio_suite_voice import duplex
+from fish_audio_suite_voice import reply
 from fish_audio_suite_voice.live import IsolatedFishTts, IsolatedResult
 
 
@@ -77,7 +77,7 @@ def install_audio(
     gate: FakeGate | None = None,
     sink: FakeSink | None = None,
 ) -> tuple[FakeGate, FakeSink]:
-    """Replace the barge gate and the sink factory used by ``duplex``.
+    """Replace the barge gate and the sink factory used by ``reply``.
 
     Parameters
     ----------
@@ -95,8 +95,8 @@ def install_audio(
     """
     use_gate = gate or FakeGate()
     use_sink = sink or FakeSink()
-    monkeypatch.setattr(duplex, "BargeGate", lambda **_kwargs: use_gate)
-    monkeypatch.setattr(duplex, "make_sink", lambda *_args, **_kwargs: use_sink)
+    monkeypatch.setattr(reply, "BargeGate", lambda **_kwargs: use_gate)
+    monkeypatch.setattr(reply, "make_sink", lambda *_args, **_kwargs: use_sink)
     return use_gate, use_sink
 
 
