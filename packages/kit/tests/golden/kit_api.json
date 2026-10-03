@@ -137,7 +137,7 @@
     "FishErrorBody": "class(status: int, message: str) -> None fields=['status', 'message']",
     "FishHttpError": "class(status: int, message: str, *, retry_after: float | None = None) -> Self",
     "FishLatency": "def(*args, **kwargs)",
-    "LatencySnapshot": "class(asr_ms: float | None = None, llm_ttft: float | None = None, llm_ttfs: float | None = None, ttfa: float | None = None, voice_to_voice: float | None = None, trace_id: str | None = None, first_audio: float | None = None) -> None fields=['asr_ms', 'llm_ttft', 'llm_ttfs', 'ttfa', 'voice_to_voice', 'trace_id', 'first_audio']",
+    "LatencySnapshot": "class(asr_ms: float | None = None, llm_first_token_ms: float | None = None, tts_first_text_ms: float | None = None, tts_first_audio_ms: float | None = None, voice_to_voice_ms: float | None = None, trace_id: str | None = None, first_audio_ms: float | None = None) -> None fields=['asr_ms', 'llm_first_token_ms', 'tts_first_text_ms', 'tts_first_audio_ms', 'voice_to_voice_ms', 'trace_id', 'first_audio_ms']",
     "MIN_CHUNK_LENGTH_HI": "int=100",
     "MIN_CHUNK_LENGTH_LO": "int=0",
     "MS_PER_S": "int=1000",

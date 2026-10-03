@@ -139,7 +139,7 @@ def test_after_speech_records_only_audio_that_was_played() -> None:
     )
     assert code == 2
     assert len(loop.history) == 1
-    assert fatal.ttfa is None
+    assert fatal.tts_first_audio_ms is None
 
     loop = _loop()
     after_speech(
@@ -161,7 +161,7 @@ def test_after_speech_records_only_audio_that_was_played() -> None:
     )
     assert code is None
     assert loop.history[-1] == {"role": "assistant", "content": "hello"}
-    assert updated.ttfa == 12.0
+    assert updated.tts_first_audio_ms == 12.0
 
     loop = _loop()
     loop.history.append({"role": "user", "content": "Hey! Can you hear me?"})
@@ -486,8 +486,8 @@ def test_stream_turn_feeds_tokens_to_tts_and_arms_barge_at_first_audio(
     assert heard_tokens == ["Hello ", "there friend."]
     assert armed_before_audio == [0]
     assert gate.armed == 1
-    assert snapshot.first_audio is not None
-    assert snapshot.llm_ttft is not None
+    assert snapshot.first_audio_ms is not None
+    assert snapshot.llm_first_token_ms is not None
     assert loop.history[-1] == {"role": "assistant", "content": "Hello there friend."}
 
 

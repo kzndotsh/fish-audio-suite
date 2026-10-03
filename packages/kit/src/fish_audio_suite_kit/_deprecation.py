@@ -76,7 +76,7 @@ def deprecated_fields[C: type](since: str, **renamed: str) -> Callable[[C], C]:
     since : str
         The kit version that renamed the fields.
     **renamed : str
-        Old name mapped to the new field name, for example ``ttfa="first_audio_ms"``.
+        Old name mapped to the new field name, for example ``ttfa="tts_first_audio_ms"``.
 
     Returns
     -------

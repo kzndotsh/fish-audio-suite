@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Final, Literal, cast
 from urllib.parse import urlsplit
 
-from fish_audio_suite_kit._deprecation import deprecated
+from fish_audio_suite_kit._deprecation import deprecated, deprecated_fields
 from fish_audio_suite_kit.literals import AsrFormat, AudioFormat, FishLatency, TtsModel
 
 __all__ = [
@@ -129,19 +129,55 @@ class SuiteDefaults:
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
 
 
+@deprecated_fields(
+    "0.2.0",
+    llm_ttft="llm_first_token_ms",
+    llm_ttfs="tts_first_text_ms",
+    ttfa="tts_first_audio_ms",
+    voice_to_voice="voice_to_voice_ms",
+    first_audio="first_audio_ms",
+)
 @dataclass(frozen=True, slots=True)
 class LatencySnapshot:
-    """One cascade turn. Times are milliseconds. Never store utterance text."""
+    """One cascade turn. Times are milliseconds. Never store utterance text.
+
+    Attributes
+    ----------
+    asr_ms : float or None
+        From sending the finished utterance to Fish ASR until its transcript is back.
+    llm_first_token_ms : float or None
+        From the LLM request until its first token.
+    tts_first_text_ms : float or None
+        From the start of the TTS turn until the first text is sent to Fish. When
+        the reply streams, this includes waiting for the model's first piece.
+    tts_first_audio_ms : float or None
+        From the start of the TTS turn until the first audio chunk arrives from Fish.
+    voice_to_voice_ms : float or None
+        From sending the utterance to ASR until the TTS turn ends, after playback
+        finishes or is cut off.
+    trace_id : str or None
+        W3C trace id of the turn, when one was made.
+    first_audio_ms : float or None
+        From sending the utterance to ASR until the first Fish audio chunk goes to
+        the speaker. This is the wait the user hears after they stop talking.
+
+    Notes
+    -----
+    The fields keep their order, so a snapshot built by position keeps its
+    meaning; a new field goes last and is not keyword-only. The 0.1 names
+    (``llm_ttft``, ``llm_ttfs``, ``ttfa``, ``voice_to_voice``, ``first_audio``)
+    still work as keywords and attributes with a ``DeprecationWarning``.
+    """
 
     asr_ms: float | None = None
-    llm_ttft: float | None = None
-    llm_ttfs: float | None = None
-    ttfa: float | None = None
-    voice_to_voice: float | None = None
+    llm_first_token_ms: float | None = None
+    tts_first_text_ms: float | None = None
+    tts_first_audio_ms: float | None = None
+    voice_to_voice_ms: float | None = None
     trace_id: str | None = None
     # Last, and deliberately not keyword-only: a caller that builds a snapshot by
     # position keeps its meaning, and a new field must never shift the old ones.
-    first_audio: float | None = None
+    first_audio_ms: float | None = None
 
     def log_line(self) -> str:
         """One stdout timing line. Missing times are omitted. No utterance text.
@@ -149,15 +185,21 @@ class LatencySnapshot:
         Returns
         -------
         str
-            ``[timing asr=…ms … trace=…]``. ``trace`` appears only when set.
+            ``[timing asr=…ms … trace=…]``. Each key is its field name without
+            ``_ms``. ``trace`` appears only when set.
+
+        Examples
+        --------
+        >>> LatencySnapshot(asr_ms=40, tts_first_audio_ms=12.4).log_line()
+        '[timing asr=40ms tts_first_audio=12ms]'
         """
         parts = [
             _timing_field("asr", self.asr_ms),
-            _timing_field("llm_ttft", self.llm_ttft),
-            _timing_field("llm_ttfs", self.llm_ttfs),
-            _timing_field("ttfa", self.ttfa),
-            _timing_field("first_audio", self.first_audio),
-            _timing_field("voice_to_voice", self.voice_to_voice),
+            _timing_field("llm_first_token", self.llm_first_token_ms),
+            _timing_field("tts_first_text", self.tts_first_text_ms),
+            _timing_field("tts_first_audio", self.tts_first_audio_ms),
+            _timing_field("first_audio", self.first_audio_ms),
+            _timing_field("voice_to_voice", self.voice_to_voice_ms),
         ]
         if self.trace_id:
             parts.append(f"trace={self.trace_id}")

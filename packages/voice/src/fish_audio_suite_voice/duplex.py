@@ -55,7 +55,9 @@ async def _answer_line(loop: DuplexState, heard: HeardLine) -> int | None:
             trace_id=heard.trace_id,
             started=time.perf_counter(),
         )
-        snapshot = LatencySnapshot(asr_ms=heard.asr_ms, llm_ttft=ttft_ms, trace_id=heard.trace_id)
+        snapshot = LatencySnapshot(
+            asr_ms=heard.asr_ms, llm_first_token_ms=ttft_ms, trace_id=heard.trace_id
+        )
         if loop.session.stop.is_set():
             return bye()
         if reply:

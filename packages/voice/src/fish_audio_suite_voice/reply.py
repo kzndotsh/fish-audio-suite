@@ -170,11 +170,11 @@ def after_speech(
     return (
         replace(
             snapshot,
-            llm_ttfs=result.llm_ttfs_ms,
-            ttfa=result.ttfa_ms,
+            tts_first_text_ms=result.llm_ttfs_ms,
+            tts_first_audio_ms=result.ttfa_ms,
             # From the start of ASR, so it covers the whole wait after you stop talking.
-            first_audio=None if first_audio_at is None else (first_audio_at - started) * 1000,
-            voice_to_voice=elapsed_ms(started),
+            first_audio_ms=None if first_audio_at is None else (first_audio_at - started) * 1000,
+            voice_to_voice_ms=elapsed_ms(started),
         ),
         None,
     )
@@ -323,7 +323,7 @@ async def stream_turn(
             )
         finally:
             pipe.close()
-        snapshot = replace(snapshot, llm_ttft=ttft_ms)
+        snapshot = replace(snapshot, llm_first_token_ms=ttft_ms)
         if not reply.strip():
             # Stop the turn before Fish is asked to flush nothing.
             cancel.set()
@@ -377,11 +377,11 @@ def _seconds(ms: float) -> str:
 def turn_summary(snapshot: LatencySnapshot) -> str:
     """One human line for a finished turn. The first number is the wait that matters."""
     fields = [
-        ("first audio", snapshot.first_audio),
+        ("first audio", snapshot.first_audio_ms),
         ("asr", snapshot.asr_ms),
-        ("llm first token", snapshot.llm_ttft),
-        ("tts first audio", snapshot.ttfa),
-        ("total", snapshot.voice_to_voice),
+        ("llm first token", snapshot.llm_first_token_ms),
+        ("tts first audio", snapshot.tts_first_audio_ms),
+        ("total", snapshot.voice_to_voice_ms),
     ]
     shown = [f"{name} {_seconds(value)}" for name, value in fields if value is not None]
     return "  \u21b3 " + " \u00b7 ".join(shown) if shown else ""
