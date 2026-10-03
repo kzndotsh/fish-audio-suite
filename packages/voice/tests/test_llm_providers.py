@@ -294,3 +294,24 @@ def test_the_gateway_headers_reach_the_debug_log(
     assert "request=req-123" in err
     assert "via=experiential_cloud" in err
     assert "zdr=true" in err
+
+
+def test_an_old_openrouter_backend_setting_does_not_follow_a_named_provider(
+    env: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    env.setenv("FISH_LLM_BACKEND", "openrouter")
+    env.setenv("FISH_LLM_PROVIDER", "experiential")
+    tune = LlmTune.from_env()
+    assert tune.backend == "openai"
+    assert tune.provider == "experiential"
+    assert "does not fit experiential" in capsys.readouterr().err
+
+
+def test_the_openrouter_backend_setting_still_holds_for_openrouter_and_custom_hosts(
+    env: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    env.setenv("FISH_LLM_BACKEND", "openrouter")
+    assert LlmTune.from_env().backend == "openrouter"
+    env.setenv("FISH_LLM_BASE", "https://proxy.example.test/v1")
+    assert LlmTune.from_env().backend == "openrouter"
+    assert capsys.readouterr().err == ""

@@ -638,6 +638,15 @@ def _backend(base: str) -> LlmBackendName:
         if low == "openai":
             return "openai"
         if low == "openrouter":
+            host = provider_for_base(base)
+            if host is not None and host.name != "openrouter":
+                # The SDK backend only fits OpenRouter. A setting left over from
+                # before another provider existed must not point it elsewhere.
+                warn(
+                    f"fish-voice: FISH_LLM_BACKEND=openrouter does not fit {host.name}, "
+                    "using the openai backend"
+                )
+                return "openai"
             return "openrouter"
         warn(f"fish-voice: unknown FISH_LLM_BACKEND={raw!r}, choosing from the base URL")
     return "openrouter" if openrouter_host(base) else "openai"
