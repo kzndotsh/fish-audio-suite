@@ -6,7 +6,7 @@ import logging
 import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Final
 
 from fish_audio_suite_kit import (
     CHUNK_LENGTH_LO,
@@ -28,21 +28,38 @@ from fish_audio_suite_kit import (
     known_mp3_bitrate,
     known_tts_model,
 )
-from fish_audio_suite_proxy.fields import format_or_default
+from fish_audio_suite_proxy.fields import ClientFormat, fish_audio_format, format_or_default
 from fish_audio_suite_proxy.models import default_tts_aliases, parse_aliases, resolve_asr_model
 
-log = logging.getLogger("fish-audio-suite-proxy")
+__all__ = [
+    "DEFAULT_CONNECT_S",
+    "DEFAULT_GRACEFUL_S",
+    "DEFAULT_HOST",
+    "DEFAULT_KEEP_ALIVE_S",
+    "DEFAULT_MAX_BODY_BYTES",
+    "DEFAULT_MAX_INPUT_CHARS",
+    "DEFAULT_POOL_S",
+    "DEFAULT_PORT",
+    "DEFAULT_READ_S",
+    "DEFAULT_RETRY_DEADLINE_S",
+    "ProxySettings",
+    "SettingsError",
+    "load_settings",
+    "runtime_defaults",
+]
 
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8849
-DEFAULT_MAX_BODY_BYTES = 25 * 1024 * 1024
-DEFAULT_MAX_INPUT_CHARS = 4096
-DEFAULT_CONNECT_S = 10.0
-DEFAULT_READ_S = 120.0
-DEFAULT_POOL_S = 5.0
-DEFAULT_RETRY_DEADLINE_S = 90.0
-DEFAULT_KEEP_ALIVE_S = 5
-DEFAULT_GRACEFUL_S = 120
+log: Final[logging.Logger] = logging.getLogger("fish-audio-suite-proxy")
+
+DEFAULT_HOST: Final = "127.0.0.1"
+DEFAULT_PORT: Final = 8849
+DEFAULT_MAX_BODY_BYTES: Final = 25 * 1024 * 1024
+DEFAULT_MAX_INPUT_CHARS: Final = 4096
+DEFAULT_CONNECT_S: Final = 10.0
+DEFAULT_READ_S: Final = 120.0
+DEFAULT_POOL_S: Final = 5.0
+DEFAULT_RETRY_DEADLINE_S: Final = 90.0
+DEFAULT_KEEP_ALIVE_S: Final = 5
+DEFAULT_GRACEFUL_S: Final = 120
 _PORT_MAX = 65535
 _MAX_RETRY_ATTEMPTS = 10
 _LOOPBACK = frozenset({"127.0.0.1", "localhost", "::1"})
@@ -106,7 +123,7 @@ def _api_keys(raw: str) -> tuple[str, ...]:
     return keys
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class ProxySettings:
     """Everything the proxy reads from the environment, validated.
 
@@ -126,6 +143,7 @@ class ProxySettings:
     tts_dialogue_only: bool = False
     tts_mood_lead: bool = False
     tts_drop_narration: bool = False
+    response_format: ClientFormat = "mp3"
     api_keys: tuple[str, ...] = field(default=(), repr=False)
     max_body_bytes: int = DEFAULT_MAX_BODY_BYTES
     max_input_chars: int = DEFAULT_MAX_INPUT_CHARS
@@ -191,7 +209,7 @@ class ProxySettings:
             "asr_language": d.asr_language,
             "latency": d.latency,
             "chunk_length": d.chunk_length,
-            "format": d.audio_format,
+            "format": self.response_format,
             "speed_scale": d.speed,
             "quality_guard": self.quality_guard,
             "asr_strip_speakers": self.asr_strip_speakers,
@@ -205,6 +223,18 @@ class ProxySettings:
             "retry_attempts": self.retry_attempts,
             "retry_deadline_s": self.retry_deadline_s,
         }
+
+
+def _response_format() -> ClientFormat:
+    """Read ``FISH_FORMAT``, the format used when a request names none.
+
+    Returns
+    -------
+    ClientFormat
+        A supported format, or ``mp3`` for a missing or unknown value. ``pcm16``
+        is allowed here, though Fish itself only knows ``pcm``.
+    """
+    return format_or_default(env_token("FISH_FORMAT", "mp3"), "mp3")
 
 
 def _suite_defaults() -> SuiteDefaults:
@@ -231,9 +261,7 @@ def _suite_defaults() -> SuiteDefaults:
             stock.min_chunk_length,
             int,
         ),
-        audio_format=format_or_default(
-            env_token("FISH_FORMAT", stock.audio_format), stock.audio_format
-        ),
+        audio_format=fish_audio_format(_response_format()),
         mp3_bitrate=known_mp3_bitrate(env_int("FISH_MP3_BITRATE", stock.mp3_bitrate)),
         speed=clamp_num(
             _deprecated(env_float, "FISH_SPEED", "FISH_SPEED_SCALE", stock.speed),
@@ -293,6 +321,7 @@ def load_settings() -> ProxySettings:
         tts_dialogue_only=env_bool("FISH_TTS_DIALOGUE_ONLY"),
         tts_mood_lead=env_bool("FISH_MOOD_LEAD"),
         tts_drop_narration=env_bool("FISH_DROP_NARRATION"),
+        response_format=_response_format(),
         api_keys=_api_keys(env_text("FISH_PROXY_API_KEYS")),
         max_body_bytes=_non_negative("FISH_PROXY_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES),
         max_input_chars=_non_negative("FISH_PROXY_MAX_INPUT_CHARS", DEFAULT_MAX_INPUT_CHARS),

@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, get_args
 
 from fastapi import Request
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -12,6 +13,8 @@ from starlette.datastructures import FormData, UploadFile
 from starlette.exceptions import HTTPException
 
 from fish_audio_suite_kit import (
+    AsrBody,
+    AsrFormat,
     CaptionCue,
     SuiteDefaults,
     format_as_srt,
@@ -24,16 +27,47 @@ from fish_audio_suite_kit import (
 from fish_audio_suite_proxy.errors import ProxyError, json_error, read_json_object
 from fish_audio_suite_proxy.speech import ClipError, decode_audio_b64
 
+__all__ = [
+    "ASR_FORMATS",
+    "InboundAsr",
+    "asr_response_format",
+    "asr_upload",
+    "caption_cues",
+    "form_strings",
+    "read_asr",
+    "transcription_body",
+]
 
-@dataclass(frozen=True)
-class _InboundAsr:
+
+@dataclass(frozen=True, slots=True)
+class InboundAsr:
+    """A transcription request after parsing, from a multipart form or JSON.
+
+    Attributes
+    ----------
+    audio : bytes
+        The audio to transcribe.
+    filename : str
+        Name sent to Fish with the upload.
+    content_type : str
+        Media type sent to Fish with the upload.
+    model : str or None
+        The client's model, or None when it sent none.
+    language : str
+        Language hint, or an empty string for none.
+    response_format : str
+        The client's requested response format, not yet validated.
+    granularities : tuple of str
+        ``timestamp_granularities`` values.
+    """
+
     audio: bytes
     filename: str
     content_type: str
     model: str | None
     language: str
     response_format: str
-    granularities: list[str]
+    granularities: tuple[str, ...]
 
 
 def _granularity_list(value: Any) -> list[str]:
@@ -53,7 +87,7 @@ def _granularity_list(value: Any) -> list[str]:
     return out
 
 
-def _asr_from_json(parsed: dict[str, Any]) -> _InboundAsr | JSONResponse:
+def _asr_from_json(parsed: dict[str, Any]) -> InboundAsr | JSONResponse:
     inner = parsed.get("input_audio")
     audio_obj = inner if isinstance(inner, dict) else {}
     data = audio_obj.get("data")
@@ -63,14 +97,14 @@ def _asr_from_json(parsed: dict[str, Any]) -> _InboundAsr | JSONResponse:
     except ClipError as exc:
         return json_error(400, exc.message)
     model = parsed.get("model")
-    return _InboundAsr(
+    return InboundAsr(
         audio,
         f"utterance.{fmt}",
         f"audio/{fmt}",
         model if isinstance(model, str) else None,
         _form_text(parsed.get("language"), ""),
         _form_text(parsed.get("response_format"), "json"),
-        _granularity_list(parsed.get("timestamp_granularities")),
+        tuple(_granularity_list(parsed.get("timestamp_granularities"))),
     )
 
 
@@ -80,10 +114,11 @@ def _form_text(value: Any, default: str) -> str:
     return default
 
 
-ASR_FORMATS = ("json", "text", "verbose_json", "srt", "vtt")
+ASR_FORMATS: tuple[AsrFormat, ...] = get_args(AsrFormat)
+_ASR_FORMAT_BY_NAME: dict[str, AsrFormat] = {name: name for name in ASR_FORMATS}
 
 
-def asr_response_format(raw: str) -> str:
+def asr_response_format(raw: str) -> AsrFormat:
     """Return one response-format token. A newline is not part of the name.
 
     Parameters
@@ -93,7 +128,7 @@ def asr_response_format(raw: str) -> str:
 
     Returns
     -------
-    str
+    AsrFormat
         The lowercase token, cut at the first control character.
 
     Raises
@@ -102,10 +137,11 @@ def asr_response_format(raw: str) -> str:
         400 when the token is not one of ``ASR_FORMATS``. The reply is never
         sent in a different format than the one asked for.
     """
-    fmt = _single_line(raw.lower(), "json")
-    if fmt not in ASR_FORMATS:
+    token = _single_line(raw.lower(), "json")
+    fmt = _ASR_FORMAT_BY_NAME.get(token)
+    if fmt is None:
         allowed = ", ".join(ASR_FORMATS)
-        raise ProxyError(400, f"unsupported response_format {fmt[:32]!r}; use one of: {allowed}")
+        raise ProxyError(400, f"unsupported response_format {token[:32]!r}; use one of: {allowed}")
     return fmt
 
 
@@ -118,16 +154,16 @@ def _single_line(value: str, default: str) -> str:
     return text or default
 
 
-def _asr_from_form(form: FormData, audio: bytes, upload: UploadFile) -> _InboundAsr:
+def _asr_from_form(form: FormData, audio: bytes, upload: UploadFile) -> InboundAsr:
     model = form.get("model")
-    return _InboundAsr(
+    return InboundAsr(
         audio,
         _filename(upload.filename),
         _single_line(upload.content_type or "", "application/octet-stream"),
         model if isinstance(model, str) else None,
         _form_text(form.get("language"), ""),
         _form_text(form.get("response_format"), "json"),
-        form_strings(form, "timestamp_granularities", "timestamp_granularities[]"),
+        tuple(form_strings(form, "timestamp_granularities", "timestamp_granularities[]")),
     )
 
 
@@ -157,7 +193,7 @@ def _form_error_message(status: int) -> str:
     return _FORM_ERRORS.get(status, "invalid form body")
 
 
-async def read_asr(request: Request) -> _InboundAsr | JSONResponse:
+async def read_asr(request: Request) -> InboundAsr | JSONResponse:
     """Read multipart ``file`` or JSON ``input_audio`` into one upload.
 
     Parameters
@@ -168,7 +204,7 @@ async def read_asr(request: Request) -> _InboundAsr | JSONResponse:
 
     Returns
     -------
-    _InboundAsr or JSONResponse
+    InboundAsr or JSONResponse
         Audio plus the fields that affect the Fish form, or a 400 response.
     """
     content_type = request.headers.get("content-type", "")
@@ -246,7 +282,7 @@ def _segment_cue(seg: Any, *, strip_speakers: bool, strip_cues: bool) -> Caption
 
 
 def caption_cues(
-    data: dict[str, Any],
+    data: AsrBody,
     text: str,
     *,
     strip_speakers: bool,
@@ -256,7 +292,7 @@ def caption_cues(
 
     Parameters
     ----------
-    data : dict
+    data : AsrBody
         Decoded Fish ASR JSON.
     text : str
         Scrubbed full transcript, used when ``segments`` is missing or empty.
@@ -273,7 +309,8 @@ def caption_cues(
         ``text``, or an empty list when ``text`` is empty.
     """
     cues: list[CaptionCue] = []
-    raw_segments = data.get("segments") or []
+    # Fish JSON is checked only for ``text``, so a segment list can hold anything.
+    raw_segments: object = dict(data).get("segments") or []
     if isinstance(raw_segments, list):
         for seg in raw_segments:
             cue = _segment_cue(seg, strip_speakers=strip_speakers, strip_cues=strip_cues)
@@ -291,7 +328,7 @@ def _cue_rows(cues: list[CaptionCue], key: str) -> list[dict[str, Any]]:
 
 
 def _plain_transcript(
-    fmt: str,
+    fmt: AsrFormat,
     text: str,
     cues: list[CaptionCue],
 ) -> PlainTextResponse | None:
@@ -320,7 +357,7 @@ def _json_text(value: Any) -> str | None:
 
 
 def _word_rows(
-    data: dict[str, Any],
+    data: AsrBody,
     *,
     strip_speakers: bool,
     strip_cues: bool,
@@ -328,7 +365,7 @@ def _word_rows(
     # Fish segments are phrases, not words, so they are never relabeled as
     # words. Only real word timings from Fish are passed through, scrubbed the
     # same way as the transcript so the flags hold for every field.
-    raw = data.get("words")
+    raw: object = dict(data).get("words")
     if not isinstance(raw, list):
         return []
     rows: list[dict[str, Any]] = []
@@ -347,10 +384,10 @@ def _word_rows(
 def _verbose_body(
     text: str,
     cues: list[CaptionCue],
-    data: dict[str, Any],
+    data: AsrBody,
     *,
     language: str | None,
-    granularities: list[str],
+    granularities: Sequence[str],
     strip_speakers: bool,
     strip_cues: bool,
 ) -> dict[str, Any]:
@@ -377,13 +414,13 @@ def _verbose_body(
 
 
 def transcription_body(
-    fmt: str,
+    fmt: AsrFormat,
     text: str,
     cues: list[CaptionCue],
-    data: dict[str, Any],
+    data: AsrBody,
     *,
     language: str | None,
-    granularities: list[str],
+    granularities: Sequence[str],
     strip_speakers: bool = False,
     strip_cues: bool = False,
 ) -> PlainTextResponse | dict[str, Any]:
@@ -391,19 +428,19 @@ def transcription_body(
 
     Parameters
     ----------
-    fmt : str
+    fmt : AsrFormat
         ``response_format``. ``srt`` and ``vtt`` return caption files.
     text : str
         Scrubbed transcript.
     cues : list of CaptionCue
         Timed phrases returned as ``segments``.
-    data : dict
+    data : AsrBody
         Decoded Fish JSON, used for duration and language. A ``words`` array is
         returned for ``verbose_json`` with ``word`` granularity only when Fish
         sent word timings. Segments are never relabeled as words.
     language : str or None
         Client or env language hint.
-    granularities : list of str
+    granularities : sequence of str
         ``timestamp_granularities`` values.
     strip_speakers : bool, optional
         Drop speaker labels from each word row. Default False.
@@ -436,23 +473,23 @@ _TIMED_FORMATS = frozenset({"verbose_json", "vtt", "srt"})
 
 
 def asr_upload(
-    inbound: _InboundAsr,
+    inbound: InboundAsr,
     defaults: SuiteDefaults,
-    fmt: str,
-    granularities: list[str],
+    fmt: AsrFormat,
+    granularities: Sequence[str],
 ) -> tuple[dict[str, tuple[str, bytes, str]], dict[str, str], str]:
     """Build the Fish ASR multipart body.
 
     Parameters
     ----------
-    inbound : _InboundAsr
+    inbound : InboundAsr
         Parsed upload.
     defaults : SuiteDefaults
         Supplies the language hint when the client omitted one.
-    fmt : str
+    fmt : AsrFormat
         Response format. ``verbose_json``, ``srt``, and ``vtt`` ask Fish for
         timestamps.
-    granularities : list of str
+    granularities : sequence of str
         Any non-empty list also asks for timestamps.
 
     Returns

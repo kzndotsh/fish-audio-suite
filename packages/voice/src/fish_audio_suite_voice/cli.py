@@ -13,10 +13,12 @@ import traceback
 import uuid
 from dataclasses import replace
 from pathlib import Path
+from typing import Final
 
 from fish_audio_suite_voice.aec import EchoCanceller
 from fish_audio_suite_voice.config import VoiceCliConfig, cfg, warn_if_insecure_base
 from fish_audio_suite_voice.debug import (
+    DebugLevel,
     configure_voice_logging,
     console_print,
     debug_level,
@@ -36,11 +38,17 @@ from fish_audio_suite_voice.playback import (
 )
 from fish_audio_suite_voice.signals import DuplexSession
 
-__all__ = ["apply_cli_env_files", "cfg", "main", "run_loop", "smoke_test"]
+__all__ = [
+    "apply_cli_env_files",
+    "cfg",
+    "main",
+    "run_loop",
+    "smoke_test",
+]
 
-DEFAULT_ENV_FILE = Path(".env")
-_SMOKE_MIN_BYTES = 1000
-_SMOKE_FAIL = 1
+DEFAULT_ENV_FILE: Final = Path(".env")
+_SMOKE_MIN_BYTES: Final = 1000
+_SMOKE_FAIL: Final = 1
 
 
 def _parse_device(raw: str | None) -> str | int | None:
@@ -258,9 +266,9 @@ def main(argv: list[str] | None = None) -> int:
         loaded = apply_cli_env_files([DEFAULT_ENV_FILE], required=False)
     if loaded:
         print("env: " + " ".join(str(p) for p in loaded), flush=True)
-    level = 2 if args.trace else int(bool(args.debug))
+    level = DebugLevel.TRACE if args.trace else DebugLevel(int(bool(args.debug)))
     level = max(level, debug_level())
-    debug = level >= 1
+    debug = level >= DebugLevel.EVENTS
     configure_voice_logging(debug=level)
     c = cfg()
     warn_if_insecure_base(c)

@@ -33,29 +33,12 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
-      - name: Sync
-        run: uv sync --frozen --all-packages --extra cli --group dev --group test
-      - name: Ruff check
-        run: uv run ruff check packages
-      - name: Ruff format
-        run: uv run ruff format --check packages
-      - name: Docstrings
-        run: uv run pydoclint --config=pyproject.toml packages
-      - name: Types
-        run: uv run basedpyright
-      - name: Tests
-        env:
-          PYTHONDONTWRITEBYTECODE: "1"
-        # Floors sit about a point under the measured branch coverage (total 90.7,
-        # kit 95.7, proxy 95.7, voice 86.0). Raise them when coverage rises. The
-        # per-package steps read the .coverage file the test run wrote.
-        run: uv run pytest --cov --cov-report=term-missing --cov-fail-under=89
-      - name: Coverage floor (kit)
-        run: uv run coverage report --include="packages/kit/*" --fail-under=94 --skip-covered
-      - name: Coverage floor (proxy)
-        run: uv run coverage report --include="packages/proxy/*" --fail-under=94 --skip-covered
-      - name: Coverage floor (voice)
-        run: uv run coverage report --include="packages/voice/*" --fail-under=85 --skip-covered
+      - name: Gates
+        # Lint, docstrings, types, public API types, then tests with the kit
+        # doctests and the coverage floors. release.yml runs the same action.
+        # `./` works on every runner. zizmor prefers the newer `$/` form, which GitHub
+        # added in July 2026. Switch once a CI run on `$/` has passed.
+        uses: ./.github/actions/gates  # zizmor: ignore[self-repository]
       - name: Prune uv cache for CI
         if: always()
         run: uv cache prune --ci
@@ -102,7 +85,7 @@ jobs:
       - name: Lint the workflows with zizmor
         env:
           GH_TOKEN: ${{ github.token }}
-        run: uvx zizmor==1.30.1 --no-progress .github/workflows
+        run: uvx zizmor==1.30.1 --no-progress .github
   build:
     name: Build wheels
     runs-on: ubuntu-latest

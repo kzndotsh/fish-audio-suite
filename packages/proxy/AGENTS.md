@@ -16,18 +16,19 @@ CLI: `fish-audio-suite-proxy`. Import: `fish_audio_suite_proxy`. Start uvicorn w
 | --- | --- |
 | `server.py` | App, lifespan, routes, client-key check |
 | `settings.py` | `ProxySettings`, built once in lifespan on `app.state.settings`. No other module reads the env |
-| `upstream.py` | `fish_send`: bounded retry, `Retry-After`, deadline, stops on disconnect |
+| `upstream.py` | `fish_send`: bounded retry, `Retry-After` (kit `retry_after_seconds`), deadline, stops on disconnect. `FishHttp` is the client Protocol |
 | `limits.py` | Request body cap middleware |
 | `models.py` | TTS aliases, ASR id rules, `/v1/models` ids |
 | `fields.py` | Format, silence, request-field readers, trace headers |
 | `speech.py`, `transcribe.py` | Fish TTS body and ASR upload/response |
-| `errors.py` | OpenAI error envelope, `ProxyError` |
+| `errors.py` | OpenAI error envelope (`OpenAIErrorBody`), `ProxyError`. `ClipError` is a `ProxyError` with status 400 |
 
 Invariants:
 - `FISH_API_KEY` is read in lifespan. Importing the app and `GET /health` must work with it unset. A missing key is 503 on any request that would call Fish, and a wrong client key is 401. Text that is only junk returns local silence first, so it never reaches the key check.
 - `FISH_PROXY_API_KEYS` set but with no key raises `SettingsError` at startup. Empty or unset means no client auth. Never let a typo turn auth off silently. Secret fields on settings use `repr=False`.
 - A transport error message never reaches a client: send the fixed 502 or 504 text and log the detail. Close every multipart form with `async with request.form()`.
 - Scrub and cue logic lives in kit. Do not copy it here.
+- Every module lists its public names in `__all__`, and a public signature uses only public types (`SpeechControls`, `PackedTts`, `InboundAsr`, `FishHttp`). Formats and models use the kit literals (`AudioFormat`, `AsrFormat`, `FishLatency`); `ClientFormat` adds `pcm16`, which is a request format only. Fish ASR JSON is `AsrBody`, but parse defensively: Fish may send any JSON.
 - Never log request text above DEBUG unless `FISH_PROXY_LOG_TEXT` is set. Never put a key in `/health`.
 - Retry only 429, 5xx, and connections that never opened. A read timeout is not repeated.
 - Return the format the client asked for, or a 400. Do not swap it. This holds for speech and transcription.

@@ -29,6 +29,12 @@ from fish_audio_suite_kit.scrub_markdown import (
     unclosed_span_start,
 )
 
+__all__ = [
+    "hold_tts",
+    "sentence_closer_hold_at",
+    "skip_empty_delta",
+]
+
 _Hold = Callable[[str], int | None]
 
 _WHISPER_OPEN_RE = re.compile(r"<\s*whisper\s*>", re.IGNORECASE)

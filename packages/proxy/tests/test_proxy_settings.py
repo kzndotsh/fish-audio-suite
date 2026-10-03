@@ -4,15 +4,19 @@ import asyncio
 import base64
 import json
 import time
-from typing import Any
+from collections.abc import AsyncIterator
+from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import httpx
 import ormsgpack
 import pytest
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 from proxy_helpers import (
     AsrJson,
     FakeUpstream,
+    asr_body,
     capture_upstream,
     fresh_app_env,
     post_speech,
@@ -27,7 +31,7 @@ from fish_audio_suite_proxy.models import catalog_ids, resolve_tts_model
 from fish_audio_suite_proxy.server import _uvicorn_run_kwargs, app
 from fish_audio_suite_proxy.settings import ProxySettings, SettingsError, load_settings
 from fish_audio_suite_proxy.transcribe import transcription_body
-from fish_audio_suite_proxy.upstream import RetryPolicy, fish_send, retry_after_s
+from fish_audio_suite_proxy.upstream import FishHttp, RetryPolicy, fish_send
 
 
 def test_proxy_listens_on_loopback_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -254,11 +258,36 @@ def test_fish_send_honors_retry_after(monkeypatch: pytest.MonkeyPatch) -> None:
     assert sleeps.await_args.args[0] >= 7
 
 
-def test_retry_after_s_reads_seconds_only() -> None:
-    assert retry_after_s({"retry-after": " 3 "}) == 3.0
-    assert retry_after_s({"retry-after": "Wed, 21 Oct 2026 07:28:00 GMT"}) is None
-    assert retry_after_s({}) is None
-    assert retry_after_s(None) is None
+@pytest.mark.parametrize("hint", ["-5", "nan", "inf", "Wed, 21 Oct 2026 07:28:00 GMT", ""])
+def test_fish_send_ignores_an_unusable_retry_after(
+    monkeypatch: pytest.MonkeyPatch, hint: str
+) -> None:
+    out, _client, sleeps = run_fish_send(
+        monkeypatch,
+        [
+            FakeUpstream(429, b'{"message": "slow", "status": 429}', {"retry-after": hint}),
+            FakeUpstream(200),
+        ],
+    )
+    assert out.status_code == 200
+    assert sleeps.await_args is not None
+    pause = sleeps.await_args.args[0]
+    assert 0 <= pause < 60
+
+
+def test_fish_send_retries_a_429_and_stops_on_an_auth_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    out, client, _sleeps = run_fish_send(
+        monkeypatch,
+        [
+            FakeUpstream(429, b'{"message": "slow", "status": 429}'),
+            FakeUpstream(401, b'{"message": "bad key", "status": 401}'),
+            FakeUpstream(200),
+        ],
+    )
+    assert out.status_code == 401
+    assert client.sends == 2
 
 
 def test_fish_send_gives_up_at_the_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -319,7 +348,7 @@ def test_the_deadline_cuts_off_a_stalled_request() -> None:
 
     async def run() -> Any:
         return await fish_send(
-            client,
+            cast(FishHttp, client),
             stream=False,
             policy=RetryPolicy(attempts=5, deadline_s=0.05),
             method="POST",
@@ -396,14 +425,16 @@ def test_an_unsupported_transcription_format_is_a_400_and_never_calls_fish(
 
 
 def test_word_rows_are_scrubbed_like_the_transcript_and_empty_ones_dropped() -> None:
-    data = {
-        "words": [
-            {"word": "<|speaker:0|>Hello", "start": 0.0, "end": 0.4},
-            {"word": "[laughter]", "start": 0.4, "end": 0.9},
-            {"word": "ok\ud800", "start": 0.9, "end": 1.2},
-            {"word": "   ", "start": 1.2, "end": 1.3},
-        ]
-    }
+    data = asr_body(
+        {
+            "words": [
+                {"word": "<|speaker:0|>Hello", "start": 0.0, "end": 0.4},
+                {"word": "[laughter]", "start": 0.4, "end": 0.9},
+                {"word": "ok\ud800", "start": 0.9, "end": 1.2},
+                {"word": "   ", "start": 1.2, "end": 1.3},
+            ]
+        }
+    )
     stripped = transcription_body(
         "verbose_json",
         "Hello ok",
@@ -516,3 +547,47 @@ def test_startup_does_not_warn_for_https_or_loopback(
     with caplog.at_level("WARNING", logger="fish-audio-suite-proxy"), TestClient(app):
         pass
     assert not [r for r in caplog.records if "cleartext" in r.getMessage()]
+
+
+def _cut_off_response(status: int) -> tuple[httpx.AsyncClient, list[int]]:
+    class CutOff(httpx.AsyncByteStream):
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            raise httpx.ReadError("connection dropped mid-body on 10.0.0.5")
+            yield b""  # pragma: no cover
+
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(status, headers={"retry-after": "2"}, stream=CutOff())
+
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler)), calls
+
+
+@pytest.mark.parametrize(
+    ("status", "retried"), [(401, False), (400, False), (429, True), (503, True)]
+)
+def test_an_unreadable_error_body_keeps_the_status_fish_sent(
+    monkeypatch: pytest.MonkeyPatch, status: int, retried: bool
+) -> None:
+    client, calls = _cut_off_response(status)
+    monkeypatch.setattr("fish_audio_suite_proxy.upstream.asyncio.sleep", AsyncMock())
+
+    async def run() -> tuple[int, bytes]:
+        async with client:
+            out = await fish_send(
+                client,
+                stream=True,
+                method="POST",
+                url="https://fish.test/v1/tts",
+                policy=RetryPolicy(attempts=3),
+            )
+            assert isinstance(out, JSONResponse)
+            return out.status_code, bytes(out.body)
+
+    code, body = asyncio.run(run())
+    assert code == status
+    assert len(calls) == (3 if retried else 1)
+    assert b"error body could not be read" in body
+    assert b"10.0.0.5" not in body
+    assert b"connection dropped" not in body

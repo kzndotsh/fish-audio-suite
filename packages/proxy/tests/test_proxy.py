@@ -7,7 +7,16 @@ import httpx
 import ormsgpack
 import pytest
 from fastapi.testclient import TestClient
-from proxy_helpers import AudioStream, FakeUpstream, capture_upstream, not_response, run_fish_send
+from proxy_helpers import (
+    AudioStream,
+    FakeUpstream,
+    asr_body,
+    capture_upstream,
+    content_part,
+    json_part,
+    not_response,
+    run_fish_send,
+)
 from starlette.datastructures import FormData
 from starlette.responses import JSONResponse
 
@@ -29,10 +38,10 @@ from fish_audio_suite_proxy.fields import (
 )
 from fish_audio_suite_proxy.models import catalog_ids, resolve_asr_model, resolve_tts_model
 from fish_audio_suite_proxy.server import _uvicorn_run_kwargs, app
-from fish_audio_suite_proxy.settings import runtime_defaults
+from fish_audio_suite_proxy.settings import load_settings, runtime_defaults
 from fish_audio_suite_proxy.speech import (
+    SpeechControls,
     _fish_tts_payload,
-    _SpeechControls,
     pack_tts,
     speech_controls,
 )
@@ -72,8 +81,11 @@ def test_explicit_bool_keeps_false_and_uses_the_default_when_absent() -> None:
     assert explicit_bool({"dialogue_only": "maybe"}, "dialogue_only", default=True) is True
 
 
-def test_no_format_with_an_unknown_default_is_mp3() -> None:
-    assert pick_format({}, "not-a-format") == "mp3"
+def test_no_format_uses_the_default_and_an_unknown_format_name_is_a_400() -> None:
+    assert pick_format({}, "opus") == "opus"
+    assert pick_format({"format": "WAV "}, "mp3") == "wav"
+    with pytest.raises(ProxyError, match="unsupported response_format"):
+        pick_format({"format": "not-a-format"}, "mp3")
 
 
 @pytest.mark.parametrize("name", ["nope", "aac", "flac"])
@@ -159,8 +171,14 @@ def test_mp3_bitrate_env_snaps(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_format_env_uses_the_request_alias(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FISH_FORMAT", " AAC ")
     assert runtime_defaults().audio_format == "mp3"
+    assert load_settings().response_format == "mp3"
     monkeypatch.setenv("FISH_FORMAT", "PCM16")
-    assert runtime_defaults().audio_format == "pcm16"
+    # Fish only knows "pcm". The client-facing default stays "pcm16" (24 kHz).
+    assert runtime_defaults().audio_format == "pcm"
+    settings = load_settings()
+    assert settings.response_format == "pcm16"
+    controls = speech_controls({}, settings.defaults, default_format=settings.response_format)
+    assert controls.fmt == "pcm16"
     monkeypatch.setenv("FISH_ASR_MODEL", " fish-audio/Transcribe-1 ")
     assert runtime_defaults().asr_model == "transcribe-1"
 
@@ -224,7 +242,7 @@ def test_payload_snaps_bitrate_and_unit_interval() -> None:
     mp3 = _fish_tts_payload(
         {"mp3_bitrate": 96, "temperature": 5},
         defaults,
-        _SpeechControls("s2.1-pro", 1.0, "mp3", "normal", 200, 50),
+        SpeechControls("s2.1-pro", 1.0, "mp3", "normal", 200, 50),
         "hi",
     )
     assert mp3["mp3_bitrate"] == 128
@@ -232,7 +250,7 @@ def test_payload_snaps_bitrate_and_unit_interval() -> None:
     opus = _fish_tts_payload(
         {"opus_bitrate": 1, "top_p": -3, "early_stop_threshold": 4},
         defaults,
-        _SpeechControls("s2.1-pro", 1.0, "opus", "normal", 200, 50),
+        SpeechControls("s2.1-pro", 1.0, "opus", "normal", 200, 50),
         "hi",
     )
     assert opus["opus_bitrate"] == -1000
@@ -387,7 +405,7 @@ def test_null_quality_guard_does_not_hide_the_alias(
 
     def features(body: dict[str, Any]) -> object:
         packed = not_response(pack_tts(body, defaults, {}, speech_controls(body, defaults), spoken))
-        return packed.request_kw["json"].get("features")
+        return json_part(packed).get("features")
 
     assert features({"input": spoken, "quality_guard": None, "fish_quality_guard": True}) == [
         "quality-guard"
@@ -415,7 +433,7 @@ def test_surrogate_in_pronunciation_still_encodes() -> None:
     )
     request = httpx.Request("POST", "https://api.fish.audio/v1/tts", **packed.request_kw)
     request.read()
-    payload = packed.request_kw["json"]
+    payload = json_part(packed)
     assert "\ud800" not in payload["reference_id"]
     value = payload["pronunciation_dictionary"][0]["items"][0]["value"]
     assert "\ud800" not in value
@@ -448,7 +466,7 @@ def test_surrogate_in_speech_text_still_encodes() -> None:
             "Hello there friend",
         )
     )
-    unpacked = ormsgpack.unpackb(clip_packed.request_kw["content"])
+    unpacked = ormsgpack.unpackb(content_part(clip_packed))
     clip_text = unpacked["references"][0]["text"]
     assert "\ud800" not in clip_text
     assert "sample" in clip_text
@@ -687,7 +705,7 @@ def test_verbose_words_accepts_padded_granularity() -> None:
         "verbose_json",
         "hello",
         [CaptionCue(0.0, 1.0, "hello")],
-        {"words": [{"word": "hello", "start": 0.0, "end": 0.4}, {"word": 7}, "junk"]},
+        asr_body({"words": [{"word": "hello", "start": 0.0, "end": 0.4}, {"word": 7}, "junk"]}),
         language=None,
         granularities=[" word "],
     )
@@ -722,12 +740,14 @@ def test_caption_cues_drop_a_watermark_segment() -> None:
 
 def test_caption_cues_skip_non_string_segment_text() -> None:
     cues = caption_cues(
-        {
-            "segments": [
-                {"text": ["hello"], "start": 0, "end": 1},
-                {"text": "there", "start": 1, "end": 2},
-            ]
-        },
+        asr_body(
+            {
+                "segments": [
+                    {"text": ["hello"], "start": 0, "end": 1},
+                    {"text": "there", "start": 1, "end": 2},
+                ]
+            }
+        ),
         "there",
         strip_speakers=False,
     )
@@ -736,7 +756,7 @@ def test_caption_cues_skip_non_string_segment_text() -> None:
 
 def test_caption_cues_keep_zero_when_times_are_junk() -> None:
     cues = caption_cues(
-        {"segments": [{"text": "hello", "start": "nope", "end": None}]},
+        asr_body({"segments": [{"text": "hello", "start": "nope", "end": None}]}),
         "hello",
         strip_speakers=False,
     )

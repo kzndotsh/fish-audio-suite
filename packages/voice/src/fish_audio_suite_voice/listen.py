@@ -5,7 +5,7 @@ from __future__ import annotations
 import collections
 import io
 import threading
-from typing import Any
+from typing import Any, Final
 
 from fish_audio_suite_voice.aec import EchoCanceller, pcm_rms
 from fish_audio_suite_voice.barge import (
@@ -26,23 +26,49 @@ from fish_audio_suite_voice.tune import (
     ListenTune,
 )
 
-HOLD_RMS_RATIO = 0.55
-MIN_UTTERANCE_FRAMES = 4
+__all__ = [
+    "listen_reject_reason",
+    "prime_listen",
+    "record_utterance",
+    "spike_start_allowed",
+    "start_frames_needed",
+    "start_hit",
+    "trailing_start_hits",
+]
+
+HOLD_RMS_RATIO: Final = 0.55
+MIN_UTTERANCE_FRAMES: Final = 4
 # One quiet frame is 30 ms, a normal dip inside a word. Ending on that dip
 # after the cap sends a cut-off sentence to ASR.
-_CAP_QUIET_FRAMES = 4
-_MIC_POLL_S = 0.25
-_WAV_HEADER_BYTES = 44
-IMPULSE_PEAK_RATIO = 8.0
-IMPULSE_EXTRA_VOICED = 12
-IMPULSE_NOW_RATIO = 0.5
+_CAP_QUIET_FRAMES: Final = 4
+_MIC_POLL_S: Final = 0.25
+_WAV_HEADER_BYTES: Final = 44
+IMPULSE_PEAK_RATIO: Final = 8.0
+IMPULSE_EXTRA_VOICED: Final = 12
+IMPULSE_NOW_RATIO: Final = 0.5
 
 
-def start_hit(rms: float, vad_speech: bool, min_rms: float) -> bool:
+def start_hit(rms: float, min_rms: float, *, vad_speech: bool) -> bool:
     """Count a listen-start frame. Score VAD once per capture; do not replay the ring.
 
-    Require VAD and full min RMS. The hold ratio is only for staying in an
-    utterance after it has already started.
+    Parameters
+    ----------
+    rms : float
+        Frame loudness.
+    min_rms : float
+        The loudness a frame must reach.
+    vad_speech : bool
+        Whether the voice detector scored the frame as speech.
+
+    Returns
+    -------
+    bool
+        True when the detector heard speech and the frame is at least ``min_rms``.
+
+    Notes
+    -----
+    The hold ratio is only for staying in an utterance after it has already
+    started, so it does not apply here.
     """
     if not vad_speech:
         return False
@@ -113,21 +139,21 @@ def _encode_wav(pcm: bytes) -> bytes:
 
 class _Listen:
     def __init__(self, tune: ListenTune, vad: Any) -> None:
-        self.tune = tune
-        self.vad = vad
+        self.tune: ListenTune = tune
+        self.vad: Any = vad
         self.voiced: list[bytes] = []
         self.ring: collections.deque[tuple[bytes, bool]] = collections.deque(
             maxlen=tune.pre_pad_frames
         )
-        self.triggered = False
-        self.silence = 0
-        self.window_peak = 0.0
-        self.clip_peak = 0.0
-        self.speech_hits = 0
+        self.triggered: bool = False
+        self.silence: int = 0
+        self.window_peak: float = 0.0
+        self.clip_peak: float = 0.0
+        self.speech_hits: int = 0
         self.speech_flags: list[bool] = []
-        self.primed_hits = 0
-        self.floor = AdaptiveFloor(tune.min_speech_rms)
-        self.min_speech_now = tune.min_speech_rms
+        self.primed_hits: int = 0
+        self.floor: AdaptiveFloor = AdaptiveFloor(tune.min_speech_rms)
+        self.min_speech_now: float = tune.min_speech_rms
 
     def take(self, frame: bytes, idle_frames: int) -> bool:
         rms = pcm_rms(frame)
@@ -199,7 +225,7 @@ class _Listen:
         self.window_peak = 0.0
 
     def _arm(self, frame: bytes, rms: float, vad_speech: bool) -> bool:
-        self.ring.append((frame, start_hit(rms, vad_speech, self.min_speech_now)))
+        self.ring.append((frame, start_hit(rms, self.min_speech_now, vad_speech=vad_speech)))
         peak_ring = max((pcm_rms(pcm) for pcm, _ in self.ring), default=0.0)
         need_start = start_frames_needed(
             peak_ring, self.min_speech_now, self.tune.speech_frames_start

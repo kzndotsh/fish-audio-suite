@@ -12,6 +12,11 @@ from types import FrameType
 
 from fish_audio_suite_voice.aec import EchoCanceller
 
+__all__ = [
+    "DuplexSession",
+    "TurnSignals",
+]
+
 
 class TurnSignals:
     """Cancel handles for the reply in flight.

@@ -248,6 +248,22 @@ def test_asr_429_waits_at_least_retry_after(monkeypatch: pytest.MonkeyPatch) -> 
     assert sum(slept) >= 3.0
 
 
+@pytest.mark.parametrize("hint", ["-5", "nan", "inf", "1e9", "soon", "999999"])
+def test_asr_ignores_an_unusable_retry_after(monkeypatch: pytest.MonkeyPatch, hint: str) -> None:
+    slept: list[float] = []
+
+    async def fake_sleep(seconds: float) -> None:
+        slept.append(seconds)
+
+    monkeypatch.setattr("fish_audio_suite_voice.pause.asyncio.sleep", fake_sleep)
+    slow = _FakeAsrResponse(429, text='{"message": "slow down", "status": 429}')
+    slow.headers = {"retry-after": hint}
+    _install_asr(monkeypatch, [slow, _FakeAsrResponse(200, payload={"text": "hello there"})])
+    assert asyncio.run(fish_asr(b"wav", "key", base="https://api.fish.audio")) == "hello there"
+    # Only the ordinary jittered backoff is waited, never the bad hint.
+    assert 0 < sum(slept) <= 3.0
+
+
 def test_asr_uses_the_session_client_and_leaves_it_open() -> None:
     posts: list[httpx.Request] = []
 

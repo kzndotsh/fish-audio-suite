@@ -9,10 +9,51 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Literal, cast
+from typing import Any, Final, Literal, cast
 from urllib.parse import urlsplit
 
-DEFAULT_SYSTEM_PROMPT = (
+from fish_audio_suite_kit.literals import AsrFormat, AudioFormat, FishLatency, TtsModel
+
+__all__ = [
+    "CHUNK_LENGTH_LO",
+    "CLOUD_CHUNK_HI",
+    "DEFAULT_SEED_EXCHANGE",
+    "DEFAULT_SYSTEM_PROMPT",
+    "FISH_LATENCIES",
+    "FISH_TTS_MODEL_IDS",
+    "MIN_CHUNK_HI",
+    "MIN_CHUNK_LO",
+    "MS_PER_S",
+    "SELF_HOST_CHUNK_HI",
+    "TTS_SPEED_HI",
+    "TTS_SPEED_LO",
+    "UNIT_HI",
+    "UNIT_LO",
+    "LatencySnapshot",
+    "SuiteDefaults",
+    "catalog_tts_model",
+    "chunk_length_hi",
+    "clamp_num",
+    "elapsed_ms",
+    "env_base",
+    "env_bool",
+    "env_float",
+    "env_int",
+    "env_off",
+    "env_text",
+    "env_token",
+    "is_insecure_fish_base",
+    "known_asr_format",
+    "known_audio_format",
+    "known_latency",
+    "known_mp3_bitrate",
+    "known_opus_bitrate",
+    "known_tts_model",
+    "number_or",
+    "strip_base",
+]
+
+DEFAULT_SYSTEM_PROMPT: Final = (
     "You are a voice assistant. Your reply is spoken aloud by a text-to-speech voice. "
     "English by default. Speak the user's language if they switch. "
     "Say only words that should be heard: no markdown, bullets, emoji, or URLs. "
@@ -32,7 +73,7 @@ DEFAULT_SYSTEM_PROMPT = (
 # pattern of its own earlier replies, so without this a conversation settles on
 # one cue per reply whatever the prompt says. Tested on two models: 1.0 cues per
 # reply without it, about 1.9 with it.
-DEFAULT_SEED_EXCHANGE: tuple[tuple[str, str], ...] = (
+DEFAULT_SEED_EXCHANGE: Final[tuple[tuple[str, str], ...]] = (
     (
         "Hi there!",
         "[happy] Hey, it's so good to hear you! [curious] What are we getting into today?",
@@ -40,10 +81,10 @@ DEFAULT_SEED_EXCHANGE: tuple[tuple[str, str], ...] = (
 )
 
 
-_OPUS_AUTO = -1000
+_OPUS_AUTO: Final = -1000
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class SuiteDefaults:
     """Shared Fish TTS and ASR knobs. Callers still clamp before a request.
 
@@ -59,10 +100,10 @@ class SuiteDefaults:
     tts_model: str = "s2.1-pro"
     asr_model: str = "transcribe-1"
     asr_language: str = ""
-    latency: str = "normal"
+    latency: FishLatency = "normal"
     chunk_length: int = 200
     min_chunk_length: int = 50
-    audio_format: str = "mp3"
+    audio_format: AudioFormat = "mp3"
     mp3_bitrate: int = 128
     opus_bitrate: int = _OPUS_AUTO
     opus_sample_rate: int = 48000
@@ -82,7 +123,7 @@ class SuiteDefaults:
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class LatencySnapshot:
     """One cascade turn. Times are milliseconds. Never store utterance text."""
 
@@ -92,7 +133,8 @@ class LatencySnapshot:
     ttfa: float | None = None
     voice_to_voice: float | None = None
     trace_id: str | None = None
-    # Last, so a caller that builds a snapshot by position keeps its meaning.
+    # Last, and deliberately not keyword-only: a caller that builds a snapshot by
+    # position keeps its meaning, and a new field must never shift the old ones.
     first_audio: float | None = None
 
     def log_line(self) -> str:
@@ -123,7 +165,7 @@ def _timing_field(name: str, value: float | None) -> str:
     return f"{name}={value:.0f}ms"
 
 
-MS_PER_S = 1000
+MS_PER_S: Final = 1000
 
 
 def elapsed_ms(started: float) -> float:
@@ -143,7 +185,19 @@ def elapsed_ms(started: float) -> float:
 
 
 def strip_base(url: str) -> str:
-    """Drop surrounding space and trailing slashes so a joined path is not `//`."""
+    """Drop surrounding space and trailing slashes so a joined path is not ``//``.
+
+    Parameters
+    ----------
+    url : str
+        A base URL. Anything from the first control character on is cut off, since
+        a newline in a base makes ``httpx`` reject the URL.
+
+    Returns
+    -------
+    str
+        The URL without surrounding space or trailing slashes.
+    """
     text = url.strip()
     # A newline in the base makes httpx raise InvalidURL when the client
     # is built, so the turn never starts.
@@ -154,7 +208,20 @@ def strip_base(url: str) -> str:
 
 
 def env_base(name: str, default: str) -> str:
-    """Process env URL. Missing or blank keeps the default. Space and trailing slashes are removed."""
+    """Read a base URL from the process environment.
+
+    Parameters
+    ----------
+    name : str
+        Environment variable name.
+    default : str
+        Used when the variable is missing, blank, or empty after cleaning.
+
+    Returns
+    -------
+    str
+        The value, or the default, with ``strip_base`` applied.
+    """
     raw = os.environ.get(name)
     if raw is None or not raw.strip():
         return strip_base(default)
@@ -173,12 +240,39 @@ _ON_WORDS = frozenset({"1", "true", "yes", "on"})
 
 
 def env_off(name: str) -> bool:
-    """Return true only for 0, false, no, or off. Blank is not off."""
+    """Return whether the variable is explicitly switched off.
+
+    Parameters
+    ----------
+    name : str
+        Environment variable name.
+
+    Returns
+    -------
+    bool
+        True only for ``0``, ``false``, ``no`` or ``off`` in any case. A missing or
+        blank variable is not off.
+    """
     return _env_word(name) in _OFF_WORDS
 
 
-def env_bool(name: str, default: bool = False) -> bool:
-    """Process env flag. Blank keeps the default. Only 1/true/yes/on are true."""
+def env_bool(name: str, *, default: bool = False) -> bool:
+    """Read an on/off flag from the process environment.
+
+    Parameters
+    ----------
+    name : str
+        Environment variable name.
+    default : bool, optional
+        Returned when the variable is missing or blank. Keyword-only, so a call
+        reads ``env_bool("X", default=True)``.
+
+    Returns
+    -------
+    bool
+        True for ``1``, ``true``, ``yes`` or ``on`` in any case, False for any
+        other non-blank value, and ``default`` when the variable is unset or blank.
+    """
     word = _env_word(name)
     if not word:
         return default
@@ -186,7 +280,20 @@ def env_bool(name: str, default: bool = False) -> bool:
 
 
 def env_token(name: str, default: str) -> str:
-    """Process env token. Missing or blank keeps the default. The value is stripped."""
+    """Read a single-word setting from the process environment.
+
+    Parameters
+    ----------
+    name : str
+        Environment variable name.
+    default : str
+        Returned when the variable is missing or blank.
+
+    Returns
+    -------
+    str
+        The stripped value, or ``default``.
+    """
     raw = os.environ.get(name)
     if raw is None:
         return default
@@ -195,7 +302,21 @@ def env_token(name: str, default: str) -> str:
 
 
 def env_text(name: str, default: str = "") -> str:
-    """Process env text. A missing key keeps the default. The value is stripped."""
+    """Read free text from the process environment.
+
+    Parameters
+    ----------
+    name : str
+        Environment variable name.
+    default : str, optional
+        Returned, stripped, when the variable is missing.
+
+    Returns
+    -------
+    str
+        The stripped value. A blank value stays blank and does not fall back to
+        ``default``, so an empty key can be told apart from an unset one.
+    """
     return os.environ.get(name, default).strip()
 
 
@@ -224,7 +345,24 @@ def _parsed[T: int | float](value: Any, parse: Callable[[Any], T]) -> T:
 
 
 def number_or[T: int | float](value: Any, default: T, parse: Callable[[Any], T]) -> T:
-    """Parse a number. Junk, including a JSON boolean, keeps the default."""
+    """Parse a number from untrusted input.
+
+    Parameters
+    ----------
+    value : Any
+        A number or a numeric string, for example from a JSON request.
+    default : int or float
+        Returned for anything that does not parse.
+    parse : Callable
+        ``int`` or ``float``. With ``int``, a whole decimal such as ``"16000.0"``
+        is accepted.
+
+    Returns
+    -------
+    int or float
+        The parsed value, or ``default`` for junk, a non-finite float, or a JSON
+        boolean (``True`` would otherwise parse as 1).
+    """
     # bool is an int subclass. True would parse as 1.
     if isinstance(value, bool):
         return default
@@ -251,27 +389,61 @@ def _env_num[T: int | float](name: str, default: T, parse: Callable[[str], T]) -
 
 
 def env_int(name: str, default: int) -> int:
-    """Process env int. Blank, non-numeric or non-ASCII-digit values keep the default."""
+    """Read an integer from the process environment.
+
+    Parameters
+    ----------
+    name : str
+        Environment variable name.
+    default : int
+        Returned when the variable is missing, blank, not a number, or written with
+        anything but plain ASCII digits (fullwidth digits, underscores and hex
+        are rejected, so a lookalike cannot pass for a limit).
+
+    Returns
+    -------
+    int
+        The parsed value. A whole decimal such as ``16000.0`` is accepted.
+
+    Examples
+    --------
+    >>> env_int("FISH_DOCTEST_SURELY_UNSET", 7)
+    7
+    """
     return _env_num(name, default, int)
 
 
 def env_float(name: str, default: float) -> float:
-    """Process env float. Blank, non-numeric or non-ASCII-digit values keep the default."""
+    """Read a float from the process environment.
+
+    Parameters
+    ----------
+    name : str
+        Environment variable name.
+    default : float
+        Returned when the variable is missing, blank, not finite, not a number, or
+        written with anything but plain ASCII digits.
+
+    Returns
+    -------
+    float
+        The parsed value, or ``default``.
+    """
     return _env_num(name, default, float)
 
 
-CHUNK_LENGTH_LO = 100
-CLOUD_CHUNK_HI = 300
-SELF_HOST_CHUNK_HI = 1000
-MIN_CHUNK_LO = 0
-MIN_CHUNK_HI = 100
-TTS_SPEED_LO = 0.5
-TTS_SPEED_HI = 2.0
-UNIT_LO = 0.0
-UNIT_HI = 1.0
+CHUNK_LENGTH_LO: Final = 100
+CLOUD_CHUNK_HI: Final = 300
+SELF_HOST_CHUNK_HI: Final = 1000
+MIN_CHUNK_LO: Final = 0
+MIN_CHUNK_HI: Final = 100
+TTS_SPEED_LO: Final = 0.5
+TTS_SPEED_HI: Final = 2.0
+UNIT_LO: Final = 0.0
+UNIT_HI: Final = 1.0
 
 
-_CLOUD_HOST = "api.fish.audio"
+_CLOUD_HOST: Final = "api.fish.audio"
 
 
 _SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
@@ -309,6 +481,15 @@ def is_insecure_fish_base(base: str) -> bool:
     -----
     This only reports. LAN self-hosting over http is legitimate, so callers warn
     and carry on.
+
+    Examples
+    --------
+    >>> is_insecure_fish_base("http://10.0.0.5:8080")
+    True
+    >>> is_insecure_fish_base("http://localhost:8080")
+    False
+    >>> is_insecure_fish_base("https://api.fish.audio")
+    False
     """
     try:
         parts = urlsplit(base.strip())
@@ -354,7 +535,26 @@ def clamp_num[T: int | float](
     default: T,
     parse: Callable[[Any], T],
 ) -> T:
-    """Parse a Fish numeric knob and keep it inside the documented range."""
+    """Parse a Fish numeric knob and keep it inside its documented range.
+
+    Parameters
+    ----------
+    value : Any
+        A number or numeric string from a caller.
+    lo : int or float
+        Lowest allowed value.
+    hi : int or float
+        Highest allowed value.
+    default : int or float
+        Returned when ``value`` does not parse, is non-finite, or is a boolean.
+    parse : Callable
+        ``int`` or ``float``.
+
+    Returns
+    -------
+    int or float
+        The parsed value clamped to ``[lo, hi]``, or ``default``.
+    """
     # bool is an int subclass. True would clamp to 1.
     if isinstance(value, bool):
         return default
@@ -371,18 +571,59 @@ def clamp_num[T: int | float](
     return n
 
 
-FISH_TTS_MODEL_IDS = (
+FISH_TTS_MODEL_IDS: Final = (
     "s2.1-pro",
     "s2.1-pro-free",
     "s2-pro",
     "s1",
     "drama-3-preview",
 )
-FISH_LATENCIES = frozenset({"low", "balanced", "normal"})
+# Each table maps a lowercase name to the Literal it stands for, so a lookup
+# narrows the type without a cast.
+_LATENCY_BY_NAME: Final[dict[str, FishLatency]] = {
+    "low": "low",
+    "balanced": "balanced",
+    "normal": "normal",
+}
+FISH_LATENCIES: Final = frozenset(_LATENCY_BY_NAME)
+_AUDIO_FORMAT_BY_NAME: Final[dict[str, AudioFormat]] = {
+    "wav": "wav",
+    "pcm": "pcm",
+    "mp3": "mp3",
+    "opus": "opus",
+}
+_ASR_FORMAT_BY_NAME: Final[dict[str, AsrFormat]] = {
+    "json": "json",
+    "text": "text",
+    "verbose_json": "verbose_json",
+    "srt": "srt",
+    "vtt": "vtt",
+}
+_TTS_MODEL_BY_NAME: Final[dict[str, TtsModel]] = {
+    "s1": "s1",
+    "s2-pro": "s2-pro",
+    "s2.1-pro": "s2.1-pro",
+    "s2.1-pro-free": "s2.1-pro-free",
+}
 
 
 def known_tts_model(name: str) -> str:
-    """Catalog ids are lowercase. Any other single-token id is returned stripped."""
+    """Catalog ids are lowercase. Any other single-token id is returned stripped.
+
+    Parameters
+    ----------
+    name : str
+        A model id from a caller or the environment.
+
+    Returns
+    -------
+    str
+        The lowercase catalog id, the stripped id when it is a single printable
+        token that Fish may know (a new model, ``drama-3-preview``), or the
+        default model when ``name`` is blank or could split a header. The result is
+        ``str`` and not ``TtsModel`` because other ids pass through; use
+        ``catalog_tts_model`` to narrow.
+    """
     text = name.strip()
     # The id is a request header. A newline would split that header, and a
     # non-ASCII character makes the client refuse to send it.
@@ -394,25 +635,96 @@ def known_tts_model(name: str) -> str:
     return SuiteDefaults().tts_model
 
 
-def known_latency(name: str, default: str) -> str:
+def catalog_tts_model(name: str) -> TtsModel | None:
+    """Narrow a model id to the catalog ``TtsModel`` set.
+
+    Parameters
+    ----------
+    name : str
+        A model id. Compared after strip and lowercase.
+
+    Returns
+    -------
+    TtsModel or None
+        The catalog id, or None for any other id, including ``drama-3-preview``.
+
+    Examples
+    --------
+    >>> catalog_tts_model(" S2-Pro ")
+    's2-pro'
+    >>> catalog_tts_model("drama-3-preview") is None
+    True
+    """
+    return _TTS_MODEL_BY_NAME.get(name.strip().lower())
+
+
+def known_latency(name: str, default: FishLatency) -> FishLatency:
     """Accept ``low``, ``balanced``, or ``normal``. Anything else keeps ``default``.
 
     Parameters
     ----------
     name : str
         Caller or env latency. Compared after strip and lowercase.
-    default : str
+    default : FishLatency
         Value returned when ``name`` is not one of the three Fish modes.
 
     Returns
     -------
-    str
+    FishLatency
         A known latency, or ``default``.
+
+    Examples
+    --------
+    >>> known_latency(" Balanced ", "normal")
+    'balanced'
+    >>> known_latency("turbo", "normal")
+    'normal'
     """
-    key = name.strip().lower()
-    if key in FISH_LATENCIES:
-        return key
-    return default
+    return _LATENCY_BY_NAME.get(name.strip().lower(), default)
+
+
+def known_audio_format(name: str, default: AudioFormat) -> AudioFormat:
+    """Accept ``wav``, ``pcm``, ``mp3`` or ``opus``. Anything else keeps ``default``.
+
+    Parameters
+    ----------
+    name : str
+        A format name. Compared after strip and lowercase.
+    default : AudioFormat
+        Value returned when ``name`` is not a Fish audio format.
+
+    Returns
+    -------
+    AudioFormat
+        A known format, or ``default``.
+
+    Examples
+    --------
+    >>> known_audio_format("PCM", "mp3")
+    'pcm'
+    >>> known_audio_format("flac", "mp3")
+    'mp3'
+    """
+    return _AUDIO_FORMAT_BY_NAME.get(name.strip().lower(), default)
+
+
+def known_asr_format(name: str, default: AsrFormat) -> AsrFormat:
+    """Accept a transcription response format. Anything else keeps ``default``.
+
+    Parameters
+    ----------
+    name : str
+        ``json``, ``text``, ``verbose_json``, ``srt`` or ``vtt``. Compared after
+        strip and lowercase.
+    default : AsrFormat
+        Value returned when ``name`` is not one of them.
+
+    Returns
+    -------
+    AsrFormat
+        A known format, or ``default``.
+    """
+    return _ASR_FORMAT_BY_NAME.get(name.strip().lower(), default)
 
 
 _MP3_BITRATES: dict[int, Literal[64, 128, 192]] = {64: 64, 192: 192}

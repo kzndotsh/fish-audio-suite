@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Any, ClassVar
@@ -1020,3 +1021,19 @@ def test_log_briefs_show_the_provider_and_the_token_counts() -> None:
     usage = {"prompt_tokens": 203, "completion_tokens": 20, "cost": 5.86e-05}
     assert _usage_brief(usage) == "in=203 out=20 cost=$0.00006"
     assert _usage_brief(None) == "usage=?"
+
+
+def test_a_retry_wait_in_the_error_body_is_read_the_way_a_header_is() -> None:
+    from fish_audio_suite_voice.transports import _retry_after_seconds
+
+    def body(value: object) -> str:
+        return json.dumps({"error": {"metadata": {"retry_after_seconds": value}}})
+
+    assert _retry_after_seconds(None, body(8)) == 8.0
+    assert _retry_after_seconds(None, body("1.5")) == 1.5
+    assert _retry_after_seconds(None, body(-3)) is None
+    assert _retry_after_seconds(None, body(10**400)) is None
+    assert _retry_after_seconds(None, body(True)) is None
+    assert _retry_after_seconds(None, body("soon")) is None
+    headers = httpx.Headers({"Retry-After": "12"})
+    assert _retry_after_seconds(headers, body(8)) == 12.0

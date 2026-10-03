@@ -6,6 +6,17 @@ import re
 
 from fish_audio_suite_kit.cuts import next_tts_cut
 
+__all__ = [
+    "ensure_lead_cue",
+    "is_paren_cue",
+    "mood_lead_hold_at",
+    "normalize_cues",
+    "paren_cue_names",
+    "rewrite_s1_parens",
+    "spoken_mood_span",
+    "strip_cue_tags",
+]
+
 # Official single-word emotions (basic + advanced). Both the sentence-lead
 # pattern and the S1 parenthesis rewriter use this set, so the lists cannot drift.
 # https://docs.fish.audio/api-reference/emotion-reference.md
@@ -214,6 +225,13 @@ def strip_cue_tags(text: str) -> str:
         single spaces. A bracket that is not a known cue, such as the index in
         ``a[i]``, is kept because the speaker said it. A cue nested in a larger
         bracket expression, such as ``[[happy]]``, is kept too.
+
+    Examples
+    --------
+    >>> strip_cue_tags("[happy] Hello [laughing] there")
+    'Hello there'
+    >>> strip_cue_tags("keep [1-2] and [[happy]]")
+    'keep [1-2] and [[happy]]'
     """
     return " ".join(_KNOWN_CUE_TAG_RE.sub(" ", text).split())
 
@@ -408,6 +426,13 @@ def normalize_cues(text: str, *, lead: bool = False, continued: bool = False) ->
     sentences. The lead list is Fish's single-word emotions, plus whispering,
     shouting, and screaming. The same word mid-sentence is spoken text, and
     sound effects such as ``Pause, wait`` stay spoken.
+
+    Examples
+    --------
+    >>> normalize_cues("<whisper>shh</whisper> and [Happy] day")
+    '[whispering] shh and [happy] day'
+    >>> normalize_cues("[excited] Yes! [  calm  ] ok")
+    '[excited] Yes! [calm] ok'
     """
     if not text:
         return text

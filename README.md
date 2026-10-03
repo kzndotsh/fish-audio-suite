@@ -85,6 +85,15 @@ cut = next_tts_cut(spoken)  # sentence end, or about 40 characters; -1 keeps buf
 
 Exports: [packages/kit/README.md](packages/kit/README.md).
 
+## Versioning and the public API
+
+The public API is the set of names in each package's root `__all__`, plus the proxy's HTTP API and
+its documented settings. Everything else is internal. While the version is 0.x, a minor release
+(0.1 to 0.2) may break the public API and a patch release never does. A name is deprecated, with a
+`DeprecationWarning` that names its replacement, for at least one minor release before it is
+removed. The GitHub release notes list every change, breaking ones marked with `!` in the pull
+request title; there is no `CHANGELOG.md`. Details: [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Tech stack
 
 | Component | Technology |

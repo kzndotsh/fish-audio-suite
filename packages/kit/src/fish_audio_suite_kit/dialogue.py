@@ -3,9 +3,19 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Set
+from typing import Final
 
 from fish_audio_suite_kit._charsets import cjk_latin_counts
 from fish_audio_suite_kit.cuts import next_tts_cut
+
+__all__ = [
+    "DEFAULT_MIN_LETTERS",
+    "DEFAULT_SHORT_WORDS",
+    "extract_quoted_speech",
+    "is_tts_junk",
+    "too_thin",
+]
 
 # A quote whose only content is a [cue] in this window is not speech.
 _CUE_LOOKAHEAD = 24
@@ -70,11 +80,11 @@ _NARRATION_VERB_RE = re.compile(
 
 # Default floor for "enough speech" and the words kept below it. A one-letter
 # reply is noise. "no", "ok", and "hi" are answers.
-DEFAULT_MIN_LETTERS = 2
-DEFAULT_SHORT_WORDS = frozenset({"no", "ok", "hi", "yo", "go", "yes", "yep", "nope"})
+DEFAULT_MIN_LETTERS: Final = 2
+DEFAULT_SHORT_WORDS: Final = frozenset({"no", "ok", "hi", "yo", "go", "yes", "yep", "nope"})
 
 
-def _short_word(text: str, short_words: frozenset[str]) -> bool:
+def _short_word(text: str, short_words: Set[str]) -> bool:
     folded = "".join(ch for ch in text.lower() if ch.isalnum())
     return folded in short_words
 
@@ -83,7 +93,7 @@ def too_thin(
     text: str,
     *,
     min_letters: int = DEFAULT_MIN_LETTERS,
-    short_words: frozenset[str] | None = None,
+    short_words: Set[str] | None = None,
 ) -> bool:
     """Return whether text has too little speech to send or answer.
 
@@ -93,7 +103,7 @@ def too_thin(
         Scrubbed text.
     min_letters : int, optional
         Fewest letters that count as speech. Default 2.
-    short_words : frozenset of str or None, optional
+    short_words : AbstractSet of str or None, optional
         Lowercase words kept even when under ``min_letters`` (or when a caller
         raises the floor). Default ``DEFAULT_SHORT_WORDS``.
 
@@ -242,7 +252,7 @@ def is_tts_junk(
     *,
     drop_narration: bool = False,
     min_letters: int = DEFAULT_MIN_LETTERS,
-    short_words: frozenset[str] | None = None,
+    short_words: Set[str] | None = None,
 ) -> bool:
     """Return whether scrubbed text should not be sent to Fish TTS.
 
@@ -257,7 +267,7 @@ def is_tts_junk(
         ``extract_quoted_speech``.
     min_letters : int, optional
         Fewest letters that count as speech. Default 2.
-    short_words : frozenset of str or None, optional
+    short_words : AbstractSet of str or None, optional
         Words kept below the floor. Default ``DEFAULT_SHORT_WORDS``.
 
     Returns

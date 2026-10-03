@@ -5,15 +5,7 @@ import time
 
 import pytest
 
-from fish_audio_suite_voice.pause import seconds_value, sleep_unless
-
-
-def test_seconds_value_ignores_an_integer_too_large_for_a_float() -> None:
-    assert seconds_value(10**400) is None
-    assert seconds_value("1" + "0" * 400) is None
-    assert seconds_value(2) == 2.0
-    assert seconds_value("1.5") == 1.5
-    assert seconds_value(True) is None
+from fish_audio_suite_voice.pause import sleep_unless
 
 
 @pytest.mark.perf

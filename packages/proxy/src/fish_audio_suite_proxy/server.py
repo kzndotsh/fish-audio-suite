@@ -17,7 +17,7 @@ import time
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from importlib.metadata import PackageNotFoundError, version
-from typing import Any
+from typing import Any, Final
 from urllib.parse import urlsplit
 
 import httpx
@@ -28,11 +28,11 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fish_audio_suite_kit import (
     FISH_ASR_PATH,
     FISH_TTS_PATH,
+    AsrBody,
     CaptionCue,
     FishHttpError,
     bearer,
     env_text,
-    fish_non_json,
     is_asr_hallucination,
     is_caption_watermark,
     is_insecure_fish_base,
@@ -45,6 +45,7 @@ from fish_audio_suite_kit import (
 from fish_audio_suite_proxy.errors import (
     ProxyError,
     json_error,
+    json_from_fish_error,
     proxy_error_response,
     read_json_object,
 )
@@ -68,7 +69,9 @@ from fish_audio_suite_proxy.transcribe import (
 )
 from fish_audio_suite_proxy.upstream import RetryPolicy, fish_send
 
-log = logging.getLogger("fish-audio-suite-proxy")
+__all__ = ["app", "lifespan", "main"]
+
+log: Final[logging.Logger] = logging.getLogger("fish-audio-suite-proxy")
 _TTS_CHUNK = 4096
 _PREVIEW_CHARS = 160
 _MAX_CONNECTIONS = 100
@@ -146,7 +149,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     await app.state.http.aclose()
 
 
-app = FastAPI(lifespan=lifespan, title="fish-audio-suite-proxy")
+app: Final[FastAPI] = FastAPI(lifespan=lifespan, title="fish-audio-suite-proxy")
 app.add_middleware(BodyLimitMiddleware)
 app.add_exception_handler(ProxyError, proxy_error_response)
 
@@ -197,7 +200,7 @@ def _spoken_line(body: dict[str, Any], settings: ProxySettings) -> tuple[str, st
 
 
 def _asr_text(
-    data: dict[str, Any],
+    data: AsrBody,
     transcript: str,
     *,
     lang: str,
@@ -300,7 +303,9 @@ async def speech(request: Request) -> Response:
         return json_error(400, "input must be a string")
     if settings.max_input_chars and len(raw_input) > settings.max_input_chars:
         return json_error(400, f"input is longer than {settings.max_input_chars} characters")
-    controls = speech_controls(body, defaults, settings.tts_aliases)
+    controls = speech_controls(
+        body, defaults, settings.tts_aliases, default_format=settings.response_format
+    )
     spoken, preview = _spoken_line(body, settings)
     if is_tts_junk(spoken, drop_narration=settings.tts_drop_narration):
         log.info("tts skip junk chars=%d", len(spoken))
@@ -396,12 +401,11 @@ async def transcriptions(request: Request) -> Response | dict[str, Any]:
     try:
         raw = r.json()
     except (json.JSONDecodeError, UnicodeDecodeError):
-        status, message = fish_non_json()
-        return json_error(status, message)
+        return json_from_fish_error(FishHttpError.non_json())
     try:
         data, transcript = parse_asr_body(raw)
     except FishHttpError as exc:
-        return json_error(exc.status, exc.message)
+        return json_from_fish_error(exc)
     text, cues = _asr_text(
         data,
         transcript,

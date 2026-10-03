@@ -8,6 +8,25 @@ from __future__ import annotations
 
 import re
 
+__all__ = [
+    "ANGLE_TOKEN_RE",
+    "ASCII_STOPS",
+    "BREAKS_RE",
+    "CJK_RANGES",
+    "IDEOGRAPHIC_STOPS",
+    "SENTENCE_CLOSERS",
+    "SENTENCE_CLOSER_CHARS",
+    "SENTENCE_STOPS",
+    "SPACED_STOPS",
+    "THOUGHT_CLOSE_RE",
+    "THOUGHT_OPEN_RE",
+    "THOUGHT_WORDS",
+    "cjk_latin_counts",
+    "is_cjk",
+    "plain_breaks",
+    "utf8_text",
+]
+
 # Ends a sentence when followed by a space or the end of the buffer.
 ASCII_STOPS = ".!?…"
 # Ideographic stops end a sentence with no space needed.

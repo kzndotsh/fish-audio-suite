@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 
+from fish_audio_suite_kit import FishHttpError
 from fish_audio_suite_voice import duplex
 from fish_audio_suite_voice.live import IsolatedFishTts, IsolatedResult
 
@@ -55,6 +56,7 @@ class FakeSink:
 
     def __init__(self, played: int = 0) -> None:
         self.played = played
+        self.output_latency_s = 0.0
 
     def start(self) -> None:
         return None
@@ -145,6 +147,11 @@ def make_result(
         llm_ttfs_ms=llm_ttfs_ms,
         error_status=error_status,
         error_message=error_message,
+        error=(
+            None
+            if error_status is None
+            else FishHttpError.from_status(error_status, error_message or "")
+        ),
     )
 
 

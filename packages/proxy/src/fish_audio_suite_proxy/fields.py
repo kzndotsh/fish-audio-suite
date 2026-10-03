@@ -5,9 +5,10 @@ from __future__ import annotations
 import io
 import wave
 from collections.abc import Mapping
-from typing import Any
+from typing import Any, Final, Literal, get_args
 
 from fish_audio_suite_kit import (
+    AudioFormat,
     ensure_trace_headers,
     extract_quoted_speech,
     normalize_cues,
@@ -16,7 +17,29 @@ from fish_audio_suite_kit import (
 )
 from fish_audio_suite_proxy.errors import ProxyError
 
-_MEDIA = {
+__all__ = [
+    "SILENT_MP3",
+    "SUPPORTED_FORMATS",
+    "ClientFormat",
+    "explicit_bool",
+    "first_choice",
+    "fish_audio_format",
+    "format_or_default",
+    "media_type",
+    "pcm_sample_rate",
+    "pick_format",
+    "pick_reference_id",
+    "prepare_tts_text",
+    "present_value",
+    "silent_speech",
+    "traced_model_headers",
+]
+
+# Formats a client may ask for. ``pcm16`` is the OpenAI name for 24 kHz PCM, which
+# Fish knows as ``pcm``, so it is a request format only (see ``fish_audio_format``).
+ClientFormat = Literal["mp3", "opus", "pcm", "pcm16", "wav"]
+
+_MEDIA: dict[ClientFormat, str] = {
     "mp3": "audio/mpeg",
     "opus": "audio/opus",
     "pcm": "audio/pcm",
@@ -28,11 +51,29 @@ _PCM16_RATE = 24_000
 # wave stores the rate as an unsigned 32-bit field. A larger junk-WAV rate
 # raises before the silence response is sent.
 _WAV_RATE_HI = 2**32 - 1
-SUPPORTED_FORMATS = tuple(_MEDIA)
+SUPPORTED_FORMATS: tuple[ClientFormat, ...] = tuple(_MEDIA)
+_CLIENT_FORMATS: dict[str, ClientFormat] = {name: name for name in get_args(ClientFormat)}
+
+
+def fish_audio_format(fmt: ClientFormat) -> AudioFormat:
+    """Map a client format to the format Fish produces.
+
+    Parameters
+    ----------
+    fmt : ClientFormat
+        A format from ``pick_format``.
+
+    Returns
+    -------
+    AudioFormat
+        The same format, except ``pcm16``, which Fish produces as ``pcm``.
+    """
+    return "pcm" if fmt == "pcm16" else fmt
+
 
 # One valid MPEG-1 Layer III frame: 32 kbps, 44.1 kHz, mono, 104 bytes
 # (144 * 32000 // 44100). Zeroed side info and main data decode as silence.
-SILENT_MP3 = b"\xff\xfb\x10\xc0" + b"\x00" * 100
+SILENT_MP3: Final = b"\xff\xfb\x10\xc0" + b"\x00" * 100
 _SILENT_PCM = b"\x00\x00"
 # One 20 ms mono Opus page (peak sample 1 after decode). An MP3 frame with
 # an audio/opus type is not silence; an Opus decoder plays it as noise.
@@ -46,7 +87,7 @@ _SILENT_OPUS = bytes.fromhex(
 )
 
 
-def silent_speech(fmt: str, sample_rate: int) -> tuple[bytes, str]:
+def silent_speech(fmt: ClientFormat, sample_rate: int) -> tuple[bytes, str]:
     """Return one silent buffer in the format the client asked to play."""
     # An MP3 frame played as PCM is loud garbage, and it is not a WAV or Opus file.
     if fmt in {"pcm", "pcm16"}:
@@ -166,19 +207,19 @@ def first_choice(body: dict[str, Any], *keys: str, default: str) -> str:
     return str(chosen).lower().strip()
 
 
-def pick_format(body: dict[str, Any], default: str) -> str:
+def pick_format(body: dict[str, Any], default: ClientFormat) -> ClientFormat:
     """Read the audio format a request asks for.
 
     Parameters
     ----------
     body : dict
         Request object. ``format``, ``response_format``, then ``fish_format``.
-    default : str
-        Used when the request names no format. An unsupported default is ``mp3``.
+    default : ClientFormat
+        Used when the request names no format.
 
     Returns
     -------
-    str
+    ClientFormat
         ``mp3``, ``opus``, ``pcm``, ``pcm16``, or ``wav``.
 
     Raises
@@ -190,40 +231,38 @@ def pick_format(body: dict[str, Any], default: str) -> str:
     """
     raw = first_choice(body, "format", "response_format", "fish_format", default="")
     if not raw:
-        return default if default in _MEDIA else "mp3"
-    if raw in _MEDIA:
-        return raw
+        return default
+    known = _CLIENT_FORMATS.get(raw)
+    if known is not None:
+        return known
     supported = ", ".join(SUPPORTED_FORMATS)
     raise ProxyError(400, f"unsupported response_format {raw[:32]!r}; use one of: {supported}")
 
 
-def format_or_default(name: str, default: str) -> str:
+def format_or_default(name: str, default: ClientFormat) -> ClientFormat:
     """Read a format from config, keeping ``default`` when the name is unsupported.
 
     Parameters
     ----------
     name : str
         Env value such as ``FISH_FORMAT``. Compared after strip and lowercase.
-    default : str
+    default : ClientFormat
         Returned when ``name`` is blank or not a supported format.
 
     Returns
     -------
-    str
+    ClientFormat
         A supported format.
     """
-    key = name.strip().lower()
-    if key in _MEDIA:
-        return key
-    return default if default in _MEDIA else "mp3"
+    return _CLIENT_FORMATS.get(name.strip().lower(), default)
 
 
-def pcm_sample_rate(fmt: str, body: dict[str, Any], default: int) -> int:
+def pcm_sample_rate(fmt: ClientFormat, body: dict[str, Any], default: int) -> int:
     """Choose the PCM rate. ``pcm16`` is 24 kHz unless the client sets one.
 
     Parameters
     ----------
-    fmt : str
+    fmt : ClientFormat
         Format from ``pick_format``.
     body : dict
         May contain ``sample_rate``.
@@ -257,7 +296,8 @@ def media_type(fmt: str) -> str:
         A MIME type. Unknown formats are ``audio/mpeg``. ``pcm16`` is
         ``audio/pcm``.
     """
-    return _MEDIA.get(fmt, "audio/mpeg")
+    known = _CLIENT_FORMATS.get(fmt)
+    return _MEDIA[known] if known is not None else "audio/mpeg"
 
 
 def prepare_tts_text(

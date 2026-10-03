@@ -9,13 +9,36 @@ import sys
 import threading
 import wave
 from collections.abc import Iterator
+from enum import StrEnum
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, BinaryIO, Final, Protocol, runtime_checkable
 
-from fish_audio_suite_kit import MS_PER_S, SuiteDefaults
+from fish_audio_suite_kit import MS_PER_S, AudioFormat, SuiteDefaults
 from fish_audio_suite_voice.aec import SAMPLE_BYTES, EchoCanceller, even_pcm
 
-PORTAUDIO_HINT = """sounddevice needs the PortAudio C library (the Python wheel does not ship it).
+__all__ = [
+    "DEFAULT_PLAYBACK",
+    "FileSink",
+    "MpvSink",
+    "PlaybackKind",
+    "PlaybackSink",
+    "PortAudioMissingError",
+    "SounddeviceSink",
+    "StdoutSink",
+    "audio_format_for",
+    "dac_slice_bytes",
+    "duplex_playback_problem",
+    "iter_pcm_slices",
+    "load_sounddevice",
+    "make_sink",
+    "missing_portaudio",
+    "parse_playback",
+    "pcm_stream_kwargs",
+    "playback_key",
+    "write_mono_wav",
+]
+
+PORTAUDIO_HINT: Final = """sounddevice needs the PortAudio C library (the Python wheel does not ship it).
   Debian/Ubuntu: sudo apt install libportaudio2
   Fedora: sudo dnf install portaudio
   macOS: brew install portaudio
@@ -32,8 +55,8 @@ def missing_portaudio() -> PortAudioMissingError:
     return PortAudioMissingError(PORTAUDIO_HINT)
 
 
-_MONO = 1
-_DEFAULT_RATE = SuiteDefaults().sample_rate
+_MONO: Final = 1
+_DEFAULT_RATE: Final = SuiteDefaults().sample_rate
 
 
 def pcm_stream_kwargs(sample_rate: int, device: str | int | None) -> dict[str, Any]:
@@ -96,10 +119,23 @@ class PlaybackSink(Protocol):
         """
         ...
 
+    @property
+    def output_latency_s(self) -> float:
+        """Seconds of audio the device buffers ahead of the speaker, or 0 when unknown.
+
+        Returns
+        -------
+        float
+            Used to discount audio that was written but not yet heard when
+            ``spoken_so_far`` is estimated.
+        """
+        ...
+
 
 class _Played:
     def __init__(self) -> None:
         self._played = 0
+        self.output_latency_s: float = 0.0
 
     def _reset_played(self) -> None:
         self._played = 0
@@ -114,7 +150,7 @@ class _Played:
 
 # wave stores the rate as an unsigned 32-bit field. Larger values raise while
 # the samples are already in memory, so the file is never written.
-_WAV_RATE_HI = 2**32 - 1
+_WAV_RATE_HI: Final = 2**32 - 1
 
 
 def _positive_rate(sample_rate: int) -> int:
@@ -124,9 +160,19 @@ def _positive_rate(sample_rate: int) -> int:
     return sample_rate
 
 
-def write_mono_wav(target: Any, pcm: bytes, sample_rate: int) -> None:
-    """Write mono int16 PCM as a WAV file."""
-    with wave.open(target, "wb") as wf:
+def write_mono_wav(target: str | Path | BinaryIO, pcm: bytes, sample_rate: int) -> None:
+    """Write mono int16 PCM as a WAV file.
+
+    Parameters
+    ----------
+    target : str or Path or BinaryIO
+        A path, or a writable binary file object.
+    pcm : bytes
+        Mono int16 samples.
+    sample_rate : int
+        Samples per second. A value the WAV header cannot store becomes the default rate.
+    """
+    with wave.open(str(target) if isinstance(target, Path) else target, "wb") as wf:
         wf.setnchannels(_MONO)
         wf.setsampwidth(SAMPLE_BYTES)
         wf.setframerate(_positive_rate(sample_rate))
@@ -138,9 +184,9 @@ class FileSink(_Played):
 
     def __init__(self, path: Path, *, sample_rate: int = _DEFAULT_RATE, wav: bool = True) -> None:
         super().__init__()
-        self.path = path
-        self.sample_rate = _positive_rate(sample_rate)
-        self.wav = wav
+        self.path: Path = path
+        self.sample_rate: int = _positive_rate(sample_rate)
+        self.wav: bool = wav
         self._buf = bytearray()
 
     def start(self) -> None:
@@ -209,11 +255,26 @@ class StdoutSink(_Played):
         self._odd = b""
 
 
-DAC_SLICE_MS = 30
-_MPV_WAIT_S = 90
-_MPV_KILL_S = 2
-_MPV_BUFFER_S = 0.2
-_SPEAKER_SINKS = frozenset({"sounddevice", "speakers", "pcm"})
+DAC_SLICE_MS: Final = 30
+_MPV_WAIT_S: Final = 90
+_MPV_KILL_S: Final = 2
+_MPV_BUFFER_S: Final = 0.2
+
+
+class PlaybackKind(StrEnum):
+    """Sink names accepted by ``FISH_PLAYBACK`` and ``--playback``."""
+
+    SOUNDDEVICE = "sounddevice"
+    SPEAKERS = "speakers"
+    PCM = "pcm"
+    STDOUT = "stdout"
+    MPV = "mpv"
+    FILE = "file"
+
+    @property
+    def is_speaker(self) -> bool:
+        """Whether the sink plays through the sound card (``sounddevice``, ``speakers``, ``pcm``)."""
+        return self in {PlaybackKind.SOUNDDEVICE, PlaybackKind.SPEAKERS, PlaybackKind.PCM}
 
 
 def dac_slice_bytes(sample_rate: int, frame_ms: int = DAC_SLICE_MS) -> int:
@@ -247,6 +308,8 @@ class SounddeviceSink(_Played):
     raises ``PortAudioMissingError`` when the stream opens, not at import.
     """
 
+    output_latency_s: float
+
     def __init__(
         self,
         *,
@@ -256,11 +319,10 @@ class SounddeviceSink(_Played):
         aec: EchoCanceller | None = None,
     ) -> None:
         super().__init__()
-        self.sample_rate = _positive_rate(sample_rate)
-        self.device = device
+        self.sample_rate: int = _positive_rate(sample_rate)
+        self.device: str | int | None = device
         self._cancel = cancel
         self._aec = aec
-        self.output_latency_s = 0.0
         self._stream: Any = None
         self._odd = b""
 
@@ -398,7 +460,7 @@ class MpvSink(_Played):
         self.proc = None
 
 
-DEFAULT_PLAYBACK = "sounddevice"
+DEFAULT_PLAYBACK: Final = PlaybackKind.SOUNDDEVICE.value
 
 
 def playback_key(name: str) -> str:
@@ -418,19 +480,38 @@ def playback_key(name: str) -> str:
     return name.strip().lower()
 
 
+def parse_playback(name: str) -> PlaybackKind | None:
+    """Look up a sink by name.
+
+    Parameters
+    ----------
+    name : str
+        ``FISH_PLAYBACK`` or ``--playback``, in any case and with surrounding space.
+
+    Returns
+    -------
+    PlaybackKind or None
+        The sink, or None when the name is not one of them.
+    """
+    try:
+        return PlaybackKind(playback_key(name))
+    except ValueError:
+        return None
+
+
 def duplex_playback_problem(name: str) -> str | None:
     """Why this sink cannot play a duplex reply. None means it can."""
-    key = playback_key(name)
-    if key == "file":
+    kind = parse_playback(name)
+    if kind is None:
+        return f"unknown playback sink {name!r}"
+    if kind is PlaybackKind.FILE:
         return "file playback needs a path"
-    if key == "mpv" and shutil.which("mpv") is None:
+    if kind is PlaybackKind.MPV and shutil.which("mpv") is None:
         return "mpv is not on PATH"
-    if key in {"stdout", "mpv"} or key in _SPEAKER_SINKS:
-        return None
-    return f"unknown playback sink {name!r}"
+    return None
 
 
-def audio_format_for(playback: str) -> str:
+def audio_format_for(playback: str) -> AudioFormat:
     """Fish format for a sink.
 
     Parameters
@@ -443,7 +524,7 @@ def audio_format_for(playback: str) -> str:
     str
         ``mp3`` for mpv. ``pcm`` for sounddevice, file, and stdout.
     """
-    if playback_key(playback) == "mpv":
+    if parse_playback(playback) is PlaybackKind.MPV:
         return "mp3"
     return "pcm"
 
@@ -484,15 +565,15 @@ def make_sink(
     ValueError
         ``file`` without ``path``, or a name this function does not know.
     """
-    key = playback_key(name)
-    if key == "file":
+    kind = parse_playback(name)
+    if kind is PlaybackKind.FILE:
         if path is None:
             raise ValueError("file sink requires path")
         return FileSink(path, sample_rate=sample_rate, wav=path.suffix.lower() == ".wav")
-    if key == "stdout":
+    if kind is PlaybackKind.STDOUT:
         return StdoutSink()
-    if key == "mpv":
+    if kind is PlaybackKind.MPV:
         return MpvSink()
-    if key in _SPEAKER_SINKS:
+    if kind is not None and kind.is_speaker:
         return SounddeviceSink(sample_rate=sample_rate, device=device, cancel=cancel, aec=aec)
     raise ValueError(f"unknown playback sink {name!r}")

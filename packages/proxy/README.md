@@ -114,7 +114,7 @@ Read once at startup. `GET /health` shows the values in effect, never a key.
 | `FISH_SPEED` | `1` | `FISH_SPEED_SCALE` still works, deprecated |
 | `FISH_CHUNK_LENGTH` | `200` | |
 | `FISH_MIN_CHUNK_LENGTH` | `50` | 0–100 |
-| `FISH_FORMAT` | `mp3` | |
+| `FISH_FORMAT` | `mp3` | Format when a request names none: `mp3`, `opus`, `wav`, `pcm` or `pcm16` (24 kHz PCM, sent to Fish as `pcm`). Anything else is `mp3` |
 | `FISH_MP3_BITRATE` | `128` | 64, 128, 192 |
 | `FISH_QUALITY_GUARD` | off | |
 | `FISH_ASR_STRIP_SPEAKERS` | off | |

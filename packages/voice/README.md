@@ -18,6 +18,8 @@ result = tts.speak_isolated("Hello there.", FileSink(Path("turn.wav")))
 
 `speak_isolated` runs the websocket on a private thread and event loop, so it is safe under `asyncio.run` or `to_thread`. Retry of 429 and 5xx happens only before the first audio byte. There is no default `voice_id`.
 
+`speak_isolated(text, sink, *, cancel=None, on_first_audio=None)` takes `cancel` (a `threading.Event`) by keyword. The returned `IsolatedResult` carries `error`, a kit error such as `FishAuthError` (401, 402, 403), `FishRateLimitError` (429) or `FishUpstreamError` (5xx), when the turn failed with a status. Test it with `isinstance`; `error_status` and `error_message` stay for display. The package root exports the types its signatures use: `IsolatedFishTts`, `IsolatedResult`, `PlaybackSink`, `PlaybackKind`, `make_sink`, `BargeGate`, `EchoCanceller`, `DuplexSession`, `ChatBackend`, the four tune classes and `PortAudioMissingError`. Each module lists its own exports in `__all__`.
+
 ```bash
 cp .env.example .env
 ./packages/voice/dev.sh --smoke    # writes a new temp wav, or pass --out PATH

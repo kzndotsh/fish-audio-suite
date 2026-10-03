@@ -9,10 +9,16 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Final
 
 from fish_audio_suite_voice.debug import warn
 
-_EXPORT_WORD = "export"
+__all__ = [
+    "apply_cli_env_files",
+    "load_dotenv",
+]
+
+_EXPORT_WORD: Final = "export"
 
 
 def _quoted_span(val: str) -> tuple[str, str] | None:

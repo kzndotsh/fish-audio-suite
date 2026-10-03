@@ -9,13 +9,15 @@ import time
 from collections.abc import AsyncIterator, Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, replace
-from typing import Literal
+from typing import Final, Literal
 
 import httpx
 
 from fish_audio_suite_kit import (
     DEFAULT_SEED_EXCHANGE,
     DEFAULT_SYSTEM_PROMPT,
+    ChatMessage,
+    FishAuthError,
     FishHttpError,
     LatencySnapshot,
     elapsed_ms,
@@ -53,17 +55,23 @@ from fish_audio_suite_voice.playback import PortAudioMissingError, make_sink
 from fish_audio_suite_voice.signals import DuplexSession
 from fish_audio_suite_voice.wire import own_cancel
 
-EXIT_OK = 0
-EXIT_FATAL = 2
-_KEEP_SYSTEM = 1
-_ROLES_PER_TURN = 2
-_FATAL_FISH = frozenset({401, 402, 403})
+__all__ = [
+    "EXIT_FATAL",
+    "EXIT_OK",
+    "bye",
+    "duplex_turns",
+]
+
+EXIT_OK: Final = 0
+EXIT_FATAL: Final = 2
+_KEEP_SYSTEM: Final = 1
+_ROLES_PER_TURN: Final = 2
 # watch() polls the mic for 0.2 s. The join has to cover that poll so the
 # stream is closed before the next listen opens the device.
-_BARGE_JOIN_S = 1.0
+_BARGE_JOIN_S: Final = 1.0
 # The TTS side reads the token queue on its own loop. A short poll keeps the
 # hand-off under one frame without a cross-loop wake-up.
-_PIPE_POLL_S = 0.005
+_PIPE_POLL_S: Final = 0.005
 
 
 class _TokenPipe:
@@ -99,7 +107,7 @@ class _TokenPipe:
             yield item
 
 
-@dataclass
+@dataclass(slots=True)
 class _Loop:
     config: VoiceCliConfig
     tts: IsolatedFishTts
@@ -107,7 +115,7 @@ class _Loop:
     backend: ChatBackend
     session: DuplexSession
     asr_http: httpx.AsyncClient
-    history: list[dict[str, str]]
+    history: list[ChatMessage]
     barge_prefix: bytes = b""
     pinned: int = _KEEP_SYSTEM
 
@@ -172,7 +180,7 @@ def _after_speech(
         result.bytes_played // 1000,
         " ".join(note for note in notes if note),
     )
-    if result.error_status in _FATAL_FISH:
+    if isinstance(result.error, FishAuthError):
         return snapshot, EXIT_FATAL
     if not result.got_audio and result.cancelled:
         console_print("  [tts cancelled before audio]", flush=True)
@@ -236,8 +244,8 @@ async def _speak_reply(
                 loop.tts.speak_isolated,
                 scrubbed,
                 sink,
-                cancel,
-                lambda: first_audio.append(time.perf_counter()),
+                cancel=cancel,
+                on_first_audio=lambda: first_audio.append(time.perf_counter()),
             )
         except PortAudioMissingError as exc:
             warn(str(exc))
@@ -268,7 +276,7 @@ def _end_llm_when_tts_stops(
         task.cancelled()
         or task.exception() is not None
         or task.result().cancelled
-        or task.result().error_status in _FATAL_FISH
+        or isinstance(task.result().error, FishAuthError)
     ):
         llm_cancel.set()
 
@@ -325,7 +333,13 @@ async def _stream_turn(
     loop.tts.trace_headers = {"traceparent": make_traceparent(trace_id=heard.trace_id)}
     snapshot = LatencySnapshot(asr_ms=heard.asr_ms, trace_id=heard.trace_id)
     tts_task = asyncio.create_task(
-        asyncio.to_thread(loop.tts.speak_stream_isolated, pipe, sink, cancel, on_first_audio)
+        asyncio.to_thread(
+            loop.tts.speak_stream_isolated,
+            pipe,
+            sink,
+            cancel=cancel,
+            on_first_audio=on_first_audio,
+        )
     )
     tts_task.add_done_callback(lambda task: _end_llm_when_tts_stops(task, llm_cancel))
     reply = ""
@@ -364,7 +378,7 @@ async def _stream_turn(
         not result.got_audio
         and not result.cancelled
         and (result.error_status is not None or bool(result.error_message))
-        and result.error_status not in _FATAL_FISH
+        and not isinstance(result.error, FishAuthError)
     )
     if failed_early and reply and not loop.session.stop.is_set():
         debug("tts.stream failed before audio, speaking the finished reply")
@@ -428,7 +442,7 @@ def _accept_asr(
     return "ok"
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class _HeardLine:
     kind: Literal["bye", "again", "fatal", "line"]
     text: str = ""
@@ -463,7 +477,7 @@ async def _recognize(
         if loop.session.stop.is_set():
             return _HeardLine("bye")
         warn(f"[asr] {e.status} {e.message}")
-        if e.status in _FATAL_FISH:
+        if isinstance(e, FishAuthError):
             return _HeardLine("fatal", code=EXIT_FATAL)
         return _HeardLine("again")
     except (httpx.HTTPError, OSError) as e:
@@ -542,7 +556,7 @@ def bye() -> int:
     return EXIT_OK
 
 
-def _opening_history(system_prompt: str) -> tuple[list[dict[str, str]], int]:
+def _opening_history(system_prompt: str) -> tuple[list[ChatMessage], int]:
     """Build the starting history and say how many leading messages stay pinned.
 
     Parameters
@@ -559,7 +573,7 @@ def _opening_history(system_prompt: str) -> tuple[list[dict[str, str]], int]:
         replies it sees. A custom prompt gets no seed, so it stays in control
         of how the model replies.
     """
-    history = [{"role": "system", "content": system_prompt}]
+    history: list[ChatMessage] = [{"role": "system", "content": system_prompt}]
     if system_prompt == DEFAULT_SYSTEM_PROMPT:
         for user, assistant in DEFAULT_SEED_EXCHANGE:
             history.append({"role": "user", "content": user})
@@ -568,7 +582,7 @@ def _opening_history(system_prompt: str) -> tuple[list[dict[str, str]], int]:
 
 
 def _trim_history(
-    history: list[dict[str, str]],
+    history: list[ChatMessage],
     turns: int,
     pinned: int = _KEEP_SYSTEM,
 ) -> None:
@@ -588,7 +602,7 @@ def _trim_history(
 
 
 def _remember_user(
-    history: list[dict[str, str]],
+    history: list[ChatMessage],
     text: str,
     turns: int,
     pinned: int = _KEEP_SYSTEM,

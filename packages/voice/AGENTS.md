@@ -6,17 +6,19 @@
 
 Library classes take settings and state as arguments. Application settings come from `config.cfg()` and `tune.*.from_env()` only, read once with validation (bad value: warn, use default). Do not add settings reads below that layer. Two CLI integration points are exempt because they are not settings: `debug.debug_level()` reads `FISH_VOICE_DEBUG`, and `envfile.py` writes `os.environ` when it loads a dotenv file.
 
+Public surface: every module lists its exports in `__all__`, and the package root exports every type a public signature uses. `tests/test_public_api.py` checks both. Constants are `Final`, sink and backend names are enums or literals, and chat messages are the kit's `ChatMessage`. A new boolean parameter is keyword-only.
+
 | File | Owns |
 | --- | --- |
 | `tune.py` | Frozen `ListenTune`, `BargeTune`, `AecTune`, `LlmTune`, their defaults, and `read_int` / `read_float` / `read_flag`. `LlmTune.from_env` picks the backend and keeps provider keys apart. |
 | `config.py` | `VoiceCliConfig`: Fish/TTS fields plus the four tunes, `history_turns`, `mood_lead`, `drop_narration`. |
 | `signals.py` | `DuplexSession` (quit `stop`, `TurnSignals`, `EchoCanceller`) and `install_sigint`. No module-level flags. `TurnSignals.fire` is thread-safe for the asyncio event. |
-| `live.py` | `IsolatedFishTts` and `IsolatedResult`. `speak_isolated` runs on a **private thread + loop**. SDK coercions (`low` latency, `aac`/`flac`) warn once. |
+| `live.py` | `IsolatedFishTts` and `IsolatedResult` (`error` is a kit `FishHttpError`; duplex tells fatal from transient by `isinstance(..., FishAuthError)`, never by status numbers). `speak_isolated(text, sink, *, cancel=None, on_first_audio=None)` runs on a **private thread + loop**; `cancel` is keyword-only. SDK coercions (`low` latency, `aac`/`flac`) warn once. |
 | `session.py` | One Fish turn: retry 429/5xx only before first audio, replaying `speak()` text. Backoff is kit `fish_backoff_s` through `pause.sleep_unless`. |
 | `wire.py` | The live websocket. `_pump_ws_audio` drives the SDK iterator from **one reader task** through a one-chunk queue (backpressure, so the reader cannot buffer a long reply); the SDK holds an anyio scope inside it, so a task per `anext` raises "cancel scope in a different task". Poll cancel with a timeout on the queue; a reader that ends with no marker (the stream itself was cancelled) is surfaced, not polled forever; on barge/Ctrl+C close the **client**, never `aclose()` the iterator. `is_cancel_noise` checks types and the cancel flag first; message text is a logged fallback. |
 | `spoken.py` | What the listener heard, for history. PCM: bytes played minus output latency, scaled by speed, cut to a word. Encoded audio cannot be cut, so a cancelled or failed turn records nothing. A finished turn keeps its cues except `[clear]`. |
 | `stream_scrub.py` | Streaming scrub behind `speak_deltas` (holds unclosed spans). Duplex does not use it. |
-| `pause.py` | `sleep_unless(seconds, cancelled)`, `header_retry_after`. Every retry wait goes through it. |
+| `pause.py` | `sleep_unless(seconds, cancelled)`. Every retry wait goes through it. `Retry-After` is parsed by the kit's `retry_after_seconds`. |
 | `playback.py` | `PlaybackSink`, `make_sink`, `SounddeviceSink` (~30 ms DAC slices; far-end tap **before** each blocking write; records `output_latency_s`), `FileSink`, `StdoutSink`, optional `MpvSink` (mp3 on stdin). |
 | `aec.py` | `EchoCanceller` (one per session): far-end tap, lazy AEC3 (`pywebrtc-audio` extra), `align()`, `clean()`, `effective_bleed_s()`. Disabled AEC still marks "playing" so the barge `over` gain works. |
 | `floor.py` | `AdaptiveFloor`: quiet-percentile RMS floor shared by listen and barge. Warm-up is capped by the window size. |

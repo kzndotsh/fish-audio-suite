@@ -3,12 +3,22 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import Final
 
 from fish_audio_suite_kit import FISH_TTS_MODEL_IDS, known_tts_model
 
+__all__ = [
+    "OPENAI_TTS_NAMES",
+    "catalog_ids",
+    "default_tts_aliases",
+    "parse_aliases",
+    "resolve_asr_model",
+    "resolve_tts_model",
+]
+
 # OpenAI names clients send by default. Each maps to the configured TTS model,
 # and FISH_TTS_ALIASES adds or replaces entries.
-OPENAI_TTS_NAMES = ("tts-1", "tts-1-hd", "gpt-4o-mini-tts")
+OPENAI_TTS_NAMES: Final = ("tts-1", "tts-1-hd", "gpt-4o-mini-tts")
 
 _ASR_NATIVE = ("transcribe-1", "transcribe-1-pro")
 # Accepted on the transcription route. It is not a Fish id, so it takes the default.

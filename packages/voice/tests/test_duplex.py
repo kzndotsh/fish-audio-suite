@@ -10,7 +10,7 @@ import httpx
 import pytest
 from voice_fakes import FakeGate, FakeSink, install_audio, make_result, set_tts
 
-from fish_audio_suite_kit import FishHttpError, LatencySnapshot
+from fish_audio_suite_kit import ChatMessage, FishHttpError, LatencySnapshot
 from fish_audio_suite_voice.config import VoiceCliConfig
 from fish_audio_suite_voice.duplex import (
     _accept_asr,
@@ -64,7 +64,7 @@ class _FakeBackend:
 
     def stream(
         self,
-        messages: list[dict[str, str]],
+        messages: list[ChatMessage],
         *,
         cancel: asyncio.Event | None = None,
         trace_id: str | None = None,
@@ -109,7 +109,7 @@ def test_accept_asr_drops_echoes_and_keeps_a_real_line() -> None:
 
 
 def test_history_keeps_the_system_prompt_and_drops_the_oldest_turn() -> None:
-    history = [{"role": "system", "content": "be brief"}]
+    history: list[ChatMessage] = [{"role": "system", "content": "be brief"}]
     for i in range(HISTORY_TURNS * 2 + 1):
         _remember_user(history, f"u{i}", HISTORY_TURNS)
     assert history[0] == {"role": "system", "content": "be brief"}
@@ -119,7 +119,7 @@ def test_history_keeps_the_system_prompt_and_drops_the_oldest_turn() -> None:
 
 
 def test_history_drops_a_whole_turn_so_roles_stay_paired() -> None:
-    history = [{"role": "system", "content": "be brief"}]
+    history: list[ChatMessage] = [{"role": "system", "content": "be brief"}]
     for i in range(HISTORY_TURNS):
         _remember_user(history, f"u{i}", HISTORY_TURNS)
         history.append({"role": "assistant", "content": f"a{i}"})
@@ -193,7 +193,7 @@ def test_recognize_fatal_again_and_quit(monkeypatch: pytest.MonkeyPatch) -> None
     loop = _loop()
 
     async def denied(*_args: object, **_kwargs: object) -> str:
-        raise FishHttpError(401, "nope")
+        raise FishHttpError.from_status(401, "nope")
 
     monkeypatch.setattr("fish_audio_suite_voice.duplex.fish_asr", denied)
     fatal = asyncio.run(_recognize(loop, b"wav", ""))
@@ -418,7 +418,7 @@ def test_speak_reply_releases_the_mic_before_returning(
 
 
 def test_history_cap_follows_the_configured_turns() -> None:
-    history = [{"role": "system", "content": "be brief"}]
+    history: list[ChatMessage] = [{"role": "system", "content": "be brief"}]
     for i in range(5):
         _remember_user(history, f"u{i}", 2)
         history.append({"role": "assistant", "content": f"a{i}"})
@@ -569,7 +569,7 @@ def test_trimming_never_drops_the_pinned_seed() -> None:
 
 
 def test_trim_history_still_pairs_user_and_assistant_without_a_seed() -> None:
-    history = [{"role": "system", "content": "s"}]
+    history: list[ChatMessage] = [{"role": "system", "content": "s"}]
     for index in range(5):
         history.append({"role": "user", "content": f"u{index}"})
         history.append({"role": "assistant", "content": f"a{index}"})

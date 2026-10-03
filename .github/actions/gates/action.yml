@@ -1,0 +1,49 @@
+name: Python gates
+description: >-
+  Lint, docstrings, types, public API types, and the tests with the coverage
+  floors. ci.yml and release.yml both run this, so the two cannot drift apart.
+  The caller checks out the repo and installs uv first. The justfile `check`
+  recipe runs the same commands.
+runs:
+  using: composite
+  steps:
+    - name: Sync
+      shell: bash
+      run: uv sync --frozen --all-packages --extra cli --group dev --group test
+    - name: Ruff check
+      shell: bash
+      run: uv run ruff check packages .github/scripts
+    - name: Ruff format
+      shell: bash
+      run: uv run ruff format --check packages .github/scripts
+    - name: Docstrings
+      shell: bash
+      run: uv run pydoclint --config=pyproject.toml packages
+    - name: Types
+      shell: bash
+      run: uv run basedpyright
+    - name: Public API types
+      # Scores each package's public interface and fails under the floor in
+      # .github/verifytypes-floors.json. The justfile runs the same script.
+      shell: bash
+      run: uv run python .github/scripts/verifytypes.py
+    - name: Tests
+      shell: bash
+      env:
+        PYTHONDONTWRITEBYTECODE: "1"
+      # --doctest-modules is on in pyproject.toml, so this run also executes the
+      # Examples in kit's docstrings, and a failing example fails the step.
+      # Floors sit about a point under the measured branch coverage (total 90.7,
+      # kit 95.7, proxy 95.7, voice 86.0). Raise them when coverage rises. The
+      # per-package steps read the .coverage file this run wrote. Keep the numbers
+      # equal to the justfile `cov` recipe.
+      run: uv run pytest --cov --cov-report=term-missing --cov-fail-under=89
+    - name: Coverage floor (kit)
+      shell: bash
+      run: uv run coverage report --include="packages/kit/*" --fail-under=94 --skip-covered
+    - name: Coverage floor (proxy)
+      shell: bash
+      run: uv run coverage report --include="packages/proxy/*" --fail-under=94 --skip-covered
+    - name: Coverage floor (voice)
+      shell: bash
+      run: uv run coverage report --include="packages/voice/*" --fail-under=85 --skip-covered

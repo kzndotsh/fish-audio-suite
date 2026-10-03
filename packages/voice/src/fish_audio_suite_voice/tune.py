@@ -10,41 +10,68 @@ from __future__ import annotations
 import math
 import os
 from dataclasses import dataclass, field
+from typing import Final, Literal, Self
 from urllib.parse import urlsplit
 
 from fish_audio_suite_kit import env_token, strip_base
 from fish_audio_suite_voice.debug import warn
 
-DEFAULT_VAD_AGGRESSIVENESS = 1
-VAD_MODE_HI = 3
-DEFAULT_SILENCE_FRAMES_END = 40
-DEFAULT_SPEECH_FRAMES_START = 4
-DEFAULT_MIN_SPEECH_RMS = 200.0
-DEFAULT_PRE_PAD_FRAMES = 20
-DEFAULT_MIN_VOICED_FRAMES = 12
-MAX_UTTERANCE_FRAMES = 500
-IMPULSE_START_EXTRA = 6
+__all__ = [
+    "DEFAULT_AEC_BLEED_S",
+    "DEFAULT_BARGE_HIT_FRAMES",
+    "DEFAULT_BARGE_OVER",
+    "DEFAULT_BARGE_RMS",
+    "DEFAULT_BLEED_DELAY_S",
+    "DEFAULT_HISTORY_TURNS",
+    "DEFAULT_MIN_SPEECH_RMS",
+    "DEFAULT_MIN_VOICED_FRAMES",
+    "DEFAULT_POST_SPEAK_COOLDOWN_S",
+    "DEFAULT_SILENCE_FRAMES_END",
+    "DEFAULT_VAD_AGGRESSIVENESS",
+    "IMPULSE_START_EXTRA",
+    "MAX_UTTERANCE_FRAMES",
+    "OPENROUTER_API_BASE",
+    "AecTune",
+    "BargeTune",
+    "ListenTune",
+    "LlmBackendName",
+    "LlmTune",
+    "openrouter_host",
+    "read_flag",
+    "read_float",
+    "read_int",
+]
 
-DEFAULT_BARGE_HIT_FRAMES = 10
-DEFAULT_BARGE_RMS = 220.0
-DEFAULT_BARGE_OVER = 2.2
-DEFAULT_BLEED_DELAY_S = 0.9
-DEFAULT_POST_SPEAK_COOLDOWN_S = 0.8
+DEFAULT_VAD_AGGRESSIVENESS: Final = 1
+VAD_MODE_HI: Final = 3
+DEFAULT_SILENCE_FRAMES_END: Final = 40
+DEFAULT_SPEECH_FRAMES_START: Final = 4
+DEFAULT_MIN_SPEECH_RMS: Final = 200.0
+DEFAULT_PRE_PAD_FRAMES: Final = 20
+DEFAULT_MIN_VOICED_FRAMES: Final = 12
+MAX_UTTERANCE_FRAMES: Final = 500
+IMPULSE_START_EXTRA: Final = 6
 
-DEFAULT_AEC_BLEED_S = 0.3
-DEFAULT_AEC_WET = 0.85
+DEFAULT_BARGE_HIT_FRAMES: Final = 10
+DEFAULT_BARGE_RMS: Final = 220.0
+DEFAULT_BARGE_OVER: Final = 2.2
+DEFAULT_BLEED_DELAY_S: Final = 0.9
+DEFAULT_POST_SPEAK_COOLDOWN_S: Final = 0.8
 
-OPENROUTER_API_BASE = "https://openrouter.ai/api/v1"
-DEFAULT_LLM_MAX_TOKENS = 1200
-DEFAULT_LLM_TEMPERATURE = 0.8
-DEFAULT_LLM_TIMEOUT_S = 120.0
-DEFAULT_LLM_REFERER = "https://github.com/kzndotsh/fish-audio-suite"
-DEFAULT_LLM_TITLE = "fish-audio-suite-voice"
-DEFAULT_LLM_CATEGORIES = "cli-agent"
-DEFAULT_HISTORY_TURNS = 20
-_LLM_TEMPERATURE_HI = 2.0
-_TRUE = frozenset({"1", "true", "yes", "on"})
-_FALSE = frozenset({"0", "false", "no", "off"})
+DEFAULT_AEC_BLEED_S: Final = 0.3
+DEFAULT_AEC_WET: Final = 0.85
+
+OPENROUTER_API_BASE: Final = "https://openrouter.ai/api/v1"
+DEFAULT_LLM_MAX_TOKENS: Final = 1200
+DEFAULT_LLM_TEMPERATURE: Final = 0.8
+DEFAULT_LLM_TIMEOUT_S: Final = 120.0
+DEFAULT_LLM_REFERER: Final = "https://github.com/kzndotsh/fish-audio-suite"
+DEFAULT_LLM_TITLE: Final = "fish-audio-suite-voice"
+DEFAULT_LLM_CATEGORIES: Final = "cli-agent"
+DEFAULT_HISTORY_TURNS: Final = 20
+_LLM_TEMPERATURE_HI: Final = 2.0
+_TRUE: Final = frozenset({"1", "true", "yes", "on"})
+_FALSE: Final = frozenset({"0", "false", "no", "off"})
 
 
 def _raw(name: str) -> str | None:
@@ -140,7 +167,7 @@ def read_int(
     return value
 
 
-def read_flag(name: str, default: bool = False) -> bool:
+def read_flag(name: str, *, default: bool = False) -> bool:
     """Read a boolean key. Unknown spellings warn and return ``default``.
 
     Parameters
@@ -186,7 +213,10 @@ def read_text(name: str, default: str = "") -> str:
     return default if value is None else value.strip()
 
 
-@dataclass(frozen=True)
+LlmBackendName = Literal["openrouter", "openai"]
+
+
+@dataclass(frozen=True, slots=True)
 class ListenTune:
     """Voice-activity and utterance limits for one microphone capture.
 
@@ -215,7 +245,7 @@ class ListenTune:
     min_voiced: int = DEFAULT_MIN_VOICED_FRAMES
 
     @classmethod
-    def from_env(cls) -> ListenTune:
+    def from_env(cls) -> Self:
         """Build from the ``FISH_VOICE_*`` listen keys.
 
         Returns
@@ -244,7 +274,7 @@ class ListenTune:
         )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class BargeTune:
     """Barge-in gate and the pauses around a spoken reply.
 
@@ -269,7 +299,7 @@ class BargeTune:
     cooldown_s: float = DEFAULT_POST_SPEAK_COOLDOWN_S
 
     @classmethod
-    def from_env(cls) -> BargeTune:
+    def from_env(cls) -> Self:
         """Build from the ``FISH_VOICE_BARGE_*`` and delay keys.
 
         Returns
@@ -286,7 +316,7 @@ class BargeTune:
         )
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class AecTune:
     """In-process echo cancellation.
 
@@ -305,7 +335,7 @@ class AecTune:
     bleed_s: float = DEFAULT_AEC_BLEED_S
 
     @classmethod
-    def from_env(cls) -> AecTune:
+    def from_env(cls) -> Self:
         """Build from ``FISH_VOICE_AEC``, ``FISH_VOICE_AEC_WET``, ``FISH_VOICE_AEC_BLEED``.
 
         Returns
@@ -341,13 +371,13 @@ def openrouter_host(base: str) -> bool:
     return host == "openrouter.ai" or host.endswith(".openrouter.ai")
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class LlmTune:
     """Chat backend choice and request settings.
 
     Attributes
     ----------
-    backend : str
+    backend : {"openrouter", "openai"}
         ``openai`` (any chat-completions server over httpx) or ``openrouter``
         (the OpenRouter SDK).
     base : str
@@ -372,7 +402,7 @@ class LlmTune:
         Send one more request when a reply stops before a sentence end.
     """
 
-    backend: str = "openrouter"
+    backend: LlmBackendName = "openrouter"
     base: str = OPENROUTER_API_BASE
     key: str = field(default="", repr=False)
     model: str = ""
@@ -392,7 +422,7 @@ class LlmTune:
         return self.backend == "openrouter"
 
     @classmethod
-    def from_env(cls) -> LlmTune:
+    def from_env(cls) -> Self:
         """Build from the ``FISH_LLM_*`` keys and their provider fallbacks.
 
         Returns
@@ -464,11 +494,13 @@ def _first_token(*names: str) -> str:
     return ""
 
 
-def _backend(base: str) -> str:
+def _backend(base: str) -> LlmBackendName:
     raw = _raw("FISH_LLM_BACKEND")
     if raw is not None:
         low = raw.lower()
-        if low in {"openai", "openrouter"}:
-            return low
+        if low == "openai":
+            return "openai"
+        if low == "openrouter":
+            return "openrouter"
         warn(f"fish-voice: unknown FISH_LLM_BACKEND={raw!r}, choosing from the base URL")
     return "openrouter" if openrouter_host(base) else "openai"

@@ -30,20 +30,12 @@ jobs:
           # A cache restored in a tag-triggered release could put poisoned
           # files into the published wheels, so release jobs never use one.
           enable-cache: false
-      - name: Sync
-        run: uv sync --frozen --all-packages --extra cli --group dev --group test
-      - name: Ruff check
-        run: uv run ruff check packages
-      - name: Ruff format
-        run: uv run ruff format --check packages
-      - name: Docstrings
-        run: uv run pydoclint --config=pyproject.toml packages
-      - name: Types
-        run: uv run basedpyright
-      - name: Tests
-        env:
-          PYTHONDONTWRITEBYTECODE: "1"
-        run: uv run pytest
+      - name: Gates
+        # The same lint, docstring, type, public API and test steps as ci.yml,
+        # including the kit doctests and the coverage floors.
+        # `./` works on every runner. zizmor prefers the newer `$/` form, which GitHub
+        # added in July 2026. Switch once a CI run on `$/` has passed.
+        uses: ./.github/actions/gates  # zizmor: ignore[self-repository]
   build:
     name: Build
     runs-on: ubuntu-latest

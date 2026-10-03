@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import httpx
@@ -9,8 +9,10 @@ import pytest
 from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
+from fish_audio_suite_kit import AsrBody
 from fish_audio_suite_proxy.server import app
-from fish_audio_suite_proxy.upstream import RetryPolicy, fish_send
+from fish_audio_suite_proxy.speech import PackedTts
+from fish_audio_suite_proxy.upstream import FishHttp, RetryPolicy, fish_send
 
 
 def not_response[T](value: T | JSONResponse) -> T:
@@ -85,7 +87,7 @@ def run_fish_send(
 
     async def run() -> Any:
         return await fish_send(
-            client,
+            cast(FishHttp, client),
             stream=False,
             policy=policy,
             is_disconnected=is_disconnected,
@@ -152,3 +154,26 @@ def fresh_app_env(monkeypatch: pytest.MonkeyPatch, **env: str) -> None:
         monkeypatch.delenv(name, raising=False)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
+
+
+def json_part(packed: PackedTts) -> dict[str, Any]:
+    """The JSON body of a packed TTS request, which must have one."""
+    body = packed.request_kw.get("json")
+    assert body is not None
+    return body
+
+
+def content_part(packed: PackedTts) -> bytes:
+    """The raw bytes of a packed TTS request, which must have them."""
+    content = packed.request_kw.get("content")
+    assert content is not None
+    return content
+
+
+def asr_body(raw: dict[str, Any]) -> AsrBody:
+    """Mark a dict as Fish ASR JSON. Tests pass malformed data here on purpose.
+
+    ``AsrBody`` says what Fish normally sends, but the proxy must survive any
+    JSON, so several tests hand it a wrong type and expect it to cope.
+    """
+    return cast(AsrBody, raw)

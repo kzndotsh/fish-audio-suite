@@ -23,6 +23,15 @@ from fish_audio_suite_kit._linear import (
 )
 from fish_audio_suite_kit.cues import is_paren_cue, rewrite_s1_parens
 
+__all__ = [
+    "HTML_BLOCK_CLOSE_RE",
+    "HTML_BLOCK_OPEN_RE",
+    "HTML_ENTITY_RE",
+    "html_char",
+    "scrub_tts",
+    "unclosed_span_start",
+]
+
 # (neighbor before the chunk, neighbor after the chunk). Empty means the call
 # is the whole string, so the string's own edges are the edges.
 _Edge = tuple[str, str]
@@ -535,6 +544,11 @@ def scrub_tts(
     str
         Spoken text. The no-argument call is the whole string, stripped.
         A neighbor character keeps one edge space the replacement inserted.
+
+    Examples
+    --------
+    >>> scrub_tts("**Hello** there!")
+    'Hello there!'
     """
     if not text:
         return ""

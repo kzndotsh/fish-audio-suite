@@ -8,18 +8,23 @@ the device, minus what was still buffered, cut back to a finished word.
 from __future__ import annotations
 
 import re
+from typing import Final
 
 from fish_audio_suite_kit import strip_cue_tags
 from fish_audio_suite_voice.aec import SAMPLE_BYTES
 
+__all__ = [
+    "spoken_prefix",
+]
+
 # Conversational English at speed 1.0. Other languages and voices drift, so
 # this is an estimate and the cut is always rounded down to a word.
-CHARS_PER_S = 16
-_MIN_SPEED = 0.1
+CHARS_PER_S: Final = 16
+_MIN_SPEED: Final = 0.1
 # A model can still write [clear]. That is a throat-clear, not words, so it
 # stays out of the next turn's history. Other cues stay, so the model keeps
 # seeing the style it used.
-_CLEAR_TAG_RE = re.compile(r"\[clear\]", re.IGNORECASE)
+_CLEAR_TAG_RE: Final = re.compile(r"\[clear\]", re.IGNORECASE)
 
 
 def _audible_text(text: str) -> str:

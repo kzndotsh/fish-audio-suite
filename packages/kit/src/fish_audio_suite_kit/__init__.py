@@ -1,5 +1,6 @@
 """Unofficial Fish Audio text helpers. Not affiliated with Fish Audio."""
 
+from fish_audio_suite_kit._version import read_version
 from fish_audio_suite_kit.asr_text import (
     DEFAULT_BACKCHANNELS,
     DEFAULT_QUIT_PHRASES,
@@ -36,6 +37,7 @@ from fish_audio_suite_kit.defaults import (
     UNIT_LO,
     LatencySnapshot,
     SuiteDefaults,
+    catalog_tts_model,
     chunk_length_hi,
     clamp_num,
     elapsed_ms,
@@ -47,6 +49,8 @@ from fish_audio_suite_kit.defaults import (
     env_text,
     env_token,
     is_insecure_fish_base,
+    known_asr_format,
+    known_audio_format,
     known_latency,
     known_mp3_bitrate,
     known_opus_bitrate,
@@ -59,7 +63,13 @@ from fish_audio_suite_kit.http_errors import (
     FISH_ASR_PATH,
     FISH_RETRY_ATTEMPTS,
     FISH_TTS_PATH,
+    FishAudioSuiteError,
+    FishAuthError,
+    FishErrorBody,
     FishHttpError,
+    FishRateLimitError,
+    FishTimeoutError,
+    FishUpstreamError,
     bearer,
     fish_attempt_exhausted,
     fish_backoff_s,
@@ -74,7 +84,23 @@ from fish_audio_suite_kit.http_errors import (
     fish_unreachable,
     parse_asr_body,
     parse_fish_error,
+    retry_after_seconds,
     should_retry_fish_status,
+)
+from fish_audio_suite_kit.literals import (
+    AsrFormat,
+    AudioFormat,
+    ChatMessage,
+    ChatRole,
+    FishLatency,
+    TtsModel,
+)
+from fish_audio_suite_kit.payloads import (
+    AsrBody,
+    AsrSegment,
+    AsrWord,
+    OpenAIError,
+    OpenAIErrorBody,
 )
 from fish_audio_suite_kit.text_filters import (
     extract_quoted_speech,
@@ -92,6 +118,8 @@ from fish_audio_suite_kit.trace_context import (
     trace_id_of,
     w3c_trace_headers,
 )
+
+__version__ = read_version()
 
 __all__ = [
     "CHUNK_LENGTH_LO",
@@ -114,12 +142,31 @@ __all__ = [
     "TTS_SPEED_LO",
     "UNIT_HI",
     "UNIT_LO",
+    "AsrBody",
+    "AsrFormat",
+    "AsrSegment",
+    "AsrWord",
+    "AudioFormat",
     "CaptionCue",
+    "ChatMessage",
+    "ChatRole",
+    "FishAudioSuiteError",
+    "FishAuthError",
+    "FishErrorBody",
     "FishHttpError",
+    "FishLatency",
+    "FishRateLimitError",
+    "FishTimeoutError",
+    "FishUpstreamError",
     "LatencySnapshot",
+    "OpenAIError",
+    "OpenAIErrorBody",
     "SuiteDefaults",
+    "TtsModel",
+    "__version__",
     "bearer",
     "canonical_traceparent",
+    "catalog_tts_model",
     "chunk_length_hi",
     "clamp_num",
     "elapsed_ms",
@@ -154,6 +201,8 @@ __all__ = [
     "is_insecure_fish_base",
     "is_quit_utterance",
     "is_tts_junk",
+    "known_asr_format",
+    "known_audio_format",
     "known_latency",
     "known_mp3_bitrate",
     "known_opus_bitrate",
@@ -165,6 +214,7 @@ __all__ = [
     "number_or",
     "parse_asr_body",
     "parse_fish_error",
+    "retry_after_seconds",
     "same_utterance",
     "scrub_asr",
     "scrub_tts",

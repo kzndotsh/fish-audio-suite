@@ -12,14 +12,17 @@ Three members under `packages/`. Usage: [`README.md`](README.md).
 | Test | `uv run pytest` |
 | Lint | `uv run ruff check packages` · `uv run ruff format packages` |
 | Docstrings | `uv run pydoclint --config=pyproject.toml packages` |
-| Types | `uv run basedpyright` |
+| Types | `uv run basedpyright` · public API completeness: `uv run python .github/scripts/verifytypes.py` (`just types-public`), floors in `.github/verifytypes-floors.json` |
+| Doctests | `uv run pytest` runs the `>>>` examples in kit docstrings (`--doctest-modules`; the root `conftest.py` keeps proxy and voice sources out). A stale example fails the build |
 | Gates | `just check` runs lint, docstrings, types and tests with the CI coverage floors. `just --list` shows the rest. `uvx pre-commit install` runs the fast checks per commit |
-| CI | `.github/workflows/ci.yml`: Python 3.12/3.13/3.14 (ruff, pydoclint, basedpyright, pytest), a job on the lowest declared dependency versions (`uv sync --resolution lowest-direct`), zizmor workflow lint, wheel build + `twine check`, `nix flake check`, Docker build + `/health`. Coverage is CI-only: `--cov` with `--cov-fail-under=89`, then per-package floors (kit 94, proxy 94, voice 85) from `coverage report --include`; `[tool.coverage]` holds branch and sources. Keep `justfile` and `ci.yml` floors equal |
+| CI | `.github/workflows/ci.yml`: Python 3.12/3.13/3.14, each running the shared steps in `.github/actions/gates` (ruff, pydoclint, basedpyright, verifytypes floors, pytest with kit doctests, coverage floors; `release.yml` runs the same action before it publishes), a job on the lowest declared dependency versions (`uv sync --resolution lowest-direct`), zizmor workflow lint, wheel build + `twine check`, `nix flake check`, Docker build + `/health`. Coverage is CI-only: `--cov` with `--cov-fail-under=89`, then per-package floors (kit 94, proxy 94, voice 85) from `coverage report --include`; `[tool.coverage]` holds branch and sources. Keep the `justfile` and `.github/actions/gates/action.yml` floors equal |
 | Supply chain | `dependency-submission.yml` on push to `main` when `uv.lock` changes. `audit.yml` runs pip-audit on the exported lock for PRs that touch it and weekly. `release.yml` publishes wheels on a `v*` tag only when repo var `PYPI_PUBLISH=true` (PyPI trusted publishing) and uploads a CycloneDX SBOM artifact. `dependabot.yml` covers actions, uv (runtime and dev groups), docker and nix, with a 7-day cooldown |
 | Wheels | `uv build --all` |
 | Proxy | `uv run --package fish-audio-suite-proxy fish-audio-suite-proxy` |
 | Voice smoke | `uv run --package fish-audio-suite-voice --extra cli fish-voice --smoke` · local: `./packages/voice/dev.sh --smoke` |
 | Flake | `nix flake check` · `nix flake show` |
+
+Public API: the names in each package root `__all__` (the proxy's also its HTTP API and documented settings); the rest is internal. 0.x: a minor release may break it, a patch never does. Deprecate with `DeprecationWarning` naming the replacement for at least one minor release before removal. No `CHANGELOG.md`: GitHub's generated release notes are the changelog (`gh release create vX.Y.Z --verify-tag --generate-notes`). Details in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Python 3.12+. **uv** only. Root is virtual (`package = false`). Proxy and voice pin `fish-audio-suite-kit>=0.1,<0.2`; the workspace source overrides it in dev.
 

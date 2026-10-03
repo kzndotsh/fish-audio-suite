@@ -47,8 +47,12 @@ filterwarnings = [
     # Starlette's TestClient reads an anyio alias that anyio has deprecated.
     "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning:starlette.testclient",
 ]
+# Doctests run from kit's source, which holds the Examples in its docstrings. The root
+# conftest.py keeps proxy and voice out of doctest collection, since they have none.
+doctest_optionflags = ["ELLIPSIS", "NORMALIZE_WHITESPACE"]
 addopts = [
     "--import-mode=importlib",
+    "--doctest-modules",
     "--disable-socket",
     # asyncio's self-pipe is AF_UNIX. AF_INET stays blocked.
     "--allow-unix-socket",
