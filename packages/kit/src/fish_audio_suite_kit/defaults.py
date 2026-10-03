@@ -69,10 +69,11 @@ DEFAULT_SYSTEM_PROMPT: Final = (
     "sentences usually has at least two cues, one for each shift in feeling. "
 )
 
-# One opening exchange that shows several cues in a reply. A model copies the
-# pattern of its own earlier replies, so without this a conversation settles on
-# one cue per reply whatever the prompt says. Tested on two models: 1.0 cues per
-# reply without it, about 1.9 with it.
+# One opening exchange that shows several cues in a reply. In a test on two
+# models a conversation drifted to one cue per reply even though the system
+# prompt asks for more, apparently because the model copies its own earlier
+# replies. With this pinned, the default model went from 1.1 to 2.2 cues per
+# reply and Claude Haiku 4.5 from 1.0 to 1.9.
 DEFAULT_SEED_EXCHANGE: Final[tuple[tuple[str, str], ...]] = (
     (
         "Hi there!",

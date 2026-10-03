@@ -36,7 +36,7 @@ Two roleplay helpers are opt-in. `normalize_cues(text, lead=True)` turns a sente
 | ASR text | `scrub_asr`, `is_asr_hallucination`, `is_backchannel`, `is_quit_utterance` | Drop timestamps, speaker labels, nospeech, and caption boilerplate. Short answers (`no`, `ok`, `hi`) are kept. Quit and backchannel phrases are overridable with `phrases=` |
 | Cuts | `next_tts_cut`, `split_tts_piece` | Flush index, or `(piece, tail)` for a stream |
 | Defaults | `SuiteDefaults`, `clamp_num`, `known_tts_model`, `catalog_tts_model`, `known_latency`, `known_audio_format`, `known_asr_format`, `chunk_length_hi` | Speed stays in 0.5–2. Cloud `chunk_length` stays in 100–300. Any other base allows up to 1000. Cloud is matched on the parsed hostname, and `self_hosted=` overrides |
-| Env | `env_text`, `env_bool`, `env_off`, `env_int`, `env_float`, `env_base`, `is_insecure_fish_base` | Blank values keep the default. Flags are true only for `1` / `true` / `yes` / `on`. Numbers must be plain ASCII decimals, so `"１０"` and `"1_000"` keep the default. `is_insecure_fish_base` is true for an `http` base on a non-loopback host |
+| Env | `env_text`, `env_bool`, `env_off`, `env_int`, `env_float`, `env_base`, `is_insecure_fish_base` | Blank values keep the default. Flags are true only for `1` / `true` / `yes` / `on`. Numbers must be plain ASCII decimals. Anything else keeps the default. `is_insecure_fish_base` is true for an `http` base on a non-loopback host |
 | Trace | `make_traceparent`, `ensure_trace_headers` | W3C `traceparent` only. No OpenTelemetry SDK. `w3c_trace_headers` is deprecated |
 | HTTP shape | `parse_fish_error`, `parse_asr_body`, `retry_after_seconds`, `should_retry_fish_status`, `fish_backoff_s`, `fish_sleep_before_retry`, `bearer` | Retry 429 and 5xx. Backoff is exponential with jitter and honors `Retry-After`. `retry_after_seconds` is the one parser for that header and drops negative, non-finite and absurd values. `bearer` always prefixes `Bearer ` |
 | Errors | `FishHttpError` and `FishAuthError`, `FishRateLimitError`, `FishUpstreamError`, `FishTimeoutError`, all under `FishAudioSuiteError` | `FishHttpError.from_status(status, message)` returns the matching class, so callers catch by type instead of comparing status numbers. `.retryable` is true for 429 and 5xx, and `.retry_after` carries Fish's hint |
@@ -45,7 +45,7 @@ Two roleplay helpers are opt-in. `normalize_cues(text, lead=True)` turns a sente
 
 Docstrings on those functions are the contract, and the ones with an Examples section are run as doctests (`pytest --doctest-modules packages/kit/src`).
 
-`fish_retry_pause`, `fish_backoff_seconds`, `fish_unreachable`, `fish_non_json`, `fish_non_object` and `w3c_trace_headers` still work and emit `DeprecationWarning`. Each warning names its replacement. `kit.__version__` is the installed version.
+Deprecated names still work and emit a `DeprecationWarning` that names the replacement. `kit.__version__` is the installed version.
 
 ## License
 

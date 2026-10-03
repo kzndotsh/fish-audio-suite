@@ -67,7 +67,7 @@ The same fields are under Admin, Settings, Audio.
 | `voice` or `reference_id` | Fish reference id. A list is S2 multi-speaker |
 | `response_format` `mp3`, `opus`, `wav`, `pcm`, `pcm16` | The same format. `pcm16` is PCM at 24 kHz unless `sample_rate` is set |
 | `response_format` `aac`, `flac`, or anything else | 400. Fish cannot produce it, and other bytes would break the client's decoder |
-| `speed` | Multiplied by `FISH_SPEED`, then clamped to 0.5–2.0. OpenAI allows 0.25–4.0 |
+| `speed` | Multiplied by `FISH_SPEED`, then clamped to 0.5–2.0 |
 | `response_format=srt` or `vtt` | Caption file built from Fish segments |
 | Transcription `response_format` other than `json`, `text`, `verbose_json`, `srt`, `vtt` | 400, never a different format |
 | `verbose_json` and word timestamps | `segments` always. `words` only when Fish returns word timings |
@@ -78,7 +78,7 @@ The same fields are under Admin, Settings, Audio.
 
 `GET /v1/models` lists the ids the proxy knows: the Fish ids, the TTS aliases, `whisper-1`, and the `fish-audio/` prefixed ids. The speech route also forwards any other single-token TTS model id as written, so a newer Fish model works before it is listed.
 
-`s2.1-pro-free` and `drama-3-preview` are left alone. Text that is only cues or junk returns one frame of silence in the requested format. ASR `language` is omitted unless the request or `FISH_ASR_LANGUAGE` sets it.
+Text that is only cues or junk returns one frame of silence in the requested format. ASR `language` is omitted unless the request or `FISH_ASR_LANGUAGE` sets it.
 
 Errors use `{error: {code, message, type}}`. A Fish body is `type: provider_error` with `metadata.provider_name: fish-audio`. A missing `FISH_API_KEY` is 503. A wrong client key is 401. A body over the cap is 413.
 
@@ -100,18 +100,18 @@ Fish 429 and 5xx are retried until `FISH_PROXY_RETRY_ATTEMPTS` tries have been m
 
 ## Settings
 
-Read once at startup. `GET /health` shows the values in effect, never a key.
+Read once at startup. `GET /health` shows the values in effect, never a key. `FISH_MODEL` and `FISH_SPEED_SCALE` still work as deprecated names for `FISH_TTS_MODEL` and `FISH_SPEED`.
 
 | Variable | Default | Notes |
 | --- | --- | --- |
 | `FISH_API_KEY` | none | Speech and transcription return 503 until set |
 | `FISH_BASE` | `https://api.fish.audio` | Cloud or self-hosted |
-| `FISH_TTS_MODEL` | `s2.1-pro` | `FISH_MODEL` still works, deprecated |
+| `FISH_TTS_MODEL` | `s2.1-pro` | |
 | `FISH_TTS_ALIASES` | none | `alias=model,alias=model` on top of the OpenAI names |
 | `FISH_ASR_MODEL` | `transcribe-1` | Or `transcribe-1-pro` |
 | `FISH_ASR_LANGUAGE` | omitted | |
 | `FISH_LATENCY` | `normal` | `low`, `balanced`, `normal` |
-| `FISH_SPEED` | `1` | `FISH_SPEED_SCALE` still works, deprecated |
+| `FISH_SPEED` | `1` | |
 | `FISH_CHUNK_LENGTH` | `200` | |
 | `FISH_MIN_CHUNK_LENGTH` | `50` | 0–100 |
 | `FISH_FORMAT` | `mp3` | Format when a request names none: `mp3`, `opus`, `wav`, `pcm` or `pcm16` (24 kHz PCM, sent to Fish as `pcm`). Anything else is `mp3` |

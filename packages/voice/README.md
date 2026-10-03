@@ -63,11 +63,11 @@ On NixOS use `./packages/voice/dev.sh` or `nix run .#fish-audio-suite-voice`. Bo
 
 ### Echo and barge-in
 
-The `cli` extra includes AEC3. Speaker audio is subtracted from the mic before voice activity detection. `FISH_VOICE_AEC=0` leaves the mic unchanged and keeps the longer bleed delay (0.9 s). With AEC loaded, that delay is 0.3 s. PipeWire `echo-cancel` is a host setup, not a Python dependency.
+The `cli` extra includes AEC3. Speaker audio is subtracted from the mic before voice activity detection. `FISH_VOICE_AEC=0` leaves the mic unchanged and keeps the longer bleed delay (0.9 s). With AEC loaded, that delay is 0.3 s.
 
 A barge-in keeps the audio that tripped it and clears the speaker tap. The next listen starts from that clip.
 
-The barge floor follows the room: it is the quiet-percentile of recent mic frames, never below `FISH_VOICE_BARGE_RMS`. If barge-in fires on a cough or a chair, raise `FISH_VOICE_BARGE_FRAMES` (30 ms each) before raising the RMS. When the mic opens after the bleed delay, the far-end reference is trimmed to the audio about to be heard, using the output latency PortAudio reports.
+The barge floor follows the room: it is the quiet-percentile of recent mic frames, never below `FISH_VOICE_BARGE_RMS`. If barge-in fires on a cough or a chair, raise `FISH_VOICE_BARGE_FRAMES` (30 ms each) before raising the RMS.
 
 ### History after a barge-in
 
@@ -75,12 +75,9 @@ The chat history gets only what you probably heard. For PCM that is a word-align
 
 ### Cues in replies
 
-A model copies the pattern of its own earlier replies. Without help a conversation settles on one
-`[cue]` per reply, whatever the prompt says. With the default system prompt the session therefore
-starts with one pinned exchange that shows several cues (`DEFAULT_SEED_EXCHANGE` in the kit). It
-costs about 40 tokens per request and is never trimmed from the history. In a test on two models
-that took the average from 1.0 to about 2 cues per reply. A custom `FISH_SYSTEM_PROMPT` gets no
-seed, so it stays in control of the replies.
+With the default system prompt the session starts with one pinned exchange that shows several cues
+(`DEFAULT_SEED_EXCHANGE` in the kit). It costs about 40 tokens per request and is never trimmed from
+the history. A custom `FISH_SYSTEM_PROMPT` gets no seed, so it stays in control of the replies.
 
 ### LLM providers
 
@@ -104,21 +101,19 @@ httpx client). `FISH_LLM_BACKEND` picks `openai` or `openrouter` (the SDK) expli
 follows the host. What to know about Experiential, from its published contract:
 
 - **Reasoning.** `FISH_LLM_REASONING_EFFORT` (`none`, `minimal`, `low`, `medium`, `high` or `max`) is
-  sent as `reasoning_effort` on the `openai` backend. A reasoning model such as
-  `glm-5.3-flash-abliterated` defaults to `max` and can take seconds to its first word, so `low`
-  suits voice. Empty omits the field. The OpenRouter SDK backend never sends it.
+  sent as `reasoning_effort` on the `openai` backend. Reasoning models can be slow to a first word,
+  so a low effort suits voice. Which values a model accepts depends on its route, and the value is
+  passed through unchanged. Empty omits the field. The OpenRouter SDK backend never sends it.
 - **Fields.** Experiential answers 400 to a request field it does not know, so the request carries
   only `model`, `messages`, `stream`, `temperature` and `max_tokens`, plus `reasoning_effort` when set.
 - **No `:nitro`.** That suffix is OpenRouter-only (`FISH_LLM_NITRO` never applies to Experiential).
-- **Errors.** A spent free allowance is a 429 `insufficient_quota` (for example `free_limit_reached`)
-  with no `Retry-After`. It is printed with its code and not retried.
+- **Errors.** A spent free allowance is a 429 `insufficient_quota` with no `Retry-After`. It is
+  printed with its code and not retried.
 - **Debug log.** With `--debug` the response line shows the request id (`x-request-id`), the route
-  (`x-gateway-provider`) and the zero-data-retention posture (`x-gateway-zdr`), which support asks for.
+  (`x-gateway-provider`) and the zero-data-retention posture (`x-gateway-zdr`).
 - **Privacy.** Platform-funded calls are captured: Experiential stores both the request and the
   model's reply. A free organization cannot turn that off, and only a Pro organization can. Your
   spoken conversation is the prompt, so do not use a free organization for anything private.
-- **Effort values differ by route.** `glm-5.3-flash-abliterated` takes only `low`, `high` and `max`
-  and answers 400 to `none`. The value is passed through unchanged.
 - **https only for the automatic key.** `EXPLABS_API_KEY` is picked up only when the base is
   `https`. A plain `http` base would send it unencrypted, so use `FISH_LLM_KEY` to override.
 
@@ -138,7 +133,6 @@ the whole reply is. The socket then gets one more flush at the end.
 - The reply is scrubbed as it arrives, and the whole-reply junk check is skipped.
 - The barge-in gate arms at the first audio chunk.
 - If Fish fails before any audio, the finished reply is spoken on the normal path.
-- The `first_audio` timing is measured from the start of ASR, in both modes, so you can compare them.
 
 ### Roleplay helpers
 
@@ -174,7 +168,7 @@ Speech:
 | --- | --- |
 | `FISH_BASE` | `https://api.fish.audio` |
 | `FISH_TTS_MODEL` | `s2.1-pro` |
-| `FISH_LATENCY` | `normal` (`balanced` is the other choice for this SDK) |
+| `FISH_LATENCY` | `normal` (or `balanced`) |
 | `FISH_SPEED` | `1` |
 | `FISH_VOLUME` | `0` (dB) |
 | `FISH_TEMPERATURE`, `FISH_TOP_P` | `0.7`, `0.7` |
@@ -213,7 +207,7 @@ Listen and interrupt. Times are approximate at 30 ms frames.
 | Variable | Default | Effect |
 | --- | --- | --- |
 | `FISH_VOICE_SPEECH_FRAMES` | `4` | About 120 ms before speech counts |
-| `FISH_VOICE_PRE_PAD` | `20` | Frames kept before the start. At least speech frames + 6 |
+| `FISH_VOICE_PRE_PAD` | `20` | Frames kept before the start |
 | `FISH_VOICE_MIN_RMS` | `200` | Listen floor seed. It can rise in a loud room |
 | `FISH_VOICE_MIN_VOICED` | `12` | About 360 ms of voice. Drops a cough |
 | `FISH_VOICE_SILENCE_FRAMES` | `40` | About 1.2 s of quiet ends the turn |

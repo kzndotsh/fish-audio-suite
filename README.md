@@ -25,7 +25,6 @@ you ▸  Hey, can you hear me?
 llm ▸  [happy] Yes, I can hear you! [curious] What's on your mind today?
   ↳ first audio 1.99s · asr 0.30s · llm first token 0.75s · tts first audio 1.69s · total 5.57s
 ```
-
 <sub>One turn of `fish-voice`, copied from a real run. Your numbers depend on your network, model and Fish latency setting.</sub>
 
 ---
@@ -34,9 +33,9 @@ llm ▸  [happy] Yes, I can hear you! [curious] What's on your mind today?
 
 | Package | What it is | Reach for it when |
 | --- | --- | --- |
-| [**`kit`**](packages/kit/README.md) | Pure text. Cue tags, markdown and thought scrubbing, sentence cuts, caption files, the Fish error types. No network, no audio, no dependencies. | You build your own Fish client and want the text handling right. |
-| [**`proxy`**](packages/proxy/README.md) | An OpenAI-compatible speech and transcription server in front of Fish, on `127.0.0.1:8849`. | Open WebUI, or any app that already speaks the OpenAI audio API. |
-| [**`voice`**](packages/voice/README.md) | One Fish websocket per turn, playback sinks, and `fish-voice`, a full duplex voice chat in your terminal. | You want to talk to a model, or play one Fish turn from Python. |
+| [`kit`](packages/kit/README.md) | Pure text. Cue tags, markdown and thought scrubbing, sentence cuts, caption files, the Fish error types. No network, no audio, no dependencies. | You build your own Fish client and want the text handling right. |
+| [`proxy`](packages/proxy/README.md) | An OpenAI-compatible speech and transcription server in front of Fish, on `127.0.0.1:8849`. | Open WebUI, or any app that already speaks the OpenAI audio API. |
+| [`voice`](packages/voice/README.md) | One Fish websocket per turn, playback sinks, and `fish-voice`, a full duplex voice chat in your terminal. | You want to talk to a model, or play one Fish turn from Python. |
 
 `proxy` and `voice` both build on `kit`, and `kit` builds on nothing.
 
@@ -53,10 +52,9 @@ flowchart LR
     spk -. "you talk over it: barge-in" .-> ear
 ```
 
-- **It can talk while the model is still writing.** Set `FISH_STREAM_TTS=1` and the first sentence goes to Fish the moment it is complete, so you hear it before the reply is finished. The flush waits for the sentence end, so Fish never says half a sentence as if it were finished. By default the reply is spoken after the model finishes.
-- **You can interrupt it.** Echo cancellation removes the speaker from the mic, and a barge-in stops the reply and keeps the audio that tripped it, so your interruption becomes the next turn.
-- **History holds only what you heard.** After a barge-in the chat history records a word-aligned estimate of the part that was played, never the full reply you cut off.
-- **Cue tags that vary.** Models copy their own earlier replies, so a chat settles on one `[cue]` per reply. A pinned opening exchange shows several, and the session stays expressive.
+With `FISH_STREAM_TTS=1` the first sentence goes to Fish as soon as it is complete, so you hear it while the model is still writing. The flush waits for the end of the sentence, because a flush earlier makes Fish speak half a sentence as if it were finished. Without that setting the reply is spoken after the model finishes.
+
+You can talk over it. Echo cancellation removes the speaker from the mic signal, and a barge-in stops the reply and keeps the audio that tripped it, so your interruption becomes the next turn. The chat history records a word-aligned estimate of the part that was played, not the full reply you cut off.
 
 ## Quick start
 
@@ -125,7 +123,7 @@ cut = next_tts_cut(spoken)  # end of the next piece, or -1 to keep buffering
 </details>
 
 > [!WARNING]
-> **Proxy:** with no `FISH_PROXY_API_KEYS` any client is accepted, so anyone who can reach the port spends your Fish credits. Keep the default loopback bind, or set the keys before you listen elsewhere. A set-but-empty value refuses to start instead of silently turning auth off.
+> With no `FISH_PROXY_API_KEYS` the proxy accepts any client, so anyone who can reach the port spends your Fish credits. Keep the default loopback bind, or set the keys before you listen on another address. A set-but-empty value refuses to start instead of silently turning auth off.
 
 ## Pick your LLM
 
@@ -158,11 +156,11 @@ The ones you touch first. Every package lists its full table.
 | `FISH_PROXY_API_KEYS` | proxy | none, any client key accepted |
 | `FISH_STREAM_TTS` | voice | off (`1` speaks while the model writes) |
 
-Self-hosted [fish-speech](https://github.com/fishaudio/fish-speech) is `FISH_BASE=http://127.0.0.1:8080`. Full tables: [proxy](packages/proxy/README.md#settings), [voice](packages/voice/README.md#settings).
+FYI: Self-hosted [fish-speech](https://github.com/fishaudio/fish-speech) is `FISH_BASE=http://127.0.0.1:8080`. Full tables: [proxy](packages/proxy/README.md#settings), [voice](packages/voice/README.md#settings).
 
 ## Run it as a service
 
-**Docker** (the proxy, non-root):
+Docker runs the proxy as a non-root user:
 
 ```bash
 docker build -t fish-audio-suite-proxy:latest .
@@ -170,7 +168,7 @@ docker run --rm -p 127.0.0.1:8849:8849 -e FISH_PROXY_HOST=0.0.0.0 \
   --env-file /path/to/env --stop-timeout 130 fish-audio-suite-proxy:latest
 ```
 
-**NixOS:**
+On NixOS:
 
 ```nix
 inputs.fish-audio-suite.url = "github:kzndotsh/fish-audio-suite";
@@ -183,13 +181,13 @@ services.fish-audio-suite-proxy = {
 
 The module runs a hardened systemd service on `127.0.0.1:8849`. Options for `host`, `port`, `autoStart`, `openFirewall`, `gracefulShutdownSeconds` and an `oci` backend are in [`nix/module.nix`](nix/module.nix). `nix run .#fish-audio-suite-voice` runs the voice CLI with PortAudio on the library path.
 
-## Built to be depended on
+## Reliability
 
-- **Typed end to end.** basedpyright in strict mode, and every package's public API scores 100% on `--verifytypes`. Errors are classes (`FishAuthError`, `FishRateLimitError`, ...), so you catch by type instead of comparing status numbers.
-- **Secrets stay put.** Keys are left out of `repr()` and out of `/health`, are not read at import, and an LLM key is only sent to the provider that owns it.
-- **Fails closed.** A blank client-key list or a plain-`http` remote base is a refusal or a warning, not a silent downgrade.
-- **Tested hard.** Over a thousand tests run in random order with warnings as errors and sockets disabled, plus Hypothesis property tests on the stream scrubber, with branch-coverage floors in CI.
-- **A stable surface.** The public API is the names in each package's root `__all__`, plus the proxy's HTTP API. On 0.x a minor release may break it and a patch never does, and a name is deprecated with a warning for a full minor release before it goes. See [CONTRIBUTING](CONTRIBUTING.md#the-public-api).
+- The code is type checked with basedpyright in strict mode, and each package's public API is fully typed. Fish errors are classes such as `FishAuthError` and `FishRateLimitError`, so you catch by type instead of comparing status numbers.
+- Keys are left out of `repr()` and `/health`, nothing reads them at import, and an LLM key is sent only to the provider that owns it.
+- A set-but-blank `FISH_PROXY_API_KEYS` stops the proxy from starting instead of silently turning auth off, and a plain-`http` remote Fish base logs a warning.
+- The tests run in random order with warnings as errors and network sockets disabled, and CI enforces branch-coverage floors.
+- The public API is the set of names in each package's root `__all__`, plus the proxy's HTTP API. On 0.x a minor release may break it and a patch release never does. A name is deprecated, with a warning, for at least one minor release before it is removed. Details are in [CONTRIBUTING](CONTRIBUTING.md#the-public-api).
 
 ## Development
 
