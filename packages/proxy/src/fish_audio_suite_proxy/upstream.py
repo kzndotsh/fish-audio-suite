@@ -119,7 +119,15 @@ async def _closed_error(upstream: httpx.Response) -> tuple[JSONResponse, FishHtt
         body = await upstream.aread()
     except httpx.RequestError as exc:
         err = _transport_error(exc)
-        return json_from_fish_error(err), err
+        # The client sees the transport failure, but the HTTP status that Fish
+        # already sent still decides whether to retry. A 401 whose body was cut
+        # off must not be sent five times.
+        failure = FishHttpError.from_status(
+            upstream.status_code,
+            err.message,
+            retry_after=retry_after_seconds(upstream.headers),
+        )
+        return json_from_fish_error(err), failure
     finally:
         await upstream.aclose()
     detail = parse_fish_error(upstream.status_code, body)

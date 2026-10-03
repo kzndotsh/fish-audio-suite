@@ -24,12 +24,14 @@ from fish_audio_suite_kit import (
     scrub_tts,
 )
 from fish_audio_suite_voice.live import IsolatedFishTts
+from fish_audio_suite_voice.playback import PlaybackSink
 from fish_audio_suite_voice.session import _HeldClient, run_turn
 from fish_audio_suite_voice.stream_scrub import delta_events
 from fish_audio_suite_voice.wire import (
     EventAcc,
     FlushEvent,
     Heard,
+    IsolatedResult,
     TextEvent,
     TurnRun,
     TurnSpec,
@@ -1514,3 +1516,35 @@ def test_speak_isolated_takes_cancel_by_keyword_only() -> None:
         cast(Any, tts.speak_isolated)("hi", _Sink(), threading.Event())
     with pytest.raises(TypeError):
         cast(Any, tts.speak_stream_isolated)(["hi"], _Sink(), threading.Event())
+
+
+def test_a_sink_without_output_latency_still_finishes_the_turn() -> None:
+    class OldSink:
+        """Written against the protocol before output_latency_s existed."""
+
+        def start(self) -> None:
+            return None
+
+        def write(self, chunk: bytes) -> None:
+            del chunk
+
+        def finish(self, *, kill: bool = False) -> None:
+            del kill
+
+        def bytes_played(self) -> int:
+            return 0
+
+    run, _sink = _run()
+    # The cast is the point: this sink deliberately lacks a member of the protocol.
+    run.sink = cast("PlaybackSink", OldSink())
+    result = isolated_result(run)
+    assert result.bytes_played == 0
+
+
+def test_an_isolated_result_built_from_a_status_gets_the_matching_error() -> None:
+    from fish_audio_suite_kit import FishAuthError
+
+    fatal = IsolatedResult("", 0, False, False, None, None, error_status=401, error_message="no")
+    assert isinstance(fatal.error, FishAuthError)
+    plain = IsolatedResult("hi", 4, True, False, 1.0, 1.0)
+    assert plain.error is None

@@ -4,7 +4,9 @@ import asyncio
 import base64
 import json
 import time
+from collections.abc import AsyncIterator
 from typing import Any, cast
+from unittest.mock import AsyncMock
 
 import httpx
 import ormsgpack
@@ -544,3 +546,63 @@ def test_startup_does_not_warn_for_https_or_loopback(
     with caplog.at_level("WARNING", logger="fish-audio-suite-proxy"), TestClient(app):
         pass
     assert not [r for r in caplog.records if "cleartext" in r.getMessage()]
+
+
+def test_a_4xx_whose_body_cannot_be_read_is_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    class CutOff(httpx.AsyncByteStream):
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            raise httpx.ReadError("connection dropped mid-body")
+            yield b""  # pragma: no cover
+
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(401, stream=CutOff())
+
+    sleeps = AsyncMock()
+    monkeypatch.setattr("fish_audio_suite_proxy.upstream.asyncio.sleep", sleeps)
+
+    async def run() -> int:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            out = await fish_send(
+                client,
+                stream=True,
+                method="POST",
+                url="https://fish.test/v1/tts",
+                policy=RetryPolicy(attempts=5),
+            )
+            return int(out.status_code)
+
+    status = asyncio.run(run())
+    assert status == 502
+    assert len(calls) == 1
+    assert sleeps.await_count == 0
+
+
+def test_a_5xx_whose_body_cannot_be_read_is_still_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    class CutOff(httpx.AsyncByteStream):
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            raise httpx.ReadError("connection dropped mid-body")
+            yield b""  # pragma: no cover
+
+    calls: list[int] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(503, stream=CutOff())
+
+    monkeypatch.setattr("fish_audio_suite_proxy.upstream.asyncio.sleep", AsyncMock())
+
+    async def run() -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            await fish_send(
+                client,
+                stream=True,
+                method="POST",
+                url="https://fish.test/v1/tts",
+                policy=RetryPolicy(attempts=3),
+            )
+
+    asyncio.run(run())
+    assert len(calls) == 3

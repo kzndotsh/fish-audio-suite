@@ -85,7 +85,7 @@ kit to `>=0.1,<0.2`, so a kit minor bump needs a matching change in both. From
 Remove a public name only after it has been deprecated for at least one minor
 release. A deprecated name keeps working and emits `DeprecationWarning`, with
 `stacklevel=2` so the warning points at the caller. The message names the
-replacement and the version that removes it. A renamed environment variable keeps
+replacement and the version that deprecated the name. A renamed environment variable keeps
 its old name the same way and logs a warning that names the new one.
 
 ## Releases and release notes

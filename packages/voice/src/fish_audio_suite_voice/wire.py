@@ -97,6 +97,12 @@ class IsolatedResult:
     error_message: str | None = None
     error: FishHttpError | None = None
 
+    def __post_init__(self) -> None:
+        """Derive ``error`` from ``error_status`` when only the status was given."""
+        if self.error is None and self.error_status is not None:
+            error = FishHttpError.from_status(self.error_status, self.error_message or "")
+            object.__setattr__(self, "error", error)
+
 
 @dataclass(frozen=True, slots=True)
 class TurnSpec:
@@ -488,7 +494,9 @@ def isolated_result(run: TurnRun) -> IsolatedResult:
         # A socket drop has no HTTP status. The message is still a failed turn.
         failed=run.err_status is not None or bool(run.err_message),
         speed=spec.speed,
-        output_latency_s=float(run.sink.output_latency_s),
+        # A sink written against the older protocol has no latency attribute,
+        # and a turn that already played must not fail on it.
+        output_latency_s=float(getattr(run.sink, "output_latency_s", 0.0) or 0.0),
     )
     return IsolatedResult(
         spoken_so_far=spoken,

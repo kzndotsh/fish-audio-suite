@@ -32,10 +32,13 @@ def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool 
     """
     if not config.option.doctestmodules:
         return None
-    return any(
+    under_skipped_source = any(
         collection_path.is_relative_to(config.rootpath / "packages" / name / "src")
         for name in _NO_DOCTESTS
     )
+    # None, not False: a False result would stop pytest's own handling of
+    # --ignore, --ignore-glob and collect_ignore.
+    return True if under_skipped_source else None
 
 
 @pytest.fixture(autouse=True)

@@ -131,9 +131,24 @@ class FishHttpError(FishAudioSuiteError):
         """
         self.status = int(status)
         self.message = utf8_text(str(message))
-        usable = retry_after is not None and math.isfinite(retry_after) and retry_after >= 0
+        usable = (
+            retry_after is not None
+            and not isinstance(retry_after, bool)
+            and math.isfinite(retry_after)
+            and retry_after >= 0
+        )
         self.retry_after = float(retry_after) if usable and retry_after is not None else None
         super().__init__(f"HTTP {self.status}: {self.message}")
+
+    def __reduce__(self) -> tuple[Any, ...]:
+        """Support copy and pickle, which the default exception reduce cannot.
+
+        Returns
+        -------
+        tuple
+            The class, the constructor arguments and the ``retry_after`` state.
+        """
+        return (self.__class__, (self.status, self.message), {"retry_after": self.retry_after})
 
     @property
     def retryable(self) -> bool:

@@ -358,3 +358,24 @@ def test_other_statuses_stay_plain_and_subclass_calls_are_unchanged() -> None:
     assert type(FishHttpError(404, "missing")) is FishHttpError
     assert type(FishAuthError(404, "odd")) is FishAuthError
     assert type(FishHttpError.from_status(401, "k")) is FishAuthError
+
+
+def test_a_fish_error_survives_copy_and_pickle_with_its_class_and_retry_hint() -> None:
+    import copy
+    import pickle
+
+    original = FishRateLimitError(429, "slow down", retry_after=7)
+    roundtrip = pickle.loads(pickle.dumps(original))  # noqa: S301 - our own object
+    for clone in (copy.copy(original), copy.deepcopy(original), roundtrip):
+        assert type(clone) is FishRateLimitError
+        assert clone.status == 429
+        assert clone.message == "slow down"
+        assert clone.retry_after == 7.0
+    plain = pickle.loads(pickle.dumps(FishHttpError(404, "missing")))  # noqa: S301 - our own object
+    assert type(plain) is FishHttpError
+    assert plain.retry_after is None
+
+
+def test_a_boolean_is_not_a_retry_after_hint() -> None:
+    assert FishHttpError(429, "x", retry_after=True).retry_after is None
+    assert FishHttpError(429, "x", retry_after=0).retry_after == 0.0
