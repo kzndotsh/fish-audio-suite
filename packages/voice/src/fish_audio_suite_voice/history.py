@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from typing import Final
 
-from fish_audio_suite_kit import DEFAULT_SEED_EXCHANGE, DEFAULT_SYSTEM_PROMPT, ChatMessage
+from fish_audio_suite_kit import (
+    DEFAULT_SEED_EXCHANGE,
+    DEFAULT_SYSTEM_PROMPT,
+    ChatMessage,
+    is_same_utterance,
+)
 
 __all__ = [
     "KEEP_SYSTEM",
@@ -15,6 +20,9 @@ __all__ = [
 
 KEEP_SYSTEM: Final = 1
 _ROLES_PER_TURN: Final = 2
+# Unanswered user lines kept in one message. While the model keeps failing, the
+# oldest drop off, so the merged message cannot grow without bound.
+_UNANSWERED_LINES: Final = 4
 
 
 def opening_history(system_prompt: str) -> tuple[list[ChatMessage], int]:
@@ -69,6 +77,20 @@ def remember_user(
     turns: int,
     pinned: int = KEEP_SYSTEM,
 ) -> None:
-    """Append a user line and trim the history to its cap."""
-    history.append({"role": "user", "content": text})
+    """Append a user line and trim the history to its cap.
+
+    A previous user line that got no reply (the model failed, or a barge-in cut it
+    off before any audio) is still the last message. The new line joins it instead
+    of following it, so roles keep alternating, and a repeat of it is kept once.
+    At most the last four unanswered lines are kept.
+    """
+    last = history[-1] if len(history) > pinned else None
+    if last is not None and last["role"] == "user":
+        if is_same_utterance(text, last["content"]):
+            last["content"] = text
+        else:
+            lines = [*last["content"].split("\n"), text]
+            last["content"] = "\n".join(lines[-_UNANSWERED_LINES:])
+    else:
+        history.append({"role": "user", "content": text})
     trim_history(history, turns, pinned)

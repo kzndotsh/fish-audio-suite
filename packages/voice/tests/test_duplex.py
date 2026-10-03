@@ -106,11 +106,12 @@ def test_classify_transcript_drops_echoes_and_keeps_a_real_line() -> None:
 
 def test_history_keeps_the_system_prompt_and_drops_the_oldest_turn() -> None:
     history: list[ChatMessage] = [{"role": "system", "content": "be brief"}]
-    for i in range(HISTORY_TURNS * 2 + 1):
+    for i in range(HISTORY_TURNS + 1):
         remember_user(history, f"u{i}", HISTORY_TURNS)
+        history.append({"role": "assistant", "content": f"a{i}"})
     assert history[0] == {"role": "system", "content": "be brief"}
     assert history[1]["content"] == "u1"
-    assert history[-1]["content"] == f"u{HISTORY_TURNS * 2}"
+    assert history[-1]["content"] == f"a{HISTORY_TURNS}"
     assert len(history) == 1 + HISTORY_TURNS * 2
 
 
@@ -728,3 +729,34 @@ def test_recognize_does_not_hide_a_programming_error(
     monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", broken)
     with pytest.raises(type(bug)):
         asyncio.run(recognize(ctx, b"wav", ""))
+
+
+def test_an_unanswered_user_line_is_merged_with_the_next_one() -> None:
+    # A turn the model never answered (a 429, a refusal from the provider) left its
+    # user line last. Two user messages in a row reached the model before.
+    history: list[ChatMessage] = [{"role": "system", "content": "s"}]
+    remember_user(history, "Swear on it.", HISTORY_TURNS)
+    remember_user(history, "Swear on it.", HISTORY_TURNS)
+    assert history == [
+        {"role": "system", "content": "s"},
+        {"role": "user", "content": "Swear on it."},
+    ]
+    remember_user(history, "Are you there?", HISTORY_TURNS)
+    assert history[-1] == {"role": "user", "content": "Swear on it.\nAre you there?"}
+    assert [m["role"] for m in history] == ["system", "user"]
+
+
+def test_a_new_line_after_a_reply_is_its_own_message() -> None:
+    history: list[ChatMessage] = [{"role": "system", "content": "s"}]
+    remember_user(history, "hi", HISTORY_TURNS)
+    history.append({"role": "assistant", "content": "hello"})
+    remember_user(history, "hi", HISTORY_TURNS)
+    assert [m["role"] for m in history] == ["system", "user", "assistant", "user"]
+
+
+def test_a_long_run_of_unanswered_lines_keeps_only_the_latest() -> None:
+    history: list[ChatMessage] = [{"role": "system", "content": "s"}]
+    for i in range(10):
+        remember_user(history, f"line {i}", HISTORY_TURNS)
+    assert len(history) == 2
+    assert history[-1]["content"] == "line 6\nline 7\nline 8\nline 9"
