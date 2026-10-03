@@ -62,11 +62,21 @@ def _describe(value: object) -> str:
     return f"{type(value).__name__}[len={size}]"
 
 
+_FORWARD_REF = re.compile(r"ForwardRef\('([^']*)'\)")
+
+
 def _signature(value: Any) -> str:
+    """The signature as text that does not depend on the Python version.
+
+    NamedTuple fields render as ``ForwardRef('float')`` on 3.12 and as ``float``
+    on 3.14, and string annotations keep their quotes, so both are reduced to the
+    bare annotation text. A changed name, order, default or annotation still shows.
+    """
     try:
-        return _ADDRESS.sub("", str(inspect.signature(value)))
+        text = _ADDRESS.sub("", str(inspect.signature(value)))
     except (TypeError, ValueError):
         return "(...)"
+    return _FORWARD_REF.sub(r"\1", text).replace("'", "")
 
 
 def snapshot() -> dict[str, Any]:
