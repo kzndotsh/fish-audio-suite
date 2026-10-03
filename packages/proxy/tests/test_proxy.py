@@ -715,19 +715,25 @@ def test_verbose_words_accepts_padded_granularity() -> None:
 
 
 def test_caption_cues_drop_a_watermark_segment() -> None:
+    # Fish segments are words. The watermark sentence becomes its own phrase and is
+    # dropped; the speech after it stays.
     cues = caption_cues(
         {
-            "duration": 1.5,
+            "duration": 2.0,
             "segments": [
-                {"text": "Thanks for watching.", "start": 0, "end": 0.4},
+                {"text": "Thanks", "start": 0, "end": 0.2},
+                {"text": "for", "start": 0.2, "end": 0.3},
+                {"text": "watching", "start": 0.3, "end": 0.4},
                 {"text": "ok", "start": 0.4, "end": 0.6},
-                {"text": "hello there friend", "start": 0.6, "end": 1.5},
+                {"text": "hello", "start": 0.6, "end": 1.0},
+                {"text": "there", "start": 1.0, "end": 1.3},
+                {"text": "friend", "start": 1.3, "end": 1.5},
             ],
         },
-        "hello there friend",
+        "Thanks for watching. Ok. Hello there friend.",
         strip_speakers=False,
     )
-    assert [cue.text for cue in cues] == ["ok", "hello there friend"]
+    assert [cue.text for cue in cues] == ["Ok.", "Hello there friend."]
     only = caption_cues(
         {
             "duration": 1.0,

@@ -33,6 +33,6 @@ Invariants:
 - `/health` is public API. `tts_model`, `tts_format` and `tts_speed` replace `model`, `format` and `speed_scale`; the old keys stay, with the same values, for one minor release. Rename a key the same way.
 - Retry only 429, 5xx, and connections that never opened. A read timeout is not repeated.
 - Return the format the client asked for, or a 400. Do not swap it. This holds for speech and transcription.
-- Fish ASR `segments` are word-level (`text`, `start`, `end` per word) and `duration` is seconds. Fish sends no `words` field. Today `words` is only passed through when a body holds one; building it from segments is a separate change.
+- Fish ASR `segments` are word-level (`text`, `start`, `end` per word) and `duration` is seconds. Fish sends no `words` field. OpenAI `words` are those word segments; OpenAI `segments` and SRT/VTT cues are phrases grouped from them (`caption_cues`), with punctuation taken from the transcript. A `words` array in a body still wins.
 - Forward valid `traceparent` and `tracestate`. Mint a sampled one when absent.
 - Fish errors become `{error:{code,message,type}}` with the upstream status. Fish bodies are `provider_error`.

@@ -68,9 +68,9 @@ The same fields are under Admin, Settings, Audio.
 | `response_format` `mp3`, `opus`, `wav`, `pcm`, `pcm16` | The same format. `pcm16` is PCM at 24 kHz unless `sample_rate` is set |
 | `response_format` `aac`, `flac`, or anything else | 400. Fish cannot produce it, and other bytes would break the client's decoder |
 | `speed` | Multiplied by `FISH_SPEED`, then clamped to 0.5–2.0 |
-| `response_format=srt` or `vtt` | Caption file built from Fish segments, which are one word each |
+| `response_format=srt` or `vtt` | Caption file. Fish segments are single words, so they are grouped into phrase cues: a cue ends after a sentence end, a pause of 0.7 s or more, a speaker change, or before it passes 84 characters or 6 seconds. Punctuation and case come from the transcript |
 | Transcription `response_format` other than `json`, `text`, `verbose_json`, `srt`, `vtt` | 400, never a different format |
-| `verbose_json` and word timestamps | `segments` always (one per Fish word). `words` only when the Fish body holds a `words` field, which Fish does not send today |
+| `verbose_json` and word timestamps | `segments` always: the phrase cues above, each with an `id`. With `timestamp_granularities=word`, `words` lists every Fish word segment (`word`, `start`, `end`) |
 | Transcription body | Multipart `file`, or JSON `input_audio` (base64, optional `data:` URI) |
 | `references`, `input_references` | Decoded and sent as MessagePack. Without clips the body is JSON |
 | `seed`, `use_memory_cache` | Forwarded (`on` / `off`) |

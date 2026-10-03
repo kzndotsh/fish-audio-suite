@@ -32,15 +32,15 @@ def test_transcriptions_srt_and_granularities_bracket(
         srt = post({"response_format": "srt"})
         assert srt.status_code == 200
         assert srt.headers["content-type"].startswith("application/x-subrip")
-        assert "00:00:00,000 --> 00:00:00,600" in srt.text
-        assert "hello" in srt.text
+        assert "00:00:00,000 --> 00:00:01,500" in srt.text
+        assert "hello there" in srt.text
         injected = post({"response_format": "srt\nbad"})
         assert injected.status_code == 200
         assert injected.headers["content-type"].startswith("application/x-subrip")
-        assert "00:00:00,000 --> 00:00:00,600" in injected.text
+        assert "00:00:00,000 --> 00:00:01,500" in injected.text
         vtt = post({"response_format": "vtt"})
         assert vtt.text.startswith("WEBVTT")
-        assert "00:00:00.000 --> 00:00:00.600" in vtt.text
+        assert "00:00:00.000 --> 00:00:01.500" in vtt.text
         json_body = post({"timestamp_granularities[]": "segment"})
         assert json_body.json() == {"text": "hello there"}
         assert captured["data"]["ignore_timestamps"] == "false"
@@ -52,9 +52,13 @@ def test_transcriptions_srt_and_granularities_bracket(
         )
         payload = verbose.json()
         assert payload["text"] == "hello there"
-        assert payload["segments"][0]["text"] == "hello"
-        # Fish sent phrases, not word timings, so no words are invented.
-        assert "words" not in payload
+        # Fish segments are words. They are grouped into one phrase segment and
+        # returned as OpenAI words.
+        assert payload["segments"] == [{"id": 0, "text": "hello there", "start": 0, "end": 1.5}]
+        assert payload["words"] == [
+            {"word": "hello", "start": 0, "end": 0.6},
+            {"word": "there", "start": 0.6, "end": 1.5},
+        ]
         verbose_seg = post({"response_format": "verbose_json"})
         assert "words" not in verbose_seg.json()
 

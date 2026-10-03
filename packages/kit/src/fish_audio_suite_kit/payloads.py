@@ -11,7 +11,8 @@ class AsrWord(TypedDict, total=False):
     """One word with its timing, in seconds.
 
     Fish ``/v1/asr`` does not send a ``words`` field; its ``segments`` carry
-    the word timings. This shape is for a body that does hold one.
+    the word timings. This shape is for a body that does hold one (a self-hosted
+    server, say).
     """
 
     text: str

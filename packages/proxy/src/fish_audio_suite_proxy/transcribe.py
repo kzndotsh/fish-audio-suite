@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import bisect
 import math
+import re
+import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, get_args
+from typing import Any, Final, get_args
 
 from fastapi import Request
 from fastapi.responses import JSONResponse, PlainTextResponse
@@ -17,6 +20,7 @@ from fish_audio_suite_kit import (
     AsrFormat,
     CaptionCue,
     SuiteDefaults,
+    ends_sentence,
     format_as_srt,
     format_as_vtt,
     is_caption_watermark,
@@ -281,6 +285,115 @@ def _segment_cue(seg: Any, *, strip_speakers: bool, strip_cues: bool) -> Caption
     return CaptionCue(start, end, body)
 
 
+# Fish ``segments`` are single words. Caption cues and OpenAI ``segments`` are
+# phrases, so words are grouped: a new cue starts after a sentence end, a pause,
+# a speaker change, or when the cue would get too long to read.
+_PHRASE_PAUSE_S: Final = 0.7
+# About two 42-character caption lines, and a few seconds on screen.
+_PHRASE_MAX_CHARS: Final = 84
+_PHRASE_MAX_S: Final = 6.0
+# How far ahead in the transcript a Fish word is looked for when its punctuation
+# is recovered. A word the transcript lacks is used as Fish sent it.
+_ALIGN_LOOKAHEAD: Final = 3
+_WORD_KEY_RE: Final = re.compile(r"[^\w']+")
+# A turn that starts this close after a word's start still begins at that word.
+_TURN_SLACK_S: Final = 1e-6
+
+
+def _word_cues(data: AsrBody, *, strip_speakers: bool, strip_cues: bool) -> list[CaptionCue]:
+    # Fish JSON is checked only for ``text``, so a segment list can hold anything.
+    raw_segments: object = dict(data).get("segments") or []
+    if not isinstance(raw_segments, list):
+        return []
+    words: list[CaptionCue] = []
+    for seg in raw_segments:
+        cue = _segment_cue(seg, strip_speakers=strip_speakers, strip_cues=strip_cues)
+        if cue is not None:
+            words.append(cue)
+    return words
+
+
+def _word_key(word: str) -> str:
+    return _WORD_KEY_RE.sub("", word).casefold()
+
+
+def _punctuated(words: list[CaptionCue], text: str) -> list[CaptionCue]:
+    """Give each Fish word the punctuation and case it has in the transcript."""
+    tokens = text.split()
+    out: list[CaptionCue] = []
+    at = 0
+    for cue in words:
+        key = _word_key(cue.text)
+        found = next(
+            (
+                i
+                for i in range(at, min(at + _ALIGN_LOOKAHEAD, len(tokens)))
+                if key and _word_key(tokens[i]) == key
+            ),
+            None,
+        )
+        if found is None:
+            out.append(cue)
+            continue
+        out.append(CaptionCue(cue.start, cue.end, tokens[found]))
+        at = found + 1
+    return out
+
+
+def _is_wide(ch: str) -> bool:
+    return unicodedata.east_asian_width(ch) in {"W", "F"}
+
+
+def _join_words(left: str, right: str) -> str:
+    if not left:
+        return right
+    # CJK words are written without spaces between them.
+    if _is_wide(left[-1]) and _is_wide(right[0]):
+        return left + right
+    return f"{left} {right}"
+
+
+def _turn_starts(data: AsrBody) -> list[float]:
+    turns: object = dict(data).get("speaker_turns") or []
+    if not isinstance(turns, list):
+        return []
+    starts = [_seconds(turn.get("start", 0)) for turn in turns if isinstance(turn, dict)]
+    return sorted(start for start in starts if start > 0)
+
+
+def _starts_new_turn(turn_starts: list[float], previous: CaptionCue, word: CaptionCue) -> bool:
+    i = bisect.bisect_right(turn_starts, previous.start)
+    return i < len(turn_starts) and turn_starts[i] <= word.start + _TURN_SLACK_S
+
+
+def _phrases(words: list[CaptionCue], turn_starts: list[float]) -> list[CaptionCue]:
+    phrases: list[CaptionCue] = []
+    current: list[CaptionCue] = []
+    text = ""
+
+    def close() -> None:
+        if current:
+            phrases.append(CaptionCue(current[0].start, current[-1].end, text))
+
+    for word in words:
+        if current:
+            joined = _join_words(text, word.text)
+            breaks = (
+                ends_sentence(f"{text} ")
+                or word.start - current[-1].end >= _PHRASE_PAUSE_S
+                or len(joined) > _PHRASE_MAX_CHARS
+                or word.end - current[0].start > _PHRASE_MAX_S
+                or _starts_new_turn(turn_starts, current[-1], word)
+            )
+            if breaks:
+                close()
+                current, text = [], ""
+        current.append(word)
+        text = _join_words(text, word.text)
+    close()
+    return phrases
+
+
 def caption_cues(
     data: AsrBody,
     text: str,
@@ -288,37 +401,36 @@ def caption_cues(
     strip_speakers: bool,
     strip_cues: bool = False,
 ) -> list[CaptionCue]:
-    """Build timed cues from Fish segments, or one cue for the whole transcript.
+    """Build phrase cues from Fish word segments, or one cue for the whole transcript.
 
     Fish ``segments`` are word-level: each holds one word with ``start`` and
-    ``end`` in seconds. They are used as they come, one cue per segment.
+    ``end`` in seconds. Words are grouped into phrases, taking punctuation and
+    case from ``text``. A cue ends after a sentence end, a pause of 0.7 s or
+    more, a ``speaker_turns`` boundary, or before it would pass 84 characters
+    (two caption lines) or 6 seconds.
 
     Parameters
     ----------
     data : AsrBody
         Decoded Fish ASR JSON.
     text : str
-        Scrubbed full transcript, used when ``segments`` is missing or empty.
+        Scrubbed full transcript. It supplies punctuation, and is the one cue
+        when ``segments`` is missing or empty.
     strip_speakers : bool
-        Drop speaker labels inside each segment.
+        Drop speaker labels inside each word.
     strip_cues : bool, optional
-        Drop ``[cue]`` annotations inside each segment. Default False.
+        Drop ``[cue]`` annotations inside each word. Default False.
 
     Returns
     -------
     list of CaptionCue
-        Segment cues when any segment has text. A known caption watermark
-        segment is omitted. Otherwise one cue from 0 to ``duration`` (seconds)
+        Phrase cues when any word has text. A phrase that is a known caption
+        watermark is omitted. Otherwise one cue from 0 to ``duration`` (seconds)
         covering ``text``, or an empty list when ``text`` is empty.
     """
-    cues: list[CaptionCue] = []
-    # Fish JSON is checked only for ``text``, so a segment list can hold anything.
-    raw_segments: object = dict(data).get("segments") or []
-    if isinstance(raw_segments, list):
-        for seg in raw_segments:
-            cue = _segment_cue(seg, strip_speakers=strip_speakers, strip_cues=strip_cues)
-            if cue is not None and not is_caption_watermark(cue.text):
-                cues.append(cue)
+    words = _word_cues(data, strip_speakers=strip_speakers, strip_cues=strip_cues)
+    phrases = _phrases(_punctuated(words, text), _turn_starts(data))
+    cues = [cue for cue in phrases if not is_caption_watermark(cue.text)]
     if cues:
         return cues
     if not text:
@@ -326,8 +438,11 @@ def caption_cues(
     return [CaptionCue(0.0, max(0.0, _duration_s(data.get("duration"))), text)]
 
 
-def _cue_rows(cues: list[CaptionCue], key: str) -> list[dict[str, Any]]:
-    return [{key: cue.text, "start": cue.start, "end": cue.end} for cue in cues]
+def _cue_rows(cues: list[CaptionCue]) -> list[dict[str, Any]]:
+    return [
+        {"id": index, "text": cue.text, "start": cue.start, "end": cue.end}
+        for index, cue in enumerate(cues)
+    ]
 
 
 def _plain_transcript(
@@ -365,13 +480,15 @@ def _word_rows(
     strip_speakers: bool,
     strip_cues: bool,
 ) -> list[dict[str, Any]]:
-    # Fish /v1/asr sends no ``words`` field: its ``segments`` already carry one
-    # word each. Filling OpenAI ``words`` from those segments is a separate
-    # change, so for now only a ``words`` array in the body is passed through,
-    # scrubbed the same way as the transcript so the flags hold for every field.
+    # Fish /v1/asr sends no ``words`` field: its ``segments`` hold one word each,
+    # so they are the word list. A ``words`` array in the body (a server that sends
+    # one) wins, scrubbed the same way as the transcript.
     raw: object = dict(data).get("words")
     if not isinstance(raw, list):
-        return []
+        return [
+            {"word": cue.text, "start": cue.start, "end": cue.end}
+            for cue in _word_cues(data, strip_speakers=strip_speakers, strip_cues=strip_cues)
+        ]
     rows: list[dict[str, Any]] = []
     for item in raw:
         if not isinstance(item, dict):
@@ -404,7 +521,7 @@ def _verbose_body(
         "language": spoken_lang,
         "duration": _json_number(data.get("duration")),
         "text": text,
-        "segments": _cue_rows(cues, "text"),
+        "segments": _cue_rows(cues),
     }
     wants_words = any(g.strip().lower() == "word" for g in granularities)
     words = (
@@ -437,13 +554,11 @@ def transcription_body(
     text : str
         Scrubbed transcript.
     cues : list of CaptionCue
-        Timed cues returned as ``segments``. From Fish segments these are one
-        word each.
+        Phrase cues from ``caption_cues``, returned as ``segments`` with an ``id``.
     data : AsrBody
-        Decoded Fish JSON, used for ``duration`` (seconds) and language. A
-        ``words`` array is returned for ``verbose_json`` with ``word``
-        granularity only when the body holds a ``words`` field, which Fish
-        does not send today.
+        Decoded Fish JSON, used for ``duration`` (seconds) and language. With
+        ``word`` granularity, ``verbose_json`` adds ``words``: one row per Fish
+        word segment, or the body's own ``words`` array when it has one.
     language : str or None
         Client or env language hint.
     granularities : sequence of str
