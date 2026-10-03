@@ -24,11 +24,11 @@ from fish_audio_suite_kit import (
     FISH_RETRY_ATTEMPTS,
     AudioFormat,
     FishHttpError,
+    describe_request_error,
     elapsed_ms,
     fish_attempt_exhausted,
-    fish_request_error,
+    is_empty_delta,
     should_retry_fish_status,
-    skip_empty_delta,
     split_tts_piece,
 )
 from fish_audio_suite_voice.debug import debug, warn, with_detail
@@ -191,7 +191,7 @@ async def text_events(
         if split is None:
             break
         piece, buf = split
-        if skip_empty_delta(piece):
+        if is_empty_delta(piece):
             continue
         yield TextEvent(text=piece)
         sent += 1
@@ -623,6 +623,6 @@ def _classify_fish_exc(exc: BaseException) -> tuple[bool, int | None, str]:
     if isinstance(exc, WebSocketError):
         return True, None, str(exc)
     if isinstance(exc, httpx.RequestError):
-        status, message = fish_request_error(exc, httpx.TimeoutException)
+        status, message = describe_request_error(exc, httpx.TimeoutException)
         return True, status, with_detail(message, exc)
     return False, None, str(exc)

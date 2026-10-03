@@ -30,16 +30,16 @@ from fish_audio_suite_kit import (
     SuiteDefaults,
     TtsModel,
     catalog_tts_model,
+    describe_transport_error,
     ensure_trace_headers,
     env_bool,
     fish_backoff_s,
     fish_sleep_before_retry,
-    fish_transport_error,
     known_asr_format,
     known_audio_format,
     known_latency,
     parse_asr_body,
-    retry_after_seconds,
+    retry_after_s,
 )
 from fish_audio_suite_kit._deprecation import deprecated
 from fish_audio_suite_kit._version import read_version
@@ -117,19 +117,19 @@ def test_a_rate_limit_error_carries_the_hint_and_catches_by_type() -> None:
 
 
 def test_the_factories_return_the_right_subclass_with_the_old_message() -> None:
-    assert type(FishHttpError.unreachable()) is FishUpstreamError
-    assert type(FishHttpError.non_json()) is FishUpstreamError
-    assert type(FishHttpError.non_object()) is FishUpstreamError
-    assert type(FishHttpError.timed_out()) is FishTimeoutError
-    assert (FishHttpError.unreachable().status, FishHttpError.unreachable().message) == (
+    assert type(FishHttpError.for_unreachable()) is FishUpstreamError
+    assert type(FishHttpError.for_non_json()) is FishUpstreamError
+    assert type(FishHttpError.for_non_object()) is FishUpstreamError
+    assert type(FishHttpError.for_timeout()) is FishTimeoutError
+    assert (FishHttpError.for_unreachable().status, FishHttpError.for_unreachable().message) == (
         502,
         "Fish upstream unreachable",
     )
-    assert FishHttpError.timed_out().status == 504
-    assert FishHttpError.non_json().message == "Fish returned a non-JSON body"
-    assert FishHttpError.non_object().message == "Fish returned a non-object body"
+    assert FishHttpError.for_timeout().status == 504
+    assert FishHttpError.for_non_json().message == "Fish returned a non-JSON body"
+    assert FishHttpError.for_non_object().message == "Fish returned a non-object body"
     # Calling a factory on a subclass still gives the fixed class.
-    assert type(FishAuthError.unreachable()) is FishUpstreamError
+    assert type(FishAuthError.for_unreachable()) is FishUpstreamError
 
 
 def test_parse_asr_body_raises_the_typed_non_object_error() -> None:
@@ -221,7 +221,7 @@ def test_a_latency_snapshot_is_still_built_by_position() -> None:
     assert dataclasses.replace(snapshot, first_audio=9.0).first_audio == 9.0
 
 
-# --- retry_after_seconds ----------------------------------------------------------
+# --- retry_after_s ----------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -244,10 +244,10 @@ def test_a_latency_snapshot_is_still_built_by_position() -> None:
         (None, None),
     ],
 )
-def test_retry_after_seconds_accepts_only_a_sane_wait(
+def test_retry_after_s_accepts_only_a_sane_wait(
     headers: dict[str, str] | None, expected: float | None
 ) -> None:
-    assert retry_after_seconds(headers) == expected
+    assert retry_after_s(headers) == expected
 
 
 # --- deprecation helper --------------------------------------------------------------
@@ -283,7 +283,7 @@ def test_the_kit_does_not_call_its_own_deprecated_names() -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         assert fish_backoff_s(1, rng=None) > 0
-        assert fish_transport_error(OSError("x"), timed_out=False)[0] == 502
+        assert describe_transport_error(OSError("x"), timed_out=False)[0] == 502
         assert "traceparent" in ensure_trace_headers({})
         assert parse_asr_body({"text": "x"})[1] == "x"
         assert asyncio.run(fish_sleep_before_retry(kit.FISH_RETRY_ATTEMPTS - 1)) is False

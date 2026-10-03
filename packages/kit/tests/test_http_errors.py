@@ -24,9 +24,9 @@ from fish_audio_suite_kit import (
 from fish_audio_suite_kit.http_errors import (
     FISH_BACKOFF_CAP_S,
     FISH_RETRY_AFTER_CAP_S,
+    describe_transport_error,
     fish_error_body,
     fish_non_object,
-    fish_transport_error,
 )
 
 
@@ -57,23 +57,23 @@ def test_retry_pause_stops_on_the_last_attempt(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_transport_error_timeout_and_blank() -> None:
-    status, message = fish_transport_error(TimeoutError("late"), timed_out=True)
+    status, message = describe_transport_error(TimeoutError("late"), timed_out=True)
     assert status == 504
     assert message == "Fish request timed out"
-    status, message = fish_transport_error(None, timed_out=False)
+    status, message = describe_transport_error(None, timed_out=False)
     assert status == 502
     assert message == "Fish upstream unreachable"
-    status, message = fish_transport_error(ConnectionError("reset"), timed_out=False)
+    status, message = describe_transport_error(ConnectionError("reset"), timed_out=False)
     assert (status, message) == (502, "Fish upstream unreachable")
 
 
 def test_transport_error_text_never_reaches_the_message() -> None:
     secret = "connect to 10.0.0.5:443 refused [Errno 111]"
-    status, message = fish_transport_error(ConnectionError(secret), timed_out=False)
+    status, message = describe_transport_error(ConnectionError(secret), timed_out=False)
     assert status == 502
     assert "10.0.0.5" not in message
     assert "Errno" not in message
-    _status, timeout_message = fish_transport_error(TimeoutError(secret), timed_out=True)
+    _status, timeout_message = describe_transport_error(TimeoutError(secret), timed_out=True)
     assert "10.0.0.5" not in timeout_message
 
 
@@ -231,10 +231,14 @@ def test_fish_http_error_constructors_match_the_tuple_helpers() -> None:
         pairs = (fish_unreachable(), fish_non_json(), fish_non_object())
     assert len(caught) == 3
     for built, pair in zip(
-        (FishHttpError.unreachable(), FishHttpError.non_json(), FishHttpError.non_object()),
+        (
+            FishHttpError.for_unreachable(),
+            FishHttpError.for_non_json(),
+            FishHttpError.for_non_object(),
+        ),
         pairs,
         strict=True,
     ):
         assert (built.status, built.message) == pair
-    timed_out = FishHttpError.timed_out()
+    timed_out = FishHttpError.for_timeout()
     assert (timed_out.status, timed_out.message) == (504, "Fish request timed out")

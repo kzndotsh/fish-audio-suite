@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Final
 
-from fish_audio_suite_kit import FISH_TTS_MODEL_IDS, known_tts_model
+from fish_audio_suite_kit import FISH_TTS_MODEL_IDS, normalize_tts_model
 
 __all__ = [
     "OPENAI_TTS_NAMES",
@@ -108,10 +108,10 @@ def resolve_tts_model(
     target = table.get(raw.lower())
     if target is not None:
         # A target written as fish-audio/<id> is the same model as <id>.
-        return known_tts_model(_native_model_id(target))
+        return normalize_tts_model(_native_model_id(target))
     if any(ch.isspace() or ord(ch) < 32 for ch in raw):
-        return known_tts_model(default)
-    return known_tts_model(raw)
+        return normalize_tts_model(default)
+    return normalize_tts_model(raw)
 
 
 def _header_model(text: str) -> str:

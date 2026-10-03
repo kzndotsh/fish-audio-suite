@@ -13,19 +13,19 @@ from typing import Any, Final
 from fishaudio.types import LatencyMode, Prosody, TTSConfig
 
 from fish_audio_suite_kit import (
+    CHUNK_LENGTH_CLOUD_HI,
     CHUNK_LENGTH_LO,
-    CLOUD_CHUNK_HI,
     TTS_SPEED_HI,
     TTS_SPEED_LO,
-    UNIT_HI,
-    UNIT_LO,
+    UNIT_INTERVAL_HI,
+    UNIT_INTERVAL_LO,
     AudioFormat,
     FishLatency,
     SuiteDefaults,
-    clamp_num,
+    clamp_number,
     known_mp3_bitrate,
-    known_tts_model,
     normalize_cues,
+    normalize_tts_model,
     scrub_tts,
     strip_base,
     utf8_text,
@@ -94,7 +94,7 @@ def _sdk_latency(latency: str) -> LatencyMode:
 
 def _sdk_chunk_length(chunk_length: int) -> int:
     # Self-hosted HTTP allows 1000. The SDK model rejects anything above 300.
-    return min(CLOUD_CHUNK_HI, max(CHUNK_LENGTH_LO, chunk_length))
+    return min(CHUNK_LENGTH_CLOUD_HI, max(CHUNK_LENGTH_LO, chunk_length))
 
 
 def _sdk_sample_rate(sample_rate: int) -> int:
@@ -106,7 +106,7 @@ def _sdk_sample_rate(sample_rate: int) -> int:
 
 
 def _sdk_speed(speed: float) -> float:
-    return clamp_num(speed, TTS_SPEED_LO, TTS_SPEED_HI, _STOCK.speed, float)
+    return clamp_number(speed, TTS_SPEED_LO, TTS_SPEED_HI, _STOCK.speed, float)
 
 
 def _sdk_volume(volume: float) -> float:
@@ -386,7 +386,7 @@ class IsolatedFishTts:
             # The id is MessagePacked into the start event. A surrogate makes
             # that pack fail and the socket never opens. The model is a header.
             voice_id=utf8_text(self.voice_id),
-            model=known_tts_model(self.model),
+            model=normalize_tts_model(self.model),
             audio_format=_sdk_format(self.audio_format),
             latency=_sdk_latency(self.latency),
             speed=_sdk_speed(self.speed),
@@ -405,8 +405,10 @@ class IsolatedFishTts:
             normalize=_STOCK.normalize,
             chunk_length=_sdk_chunk_length(self.chunk_length),
             min_chunk_length=self.min_chunk_length,
-            temperature=clamp_num(self.temperature, UNIT_LO, UNIT_HI, _STOCK.temperature, float),
-            top_p=clamp_num(self.top_p, UNIT_LO, UNIT_HI, _STOCK.top_p, float),
+            temperature=clamp_number(
+                self.temperature, UNIT_INTERVAL_LO, UNIT_INTERVAL_HI, _STOCK.temperature, float
+            ),
+            top_p=clamp_number(self.top_p, UNIT_INTERVAL_LO, UNIT_INTERVAL_HI, _STOCK.top_p, float),
             repetition_penalty=self.repetition_penalty,
             max_new_tokens=_STOCK.max_new_tokens,
             condition_on_previous_chunks=_STOCK.condition_on_previous_chunks,

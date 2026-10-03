@@ -9,16 +9,16 @@ from urllib.parse import urlsplit
 
 from fish_audio_suite_kit import (
     CHUNK_LENGTH_LO,
-    MIN_CHUNK_HI,
-    MIN_CHUNK_LO,
+    MIN_CHUNK_LENGTH_HI,
+    MIN_CHUNK_LENGTH_LO,
     TTS_SPEED_HI,
     TTS_SPEED_LO,
-    UNIT_HI,
-    UNIT_LO,
+    UNIT_INTERVAL_HI,
+    UNIT_INTERVAL_LO,
     FishLatency,
     SuiteDefaults,
     chunk_length_hi,
-    clamp_num,
+    clamp_number,
     env_base,
     env_float,
     env_int,
@@ -26,7 +26,7 @@ from fish_audio_suite_kit import (
     env_token,
     is_insecure_fish_base,
     known_latency,
-    known_tts_model,
+    normalize_tts_model,
 )
 from fish_audio_suite_voice.debug import warn
 from fish_audio_suite_voice.playback import DEFAULT_PLAYBACK, playback_key
@@ -183,35 +183,37 @@ def cfg() -> VoiceCliConfig:
         fish_base=fish_base,
         fish_voice_id=env_text("FISH_VOICE_ID"),
         fish_asr_language=env_text("FISH_ASR_LANGUAGE", d.asr_language),
-        tts_model=known_tts_model(env_token("FISH_TTS_MODEL", d.tts_model)),
+        tts_model=normalize_tts_model(env_token("FISH_TTS_MODEL", d.tts_model)),
         latency=known_latency(env_token("FISH_LATENCY", d.latency), d.latency),
-        speed=clamp_num(
+        speed=clamp_number(
             env_float("FISH_SPEED", d.speed),
             TTS_SPEED_LO,
             TTS_SPEED_HI,
             d.speed,
             float,
         ),
-        temperature=clamp_num(
+        temperature=clamp_number(
             env_float("FISH_TEMPERATURE", d.temperature),
-            UNIT_LO,
-            UNIT_HI,
+            UNIT_INTERVAL_LO,
+            UNIT_INTERVAL_HI,
             d.temperature,
             float,
         ),
-        top_p=clamp_num(env_float("FISH_TOP_P", d.top_p), UNIT_LO, UNIT_HI, d.top_p, float),
+        top_p=clamp_number(
+            env_float("FISH_TOP_P", d.top_p), UNIT_INTERVAL_LO, UNIT_INTERVAL_HI, d.top_p, float
+        ),
         repetition_penalty=env_float("FISH_REPETITION_PENALTY", d.repetition_penalty),
-        chunk_length=clamp_num(
+        chunk_length=clamp_number(
             env_int("FISH_CHUNK_LENGTH", d.chunk_length),
             CHUNK_LENGTH_LO,
             chunk_length_hi(fish_base),
             d.chunk_length,
             int,
         ),
-        min_chunk_length=clamp_num(
+        min_chunk_length=clamp_number(
             env_int("FISH_MIN_CHUNK_LENGTH", d.min_chunk_length),
-            MIN_CHUNK_LO,
-            MIN_CHUNK_HI,
+            MIN_CHUNK_LENGTH_LO,
+            MIN_CHUNK_LENGTH_HI,
             d.min_chunk_length,
             int,
         ),

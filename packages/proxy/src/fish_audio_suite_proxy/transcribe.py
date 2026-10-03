@@ -20,7 +20,7 @@ from fish_audio_suite_kit import (
     format_as_srt,
     format_as_vtt,
     is_caption_watermark,
-    number_or,
+    parse_number,
     scrub_asr,
     utf8_text,
 )
@@ -255,7 +255,7 @@ def form_strings(form: FormData, *names: str) -> list[str]:
 
 
 def _seconds(value: Any) -> float:
-    return number_or(value or 0, 0.0, float)
+    return parse_number(value or 0, 0.0, float)
 
 
 def _duration_s(value: Any) -> float:

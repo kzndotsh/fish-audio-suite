@@ -17,11 +17,11 @@ from fishaudio import FlushEvent, TextEvent
 
 from fish_audio_suite_kit import (
     ends_sentence,
-    hold_tts,
+    is_empty_delta,
     normalize_cues,
     scrub_tts,
-    skip_empty_delta,
     split_tts_piece,
+    tts_hold_at,
 )
 from fish_audio_suite_voice.wire import as_async, flush_if_sent
 
@@ -33,7 +33,7 @@ __all__ = [
 def _text_event(piece: str) -> TextEvent | None:
     # The piece was already scrubbed, including one edge space. Scrubbing
     # again strips that space and the next cut is spoken as one word.
-    if skip_empty_delta(piece):
+    if is_empty_delta(piece):
         return None
     return TextEvent(text=piece)
 
@@ -46,7 +46,7 @@ def _hold_at(
     before: str = "",
     lead: bool = False,
 ) -> int:
-    return hold_tts(
+    return tts_hold_at(
         text,
         line_start=line_start,
         sentence_start=sentence_start,

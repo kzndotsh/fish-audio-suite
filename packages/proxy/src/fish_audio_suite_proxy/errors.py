@@ -11,8 +11,8 @@ from fastapi.responses import JSONResponse
 from fish_audio_suite_kit import (
     FishErrorBody,
     FishHttpError,
-    OpenAIError,
     OpenAIErrorBody,
+    OpenAIErrorDetail,
     parse_fish_error,
     utf8_text,
 )
@@ -89,7 +89,7 @@ def openai_error_body(status: int, message: str, *, provider: bool = False) -> O
     OpenAIErrorBody
         The envelope, not a response.
     """
-    err: OpenAIError = {
+    err: OpenAIErrorDetail = {
         "code": int(status),
         "message": utf8_text(str(message)),
         "type": "provider_error" if provider else _openai_error_type(status),

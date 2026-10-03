@@ -16,8 +16,8 @@ from fish_audio_suite_kit import (
     is_asr_hallucination,
     is_backchannel,
     is_quit_utterance,
+    is_same_utterance,
     make_traceparent,
-    same_utterance,
     trace_id_of,
 )
 from fish_audio_suite_voice.asr import fish_asr
@@ -63,7 +63,7 @@ def accept_asr(
         return "quit"
     # Only a clip that ended almost as the mic opened can be a stale copy. A
     # later repeat is the user saying it again on purpose.
-    if stale and same_utterance(text, last_user):
+    if stale and is_same_utterance(text, last_user):
         return "skip"
     return "ok"
 

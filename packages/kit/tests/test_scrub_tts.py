@@ -4,11 +4,11 @@ import pytest
 from kit_timing import assert_linear_time
 
 from fish_audio_suite_kit import (
-    hold_tts,
     is_tts_junk,
     normalize_cues,
     scrub_asr,
     scrub_tts,
+    tts_hold_at,
 )
 
 
@@ -634,7 +634,7 @@ def test_a_removed_aside_leaves_one_space(text: str, expected: str) -> None:
 def test_hostile_input_is_scrubbed_in_linear_time(hostile: str) -> None:
     def run(text: str) -> None:
         scrub_tts(text)
-        hold_tts(text, line_start=True, sentence_start=True)
+        tts_hold_at(text, line_start=True, sentence_start=True)
 
     assert_linear_time(run, hostile)
 

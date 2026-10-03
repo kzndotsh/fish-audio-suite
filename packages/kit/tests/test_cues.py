@@ -5,10 +5,10 @@ from kit_timing import assert_linear_time
 
 from fish_audio_suite_kit import (
     ensure_lead_cue,
-    hold_tts,
     normalize_cues,
     scrub_tts,
     strip_cue_tags,
+    tts_hold_at,
 )
 from fish_audio_suite_kit.cues import mood_lead_hold_at
 
@@ -67,10 +67,10 @@ def test_tone_lead_becomes_cue() -> None:
     assert normalize_cues("Shouting, hey", lead=True) == "[shouting] hey"
 
 
-def test_hold_tts_keeps_a_mood_until_the_comma() -> None:
-    assert hold_tts("Excited,", line_start=True, sentence_start=True, lead=True) == 0
+def test_tts_hold_at_keeps_a_mood_until_the_comma() -> None:
+    assert tts_hold_at("Excited,", line_start=True, sentence_start=True, lead=True) == 0
     finished = "Excited, hello"
-    assert hold_tts(finished, line_start=True, sentence_start=True, lead=True) == len(finished)
+    assert tts_hold_at(finished, line_start=True, sentence_start=True, lead=True) == len(finished)
 
 
 def test_mood_lead_holds_only_an_unfinished_word() -> None:
@@ -261,9 +261,9 @@ def test_strip_cue_tags_keeps_what_the_speaker_says() -> None:
 
 
 def test_the_mood_hold_is_off_unless_leads_are_on() -> None:
-    assert hold_tts("Excited,", line_start=True, sentence_start=True) == len("Excited,")
-    assert hold_tts("Exc", line_start=True, sentence_start=True) == len("Exc")
-    assert hold_tts("Exc", line_start=True, sentence_start=True, lead=True) == 0
+    assert tts_hold_at("Excited,", line_start=True, sentence_start=True) == len("Excited,")
+    assert tts_hold_at("Exc", line_start=True, sentence_start=True) == len("Exc")
+    assert tts_hold_at("Exc", line_start=True, sentence_start=True, lead=True) == 0
 
 
 def test_strip_cue_tags_keeps_a_tag_nested_in_a_larger_bracket() -> None:

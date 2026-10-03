@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import NotRequired, TypedDict
 
-__all__ = ["AsrBody", "AsrSegment", "AsrWord", "OpenAIError", "OpenAIErrorBody"]
+__all__ = ["AsrBody", "AsrSegment", "AsrWord", "OpenAIErrorBody", "OpenAIErrorDetail"]
 
 
 class AsrWord(TypedDict, total=False):
@@ -34,7 +34,7 @@ class AsrBody(TypedDict, total=False):
     language_code: str
 
 
-class OpenAIError(TypedDict):
+class OpenAIErrorDetail(TypedDict):
     """The ``error`` object inside an OpenAI-style error response."""
 
     code: int
@@ -46,4 +46,4 @@ class OpenAIError(TypedDict):
 class OpenAIErrorBody(TypedDict):
     """An OpenAI-style error response: ``{"error": {...}}``."""
 
-    error: OpenAIError
+    error: OpenAIErrorDetail

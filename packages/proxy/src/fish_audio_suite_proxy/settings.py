@@ -11,13 +11,13 @@ from typing import Any, Final
 from fish_audio_suite_kit import (
     CHUNK_LENGTH_LO,
     FISH_RETRY_ATTEMPTS,
-    MIN_CHUNK_HI,
-    MIN_CHUNK_LO,
+    MIN_CHUNK_LENGTH_HI,
+    MIN_CHUNK_LENGTH_LO,
     TTS_SPEED_HI,
     TTS_SPEED_LO,
     SuiteDefaults,
     chunk_length_hi,
-    clamp_num,
+    clamp_number,
     env_base,
     env_bool,
     env_float,
@@ -26,7 +26,7 @@ from fish_audio_suite_kit import (
     env_token,
     known_latency,
     known_mp3_bitrate,
-    known_tts_model,
+    normalize_tts_model,
 )
 from fish_audio_suite_proxy.fields import ClientFormat, fish_audio_format, format_or_default
 from fish_audio_suite_proxy.models import default_tts_aliases, parse_aliases, resolve_asr_model
@@ -241,29 +241,29 @@ def _suite_defaults() -> SuiteDefaults:
     stock = SuiteDefaults()
     fish_base = env_base("FISH_BASE", stock.fish_base)
     return SuiteDefaults(
-        tts_model=known_tts_model(
+        tts_model=normalize_tts_model(
             _deprecated(env_token, "FISH_TTS_MODEL", "FISH_MODEL", stock.tts_model)
         ),
         asr_model=resolve_asr_model(None, env_token("FISH_ASR_MODEL", stock.asr_model)),
         asr_language=env_text("FISH_ASR_LANGUAGE", stock.asr_language),
         latency=known_latency(env_token("FISH_LATENCY", stock.latency), stock.latency),
-        chunk_length=clamp_num(
+        chunk_length=clamp_number(
             env_int("FISH_CHUNK_LENGTH", stock.chunk_length),
             CHUNK_LENGTH_LO,
             chunk_length_hi(fish_base),
             stock.chunk_length,
             int,
         ),
-        min_chunk_length=clamp_num(
+        min_chunk_length=clamp_number(
             env_int("FISH_MIN_CHUNK_LENGTH", stock.min_chunk_length),
-            MIN_CHUNK_LO,
-            MIN_CHUNK_HI,
+            MIN_CHUNK_LENGTH_LO,
+            MIN_CHUNK_LENGTH_HI,
             stock.min_chunk_length,
             int,
         ),
         audio_format=fish_audio_format(_response_format()),
         mp3_bitrate=known_mp3_bitrate(env_int("FISH_MP3_BITRATE", stock.mp3_bitrate)),
-        speed=clamp_num(
+        speed=clamp_number(
             _deprecated(env_float, "FISH_SPEED", "FISH_SPEED_SCALE", stock.speed),
             TTS_SPEED_LO,
             TTS_SPEED_HI,
@@ -329,7 +329,7 @@ def load_settings() -> ProxySettings:
         connect_timeout_s=_positive_float("FISH_PROXY_CONNECT_TIMEOUT", DEFAULT_CONNECT_S),
         read_timeout_s=_positive_float("FISH_PROXY_READ_TIMEOUT", DEFAULT_READ_S),
         pool_timeout_s=_positive_float("FISH_PROXY_POOL_TIMEOUT", DEFAULT_POOL_S),
-        retry_attempts=clamp_num(
+        retry_attempts=clamp_number(
             env_int("FISH_PROXY_RETRY_ATTEMPTS", FISH_RETRY_ATTEMPTS),
             1,
             _MAX_RETRY_ATTEMPTS,

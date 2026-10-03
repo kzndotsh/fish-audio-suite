@@ -16,7 +16,7 @@ CLI: `fish-audio-suite-proxy`. Import: `fish_audio_suite_proxy`. Start uvicorn w
 | --- | --- |
 | `server.py` | App, lifespan, routes, client-key check |
 | `settings.py` | `ProxySettings`, built once in lifespan on `app.state.settings`. No other module reads the env |
-| `upstream.py` | `fish_send`: bounded retry, `Retry-After` (kit `retry_after_seconds`), deadline, stops on disconnect. `FishHttp` is the client Protocol |
+| `upstream.py` | `fish_send`: bounded retry, `Retry-After` (kit `retry_after_s`), deadline, stops on disconnect. `FishHttp` is the client Protocol |
 | `limits.py` | Request body cap middleware |
 | `models.py` | TTS aliases, ASR id rules, `/v1/models` ids |
 | `fields.py` | Format, silence, request-field readers, trace headers |

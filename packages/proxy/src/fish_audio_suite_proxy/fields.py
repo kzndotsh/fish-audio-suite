@@ -12,7 +12,7 @@ from fish_audio_suite_kit import (
     ensure_trace_headers,
     extract_quoted_speech,
     normalize_cues,
-    number_or,
+    parse_number,
     scrub_tts,
 )
 from fish_audio_suite_proxy.errors import ProxyError
@@ -278,7 +278,7 @@ def pcm_sample_rate(fmt: ClientFormat, body: dict[str, Any], default: int) -> in
     raw = body.get("sample_rate")
     if raw is None:
         return fallback
-    rate = number_or(raw, fallback, int)
+    rate = parse_number(raw, fallback, int)
     return rate if rate > 0 else fallback
 
 

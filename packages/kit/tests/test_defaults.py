@@ -7,7 +7,7 @@ from fish_audio_suite_kit import (
     LatencySnapshot,
     SuiteDefaults,
     chunk_length_hi,
-    clamp_num,
+    clamp_number,
     env_base,
     env_bool,
     env_float,
@@ -19,8 +19,8 @@ from fish_audio_suite_kit import (
     known_latency,
     known_mp3_bitrate,
     known_opus_bitrate,
-    known_tts_model,
-    number_or,
+    normalize_tts_model,
+    parse_number,
 )
 
 
@@ -32,27 +32,27 @@ def test_bitrate_snaps_to_documented_values() -> None:
     assert known_opus_bitrate(1) == -1000
 
 
-def test_clamp_num_keeps_fish_ranges() -> None:
-    assert clamp_num(900, 100, chunk_length_hi("https://api.fish.audio"), 200, int) == 300
-    assert clamp_num(800, 100, chunk_length_hi("http://127.0.0.1:8080"), 200, int) == 800
-    assert clamp_num("nope", 0.5, 2.0, 1.05, float) == 1.05
-    assert clamp_num(float("nan"), 0.5, 2.0, 1.05, float) == 1.05
-    assert clamp_num(float("inf"), 0.5, 2.0, 1.05, float) == 1.05
-    assert clamp_num(float("inf"), 100, 300, 200, int) == 200
-    assert clamp_num(9, 0.5, 2.0, 1.05, float) == 2.0
-    assert clamp_num(True, 0.0, 1.0, 0.7, float) == 0.7
-    assert number_or("16000.0", 44100, int) == 16000
-    assert number_or("16,000", 44100, int) == 44100
-    assert number_or("16,5", 44100, int) == 44100
-    assert number_or(True, 0.0, float) == 0.0
-    assert number_or(False, 3, int) == 3
+def test_clamp_number_keeps_fish_ranges() -> None:
+    assert clamp_number(900, 100, chunk_length_hi("https://api.fish.audio"), 200, int) == 300
+    assert clamp_number(800, 100, chunk_length_hi("http://127.0.0.1:8080"), 200, int) == 800
+    assert clamp_number("nope", 0.5, 2.0, 1.05, float) == 1.05
+    assert clamp_number(float("nan"), 0.5, 2.0, 1.05, float) == 1.05
+    assert clamp_number(float("inf"), 0.5, 2.0, 1.05, float) == 1.05
+    assert clamp_number(float("inf"), 100, 300, 200, int) == 200
+    assert clamp_number(9, 0.5, 2.0, 1.05, float) == 2.0
+    assert clamp_number(True, 0.0, 1.0, 0.7, float) == 0.7
+    assert parse_number("16000.0", 44100, int) == 16000
+    assert parse_number("16,000", 44100, int) == 44100
+    assert parse_number("16,5", 44100, int) == 44100
+    assert parse_number(True, 0.0, float) == 0.0
+    assert parse_number(False, 3, int) == 3
 
 
 def test_known_model_and_latency() -> None:
-    assert known_tts_model(" S2.1-PRO ") == "s2.1-pro"
-    assert known_tts_model("MyModel") == "MyModel"
-    assert known_tts_model("custom\r\nX-Injected: 1") == "s2.1-pro"
-    assert known_tts_model("MyModel\ud800") == "s2.1-pro"
+    assert normalize_tts_model(" S2.1-PRO ") == "s2.1-pro"
+    assert normalize_tts_model("MyModel") == "MyModel"
+    assert normalize_tts_model("custom\r\nX-Injected: 1") == "s2.1-pro"
+    assert normalize_tts_model("MyModel\ud800") == "s2.1-pro"
     assert known_latency(" Normal ", "balanced") == "normal"
     assert known_latency("turbo", "balanced") == "balanced"
 
@@ -191,7 +191,7 @@ def test_the_package_root_still_exports_the_helpers_it_used_to() -> None:
         "canonical_traceparent",
         "fish_error_body",
         "fish_non_object",
-        "fish_transport_error",
+        "describe_transport_error",
         "mood_lead_hold_at",
         "sentence_closer_hold_at",
     ):

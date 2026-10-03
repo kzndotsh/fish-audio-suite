@@ -401,7 +401,7 @@ async def transcriptions(request: Request) -> Response | dict[str, Any]:
     try:
         raw = r.json()
     except (json.JSONDecodeError, UnicodeDecodeError):
-        return json_from_fish_error(FishHttpError.non_json())
+        return json_from_fish_error(FishHttpError.for_non_json())
     try:
         data, transcript = parse_asr_body(raw)
     except FishHttpError as exc:

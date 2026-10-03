@@ -12,28 +12,30 @@ from dataclasses import dataclass
 from typing import Any, Final, Literal, cast
 from urllib.parse import urlsplit
 
+from fish_audio_suite_kit._deprecation import deprecated
 from fish_audio_suite_kit.literals import AsrFormat, AudioFormat, FishLatency, TtsModel
 
 __all__ = [
+    "CHUNK_LENGTH_CLOUD_HI",
     "CHUNK_LENGTH_LO",
-    "CLOUD_CHUNK_HI",
+    "CHUNK_LENGTH_SELF_HOSTED_HI",
     "DEFAULT_SEED_EXCHANGE",
     "DEFAULT_SYSTEM_PROMPT",
     "FISH_LATENCIES",
     "FISH_TTS_MODEL_IDS",
-    "MIN_CHUNK_HI",
-    "MIN_CHUNK_LO",
+    "MIN_CHUNK_LENGTH_HI",
+    "MIN_CHUNK_LENGTH_LO",
     "MS_PER_S",
-    "SELF_HOST_CHUNK_HI",
     "TTS_SPEED_HI",
     "TTS_SPEED_LO",
-    "UNIT_HI",
-    "UNIT_LO",
+    "UNIT_INTERVAL_HI",
+    "UNIT_INTERVAL_LO",
     "LatencySnapshot",
     "SuiteDefaults",
     "catalog_tts_model",
     "chunk_length_hi",
     "clamp_num",
+    "clamp_number",
     "elapsed_ms",
     "env_base",
     "env_bool",
@@ -50,7 +52,9 @@ __all__ = [
     "known_mp3_bitrate",
     "known_opus_bitrate",
     "known_tts_model",
+    "normalize_tts_model",
     "number_or",
+    "parse_number",
     "strip_base",
 ]
 
@@ -379,7 +383,7 @@ def _parsed[T: int | float](value: Any, parse: Callable[[Any], T]) -> T:
     return parse(value)
 
 
-def number_or[T: int | float](value: Any, default: T, parse: Callable[[Any], T]) -> T:
+def parse_number[T: int | float](value: Any, default: T, parse: Callable[[Any], T]) -> T:
     """Parse a number from untrusted input.
 
     Parameters
@@ -420,7 +424,7 @@ def _env_num[T: int | float](name: str, default: T, parse: Callable[[str], T]) -
     raw = os.environ.get(name, "").strip()
     if not raw or not _ASCII_NUMBER_RE.fullmatch(raw):
         return default
-    return number_or(raw, default, parse)
+    return parse_number(raw, default, parse)
 
 
 def env_int(name: str, default: int) -> int:
@@ -468,14 +472,14 @@ def env_float(name: str, default: float) -> float:
 
 
 CHUNK_LENGTH_LO: Final = 100
-CLOUD_CHUNK_HI: Final = 300
-SELF_HOST_CHUNK_HI: Final = 1000
-MIN_CHUNK_LO: Final = 0
-MIN_CHUNK_HI: Final = 100
+CHUNK_LENGTH_CLOUD_HI: Final = 300
+CHUNK_LENGTH_SELF_HOSTED_HI: Final = 1000
+MIN_CHUNK_LENGTH_LO: Final = 0
+MIN_CHUNK_LENGTH_HI: Final = 100
 TTS_SPEED_LO: Final = 0.5
 TTS_SPEED_HI: Final = 2.0
-UNIT_LO: Final = 0.0
-UNIT_HI: Final = 1.0
+UNIT_INTERVAL_LO: Final = 0.0
+UNIT_INTERVAL_HI: Final = 1.0
 
 
 _CLOUD_HOST: Final = "api.fish.audio"
@@ -560,10 +564,10 @@ def chunk_length_hi(fish_base: str, *, self_hosted: bool | None = None) -> int:
         300 for the cloud API, 1000 for self-hosted fish-speech.
     """
     hosted = (not _is_cloud_base(fish_base)) if self_hosted is None else self_hosted
-    return SELF_HOST_CHUNK_HI if hosted else CLOUD_CHUNK_HI
+    return CHUNK_LENGTH_SELF_HOSTED_HI if hosted else CHUNK_LENGTH_CLOUD_HI
 
 
-def clamp_num[T: int | float](
+def clamp_number[T: int | float](
     value: Any,
     lo: T,
     hi: T,
@@ -642,7 +646,7 @@ _TTS_MODEL_BY_NAME: Final[dict[str, TtsModel]] = {
 }
 
 
-def known_tts_model(name: str) -> str:
+def normalize_tts_model(name: str) -> str:
     """Catalog ids are lowercase. Any other single-token id is returned stripped.
 
     Parameters
@@ -800,3 +804,30 @@ def known_opus_bitrate(rate: int) -> int:
     if rate in _OPUS_BITRATES:
         return rate
     return _OPUS_AUTO
+
+
+# --- Deprecated names -------------------------------------------------------------------
+
+
+@deprecated("parse_number", "0.2.0")
+def number_or[T: int | float](value: Any, default: T, parse: Callable[[Any], T]) -> T:
+    """Call ``parse_number``. Deprecated since 0.2.0."""
+    return parse_number(value, default, parse)
+
+
+@deprecated("clamp_number", "0.2.0")
+def clamp_num[T: int | float](
+    value: Any,
+    lo: T,
+    hi: T,
+    default: T,
+    parse: Callable[[Any], T],
+) -> T:
+    """Call ``clamp_number``. Deprecated since 0.2.0."""
+    return clamp_number(value, lo, hi, default, parse)
+
+
+@deprecated("normalize_tts_model", "0.2.0")
+def known_tts_model(name: str) -> str:
+    """Call ``normalize_tts_model``. Deprecated since 0.2.0."""
+    return normalize_tts_model(name)

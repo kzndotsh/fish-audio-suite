@@ -16,14 +16,14 @@ from fish_audio_suite_kit import (
     FishHttpError,
     SuiteDefaults,
     bearer,
+    describe_request_error,
     fish_attempt_exhausted,
     fish_backoff_s,
-    fish_request_error,
     is_asr_hallucination,
     is_caption_watermark,
     parse_asr_body,
     parse_fish_error,
-    retry_after_seconds,
+    retry_after_s,
     scrub_asr,
     strip_base,
     without_watermark_segments,
@@ -75,7 +75,7 @@ async def _post_fish(
         try:
             response = await client.post(url, **kwargs)
         except httpx.RequestError as exc:
-            status, message = fish_request_error(exc, httpx.TimeoutException)
+            status, message = describe_request_error(exc, httpx.TimeoutException)
             last_error = FishHttpError.from_status(status, with_detail(message, exc))
             if await _pause_or_raise(attempt, last_error, exc, cancel):
                 return None
@@ -85,7 +85,7 @@ async def _post_fish(
             last_error = FishHttpError.from_status(
                 detail.status,
                 detail.message,
-                retry_after=retry_after_seconds(response.headers),
+                retry_after=retry_after_s(response.headers),
             )
             if last_error.retryable:
                 if await _pause_or_raise(attempt, last_error, None, cancel, last_error.retry_after):
@@ -93,7 +93,7 @@ async def _post_fish(
                 continue
             raise last_error
         return response
-    raise last_error or FishHttpError.unreachable()
+    raise last_error or FishHttpError.for_unreachable()
 
 
 def asr_client() -> httpx.AsyncClient:
@@ -187,7 +187,7 @@ async def fish_asr(
     try:
         body = response.json()
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise FishHttpError.non_json() from exc
+        raise FishHttpError.for_non_json() from exc
     if isinstance(body, dict):
         meta = public_meta(body)
         debug(

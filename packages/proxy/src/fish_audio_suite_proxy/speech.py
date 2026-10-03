@@ -14,21 +14,21 @@ from fastapi.responses import JSONResponse
 
 from fish_audio_suite_kit import (
     CHUNK_LENGTH_LO,
-    MIN_CHUNK_HI,
-    MIN_CHUNK_LO,
+    MIN_CHUNK_LENGTH_HI,
+    MIN_CHUNK_LENGTH_LO,
     TTS_SPEED_HI,
     TTS_SPEED_LO,
-    UNIT_HI,
-    UNIT_LO,
+    UNIT_INTERVAL_HI,
+    UNIT_INTERVAL_LO,
     AudioFormat,
     FishLatency,
     SuiteDefaults,
     chunk_length_hi,
-    clamp_num,
+    clamp_number,
     known_latency,
     known_mp3_bitrate,
     known_opus_bitrate,
-    number_or,
+    parse_number,
     utf8_text,
 )
 from fish_audio_suite_proxy.errors import ProxyError, json_error
@@ -82,7 +82,7 @@ def _clamped_int(
         break
     if raw is None:
         raw = default
-    return clamp_num(raw, lo, hi, default, int)
+    return clamp_number(raw, lo, hi, default, int)
 
 
 def _scrub_pronunciation_item(item: Any) -> Any:
@@ -300,7 +300,7 @@ def _body_num[T: int | float](
     default: T,
     parse: Callable[[Any], T],
 ) -> T:
-    return number_or(body.get(key, default), default, parse)
+    return parse_number(body.get(key, default), default, parse)
 
 
 def _body_float(body: dict[str, Any], key: str, default: float) -> float:
@@ -388,15 +388,19 @@ def _fish_tts_payload(
         "text": spoken,
         "format": native_fmt,
         "latency": controls.latency,
-        "temperature": clamp_num(
+        "temperature": clamp_number(
             _body_float(body, "temperature", defaults.temperature),
-            UNIT_LO,
-            UNIT_HI,
+            UNIT_INTERVAL_LO,
+            UNIT_INTERVAL_HI,
             defaults.temperature,
             float,
         ),
-        "top_p": clamp_num(
-            _body_float(body, "top_p", defaults.top_p), UNIT_LO, UNIT_HI, defaults.top_p, float
+        "top_p": clamp_number(
+            _body_float(body, "top_p", defaults.top_p),
+            UNIT_INTERVAL_LO,
+            UNIT_INTERVAL_HI,
+            defaults.top_p,
+            float,
         ),
         "chunk_length": controls.chunk_length,
         "min_chunk_length": controls.min_chunk_length,
@@ -415,10 +419,10 @@ def _fish_tts_payload(
             "condition_on_previous_chunks",
             default=defaults.condition_on_previous_chunks,
         ),
-        "early_stop_threshold": clamp_num(
+        "early_stop_threshold": clamp_number(
             _body_float(body, "early_stop_threshold", defaults.early_stop_threshold),
-            UNIT_LO,
-            UNIT_HI,
+            UNIT_INTERVAL_LO,
+            UNIT_INTERVAL_HI,
             defaults.early_stop_threshold,
             float,
         ),
@@ -435,7 +439,7 @@ def _seed(value: Any) -> int | None:
         return None
     # int("42.0") raises, so a whole-number decimal was omitted and Fish
     # picked a different seed than the one the client asked for.
-    parsed = number_or(value, _MSGPACK_INT_LO - 1, int)
+    parsed = parse_number(value, _MSGPACK_INT_LO - 1, int)
     if parsed < _MSGPACK_INT_LO or parsed > _MSGPACK_INT_HI:
         return None
     return parsed
@@ -501,7 +505,7 @@ def speech_controls(
     raw_speed = _body_float(body, "speed", _REQUEST_SPEED) * defaults.speed
     return SpeechControls(
         model=resolve_tts_model(body.get("model"), defaults.tts_model, aliases),
-        speed=clamp_num(raw_speed, TTS_SPEED_LO, TTS_SPEED_HI, defaults.speed, float),
+        speed=clamp_number(raw_speed, TTS_SPEED_LO, TTS_SPEED_HI, defaults.speed, float),
         fmt=pick_format(body, default_format or defaults.audio_format),
         latency=_pick_latency(body, defaults.latency),
         chunk_length=_clamped_int(
@@ -516,8 +520,8 @@ def speech_controls(
             body,
             "min_chunk_length",
             "fish_min_chunk_length",
-            lo=MIN_CHUNK_LO,
-            hi=MIN_CHUNK_HI,
+            lo=MIN_CHUNK_LENGTH_LO,
+            hi=MIN_CHUNK_LENGTH_HI,
             default=defaults.min_chunk_length,
         ),
     )

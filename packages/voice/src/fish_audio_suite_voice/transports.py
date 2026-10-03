@@ -14,7 +14,7 @@ from fish_audio_suite_kit import (
     MS_PER_S,
     ChatMessage,
     bearer,
-    retry_after_seconds,
+    retry_after_s,
     strip_base,
     utf8_text,
 )
@@ -209,7 +209,7 @@ def _abort_http(
 
 
 def _retry_after_seconds(headers: httpx.Headers | None, body: str) -> float | None:
-    found = retry_after_seconds(headers)
+    found = retry_after_s(headers)
     if found is not None:
         return found
     return _seconds_in_json(body)
@@ -228,7 +228,7 @@ def _json_seconds(raw: object) -> float | None:
     # way a Retry-After header is, so a negative, nan or huge value is dropped.
     if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
         return None
-    return retry_after_seconds({"Retry-After": str(raw)})
+    return retry_after_s({"Retry-After": str(raw)})
 
 
 def _find_retry_seconds(value: object) -> float | None:

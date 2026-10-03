@@ -15,10 +15,10 @@ from fish_audio_suite_kit import (
     LatencySnapshot,
     elapsed_ms,
     ensure_lead_cue,
+    is_same_utterance,
     is_tts_junk,
     make_traceparent,
     normalize_cues,
-    same_utterance,
     scrub_tts,
 )
 from fish_audio_suite_voice.barge import BargeGate
@@ -164,7 +164,7 @@ def after_speech(
     if (
         spoken
         and (result.got_audio or not result.cancelled)
-        and not same_utterance(spoken, last_user)
+        and not is_same_utterance(spoken, last_user)
     ):
         history.append({"role": "assistant", "content": spoken})
     return (

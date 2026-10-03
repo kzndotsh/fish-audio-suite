@@ -8,7 +8,8 @@ from typing import Any, cast
 
 import pytest
 
-from fish_audio_suite_kit import deprecated_fields, env_renamed
+import fish_audio_suite_kit as kit
+from fish_audio_suite_kit import FishHttpError, deprecated_fields, env_renamed
 
 
 @deprecated_fields("0.2.0", secs="seconds", tag="label")
@@ -133,3 +134,92 @@ def test_env_renamed_returns_the_new_name_when_neither_is_set(
     seen, warn = _collect()
     assert env_renamed("FISH_TEST_NEW", "FISH_TEST_OLD", warn=warn) == "FISH_TEST_NEW"
     assert seen == []
+
+
+# --- deprecated kit names --------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("CLOUD_CHUNK_HI", "CHUNK_LENGTH_CLOUD_HI"),
+        ("SELF_HOST_CHUNK_HI", "CHUNK_LENGTH_SELF_HOSTED_HI"),
+        ("MIN_CHUNK_LO", "MIN_CHUNK_LENGTH_LO"),
+        ("MIN_CHUNK_HI", "MIN_CHUNK_LENGTH_HI"),
+        ("UNIT_LO", "UNIT_INTERVAL_LO"),
+        ("UNIT_HI", "UNIT_INTERVAL_HI"),
+        ("OpenAIError", "OpenAIErrorDetail"),
+    ],
+)
+def test_a_renamed_constant_or_class_still_resolves_and_warns(old: str, new: str) -> None:
+    with pytest.warns(
+        DeprecationWarning, match=rf"{old} is deprecated since 0\.2\.0; use {new}\."
+    ) as caught:
+        value = getattr(kit, old)
+    assert value is getattr(kit, new)
+    assert caught[0].filename == __file__
+    assert old not in kit.__all__
+    assert new in kit.__all__
+
+
+def test_a_renamed_constant_still_imports_from_the_root() -> None:
+    with pytest.warns(DeprecationWarning, match="CLOUD_CHUNK_HI"):
+        from fish_audio_suite_kit import CLOUD_CHUNK_HI
+    assert CLOUD_CHUNK_HI == kit.CHUNK_LENGTH_CLOUD_HI == 300
+
+
+def test_an_unknown_root_name_is_still_an_attribute_error() -> None:
+    with pytest.raises(AttributeError, match="no attribute 'NOT_A_KIT_NAME'"):
+        _ = getattr(kit, "NOT_A_KIT_NAME")  # noqa: B009
+
+
+class _TimeoutError(Exception):
+    pass
+
+
+_FUNCTION_ALIASES: list[tuple[str, str, tuple[Any, ...], dict[str, Any]]] = [
+    ("skip_empty_delta", "is_empty_delta", (" ",), {}),
+    ("known_tts_model", "normalize_tts_model", (" S2-Pro ",), {}),
+    ("same_utterance", "is_same_utterance", ("Hi there.", "hi there"), {}),
+    ("hold_tts", "tts_hold_at", ("Hello [ha",), {"line_start": True, "sentence_start": True}),
+    ("number_or", "parse_number", ("16000.0", 0, int), {}),
+    ("clamp_num", "clamp_number", ("9", 0, 5, 1, int), {}),
+    ("retry_after_seconds", "retry_after_s", ({"Retry-After": "7"},), {}),
+    ("fish_transport_error", "describe_transport_error", (None,), {"timed_out": True}),
+    ("fish_request_error", "describe_request_error", (_TimeoutError(), _TimeoutError), {}),
+]
+
+
+@pytest.mark.parametrize(("old", "new", "args", "kwargs"), _FUNCTION_ALIASES)
+def test_a_renamed_function_still_works_and_warns(
+    old: str, new: str, args: tuple[Any, ...], kwargs: dict[str, Any]
+) -> None:
+    old_func: Callable[..., object] = getattr(kit, old)
+    new_func: Callable[..., object] = getattr(kit, new)
+    with pytest.warns(
+        DeprecationWarning, match=rf"{old} is deprecated since 0\.2\.0; use {new}\."
+    ) as caught:
+        result = old_func(*args, **kwargs)
+    assert result == new_func(*args, **kwargs)
+    assert caught[0].filename == __file__
+    assert inspect.signature(old_func) == inspect.signature(new_func)
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("unreachable", "for_unreachable"),
+        ("timed_out", "for_timeout"),
+        ("non_json", "for_non_json"),
+        ("non_object", "for_non_object"),
+    ],
+)
+def test_a_renamed_error_factory_still_works_and_warns(old: str, new: str) -> None:
+    old_factory: Callable[[], FishHttpError] = getattr(FishHttpError, old)
+    built_new: FishHttpError = getattr(FishHttpError, new)()
+    with pytest.warns(
+        DeprecationWarning, match=rf"{old} is deprecated since 0\.2\.0; use FishHttpError\.{new}"
+    ):
+        built = old_factory()
+    assert type(built) is type(built_new)
+    assert (built.status, built.message) == (built_new.status, built_new.message)
