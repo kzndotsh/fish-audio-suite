@@ -304,7 +304,7 @@ async def speech(request: Request) -> Response:
     if settings.max_input_chars and len(raw_input) > settings.max_input_chars:
         return json_error(400, f"input is longer than {settings.max_input_chars} characters")
     controls = speech_controls(
-        body, defaults, settings.tts_aliases, default_format=settings.response_format
+        body, defaults, settings.tts_aliases, default_format=settings.tts_format
     )
     spoken, preview = _spoken_line(body, settings)
     if is_tts_junk(spoken, drop_narration=settings.tts_drop_narration):
@@ -439,7 +439,7 @@ async def models(request: Request) -> Response | dict[str, Any]:
     -------
     dict
         OpenAI ``{object: list, data: [...]}``. Native Fish ids, the TTS
-        aliases (``tts-1`` and any from ``FISH_TTS_ALIASES``), ``whisper-1``,
+        aliases (``tts-1`` and any from ``FISH_PROXY_TTS_ALIASES``), ``whisper-1``,
         and the ``fish-audio/`` prefixed native ids.
     """
     if (refused := _unauthorized(request)) is not None:

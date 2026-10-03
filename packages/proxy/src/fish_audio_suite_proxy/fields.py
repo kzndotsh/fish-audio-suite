@@ -325,7 +325,7 @@ def known_client_format(name: str, default: ClientFormat) -> ClientFormat:
     Parameters
     ----------
     name : str
-        Env value such as ``FISH_FORMAT``. Compared after strip and lowercase.
+        Env value such as ``FISH_TTS_FORMAT``. Compared after strip and lowercase.
     default : ClientFormat
         Returned when ``name`` is blank or not a supported format.
 

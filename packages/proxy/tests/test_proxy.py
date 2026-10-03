@@ -169,15 +169,16 @@ def test_mp3_bitrate_env_snaps(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_format_env_uses_the_request_alias(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("FISH_FORMAT", " AAC ")
+    monkeypatch.delenv("FISH_FORMAT", raising=False)
+    monkeypatch.setenv("FISH_TTS_FORMAT", " AAC ")
     assert runtime_defaults().audio_format == "mp3"
-    assert load_settings().response_format == "mp3"
-    monkeypatch.setenv("FISH_FORMAT", "PCM16")
+    assert load_settings().tts_format == "mp3"
+    monkeypatch.setenv("FISH_TTS_FORMAT", "PCM16")
     # Fish only knows "pcm". The client-facing default stays "pcm16" (24 kHz).
     assert runtime_defaults().audio_format == "pcm"
     settings = load_settings()
-    assert settings.response_format == "pcm16"
-    controls = speech_controls({}, settings.defaults, default_format=settings.response_format)
+    assert settings.tts_format == "pcm16"
+    controls = speech_controls({}, settings.defaults, default_format=settings.tts_format)
     assert controls.fmt == "pcm16"
     monkeypatch.setenv("FISH_ASR_MODEL", " fish-audio/Transcribe-1 ")
     assert runtime_defaults().asr_model == "transcribe-1"

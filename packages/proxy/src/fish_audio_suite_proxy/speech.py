@@ -438,7 +438,7 @@ def speech_controls(
         TTS model alias table. ``None`` maps the OpenAI names to the default.
     default_format : ClientFormat or None, optional
         Format used when the request names none. ``None`` uses
-        ``defaults.audio_format``. The proxy passes ``FISH_FORMAT`` here, which
+        ``defaults.audio_format``. The proxy passes ``FISH_TTS_FORMAT`` here, which
         can be ``pcm16``, a name Fish itself does not know.
 
     Returns
