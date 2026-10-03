@@ -106,7 +106,7 @@ class VoiceCliConfig:
     playback: str
     system_prompt: str
     device: str | None
-    asr_model: str = "transcribe-1"
+    asr_model: str = "transcribe-1-pro"
     llm: LlmSettings = field(default_factory=LlmSettings)
     listen: ListenTune = field(default_factory=ListenTune)
     barge: BargeTune = field(default_factory=BargeTune)

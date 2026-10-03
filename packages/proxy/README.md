@@ -121,7 +121,7 @@ Renamed variables: the old name still works when the new one is unset or blank, 
 | `FISH_BASE` | `https://api.fish.audio` | Cloud or self-hosted |
 | `FISH_TTS_MODEL` | `s2.1-pro` | |
 | `FISH_PROXY_TTS_ALIASES` | none | `alias=model,alias=model` on top of the OpenAI names |
-| `FISH_ASR_MODEL` | `transcribe-1` | Or `transcribe-1-pro` |
+| `FISH_ASR_MODEL` | `transcribe-1-pro` | Or `transcribe-1`. Both cost the same; pro adds speaker turns, emotion and event cues, and takes recordings up to 60 minutes |
 | `FISH_ASR_LANGUAGE` | omitted | |
 | `FISH_LATENCY` | `normal` | `low`, `balanced`, `normal` |
 | `FISH_SPEED` | `1` | Multiplies a request's `speed` |

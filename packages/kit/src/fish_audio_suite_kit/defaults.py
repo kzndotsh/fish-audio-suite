@@ -104,7 +104,7 @@ class SuiteDefaults:
     """
 
     tts_model: str = "s2.1-pro"
-    asr_model: str = "transcribe-1"
+    asr_model: str = "transcribe-1-pro"
     asr_language: str = ""
     latency: FishLatency = "normal"
     chunk_length: int = 200

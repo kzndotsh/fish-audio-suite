@@ -152,7 +152,7 @@ The ones you touch first. Every package lists its full table.
 | `FISH_API_KEY` | proxy, voice | none |
 | `FISH_VOICE_ID` | voice | none, bring your own |
 | `FISH_TTS_MODEL` | proxy, voice | `s2.1-pro` |
-| `FISH_ASR_MODEL` | proxy, voice | `transcribe-1` |
+| `FISH_ASR_MODEL` | proxy, voice | `transcribe-1-pro` |
 | `FISH_LATENCY` | proxy, voice | `normal` |
 | `FISH_BASE` | proxy, voice | `https://api.fish.audio` |
 | `FISH_PROXY_HOST` / `FISH_PROXY_PORT` | proxy | `127.0.0.1` / `8849` |

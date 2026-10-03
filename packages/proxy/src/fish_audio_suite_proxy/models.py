@@ -138,7 +138,7 @@ def resolve_asr_model(model: object, default: str) -> str:
     str
         A native id when the client or the default names one. Otherwise the
         default when it is a single header token, so an unknown alias still
-        reaches Fish as that id. A blank or illegal default is ``transcribe-1``.
+        reaches Fish as that id. A blank or illegal default is ``transcribe-1-pro``.
     """
     chosen = _header_model(_native_model_id(_model_name(model, default))).lower()
     if chosen in _ASR_NATIVE:
@@ -149,7 +149,7 @@ def resolve_asr_model(model: object, default: str) -> str:
     custom = _header_model(default)
     if custom:
         return custom
-    return "transcribe-1"
+    return "transcribe-1-pro"
 
 
 def catalog_ids(aliases: Mapping[str, str] | None = None) -> list[str]:

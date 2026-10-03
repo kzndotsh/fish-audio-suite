@@ -157,8 +157,9 @@ def test_asr_model_whisper_remap() -> None:
     assert resolve_asr_model("whisper-1", " Transcribe-1 ") == "transcribe-1"
     assert resolve_asr_model(None, "fish-audio/Transcribe-1-Pro") == "transcribe-1-pro"
     assert resolve_asr_model("gpt-4o-transcribe", "CustomAsr") == "CustomAsr"
-    assert resolve_asr_model("gpt-4o-transcribe", "transcribe-1\nbad") == "transcribe-1"
-    assert resolve_asr_model("whisper-1", "custom\nid") == "transcribe-1"
+    assert resolve_asr_model("gpt-4o-transcribe", "transcribe-1\nbad") == "transcribe-1-pro"
+    assert resolve_asr_model("whisper-1", "custom\nid") == "transcribe-1-pro"
+    assert resolve_asr_model("whisper-1", "   ") == "transcribe-1-pro"
 
 
 def test_mp3_bitrate_env_snaps(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -182,6 +183,8 @@ def test_format_env_uses_the_request_alias(monkeypatch: pytest.MonkeyPatch) -> N
     assert controls.fmt == "pcm16"
     monkeypatch.setenv("FISH_ASR_MODEL", " fish-audio/Transcribe-1 ")
     assert runtime_defaults().asr_model == "transcribe-1"
+    monkeypatch.delenv("FISH_ASR_MODEL")
+    assert runtime_defaults().asr_model == "transcribe-1-pro"
 
 
 def test_tts_and_asr_model_aliases() -> None:

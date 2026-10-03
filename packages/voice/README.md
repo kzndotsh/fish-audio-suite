@@ -177,7 +177,7 @@ Speech:
 | `FISH_MIN_CHUNK_LENGTH` | `50` |
 | `FISH_SAMPLE_RATE` | `44100` |
 | `FISH_ASR_LANGUAGE` | omitted |
-| `FISH_ASR_MODEL` | `transcribe-1` (or `transcribe-1-pro`) |
+| `FISH_ASR_MODEL` | `transcribe-1-pro` (or `transcribe-1`) |
 | `FISH_VOICE_PLAYBACK` | `sounddevice` |
 | `FISH_VOICE_DEVICE` | host default. A PortAudio index or name |
 

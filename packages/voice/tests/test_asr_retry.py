@@ -386,3 +386,41 @@ def test_asr_sends_the_chosen_model_and_strips_cues(monkeypatch: pytest.MonkeyPa
     )
     assert seen["headers"]["model"] == "transcribe-1-pro"
     assert heard == "open the door please"
+
+
+_PRO_BODY: dict[str, Any] = {
+    "text": "<|speaker:0|> 你好。 <|speaker:1|> [高兴]很开心认识你。 <|speaker:0|> 我也是。",
+    "duration": 6.4,
+    "segments": [
+        {"text": "你", "start": 0.32, "end": 0.56},
+        {"text": "好", "start": 0.56, "end": 0.88},
+    ],
+    "speaker_turns": [
+        {"speaker": "speaker:0", "text": "你好。", "start": 0.32, "end": 0.88},
+        {"speaker": "speaker:1", "text": "[高兴]很开心认识你。", "start": 1.84, "end": 3.2},
+        {"speaker": "speaker:0", "text": "我也是。", "start": 4.56, "end": 5.36},
+    ],
+    "language_code": "zh",
+    "language": "Chinese",
+    "request_id": "0b6f4c1e",
+}
+
+
+def test_default_model_is_pro_and_its_markers_never_reach_the_llm(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
+
+    class _RecordingClient(_FakeAsrClient):
+        async def post(self, *_args: object, **kwargs: object) -> _FakeAsrResponse:
+            seen.update(kwargs)
+            return await super().post(*_args, **kwargs)
+
+    client = _RecordingClient([_FakeAsrResponse(200, payload=_PRO_BODY)])
+    monkeypatch.setattr("fish_audio_suite_voice.asr.httpx.AsyncClient", lambda **_kwargs: client)
+    heard = asyncio.run(fish_asr(b"wav", "key", base="https://api.fish.audio"))
+    assert seen["headers"]["model"] == "transcribe-1-pro"
+    # What fish_asr returns is the user line the LLM gets: no speaker marker, no cue.
+    assert heard == "你好。 很开心认识你。 我也是。"
+    assert "<|" not in heard
+    assert "[" not in heard

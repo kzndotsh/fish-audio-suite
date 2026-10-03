@@ -293,3 +293,8 @@ def test_env_numbers_still_accept_ordinary_decimals(
     monkeypatch.setenv("FISH_TEST_NUM", value)
     assert env_int("FISH_TEST_NUM", 7) == as_int
     assert env_float("FISH_TEST_NUM", 7.5) == as_float
+
+
+def test_the_default_asr_model_is_transcribe_1_pro() -> None:
+    # Fish recommends pro and bills both models the same.
+    assert SuiteDefaults().asr_model == "transcribe-1-pro"

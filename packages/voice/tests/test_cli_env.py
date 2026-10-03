@@ -442,11 +442,11 @@ def test_roleplay_features_are_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_asr_model_env_accepts_only_native_ids(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("FISH_ASR_MODEL", raising=False)
-    assert load_config().asr_model == "transcribe-1"
-    monkeypatch.setenv("FISH_ASR_MODEL", " Transcribe-1-Pro ")
     assert load_config().asr_model == "transcribe-1-pro"
-    monkeypatch.setenv("FISH_ASR_MODEL", "whisper-1")
+    monkeypatch.setenv("FISH_ASR_MODEL", " Transcribe-1 ")
     assert load_config().asr_model == "transcribe-1"
+    monkeypatch.setenv("FISH_ASR_MODEL", "whisper-1")
+    assert load_config().asr_model == "transcribe-1-pro"
 
 
 class _SmokeTts:
