@@ -12,6 +12,7 @@ from proxy_helpers import (
     WAV_UPLOAD,
     AsrJson,
     FakeUpstream,
+    asr_body,
     capture_upstream,
     post_speech,
     run_fish_send,
@@ -679,7 +680,7 @@ def test_verbose_language_is_the_lowercase_name(
         "verbose_json",
         "hi",
         [CaptionCue(0.0, 1.0, "hi")],
-        {"text": "hi", **fish},
+        asr_body({"text": "hi", **fish}),
         language=hint,
         granularities=[],
     )
