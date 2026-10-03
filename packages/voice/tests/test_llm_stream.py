@@ -871,8 +871,52 @@ def test_429_over_cap_returns_to_listening(monkeypatch: pytest.MonkeyPatch) -> N
     assert calls["n"] == 1
 
 
-def test_429_without_retry_after_does_not_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_429_without_retry_after_retries_once_after_a_short_pause(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A shared provider pool (one OpenRouter host) sends a bare 429 that clears fast.
     calls, events = _events_once_429(None, ["back"])
+    monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", events)
+    waits: list[float] = []
+
+    async def no_sleep(_cancel: object, seconds: float) -> bool:
+        waits.append(seconds)
+        return False
+
+    monkeypatch.setattr("fish_audio_suite_voice.llm._pause_for_retry", no_sleep)
+
+    async def collect() -> list[str]:
+        return [
+            tok
+            async for tok in llm_token_stream(
+                [{"role": "user", "content": "hi"}],
+                base="https://api.example.com/v1",
+                key="sk-test",
+                model="org/model",
+            )
+        ]
+
+    assert asyncio.run(collect()) == ["back"]
+    assert calls["n"] == 2
+    assert waits == [1.0]
+
+
+def test_a_quota_429_is_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = {"n": 0}
+
+    def events(call: Any) -> Any:
+        async def gen() -> Any:
+            calls["n"] += 1
+            call.stats.aborted = True
+            call.stats.http_status = 429
+            call.stats.retry_after_s = None
+            call.stats.quota_exhausted = True
+            for _ in ():
+                yield None
+
+        return gen()
+
+    monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", events)
     monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", events)
 
     async def collect() -> list[str]:
@@ -1037,3 +1081,20 @@ def test_a_retry_wait_in_the_error_body_is_read_the_way_a_header_is() -> None:
     assert _retry_after_seconds(None, body("soon")) is None
     headers = httpx.Headers({"Retry-After": "12"})
     assert _retry_after_seconds(headers, body(8)) == 12.0
+
+
+def test_abort_http_marks_a_quota_429() -> None:
+    quota = _ChatStats()
+    _abort_http(
+        quota,
+        429,
+        "m",
+        '{"error":{"code":"insufficient_quota","message":"free_limit_reached"}}',
+        None,
+    )
+    assert quota.quota_exhausted
+    limited = _ChatStats()
+    _abort_http(
+        limited, 429, "m", '{"error":{"message":"temporarily rate-limited upstream"}}', None
+    )
+    assert not limited.quota_exhausted

@@ -40,6 +40,9 @@ __all__ = [
 
 # A longer Retry-After than this ends the reply instead of stalling the turn.
 _LLM_429_CAP_S: Final = 15.0
+# A rate-limit 429 with no Retry-After is retried once after this pause. A shared
+# provider pool (one host behind an OpenRouter model) often clears in a second.
+_LLM_429_DEFAULT_S: Final = 1.0
 # A cue after a finished sentence is not a cut-off. "Hello. [break]" is done.
 _TRAIL_CUE_RE: Final = re.compile(r"(?:\s*\[[^\[\]]{0,80}\])+\s*$")
 # A follow-up with no sentence end past this is a runaway, not the missing words.
@@ -213,6 +216,7 @@ class _ChatStats:
     aborted: bool = False
     http_status: int | None = None
     retry_after_s: float | None = None
+    quota_exhausted: bool = False
 
 
 class _HeldStats:
@@ -705,8 +709,10 @@ async def _stream_generation(
 
 def _retry_wait(stats: _ChatStats, cancel: asyncio.Event | None) -> float | None:
     wait = stats.retry_after_s
-    if stats.http_status != 429 or stats.yielded or wait is None:
+    if stats.http_status != 429 or stats.yielded or stats.quota_exhausted:
         return None
+    if wait is None:
+        wait = _LLM_429_DEFAULT_S
     if not math.isfinite(wait) or wait < 0 or wait > _LLM_429_CAP_S:
         return None
     if cancel is not None and cancel.is_set():

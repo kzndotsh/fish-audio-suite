@@ -37,6 +37,7 @@ class _AbortStats(Protocol):
     aborted: bool
     http_status: int | None
     retry_after_s: float | None
+    quota_exhausted: bool
 
 
 @dataclass(slots=True)
@@ -206,6 +207,9 @@ def _abort_http(
     stats.http_status = status if isinstance(status, int) else None
     if stats.http_status == 429:
         stats.retry_after_s = _retry_after_seconds(headers, body)
+        # A spent quota (Experiential's insufficient_quota, a daily free limit) is
+        # also a 429, but waiting a second does not refill it.
+        stats.quota_exhausted = "quota" in body.lower()
 
 
 def _retry_after_seconds(headers: httpx.Headers | None, body: str) -> float | None:
