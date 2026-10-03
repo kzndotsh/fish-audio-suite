@@ -472,3 +472,118 @@ def test_the_language_hint_sent_to_fish_is_a_two_letter_code(
         )
     assert reply.status_code == 200
     assert captured["data"].get("language") == sent
+
+
+def _post_pro(
+    monkeypatch: pytest.MonkeyPatch, fields: dict[str, str], *, model: str = "transcribe-1-pro"
+) -> tuple[Any, dict[str, Any]]:
+    captured = capture_upstream(monkeypatch, AsrJson())
+    with TestClient(app) as client:
+        reply = client.post(
+            "/v1/audio/transcriptions", files=WAV_UPLOAD, data={"model": model, **fields}
+        )
+    return reply, captured
+
+
+def test_pro_fields_are_forwarded_to_transcribe_1_pro(monkeypatch: pytest.MonkeyPatch) -> None:
+    reply, captured = _post_pro(
+        monkeypatch,
+        {"diarize": " TRUE ", "min_speakers": "2", "max_speakers": "3", "tag_audio_events": "0"},
+    )
+    assert reply.status_code == 200
+    assert captured["headers"]["model"] == "transcribe-1-pro"
+    form = captured["data"]
+    assert form["diarize"] == "true"
+    assert (form["min_speakers"], form["max_speakers"]) == ("2", "3")
+    assert form["tag_audio_events"] == "false"
+    assert "num_speakers" not in form
+
+
+def test_pro_fields_are_not_sent_to_transcribe_1(monkeypatch: pytest.MonkeyPatch) -> None:
+    reply, captured = _post_pro(
+        monkeypatch, {"diarize": "auto", "num_speakers": "2"}, model="transcribe-1"
+    )
+    assert reply.status_code == 200
+    assert captured["headers"]["model"] == "transcribe-1"
+    assert not {"diarize", "num_speakers", "tag_audio_events"} & set(captured["data"])
+
+
+def test_pro_fields_in_a_json_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = capture_upstream(monkeypatch, AsrJson())
+    audio = base64.b64encode(b"RIFFxxxx").decode()
+    with TestClient(app) as client:
+        reply = client.post(
+            "/v1/audio/transcriptions",
+            json={
+                "model": "transcribe-1-pro",
+                "input_audio": {"data": audio, "format": "wav"},
+                "diarize": False,
+                "tag_audio_events": True,
+            },
+        )
+        assert reply.status_code == 200
+        assert captured["data"]["diarize"] == "false"
+        assert captured["data"]["tag_audio_events"] == "true"
+        counted = client.post(
+            "/v1/audio/transcriptions",
+            json={
+                "model": "transcribe-1-pro",
+                "input_audio": {"data": audio, "format": "wav"},
+                "num_speakers": 2,
+            },
+        )
+        assert counted.status_code == 200
+        assert captured["data"]["num_speakers"] == "2"
+        bad = client.post(
+            "/v1/audio/transcriptions",
+            json={"input_audio": {"data": audio, "format": "wav"}, "num_speakers": True},
+        )
+        assert bad.status_code == 400
+
+
+@pytest.mark.parametrize(
+    ("fields", "message"),
+    [
+        ({"diarize": "maybe"}, "diarize must be auto, true or false"),
+        ({"num_speakers": "0"}, "num_speakers must be a whole number of at least 1"),
+        ({"min_speakers": "-1"}, "min_speakers must be a whole number of at least 1"),
+        ({"max_speakers": "two"}, "max_speakers must be a whole number of at least 1"),
+        ({"num_speakers": "2.5"}, "num_speakers must be a whole number of at least 1"),
+        (
+            {"num_speakers": "2", "min_speakers": "1"},
+            "num_speakers cannot be combined with min_speakers or max_speakers",
+        ),
+        (
+            {"num_speakers": "2", "max_speakers": "3"},
+            "num_speakers cannot be combined with min_speakers or max_speakers",
+        ),
+        (
+            {"min_speakers": "3", "max_speakers": "2"},
+            "min_speakers cannot be more than max_speakers",
+        ),
+        (
+            {"diarize": "false", "num_speakers": "2"},
+            "speaker counts cannot be sent with diarize=false",
+        ),
+        (
+            {"diarize": "false", "max_speakers": "2"},
+            "speaker counts cannot be sent with diarize=false",
+        ),
+        ({"tag_audio_events": "yes please"}, "tag_audio_events must be true or false"),
+    ],
+)
+def test_invalid_pro_fields_are_a_400(
+    monkeypatch: pytest.MonkeyPatch, fields: dict[str, str], message: str
+) -> None:
+    reply, captured = _post_pro(monkeypatch, fields)
+    assert reply.status_code == 400
+    error = reply.json()["error"]
+    assert error["message"] == message
+    assert error["type"] == "invalid_request_error"
+    assert not captured
+
+
+def test_blank_pro_fields_are_not_sent(monkeypatch: pytest.MonkeyPatch) -> None:
+    reply, captured = _post_pro(monkeypatch, {"diarize": " ", "num_speakers": ""})
+    assert reply.status_code == 200
+    assert not {"diarize", "num_speakers"} & set(captured["data"])

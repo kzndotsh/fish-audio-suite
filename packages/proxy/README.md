@@ -88,6 +88,17 @@ Errors use `{error: {code, message, type}}`. A Fish body is `type: provider_erro
 
 Beyond the OpenAI fields, a speech request may set `latency`, `chunk_length`, `min_chunk_length`, `format`, `temperature`, `top_p`, `repetition_penalty`, `max_new_tokens`, `normalize`, `normalize_loudness`, `volume`, `sample_rate`, `mp3_bitrate`, `opus_bitrate`, `quality_guard`, and `dialogue_only`. The older `fish_latency`, `fish_format`, `fish_chunk_length`, `fish_min_chunk_length`, and `fish_quality_guard` spellings still work and are deprecated. Use the plain names.
 
+A transcription request may also set the `transcribe-1-pro` fields, as form fields or JSON keys. They are sent to Fish only when the request resolves to `transcribe-1-pro` (the default model) and are dropped for `transcribe-1`, which does not take them. An invalid value is a 400.
+
+| Field | Values |
+| --- | --- |
+| `diarize` | `auto`, `true` or `false`. With `auto` or `true`, Fish labels speakers |
+| `num_speakers` | Exact speaker count, a whole number of at least 1. Not with `min_speakers` or `max_speakers` |
+| `min_speakers`, `max_speakers` | Speaker count range, each at least 1, `min_speakers` no more than `max_speakers` |
+| `tag_audio_events` | `true` or `false` (JSON booleans, or `1` / `0`). Fish adds cues such as `[laughter]` unless it is `false` |
+
+Speaker counts are hints, and none of them may be sent with `diarize=false`.
+
 ### Text options
 
 `dialogue_only` (or `FISH_TTS_DIALOGUE_ONLY`) keeps only the quoted speech from text that mixes dialogue with narration, such as fiction. It is off by default.

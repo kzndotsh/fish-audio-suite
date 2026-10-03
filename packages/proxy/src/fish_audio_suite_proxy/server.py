@@ -61,6 +61,7 @@ from fish_audio_suite_proxy.models import catalog_ids, resolve_asr_model
 from fish_audio_suite_proxy.settings import ProxySettings, load_settings
 from fish_audio_suite_proxy.speech import pack_tts, speech_controls
 from fish_audio_suite_proxy.transcribe import (
+    PRO_ASR_MODEL,
     asr_upload,
     caption_cues,
     read_asr_format,
@@ -382,7 +383,9 @@ async def transcriptions(request: Request) -> Response | dict[str, Any]:
 
     granularities = inbound.granularities
     fmt = read_asr_format(inbound.response_format or "json")
-    files, form, lang = asr_upload(inbound, defaults, fmt, granularities)
+    files, form, lang = asr_upload(inbound, defaults, fmt, granularities, model=asr_model)
+    if asr_model != PRO_ASR_MODEL and inbound.pro.form_fields():
+        log.info("asr pro-only fields not sent to model=%s", asr_model)
 
     asr_headers = traced_model_headers(asr_model, request.headers)
     r = await fish_send(
