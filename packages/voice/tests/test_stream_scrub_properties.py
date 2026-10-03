@@ -8,7 +8,7 @@ from itertools import pairwise
 from typing import Any
 
 from fishaudio import FlushEvent, TextEvent
-from hypothesis import HealthCheck, given, settings
+from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 
 from fish_audio_suite_kit import ends_sentence, skip_empty_delta
@@ -198,6 +198,7 @@ def test_a_long_first_sentence_without_a_stop_still_flushes_early() -> None:
 
 
 @_SETTINGS
+@example(tokens=["Dr. friendh", "ttp://a.b/c"], partial=18, mood=False)  # a lone "." piece
 @given(tokens=_token_streams(), partial=_partial, mood=_flags)
 def test_the_early_flush_never_cuts_a_sentence_short(
     tokens: list[str], partial: int, mood: bool
@@ -208,3 +209,14 @@ def test_the_early_flush_never_cuts_a_sentence_short(
         return  # no early flush: the reply ended before one was due
     before = "".join(e.text for e in events[: flushes[0]] if isinstance(e, TextEvent))
     assert ends_sentence(before) or len(before) >= 2 * partial
+
+
+def test_a_stop_split_from_its_abbreviation_is_not_a_sentence_end() -> None:
+    # "Mr" and "." arrive as separate pieces. The "." alone looks like a sentence
+    # end, but "Mr." is not one, so the early flush must wait for the real stop.
+    events = asyncio.run(
+        _events_of(["Hello Mr", ".", " Smith is here today friend. More text."], partial=8)
+    )
+    first_flush = events.index(("flush", ""))
+    spoken_before = "".join(text for kind, text in events[:first_flush] if kind == "text")
+    assert "Smith" in spoken_before

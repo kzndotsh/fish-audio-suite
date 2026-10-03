@@ -199,10 +199,11 @@ class _StreamScrubber:
         self._sent = 0
         self._flushed_early = False
         self._since_flush = 0
-        # Text sent since the last flush. The early flush waits for a sentence
-        # end, so Fish never gets half a sentence as a finished utterance, but
-        # not past this many characters, or a long run-on would hold the audio.
-        self._unflushed_chars = 0
+        # Everything sent before the early flush. The flush waits for a sentence
+        # end in this whole text, not in the last piece alone: a piece that is
+        # just "." after "Mr" would otherwise look like one. It gives up after
+        # this many characters, or a long run-on would hold the audio.
+        self._sent_text = ""
         self._early_flush_cap = _EARLY_FLUSH_WINDOWS * partial_chars
         # Text already sent on this line. An empty ready buffer is not a new
         # line, so a star after "Hello." must not be stripped as a bullet.
@@ -222,17 +223,15 @@ class _StreamScrubber:
         self._sent += 1
         yield event
         self._since_flush += 1
-        self._unflushed_chars += len(event.text)
-        if (
-            self._early_flush
-            and not self._flushed_early
-            and not self._cancel.is_set()
-            and (ends_sentence(event.text) or self._unflushed_chars >= self._early_flush_cap)
-        ):
-            self._flushed_early = True
-            self._since_flush = 0
-            self._unflushed_chars = 0
-            yield FlushEvent()
+        if self._early_flush and not self._flushed_early:
+            self._sent_text += event.text
+            if not self._cancel.is_set() and (
+                ends_sentence(self._sent_text) or len(self._sent_text) >= self._early_flush_cap
+            ):
+                self._flushed_early = True
+                self._since_flush = 0
+                self._sent_text = ""
+                yield FlushEvent()
 
     def feed(self, tok: str) -> Iterator[Any]:
         """Take one model token and yield the events it makes ready."""
