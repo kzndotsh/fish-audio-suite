@@ -12,12 +12,12 @@ sync:
 
 # Ruff check and the format check, as CI runs them.
 lint:
-    uv run ruff check packages
-    uv run ruff format --check packages
+    uv run ruff check packages .github/scripts
+    uv run ruff format --check packages .github/scripts
 
 # Rewrite the code in the project's format.
 fmt:
-    uv run ruff format packages
+    uv run ruff format packages .github/scripts
 
 # Docstrings that match their signatures. Ruff's D rules already run in `lint`.
 docstrings:
@@ -27,23 +27,27 @@ docstrings:
 types:
     uv run basedpyright
 
-# Tests without coverage. Extra arguments go to pytest, e.g. `just test -k barge`.
+# How fully typed each package's public API is, against the floors in .github/verifytypes-floors.json.
+types-public:
+    uv run python .github/scripts/verifytypes.py
+
+# Tests without coverage, plus the kit doctests. Extra arguments go to pytest, e.g. `just test -k barge`.
 test *args:
     uv run pytest {{ args }}
 
-# Tests with branch coverage and the CI floors. Keep the numbers in step with ci.yml.
+# Tests and kit doctests with branch coverage and the CI floors. Keep the numbers in step with .github/actions/gates.
 cov:
     uv run pytest --cov --cov-report=term-missing --cov-fail-under=89
     uv run coverage report --include="packages/kit/*" --fail-under=94 --skip-covered
     uv run coverage report --include="packages/proxy/*" --fail-under=94 --skip-covered
     uv run coverage report --include="packages/voice/*" --fail-under=85 --skip-covered
 
-# Every Python gate CI runs, in CI's order.
-check: lint docstrings types cov
+# Every Python gate CI runs, in CI's order (the steps of .github/actions/gates).
+check: lint docstrings types types-public cov
 
 # Lint the GitHub workflows. Set GH_TOKEN to include the online checks.
 workflows:
-    uvx zizmor==1.30.1 --no-progress .github/workflows
+    uvx zizmor==1.30.1 --no-progress .github
 
 # Check the locked dependencies for known vulnerabilities.
 audit:
