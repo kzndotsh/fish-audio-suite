@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Mapping
 from contextlib import AsyncExitStack
 from typing import Any, Final, cast
 
@@ -39,6 +40,26 @@ __all__ = [
 
 _ASR_TIMEOUT_S: Final = 60.0
 _ASR_CONNECT_S: Final = 10.0
+_REQUEST_ID_MAX: Final = 128
+
+
+def _request_id(headers: Mapping[str, str], body: object) -> str:
+    """Return Fish's request id from ``x-request-id`` or the body, or ``""``.
+
+    transcribe-1-pro sends it on success and on errors. Fish support asks for it.
+    """
+    from_body = body.get("request_id") if isinstance(body, dict) else None
+    for value in (headers.get("x-request-id"), from_body):
+        if isinstance(value, str) and (line := value.strip()):
+            return line.splitlines()[0][:_REQUEST_ID_MAX]
+    return ""
+
+
+def _json_or_none(text: str) -> object:
+    try:
+        return json.loads(text)
+    except ValueError:
+        return None
 
 
 async def _pause_or_raise(
@@ -83,9 +104,13 @@ async def _post_fish(
             continue
         if response.status_code >= 400:
             detail = parse_fish_error(response.status_code, response.text)
+            request_id = _request_id(response.headers, _json_or_none(response.text))
+            message = (
+                f"{detail.message} (request_id {request_id})" if request_id else detail.message
+            )
             last_error = FishHttpError.from_status(
                 detail.status,
-                detail.message,
+                message,
                 retry_after=retry_after_s(response.headers),
             )
             if last_error.retryable:
@@ -195,13 +220,14 @@ async def fish_asr(
     if isinstance(body, dict):
         meta = public_meta(body)
         debug(
-            "asr.done status={} audio={}s lang={} sent={} chars={} trace={}",
+            "asr.done status={} audio={}s lang={} sent={} chars={} trace={} request_id={}",
             response.status_code,
             meta.get("duration"),
             meta.get("language_code"),
             lang or "auto",
             meta.get("text_chars"),
             response.headers.get("x-fish-trace-id", "")[:12],
+            _request_id(response.headers, body) or "-",
         )
     parsed, raw_text = parse_asr_body(body)
     text = scrub_asr(raw_text.strip(), strip_cues=True)

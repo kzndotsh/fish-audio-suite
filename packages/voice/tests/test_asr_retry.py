@@ -450,3 +450,43 @@ def test_asr_language_is_reduced_to_a_two_letter_code(
     monkeypatch.setattr("fish_audio_suite_voice.asr.httpx.AsyncClient", lambda **_kwargs: client)
     asyncio.run(fish_asr(b"wav", "key", base="https://api.fish.audio", language=hint))
     assert seen["data"] == sent
+
+
+def test_asr_error_names_the_fish_request_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    from_header = _FakeAsrResponse(
+        400, text='{"message": "invalid audio", "code": "invalid_audio"}'
+    )
+    from_header.headers = {"x-request-id": "req-head"}
+    _install_asr(monkeypatch, [from_header])
+    with pytest.raises(FishHttpError) as caught:
+        asyncio.run(fish_asr(b"wav", "key", base="https://api.fish.audio"))
+    assert caught.value.message == "invalid audio (request_id req-head)"
+
+    from_body = _FakeAsrResponse(
+        400, text='{"status": 400, "message": "too long", "request_id": "req-body"}'
+    )
+    _install_asr(monkeypatch, [from_body])
+    with pytest.raises(FishHttpError) as caught:
+        asyncio.run(fish_asr(b"wav", "key", base="https://api.fish.audio"))
+    assert caught.value.message == "too long (request_id req-body)"
+
+    _install_asr(monkeypatch, [_FakeAsrResponse(400, text="plain failure")])
+    with pytest.raises(FishHttpError) as caught:
+        asyncio.run(fish_asr(b"wav", "key", base="https://api.fish.audio"))
+    assert caught.value.message == "plain failure"
+
+
+def test_asr_done_debug_line_names_the_fish_request_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    lines: list[str] = []
+
+    def record(message: str, *args: object) -> None:
+        lines.append(message.format(*args))
+
+    monkeypatch.setattr("fish_audio_suite_voice.asr.debug", record)
+    reply = _FakeAsrResponse(200, payload={"text": "hello there"})
+    reply.headers = {"x-request-id": "req-ok"}
+    _install_asr(monkeypatch, [reply])
+    assert asyncio.run(fish_asr(b"wav", "key", base="https://api.fish.audio")) == "hello there"
+    assert lines
+    assert lines[0].startswith("asr.done status=200")
+    assert lines[0].endswith("request_id=req-ok")
