@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse
 
 from fish_audio_suite_kit import (
     FISH_RETRY_ATTEMPTS,
+    FishErrorBody,
     FishHttpError,
     fish_backoff_s,
     parse_fish_error,
@@ -24,6 +25,7 @@ from fish_audio_suite_proxy.errors import json_error, json_from_error_body, json
 __all__ = ["FishFiles", "FishHttp", "RetryPolicy", "fish_send"]
 
 log: Final[logging.Logger] = logging.getLogger("fish-audio-suite-proxy")
+_BODY_UNREADABLE: Final = "Fish answered with status {code} but the error body could not be read"
 
 # Only a failure before the request reached Fish is safe to repeat. A read
 # timeout may mean Fish already made, and billed, the audio.
@@ -118,16 +120,18 @@ async def _closed_error(upstream: httpx.Response) -> tuple[JSONResponse, FishHtt
     try:
         body = await upstream.aread()
     except httpx.RequestError as exc:
-        err = _transport_error(exc)
-        # The client sees the transport failure, but the HTTP status that Fish
-        # already sent still decides whether to retry. A 401 whose body was cut
-        # off must not be sent five times.
+        # Fish already sent a status, and it keeps meaning what it meant: a 401
+        # is still a key problem, a 429 still asks the client to back off, and
+        # neither is retried or reported as a gateway fault. Only the body is
+        # lost, so the message says that and the exception text stays in the log.
+        code = upstream.status_code
+        log.warning("fish error body unreadable status=%s: %s", code, exc)
         failure = FishHttpError.from_status(
-            upstream.status_code,
-            err.message,
+            code,
+            _BODY_UNREADABLE.format(code=code),
             retry_after=retry_after_seconds(upstream.headers),
         )
-        return json_from_fish_error(err), failure
+        return json_from_error_body(FishErrorBody(code, failure.message)), failure
     finally:
         await upstream.aclose()
     detail = parse_fish_error(upstream.status_code, body)

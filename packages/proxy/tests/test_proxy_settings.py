@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock
 import httpx
 import ormsgpack
 import pytest
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 from proxy_helpers import (
     AsrJson,
@@ -548,61 +549,45 @@ def test_startup_does_not_warn_for_https_or_loopback(
     assert not [r for r in caplog.records if "cleartext" in r.getMessage()]
 
 
-def test_a_4xx_whose_body_cannot_be_read_is_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
+def _cut_off_response(status: int) -> tuple[httpx.AsyncClient, list[int]]:
     class CutOff(httpx.AsyncByteStream):
         async def __aiter__(self) -> AsyncIterator[bytes]:
-            raise httpx.ReadError("connection dropped mid-body")
+            raise httpx.ReadError("connection dropped mid-body on 10.0.0.5")
             yield b""  # pragma: no cover
 
     calls: list[int] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls.append(1)
-        return httpx.Response(401, stream=CutOff())
+        return httpx.Response(status, headers={"retry-after": "2"}, stream=CutOff())
 
-    sleeps = AsyncMock()
-    monkeypatch.setattr("fish_audio_suite_proxy.upstream.asyncio.sleep", sleeps)
-
-    async def run() -> int:
-        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-            out = await fish_send(
-                client,
-                stream=True,
-                method="POST",
-                url="https://fish.test/v1/tts",
-                policy=RetryPolicy(attempts=5),
-            )
-            return int(out.status_code)
-
-    status = asyncio.run(run())
-    assert status == 502
-    assert len(calls) == 1
-    assert sleeps.await_count == 0
+    return httpx.AsyncClient(transport=httpx.MockTransport(handler)), calls
 
 
-def test_a_5xx_whose_body_cannot_be_read_is_still_retried(monkeypatch: pytest.MonkeyPatch) -> None:
-    class CutOff(httpx.AsyncByteStream):
-        async def __aiter__(self) -> AsyncIterator[bytes]:
-            raise httpx.ReadError("connection dropped mid-body")
-            yield b""  # pragma: no cover
-
-    calls: list[int] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        calls.append(1)
-        return httpx.Response(503, stream=CutOff())
-
+@pytest.mark.parametrize(
+    ("status", "retried"), [(401, False), (400, False), (429, True), (503, True)]
+)
+def test_an_unreadable_error_body_keeps_the_status_fish_sent(
+    monkeypatch: pytest.MonkeyPatch, status: int, retried: bool
+) -> None:
+    client, calls = _cut_off_response(status)
     monkeypatch.setattr("fish_audio_suite_proxy.upstream.asyncio.sleep", AsyncMock())
 
-    async def run() -> None:
-        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-            await fish_send(
+    async def run() -> tuple[int, bytes]:
+        async with client:
+            out = await fish_send(
                 client,
                 stream=True,
                 method="POST",
                 url="https://fish.test/v1/tts",
                 policy=RetryPolicy(attempts=3),
             )
+            assert isinstance(out, JSONResponse)
+            return out.status_code, bytes(out.body)
 
-    asyncio.run(run())
-    assert len(calls) == 3
+    code, body = asyncio.run(run())
+    assert code == status
+    assert len(calls) == (3 if retried else 1)
+    assert b"error body could not be read" in body
+    assert b"10.0.0.5" not in body
+    assert b"connection dropped" not in body

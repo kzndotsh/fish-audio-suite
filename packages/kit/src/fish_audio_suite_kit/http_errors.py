@@ -553,8 +553,8 @@ def fish_transport_error(exc: BaseException | None, *, timed_out: bool) -> tuple
     Returns
     -------
     tuple of int and str
-        ``(504, "Fish request timed out")`` on timeout, otherwise the fixed
-        fixed pair (502, "Fish upstream unreachable").
+        ``(504, "Fish request timed out")`` on timeout, otherwise the pair
+        ``(502, "Fish upstream unreachable")``.
     """
     del exc
     if timed_out:
