@@ -367,7 +367,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28" },
     { name = "ormsgpack", specifier = ">=1.5" },
     { name = "python-multipart", specifier = ">=0.0.18" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.54.0" },
 ]
 
 [[package]]
@@ -406,7 +406,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "numpy", specifier = ">=2.0" },
-    { name = "openrouter", marker = "extra == 'cli'", specifier = ">=1.2" },
+    { name = "openrouter", marker = "extra == 'cli'", specifier = ">=1.2.31" },
     { name = "pywebrtc-audio", marker = "extra == 'aec'", specifier = ">=0.2" },
     { name = "pywebrtc-audio", marker = "extra == 'cli'", specifier = ">=0.2" },
     { name = "sounddevice", marker = "extra == 'cli'", specifier = ">=0.5" },
@@ -711,7 +711,7 @@ wheels = [
 
 [[package]]
 name = "openrouter"
-version = "1.2.10"
+version = "1.2.31"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpcore" },
@@ -719,9 +719,9 @@ dependencies = [
     { name = "jsonpath-python" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/64/89/ec90b7df3230a4a9bce76d08e0856fadf62149937b5fab66d8a21ba42c7b/openrouter-1.2.10.tar.gz", hash = "sha256:9178a00babdf097cd6c34d06974ef5538277e8ef53dedd6c0bccc25bcc4af634", size = 500010, upload-time = "2026-09-21T03:27:40.31Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5e/ad/afea7f49fb35bb2711d57748330fce213a0d5d83aeff0abf63404d5526b5/openrouter-1.2.31.tar.gz", hash = "sha256:47524e1ed42559bf19750e6065a066dd38144fb300d41087db632a5849a2ee7e", size = 540445, upload-time = "2026-09-26T00:04:16.978Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/f9/e8/48df1fc9527c24238acaf543a17172e251603181e14b3b935fac3857cb19/openrouter-1.2.10-py3-none-any.whl", hash = "sha256:efd56e86ebab9b10328f3cee6cd6c69216ca3c9ed328c0df5f2f6051ba8b45b9", size = 1075458, upload-time = "2026-09-21T03:27:39.009Z" },
+    { url = "https://files.pythonhosted.org/packages/e2/1f/54e59866b1270d8c50fc624adab29b83e653af5f29c05999ea9c118b229f/openrouter-1.2.31-py3-none-any.whl", hash = "sha256:532c94236780454664b20d7efa65447a5ce5ae0233f5418962135227b1ad0a80", size = 1169253, upload-time = "2026-09-26T00:04:15.531Z" },
 ]
 
 [[package]]
@@ -1146,15 +1146,15 @@ wheels = [
 
 [[package]]
 name = "uvicorn"
-version = "0.53.0"
+version = "0.54.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
     { name = "h11" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/5d/ad/04bbb797c84fc1f26cb171f7394716f4865ffb8d8c5e1eef42565c2dfa6b/uvicorn-0.53.0.tar.gz", hash = "sha256:a9356f0cb89b3b8621529c5d5eebd69bfe154f4c3f68b4cf2de47e45fa855c2e", size = 110881, upload-time = "2026-09-14T07:44:23.815Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/da/34/30e9280707135d2cfc589dfff3cb796bd07a3aeb1a3e415ba09dd89d7bb4/uvicorn-0.54.0.tar.gz", hash = "sha256:a2e33cbfaa0306f8e6b0c13e0cb89d7d7a2da3e62b90c66e18c33d9807b28620", size = 112283, upload-time = "2026-09-25T06:52:37.601Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/76/18/0eea75741ee812e9f598b687619ce2454f6c3a1c5cd21ea990ec6bd26f45/uvicorn-0.53.0-py3-none-any.whl", hash = "sha256:e8dca71ec86dce5f04e333f0d56cdedf942446e6643b9cea1af0d6d3a02cb03e", size = 87081, upload-time = "2026-09-14T07:44:22.179Z" },
+    { url = "https://files.pythonhosted.org/packages/38/0c/b54a4fdd7f90a3af8b02ebc9ce6712c2c208b7926a2f7bad95c33ebbe943/uvicorn-0.54.0-py3-none-any.whl", hash = "sha256:505bdb0f318731d45f1f712071fc781a8981f6847a31c902c9f5e652d4f67faf", size = 87427, upload-time = "2026-09-25T06:52:35.829Z" },
 ]
 
 [package.optional-dependencies]
