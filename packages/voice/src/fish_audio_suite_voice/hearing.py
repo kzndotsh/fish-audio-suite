@@ -1,0 +1,174 @@
+"""Listen for one utterance and turn it into a line of text through Fish ASR."""
+
+from __future__ import annotations
+
+import asyncio
+import time
+from dataclasses import dataclass
+from typing import Literal
+
+import httpx
+
+from fish_audio_suite_kit import (
+    FishAuthError,
+    FishHttpError,
+    elapsed_ms,
+    is_asr_hallucination,
+    is_backchannel,
+    is_quit_utterance,
+    make_traceparent,
+    same_utterance,
+    trace_id_of,
+)
+from fish_audio_suite_voice.asr import fish_asr
+from fish_audio_suite_voice.debug import (
+    clear_turn,
+    console_print,
+    conversation,
+    debug,
+    env_debug,
+    mark_turn,
+    trace,
+    warn,
+)
+from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexState
+from fish_audio_suite_voice.listen import record_utterance
+from fish_audio_suite_voice.playback import PortAudioMissingError
+
+__all__ = [
+    "HeardLine",
+    "accept_asr",
+    "hear_line",
+    "recognize",
+]
+
+
+def _skip_asr(reason: str, text: str) -> Literal["skip"]:
+    debug("asr.skip {} ({} chars)", reason, len(text.strip()))
+    return "skip"
+
+
+def accept_asr(
+    text: str,
+    last_user: str,
+    *,
+    stale: bool = True,
+) -> Literal["skip", "quit", "ok"]:
+    """Decide whether recognized text is skipped, a quit word, or a line to answer."""
+    if is_backchannel(text):
+        return _skip_asr("backchannel", text)
+    if is_asr_hallucination(text):
+        return _skip_asr("hallucination", text)
+    if is_quit_utterance(text):
+        return "quit"
+    # Only a clip that ended almost as the mic opened can be a stale copy. A
+    # later repeat is the user saying it again on purpose.
+    if stale and same_utterance(text, last_user):
+        return "skip"
+    return "ok"
+
+
+@dataclass(frozen=True, slots=True)
+class HeardLine:
+    """What one listen step produced, and what the loop should do next."""
+
+    kind: Literal["bye", "again", "fatal", "line"]
+    text: str = ""
+    asr_ms: float = 0.0
+    started: float = 0.0
+    trace_id: str | None = None
+    code: int = 0
+
+
+async def recognize(
+    loop: DuplexState,
+    wav: bytes,
+    last_user: str,
+    *,
+    stale: bool = True,
+) -> HeardLine:
+    """Send one utterance to Fish ASR and classify the text it returns."""
+    c = loop.config
+    started = time.perf_counter()
+    asr_parent = make_traceparent()
+    try:
+        text = await fish_asr(
+            wav,
+            c.fish_api_key,
+            base=c.fish_base,
+            language=c.fish_asr_language,
+            model=c.asr_model,
+            extra_headers={"traceparent": asr_parent},
+            cancel=loop.session.stop,
+            client=loop.asr_http,
+        )
+    except FishHttpError as e:
+        if loop.session.stop.is_set():
+            return HeardLine("bye")
+        warn(f"[asr] {e.status} {e.message}")
+        if isinstance(e, FishAuthError):
+            return HeardLine("fatal", code=EXIT_FATAL)
+        return HeardLine("again")
+    except (httpx.HTTPError, OSError) as e:
+        # A network failure is worth another try on the next utterance. Any
+        # other error is a bug and propagates instead of looping silently.
+        if loop.session.stop.is_set():
+            return HeardLine("bye")
+        warn(f"[asr] {e}")
+        return HeardLine("again")
+    if loop.session.stop.is_set():
+        return HeardLine("bye")
+    asr_ms = elapsed_ms(started)
+    decision = accept_asr(text, last_user, stale=stale)
+    if decision == "quit":
+        return HeardLine("bye")
+    if decision == "skip":
+        return HeardLine("again")
+    conversation("you", text)
+    return HeardLine(
+        "line",
+        text=text,
+        asr_ms=asr_ms,
+        started=started,
+        trace_id=trace_id_of(asr_parent),
+    )
+
+
+async def hear_line(loop: DuplexState, last_user: str) -> HeardLine:
+    """Open the mic, record one utterance, and return what was heard."""
+    if env_debug():
+        debug("listen.waiting for you")
+    else:
+        console_print("listening…")
+    clear_turn()
+    trace("listen.waiting device={}", loop.device)
+    try:
+        prefix = loop.barge_prefix
+        loop.barge_prefix = b""
+        opened = time.monotonic()
+        wav = await asyncio.to_thread(
+            record_utterance,
+            loop.device,
+            loop.session.stop,
+            prefix=prefix,
+            tune=loop.config.listen,
+            aec=loop.session.aec,
+        )
+    except PortAudioMissingError as e:
+        warn(str(e))
+        return HeardLine("fatal", code=EXIT_FATAL)
+    if loop.session.stop.is_set():
+        return HeardLine("bye")
+    if not wav:
+        debug("listen.dropped (too short or none)")
+        return HeardLine("again")
+    mark_turn()
+    # A barge-in clip carries fresh speech, so it is never a stale copy.
+    window = loop.config.repeat_window_s
+    stale = not prefix and time.monotonic() - opened < window
+    heard = await recognize(loop, wav, last_user, stale=stale)
+    # Quit during the Fish request used to come back as a normal line, so
+    # the LLM still answered after Ctrl+C.
+    if loop.session.stop.is_set():
+        return HeardLine("bye")
+    return heard
