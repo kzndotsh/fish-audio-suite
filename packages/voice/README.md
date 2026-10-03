@@ -114,8 +114,13 @@ follows the host. What to know about Experiential, from its published contract:
   with no `Retry-After`. It is printed with its code and not retried.
 - **Debug log.** With `--debug` the response line shows the request id (`x-request-id`), the route
   (`x-gateway-provider`) and the zero-data-retention posture (`x-gateway-zdr`), which support asks for.
-- **Privacy.** Per Experiential's contract, a free organization has prompt capture on by default and
-  a Pro organization has it off. Your spoken conversation is the prompt, so check that setting.
+- **Privacy.** Platform-funded calls are captured: Experiential stores both the request and the
+  model's reply. A free organization cannot turn that off, and only a Pro organization can. Your
+  spoken conversation is the prompt, so do not use a free organization for anything private.
+- **Effort values differ by route.** `glm-5.3-flash-abliterated` takes only `low`, `high` and `max`
+  and answers 400 to `none`. The value is passed through unchanged.
+- **https only for the automatic key.** `EXPLABS_API_KEY` is picked up only when the base is
+  `https`. A plain `http` base would send it unencrypted, so use `FISH_LLM_KEY` to override.
 
 OpenRouter-only options: `FISH_LLM_NITRO=1` adds `:nitro` to the model and sorts providers by
 `FISH_LLM_PROVIDER_SORT`, and `FISH_LLM_REFERER`, `FISH_LLM_TITLE`, `FISH_LLM_CATEGORIES` set the
