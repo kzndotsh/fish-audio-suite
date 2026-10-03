@@ -25,6 +25,7 @@ cp .env.example .env
 ./packages/voice/dev.sh --smoke    # writes a new temp wav, or pass --out PATH
 ./packages/voice/dev.sh            # duplex
 ./packages/voice/dev.sh --debug    # or FISH_VOICE_DEBUG=1; --trace (or 2) adds heartbeats
+./packages/voice/dev.sh --prompt-file characters/mira.md   # a character, see below
 ```
 
 `--smoke` exits 2 if `FISH_API_KEY` or `FISH_VOICE_ID` is missing. The same entry point from anywhere the extra is installed:
@@ -78,6 +79,22 @@ The chat history gets only what you probably heard. For PCM that is a word-align
 With the default system prompt the session starts with one pinned exchange that shows several cues
 (`DEFAULT_SEED_EXCHANGE` in the kit). It costs about 40 tokens per request and is never trimmed from
 the history. A custom `FISH_VOICE_SYSTEM_PROMPT` gets no seed, so it stays in control of the replies.
+
+### Characters and system prompts
+
+Put a character or scene in a file and point the session at it:
+
+```bash
+./packages/voice/dev.sh --prompt-file characters/mira.md     # or FISH_VOICE_SYSTEM_PROMPT_FILE=...
+```
+
+The file is UTF-8 text, up to 64 KiB. Its text comes first, then a blank line, then the default voice
+rules (spoken replies, `[cue]` tags), and the opening cue example is pinned as usual. So a file only
+has to describe who is talking. If the file is missing, empty, too large or not UTF-8, fish-voice warns
+and uses the default prompt. The flag beats the variable, and the file beats `FISH_VOICE_SYSTEM_PROMPT`.
+
+To write the whole prompt yourself, set `FISH_VOICE_SYSTEM_PROMPT` instead. It is used as written, with
+no voice rules and no cue example, so ask for `[emotion]` cue tags in it if you want an expressive voice.
 
 ### LLM providers
 
@@ -133,6 +150,30 @@ the whole reply is. The socket then gets one more flush at the end.
 - The reply is scrubbed as it arrives, and the whole-reply junk check is skipped.
 - The barge-in gate arms at the first audio chunk.
 - If Fish fails before any audio, the finished reply is spoken on the normal path.
+
+### Local models (Ollama)
+
+Any OpenAI-compatible local server works. For Ollama:
+
+```bash
+FISH_LLM_PROVIDER=custom
+FISH_LLM_BASE=http://127.0.0.1:11434/v1
+FISH_LLM_BACKEND=openai          # the OpenRouter SDK would call the wrong server
+FISH_LLM_API_KEY=ollama          # any value, Ollama has no key
+FISH_LLM_MODEL=qwen3.5:9b        # the exact name from `ollama list`
+FISH_LLM_REASONING_EFFORT=none
+```
+
+- **Thinking models** (Qwen 3.5, Gemma 4 and their abliterated or "heretic" finetunes) write their
+  answer into a hidden reasoning field first, so a short reply comes back empty. `none` turns that off,
+  and Ollama 0.34 honored it. Without it the first word can take many seconds.
+- **The first request after idle loads the model**, which took about 17 s for a 9B model. Keep it
+  loaded with `OLLAMA_KEEP_ALIVE=-1` in Ollama's own environment.
+- **A model imported from a bare GGUF can have no chat template.** It then ignores the conversation
+  and writes unrelated text. `ollama show --modelfile <name>` should show a `TEMPLATE` for the model's
+  family, not just `{{ .Prompt }}`.
+- Once a model is loaded, the first word arrived in under 0.1 s on this machine. That is the
+  network-free baseline the cloud providers cannot reach.
 
 ### Roleplay helpers
 
@@ -196,7 +237,8 @@ LLM:
 | `FISH_LLM_PROVIDER_SORT` | `throughput` | Used with `FISH_LLM_NITRO` |
 | `FISH_LLM_REFERER`, `FISH_LLM_TITLE`, `FISH_LLM_CATEGORIES` | this project's | OpenRouter attribution. Empty disables |
 | `FISH_LLM_CONTINUE` | off | Send one more request when a reply stops mid-sentence |
-| `FISH_VOICE_SYSTEM_PROMPT` | the kit default | System prompt text. Set but blank sends no system prompt |
+| `FISH_VOICE_SYSTEM_PROMPT` | the kit default | System prompt text, used as written. Set but blank sends no system prompt |
+| `FISH_VOICE_SYSTEM_PROMPT_FILE` | none | A character file. The voice rules follow it. Beats `FISH_VOICE_SYSTEM_PROMPT`. See characters above |
 | `FISH_VOICE_HISTORY_TURNS` | `20` | User and assistant pairs kept |
 | `FISH_VOICE_STREAM_TTS` | off | Speak the reply while the model is still writing it. See streaming above |
 | `FISH_VOICE_REPEAT_WINDOW` | `1.5` | Seconds. A line equal to the previous one is dropped only if it ends this soon after the mic opens. 0 never drops a repeat |
