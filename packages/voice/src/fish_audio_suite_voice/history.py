@@ -25,13 +25,18 @@ _ROLES_PER_TURN: Final = 2
 _UNANSWERED_LINES: Final = 4
 
 
-def opening_history(system_prompt: str) -> tuple[list[ChatMessage], int]:
+def opening_history(
+    system_prompt: str, *, seed: bool | None = None
+) -> tuple[list[ChatMessage], int]:
     """Build the starting history and say how many leading messages stay pinned.
 
     Parameters
     ----------
     system_prompt : str
         The system prompt for this session.
+    seed : bool or None, optional
+        Whether to pin the opening exchange. None pins it only for the default
+        prompt. A character file keeps the voice rules, so it passes True.
 
     Returns
     -------
@@ -43,7 +48,7 @@ def opening_history(system_prompt: str) -> tuple[list[ChatMessage], int]:
         of how the model replies.
     """
     history: list[ChatMessage] = [{"role": "system", "content": system_prompt}]
-    if system_prompt == DEFAULT_SYSTEM_PROMPT:
+    if system_prompt == DEFAULT_SYSTEM_PROMPT if seed is None else seed:
         for user, assistant in DEFAULT_SEED_EXCHANGE:
             history.append({"role": "user", "content": user})
             history.append({"role": "assistant", "content": assistant})

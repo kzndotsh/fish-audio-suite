@@ -15,8 +15,14 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Final
 
+from fish_audio_suite_kit import SuiteDefaults
 from fish_audio_suite_voice.aec import EchoCanceller
-from fish_audio_suite_voice.config import VoiceCliConfig, load_config, warn_if_insecure_base
+from fish_audio_suite_voice.config import (
+    VoiceCliConfig,
+    load_config,
+    system_prompt_from_file,
+    warn_if_insecure_base,
+)
 from fish_audio_suite_voice.debug import (
     DebugLevel,
     configure_voice_logging,
@@ -233,6 +239,14 @@ def _parser() -> argparse.ArgumentParser:
         help="sounddevice | file | stdout | mpv (overrides FISH_VOICE_PLAYBACK)",
     )
     p.add_argument(
+        "--prompt-file",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="character or scene text for the system prompt. The voice rules follow it "
+        "(overrides FISH_VOICE_SYSTEM_PROMPT_FILE)",
+    )
+    p.add_argument(
         "--env-file",
         action="append",
         default=[],
@@ -288,6 +302,11 @@ def main(argv: list[str] | None = None) -> int:
     warn_if_insecure_base(c)
     if args.playback:
         c = replace(c, playback=playback_key(args.playback))
+    if args.prompt_file:
+        composed = system_prompt_from_file(str(args.prompt_file), SuiteDefaults().system_prompt)
+        if composed is None:
+            return EXIT_FATAL
+        c = replace(c, system_prompt=composed, pin_seed=True)
 
     if args.smoke:
         try:

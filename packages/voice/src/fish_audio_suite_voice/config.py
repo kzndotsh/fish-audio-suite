@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Final
 from urllib.parse import urlsplit
 
@@ -50,6 +51,7 @@ __all__ = [
     "OPENROUTER_API_BASE",
     "VoiceCliConfig",
     "load_config",
+    "system_prompt_from_file",
     "warn_if_insecure_base",
 ]
 
@@ -105,6 +107,7 @@ class VoiceCliConfig:
     system_prompt: str
     device: str | None
     asr_model: str = "transcribe-1-pro"
+    pin_seed: bool = True
     llm: LlmSettings = field(default_factory=LlmSettings)
     listen: ListenTune = field(default_factory=ListenTune)
     barge: BargeTune = field(default_factory=BargeTune)
@@ -178,6 +181,7 @@ def load_config() -> VoiceCliConfig:
     d = SuiteDefaults()
     fish_base = env_base("FISH_BASE", d.fish_base)
     sample_rate = env_int("FISH_SAMPLE_RATE", d.sample_rate)
+    prompt = _system_prompt(d.system_prompt)
     return VoiceCliConfig(
         fish_api_key=env_text("FISH_API_KEY"),
         fish_base=fish_base,
@@ -225,7 +229,8 @@ def load_config() -> VoiceCliConfig:
                 DEFAULT_PLAYBACK,
             )
         ),
-        system_prompt=_system_prompt(d.system_prompt),
+        system_prompt=prompt.text,
+        pin_seed=prompt.pin_seed,
         device=os.environ.get("FISH_VOICE_DEVICE"),
         asr_model=_asr_model(d.asr_model),
         llm=LlmSettings.from_env(),
@@ -254,8 +259,70 @@ def load_config() -> VoiceCliConfig:
     )
 
 
-def _system_prompt(default: str) -> str:
+@dataclass(frozen=True, slots=True)
+class _Prompt:
+    text: str
+    # The opening exchange that shows several cues is pinned for the default prompt
+    # and for a character file (which keeps the voice rules). A prompt written out in
+    # full is left alone.
+    pin_seed: bool
+
+
+# A character card is a few KB. This stops a wrong path (a log, a binary) from
+# becoming the system prompt.
+_PROMPT_FILE_MAX_BYTES: Final = 64 * 1024
+
+
+def system_prompt_from_file(path: str, default: str) -> str | None:
+    """Read a character file and put the voice rules after it.
+
+    Parameters
+    ----------
+    path : str
+        File with the character or scene, in UTF-8. ``~`` is expanded and a
+        relative path is read from the working directory.
+    default : str
+        The voice rules (cue tags, short spoken replies) that follow the file.
+
+    Returns
+    -------
+    str or None
+        The file text, a blank line, then ``default``. None, after a warning,
+        when the file is missing, too large, not UTF-8 or empty, so the caller
+        can fall back to the default prompt.
+    """
+    file = Path(path).expanduser()
+    try:
+        raw = file.read_bytes()
+        if len(raw) > _PROMPT_FILE_MAX_BYTES:
+            warn(
+                f"fish-voice: prompt file {file} is over {_PROMPT_FILE_MAX_BYTES // 1024} KiB, ignoring it"
+            )
+            return None
+        card = raw.decode("utf-8").strip()
+    except (OSError, UnicodeDecodeError) as exc:
+        warn(f"fish-voice: cannot read prompt file {file}: {exc}")
+        return None
+    if not card:
+        warn(f"fish-voice: prompt file {file} is empty, ignoring it")
+        return None
+    return f"{card}\n\n{default}"
+
+
+def _system_prompt(default: str) -> _Prompt:
+    file = os.environ.get("FISH_VOICE_SYSTEM_PROMPT_FILE", "").strip()
+    inline = os.environ.get("FISH_VOICE_SYSTEM_PROMPT")
+    if file:
+        if inline is not None:
+            warn(
+                "fish-voice: FISH_VOICE_SYSTEM_PROMPT_FILE is set, so FISH_VOICE_SYSTEM_PROMPT is ignored"
+            )
+        composed = system_prompt_from_file(file, default)
+        if composed is not None:
+            return _Prompt(composed, pin_seed=True)
+        return _Prompt(default, pin_seed=True)
     # A prompt set but blank means "no system prompt", so unlike the other keys
     # a blank value still counts here.
-    prompt = os.environ.get("FISH_VOICE_SYSTEM_PROMPT")
-    return default if prompt is None else prompt
+    if inline is None:
+        return _Prompt(default, pin_seed=True)
+    return _Prompt(inline, pin_seed=inline == default)
