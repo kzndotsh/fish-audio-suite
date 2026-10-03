@@ -40,6 +40,7 @@ __all__ = [
     "env_float",
     "env_int",
     "env_off",
+    "env_renamed",
     "env_text",
     "env_token",
     "is_insecure_fish_base",
@@ -319,6 +320,39 @@ def env_text(name: str, default: str = "") -> str:
         ``default``, so an empty key can be told apart from an unset one.
     """
     return os.environ.get(name, default).strip()
+
+
+def env_renamed(new: str, old: str, *, warn: Callable[[str], None]) -> str:
+    """Pick which of a renamed variable's two names to read.
+
+    Parameters
+    ----------
+    new : str
+        The current environment variable name.
+    old : str
+        The name it replaced, still honored for one minor release.
+    warn : Callable
+        Called with ``"<old> is deprecated; use <new>"`` when the old name is the
+        one in use, so each package reports it its own way (a log line, a printed
+        warning).
+
+    Returns
+    -------
+    str
+        ``new`` when it is set to a non-blank value, else ``old`` when that is set
+        to a non-blank value, else ``new``. Pass the result to an ``env_*`` reader.
+
+    Examples
+    --------
+    >>> env_renamed("FISH_DOCTEST_NEW_UNSET", "FISH_DOCTEST_OLD_UNSET", warn=print)
+    'FISH_DOCTEST_NEW_UNSET'
+    """
+    if os.environ.get(new, "").strip():
+        return new
+    if os.environ.get(old, "").strip():
+        warn(f"{old} is deprecated; use {new}")
+        return old
+    return new
 
 
 def _whole_int(value: Any) -> int:

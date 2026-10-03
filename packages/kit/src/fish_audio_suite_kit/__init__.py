@@ -1,5 +1,6 @@
 """Unofficial Fish Audio text helpers. Not affiliated with Fish Audio."""
 
+from fish_audio_suite_kit._deprecation import deprecated, deprecated_fields
 from fish_audio_suite_kit._version import read_version
 from fish_audio_suite_kit.asr_text import (
     DEFAULT_BACKCHANNELS,
@@ -46,6 +47,7 @@ from fish_audio_suite_kit.defaults import (
     env_float,
     env_int,
     env_off,
+    env_renamed,
     env_text,
     env_token,
     is_insecure_fish_base,
@@ -169,6 +171,8 @@ __all__ = [
     "catalog_tts_model",
     "chunk_length_hi",
     "clamp_num",
+    "deprecated",
+    "deprecated_fields",
     "elapsed_ms",
     "ends_sentence",
     "ensure_lead_cue",
@@ -178,6 +182,7 @@ __all__ = [
     "env_float",
     "env_int",
     "env_off",
+    "env_renamed",
     "env_text",
     "env_token",
     "extract_quoted_speech",
