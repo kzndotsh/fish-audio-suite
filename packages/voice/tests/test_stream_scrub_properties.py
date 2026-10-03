@@ -11,7 +11,7 @@ from fishaudio import FlushEvent, TextEvent
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from fish_audio_suite_kit import skip_empty_delta
+from fish_audio_suite_kit import ends_sentence, skip_empty_delta
 from fish_audio_suite_voice.stream_scrub import delta_events
 
 # Pieces that exercise the scrubber's state machine: spans that hold text until
@@ -162,3 +162,49 @@ def test_the_same_tokens_give_the_same_events(
     first = _run(tokens, partial=partial, mood_lead=mood, early_flush=early)
     second = _run(tokens, partial=partial, mood_lead=mood, early_flush=early)
     assert shape(first) == shape(second)
+
+
+async def _events_of(tokens: list[str], *, partial: int = 40) -> list[tuple[str, str]]:
+    return [
+        ("text", ev.text) if isinstance(ev, TextEvent) else ("flush", "")
+        async for ev in delta_events(
+            tokens, threading.Event(), partial_chars=partial, mood_lead=False, early_flush=True
+        )
+    ]
+
+
+def test_the_early_flush_waits_for_the_end_of_the_first_sentence() -> None:
+    # "[curious] Oh, I can definitely hear you! " is 41 characters, one over the
+    # window, so the cut drops "you!" into the next piece. Flushing after the
+    # first piece sent "...hear" to Fish as a finished utterance, and it paused
+    # before "you!".
+    events = asyncio.run(
+        _events_of(["[curious] Oh, I can definitely hear you! [excited", "] What's on your mind?"])
+    )
+    first_flush = events.index(("flush", ""))
+    spoken_before = "".join(text for kind, text in events[:first_flush] if kind == "text")
+    assert spoken_before == "[curious] Oh, I can definitely hear you! "
+
+
+def test_a_long_first_sentence_without_a_stop_still_flushes_early() -> None:
+    words = " ".join(["word"] * 60)
+    events = asyncio.run(_events_of([words], partial=40))
+    flushes = [i for i, event in enumerate(events) if event == ("flush", "")]
+    # The reply is one sentence with no stop. Waiting for the end would hold the
+    # first audio until the model finished, so a long run flushes anyway.
+    assert len(flushes) == 2
+    spoken_before = "".join(t for k, t in events[: flushes[0]] if k == "text")
+    assert len(spoken_before) >= 80
+
+
+@_SETTINGS
+@given(tokens=_token_streams(), partial=_partial, mood=_flags)
+def test_the_early_flush_never_cuts_a_sentence_short(
+    tokens: list[str], partial: int, mood: bool
+) -> None:
+    events = _run(tokens, partial=partial, mood_lead=mood, early_flush=True)
+    flushes = [i for i, event in enumerate(events) if isinstance(event, FlushEvent)]
+    if len(flushes) < 2:
+        return  # no early flush: the reply ended before one was due
+    before = "".join(e.text for e in events[: flushes[0]] if isinstance(e, TextEvent))
+    assert ends_sentence(before) or len(before) >= 2 * partial

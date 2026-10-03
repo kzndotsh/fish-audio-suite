@@ -167,6 +167,10 @@ def _scrub_chunk(
     return spoken
 
 
+# The early flush gives up waiting for a sentence end after this many send windows.
+_EARLY_FLUSH_WINDOWS: Final = 2
+
+
 class _StreamScrubber:
     """State machine behind ``delta_events``: tokens in, Fish events out.
 
@@ -195,6 +199,11 @@ class _StreamScrubber:
         self._sent = 0
         self._flushed_early = False
         self._since_flush = 0
+        # Text sent since the last flush. The early flush waits for a sentence
+        # end, so Fish never gets half a sentence as a finished utterance, but
+        # not past this many characters, or a long run-on would hold the audio.
+        self._unflushed_chars = 0
+        self._early_flush_cap = _EARLY_FLUSH_WINDOWS * partial_chars
         # Text already sent on this line. An empty ready buffer is not a new
         # line, so a star after "Hello." must not be stripped as a bullet.
         self._sent_line = ""
@@ -213,9 +222,16 @@ class _StreamScrubber:
         self._sent += 1
         yield event
         self._since_flush += 1
-        if self._early_flush and not self._flushed_early and not self._cancel.is_set():
+        self._unflushed_chars += len(event.text)
+        if (
+            self._early_flush
+            and not self._flushed_early
+            and not self._cancel.is_set()
+            and (ends_sentence(event.text) or self._unflushed_chars >= self._early_flush_cap)
+        ):
             self._flushed_early = True
             self._since_flush = 0
+            self._unflushed_chars = 0
             yield FlushEvent()
 
     def feed(self, tok: str) -> Iterator[Any]:
@@ -304,16 +320,19 @@ async def delta_events(
     mood_lead : bool, optional
         Rewrite a sentence-leading mood word into a ``[cue]``. Default False.
     early_flush : bool, optional
-        Flush once right after the first piece, so Fish speaks it while the
-        model is still writing. Default False. Fish holds text until a chunk
-        fills or a flush arrives, so without this a streamed reply is silent
-        until the model finishes.
+        Flush once at the end of the first sentence, so Fish speaks it while
+        the model is still writing. Default False. Fish holds text until a
+        chunk fills or a flush arrives, so without this a streamed reply is
+        silent until the model finishes. The flush waits for a sentence end,
+        because a flush mid-sentence makes Fish end that fragment as a finished
+        utterance and pause before the rest. After two send windows of text
+        with no sentence end it flushes anyway.
 
     Yields
     ------
     Any
         ``TextEvent`` pieces, then one ``FlushEvent`` when any text was sent.
-        With ``early_flush`` there is one more flush after the first piece,
+        With ``early_flush`` there is one more flush after the first sentence,
         and the final flush is sent only if text followed it.
 
     Notes
