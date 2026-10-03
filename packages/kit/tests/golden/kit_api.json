@@ -151,6 +151,8 @@
     "bearer": "def(key: str) -> str",
     "chunk_length_hi": "def(fish_base: str, *, self_hosted: bool | None = None) -> int",
     "clamp_number": "def(value: Any, lo: T, hi: T, default: T, parse: Callable[[Any], T]) -> T",
+    "deprecated": "def(replacement: str, since: str) -> Callable[[F], F]",
+    "deprecated_fields": "def(since: str, **renamed: str) -> Callable[[C], C]",
     "describe_request_error": "def(exc: BaseException, timeout_type: type[BaseException]) -> tuple[int, str]",
     "elapsed_ms": "def(started: float) -> float",
     "ends_sentence": "def(text: str) -> bool",

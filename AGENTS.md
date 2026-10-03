@@ -52,6 +52,18 @@ Read the nested file before editing that tree.
 | Three dists only; CLI stays in voice; W3C parse in kit with no OTel | Fourth dist, OpenTelemetry SDK, or a VAD package |
 | NumPy docstrings on public modules, classes, and functions, in the same change as the signature. First line is imperative. Parameters, Returns, Yields, and Raises match | Docstrings on tests. pydoclint skips one-line summaries and `**/tests/**` |
 
+## Env var names
+
+| Prefix | Means | Examples |
+| --- | --- | --- |
+| `FISH_*` | A Fish request default: `FISH_` plus the uppercased Fish wire field | `FISH_LATENCY`, `FISH_CHUNK_LENGTH`, `FISH_SPEED` (`prosody.speed`) |
+| `FISH_TTS_*`, `FISH_ASR_*` | An endpoint default where the bare wire name (`model`, `format`) would be ambiguous, and text shaping before TTS | `FISH_TTS_MODEL`, `FISH_TTS_FORMAT`, `FISH_ASR_MODEL`, `FISH_TTS_MOOD_LEAD` |
+| `FISH_PROXY_*` | Proxy server behavior | `FISH_PROXY_PORT`, `FISH_PROXY_TTS_ALIASES` |
+| `FISH_VOICE_*` | Voice app behavior | `FISH_VOICE_PLAYBACK`, `FISH_VOICE_BARGE_FRAMES` |
+| `FISH_LLM_*` | The voice app's chat model | `FISH_LLM_API_KEY`, `FISH_LLM_MODEL` |
+
+`FISH_VOICE_ID` is the one exception: it is the Fish voice and maps to the wire field `reference_id`. Seconds are implied in env names (`FISH_VOICE_COOLDOWN`, `FISH_PROXY_READ_TIMEOUT`); other units are suffixed (`_FRAMES`, `_BYTES`, `_CHARS`). Python fields always carry the unit (`cooldown_s`). `FISH_SPEED` is the default speed; the proxy multiplies a client-sent `speed` by it. Rename a variable with kit `env_renamed`, which keeps the old name working with a warning, and add the old name to `ENV_EXAMPLE_SKIP` in `tests/test_docs_env.py`.
+
 ## Gotchas
 
 - Do not `aclose()` the fishaudio websocket iterator. Stop iterating; close the **client**. Empty turn + bare `FlushEvent` is invalid.
