@@ -25,7 +25,7 @@ from fish_audio_suite_kit import (
     utf8_text,
 )
 from fish_audio_suite_proxy.errors import ProxyError, json_error, read_json_object
-from fish_audio_suite_proxy.speech import ClipError, decode_audio_b64
+from fish_audio_suite_proxy.fields import AudioDecodeError, decode_audio_b64
 
 __all__ = [
     "ASR_FORMATS",
@@ -93,8 +93,8 @@ def _asr_from_json(parsed: dict[str, Any]) -> InboundAsr | JSONResponse:
     data = audio_obj.get("data")
     fmt = _single_line(_form_text(audio_obj.get("format"), "wav"), "wav")
     try:
-        audio = decode_audio_b64(data)
-    except ClipError as exc:
+        audio = decode_audio_b64(data, field="input_audio")
+    except AudioDecodeError as exc:
         return json_error(400, exc.message)
     model = parsed.get("model")
     return InboundAsr(

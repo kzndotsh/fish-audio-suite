@@ -21,7 +21,9 @@ from fish_audio_suite_proxy.errors import (
 )
 from fish_audio_suite_proxy.fields import (
     SUPPORTED_FORMATS,
+    AudioDecodeError,
     ClientFormat,
+    decode_audio_b64,
     fish_audio_format,
     pick_format,
 )
@@ -30,7 +32,6 @@ from fish_audio_suite_proxy.speech import (
     ClipError,
     PackedTts,
     SpeechControls,
-    decode_audio_b64,
 )
 from fish_audio_suite_proxy.transcribe import (
     ASR_FORMATS,
@@ -106,6 +107,7 @@ def test_no_public_signature_mentions_a_private_type(label: str, value: object) 
 
 def test_clip_error_is_a_proxy_error_with_status_400() -> None:
     error = ClipError("reference audio is empty")
+    assert isinstance(error, AudioDecodeError)
     assert isinstance(error, ProxyError)
     assert error.status == 400
     assert error.message == "reference audio is empty"
@@ -113,6 +115,17 @@ def test_clip_error_is_a_proxy_error_with_status_400() -> None:
     assert response.status_code == 400
     with pytest.raises(ProxyError):
         decode_audio_b64("")
+
+
+def test_the_audio_decoder_names_the_field_it_read() -> None:
+    with pytest.raises(AudioDecodeError, match=r"^audio is empty$"):
+        decode_audio_b64(None)
+    with pytest.raises(AudioDecodeError, match=r"^audio is not valid base64$"):
+        decode_audio_b64("!!!!")
+    with pytest.raises(AudioDecodeError, match=r"^input_audio is empty$") as caught:
+        decode_audio_b64("  ", field="input_audio")
+    assert caught.value.status == 400
+    assert decode_audio_b64(b"RIFF") == b"RIFF"
 
 
 @pytest.mark.parametrize(

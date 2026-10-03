@@ -459,3 +459,4 @@ def test_bad_reference_audio_is_400(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     assert response.status_code == 400
     assert response.json()["error"]["type"] == "invalid_request_error"
+    assert response.json()["error"]["message"] == "reference audio is not valid base64"

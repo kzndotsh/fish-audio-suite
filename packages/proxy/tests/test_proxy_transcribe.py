@@ -333,3 +333,28 @@ def test_transcription_closes_an_empty_upload_on_the_early_return(
         )
     assert response.status_code == 400
     assert closed == ["empty.wav"]
+
+
+@pytest.mark.parametrize(
+    ("audio", "message"),
+    [
+        ("!!!!", "input_audio is not valid base64"),
+        ("", "input_audio is empty"),
+        (None, "input_audio is empty"),
+    ],
+)
+def test_bad_json_input_audio_names_input_audio_not_a_reference(
+    monkeypatch: pytest.MonkeyPatch, audio: str | None, message: str
+) -> None:
+    captured = capture_upstream(monkeypatch, AsrJson())
+    with TestClient(app) as client:
+        r = client.post(
+            "/v1/audio/transcriptions",
+            json={"input_audio": {"data": audio, "format": "wav"}},
+        )
+    assert r.status_code == 400
+    error = r.json()["error"]
+    assert error["message"] == message
+    assert "reference" not in error["message"]
+    assert error["type"] == "invalid_request_error"
+    assert captured == {}

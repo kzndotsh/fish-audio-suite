@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import io
 import wave
 from collections.abc import Mapping
@@ -20,7 +22,9 @@ from fish_audio_suite_proxy.errors import ProxyError
 __all__ = [
     "SILENT_MP3",
     "SUPPORTED_FORMATS",
+    "AudioDecodeError",
     "ClientFormat",
+    "decode_audio_b64",
     "explicit_bool",
     "first_choice",
     "fish_audio_format",
@@ -103,6 +107,82 @@ def silent_speech(fmt: ClientFormat, sample_rate: int) -> tuple[bytes, str]:
             wf.writeframes(_SILENT_PCM)
         return buf.getvalue(), media_type("wav")
     return SILENT_MP3, media_type("mp3")
+
+
+_DATA_URI = "data:"
+
+
+class AudioDecodeError(ProxyError):
+    """Audio in a request body could not be decoded. The route returns 400.
+
+    Attributes
+    ----------
+    status : int
+        Always 400.
+    message : str
+        Shown in the OpenAI error envelope.
+    """
+
+    def __init__(self, message: str) -> None:
+        """Store ``message`` with status 400.
+
+        Parameters
+        ----------
+        message : str
+            Client-facing reason.
+        """
+        super().__init__(400, message)
+
+
+def _b64_audio(value: str, field: str) -> bytes:
+    raw = "".join(value.strip().split())
+    # The data-URI scheme is case-insensitive. "DATA:" failed the base64
+    # check, so the request was rejected before Fish heard the audio.
+    head, sep, tail = raw.partition(",")
+    if sep and head.lower().startswith(_DATA_URI):
+        raw = tail
+    # URL-safe alphabets use - and _. The strict decoder rejects those, so
+    # real audio would 400.
+    raw = raw.replace("-", "+").replace("_", "/")
+    padded = raw + ("=" * ((-len(raw)) % 4))
+    try:
+        return base64.b64decode(padded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise AudioDecodeError(f"{field} is not valid base64") from exc
+
+
+def decode_audio_b64(value: Any, *, field: str = "audio") -> bytes:
+    """Decode audio from raw bytes or base64, including a data URI.
+
+    Parameters
+    ----------
+    value : Any
+        ``bytes``, or a base64 string. Whitespace inside the string is removed.
+    field : str, optional
+        What the client calls this audio, used to start the error message:
+        ``"input_audio"`` for a transcription, ``"reference audio"`` for a
+        voice clip. Default ``"audio"``.
+
+    Returns
+    -------
+    bytes
+        Decoded audio. Never empty.
+
+    Raises
+    ------
+    AudioDecodeError
+        When the value is empty or not valid base64, with a message such as
+        ``"audio is empty"`` or ``"audio is not valid base64"``.
+    """
+    if isinstance(value, (bytes, bytearray)):
+        audio = bytes(value)
+    elif isinstance(value, str) and value.strip():
+        audio = _b64_audio(value, field)
+    else:
+        audio = b""
+    if not audio:
+        raise AudioDecodeError(f"{field} is empty")
+    return audio
 
 
 def pick_reference_id(body: dict[str, Any]) -> str | list[str] | None:

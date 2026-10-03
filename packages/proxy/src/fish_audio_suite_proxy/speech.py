@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import base64
-import binascii
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -33,7 +31,9 @@ from fish_audio_suite_kit import (
 )
 from fish_audio_suite_proxy.errors import ProxyError, json_error
 from fish_audio_suite_proxy.fields import (
+    AudioDecodeError,
     ClientFormat,
+    decode_audio_b64,
     explicit_bool,
     first_choice,
     fish_audio_format,
@@ -50,13 +50,11 @@ __all__ = [
     "PackedTts",
     "SpeechControls",
     "TtsBody",
-    "decode_audio_b64",
     "pack_tts",
     "speech_controls",
 ]
 
 _PHONEME_MARK_RE = re.compile(r"<\|phoneme_(?:start|end)\|>")
-_DATA_URI = "data:"
 _MAX_PRONUNCIATION_ENTRIES = 512
 # ormsgpack rejects integers outside this range. A bigger seed would 500
 # the speech route when a reference clip forces MessagePack. The same range
@@ -128,72 +126,24 @@ def _want_quality_guard(body: dict[str, Any], default: bool) -> bool:
     return default
 
 
-class ClipError(ProxyError):
-    """A reference clip could not be decoded. The route returns 400.
+class ClipError(AudioDecodeError):
+    """A reference clip could not be read. The route returns 400.
 
     Attributes
     ----------
     status : int
         Always 400.
     message : str
-        Shown in the OpenAI error envelope.
+        Shown in the OpenAI error envelope. It names the reference, such as
+        ``"reference audio is empty"``.
     """
 
-    def __init__(self, message: str) -> None:
-        """Store ``message`` with status 400.
 
-        Parameters
-        ----------
-        message : str
-            Client-facing reason.
-        """
-        super().__init__(400, message)
-
-
-def _b64_audio(value: str) -> bytes:
-    raw = "".join(value.strip().split())
-    # The data-URI scheme is case-insensitive. "DATA:" failed the base64
-    # check, so the speech request was rejected before Fish heard the clip.
-    head, sep, tail = raw.partition(",")
-    if sep and head.lower().startswith(_DATA_URI):
-        raw = tail
-    # URL-safe alphabets use - and _. The strict decoder rejects those, so a
-    # real clip would 400 and the request would speak with no reference.
-    raw = raw.replace("-", "+").replace("_", "/")
-    padded = raw + ("=" * ((-len(raw)) % 4))
+def _decode_clip(value: Any) -> bytes:
     try:
-        return base64.b64decode(padded, validate=True)
-    except (binascii.Error, ValueError) as exc:
-        raise ClipError("reference audio is not valid base64") from exc
-
-
-def decode_audio_b64(value: Any) -> bytes:
-    """Decode reference audio from raw bytes or base64, including a data URI.
-
-    Parameters
-    ----------
-    value : Any
-        ``bytes``, or a base64 string. Whitespace inside the string is removed.
-
-    Returns
-    -------
-    bytes
-        Decoded audio. Never empty.
-
-    Raises
-    ------
-    ClipError
-        When the value is empty or not valid base64.
-    """
-    if isinstance(value, (bytes, bytearray)):
-        audio = bytes(value)
-    elif isinstance(value, str) and value.strip():
-        audio = _b64_audio(value)
-    else:
-        audio = b""
-    if not audio:
-        raise ClipError("reference audio is empty")
-    return audio
+        return decode_audio_b64(value, field="reference audio")
+    except AudioDecodeError as exc:
+        raise ClipError(exc.message) from exc
 
 
 def _clip_text(text: object) -> str:
@@ -206,7 +156,7 @@ def _clip_text(text: object) -> str:
 
 
 def _clip(audio: Any, text: object) -> dict[str, Any]:
-    return {"audio": decode_audio_b64(audio), "text": _clip_text(text)}
+    return {"audio": _decode_clip(audio), "text": _clip_text(text)}
 
 
 def _normalize_references(raw: Any) -> Any:
@@ -237,7 +187,7 @@ def _clips_from_input_references(items: list[Any]) -> list[dict[str, Any]]:
             if not isinstance(inner, Mapping) or inner.get("data") is None:
                 continue
             try:
-                decoded = decode_audio_b64(inner.get("data"))
+                decoded = _decode_clip(inner.get("data"))
             except ClipError:
                 # A later empty or invalid part must not wipe a clip that
                 # already decoded, and must not fail that request.

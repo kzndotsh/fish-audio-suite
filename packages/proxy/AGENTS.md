@@ -19,9 +19,9 @@ CLI: `fish-audio-suite-proxy`. Import: `fish_audio_suite_proxy`. Start uvicorn w
 | `upstream.py` | `fish_send`: bounded retry, `Retry-After` (kit `retry_after_s`), deadline, stops on disconnect. `FishHttp` is the client Protocol |
 | `limits.py` | Request body cap middleware |
 | `models.py` | TTS aliases, ASR id rules, `/v1/models` ids |
-| `fields.py` | Format, silence, request-field readers, trace headers |
+| `fields.py` | Format, silence, request-field readers, base64 audio (`decode_audio_b64`, `AudioDecodeError`), trace headers |
 | `speech.py`, `transcribe.py` | Fish TTS body and ASR upload/response |
-| `errors.py` | OpenAI error envelope (`OpenAIErrorBody`), `ProxyError`. `ClipError` is a `ProxyError` with status 400 |
+| `errors.py` | OpenAI error envelope (`OpenAIErrorBody`), `ProxyError`. `AudioDecodeError` (`fields.py`) is a `ProxyError` with status 400, and `ClipError` (`speech.py`) is the reference-clip kind of it. A transcription error names `input_audio`, never "reference audio" |
 
 Invariants:
 - `FISH_API_KEY` is read in lifespan. Importing the app and `GET /health` must work with it unset. A missing key is 503 on any request that would call Fish, and a wrong client key is 401. Text that is only junk returns local silence first, so it never reaches the key check.
