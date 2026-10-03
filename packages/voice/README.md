@@ -18,7 +18,7 @@ result = tts.speak_isolated("Hello there.", FileSink(Path("turn.wav")))
 
 `speak_isolated` runs the websocket on a private thread and event loop, so it is safe under `asyncio.run` or `to_thread`. Retry of 429 and 5xx happens only before the first audio byte. There is no default `voice_id`.
 
-`speak_isolated(text, sink, *, cancel=None, on_first_audio=None)` takes `cancel` (a `threading.Event`) by keyword. The returned `IsolatedResult` carries `error`, a kit error such as `FishAuthError` (401, 402, 403), `FishRateLimitError` (429) or `FishUpstreamError` (5xx), when the turn failed with a status. Test it with `isinstance`; `error_status` and `error_message` stay for display. The package root exports the types its signatures use: `IsolatedFishTts`, `IsolatedResult`, `PlaybackSink`, `PlaybackKind`, `make_sink`, `BargeGate`, `EchoCanceller`, `DuplexSession`, `ChatBackend`, the four tune classes and `PortAudioMissingError`. Each module lists its own exports in `__all__`.
+`speak_isolated(text, sink, *, cancel=None, on_first_audio=None)` takes `cancel` (a `threading.Event`) by keyword. The returned `TtsResult` carries `error`, a kit error such as `FishAuthError` (401, 402, 403), `FishRateLimitError` (429) or `FishUpstreamError` (5xx), when the turn failed with a status. Test it with `isinstance`; `error_status` and `error_message` stay for display. Its timings use the kit's `LatencySnapshot` names: `tts_first_text_ms` (TTS start to the first text sent to Fish) and `tts_first_audio_ms` (TTS start to the first audio from Fish, Fish's time-to-first-audio). `speak_deltas_isolated(deltas, sink, ...)` does the same for a token stream while the model is still writing. The package root exports the types its signatures use: `IsolatedFishTts`, `TtsResult`, `PlaybackSink`, `PlaybackKind`, `make_sink`, `BargeGate`, `EchoCanceller`, `DuplexSession`, `ChatBackend`, `ListenTune`, `BargeTune`, `AecTune`, `LlmSettings` and `PortAudioMissingError`. Each module lists its own exports in `__all__`.
 
 ```bash
 cp .env.example .env
@@ -77,7 +77,7 @@ The chat history gets only what you probably heard. For PCM that is a word-align
 
 With the default system prompt the session starts with one pinned exchange that shows several cues
 (`DEFAULT_SEED_EXCHANGE` in the kit). It costs about 40 tokens per request and is never trimmed from
-the history. A custom `FISH_SYSTEM_PROMPT` gets no seed, so it stays in control of the replies.
+the history. A custom `FISH_VOICE_SYSTEM_PROMPT` gets no seed, so it stays in control of the replies.
 
 ### LLM providers
 
@@ -92,7 +92,7 @@ to the wrong host.
 | `experiential` | `https://api.experientiallabs.ai/v1` | `EXPLABS_API_KEY` | `FISH_LLM_MODEL_EXPERIENTIAL` |
 | any other host | `FISH_LLM_BASE` | `OPENAI_API_KEY` | `FISH_LLM_MODEL` |
 
-`FISH_LLM_KEY` and `FISH_LLM_MODEL` work for every provider. An explicit `FISH_LLM_KEY` wins, and
+`FISH_LLM_API_KEY` and `FISH_LLM_MODEL` work for every provider. An explicit `FISH_LLM_API_KEY` wins, and
 the chosen provider's own model variable comes before `FISH_LLM_MODEL`. Keep both providers in one
 `.env` and switch with `FISH_LLM_PROVIDER`.
 
@@ -115,7 +115,7 @@ follows the host. What to know about Experiential, from its published contract:
   model's reply. A free organization cannot turn that off, and only a Pro organization can. Your
   spoken conversation is the prompt, so do not use a free organization for anything private.
 - **https only for the automatic key.** `EXPLABS_API_KEY` is picked up only when the base is
-  `https`. A plain `http` base would send it unencrypted, so use `FISH_LLM_KEY` to override.
+  `https`. A plain `http` base would send it unencrypted, so use `FISH_LLM_API_KEY` to override.
 
 OpenRouter-only options: `FISH_LLM_NITRO=1` adds `:nitro` to the model and sorts providers by
 `FISH_LLM_PROVIDER_SORT`, and `FISH_LLM_REFERER`, `FISH_LLM_TITLE`, `FISH_LLM_CATEGORIES` set the
@@ -123,7 +123,7 @@ attribution (empty disables one). The `openai` backend sends none of those heade
 
 ### Streaming the reply
 
-By default the reply is spoken after the model finishes. Set `FISH_STREAM_TTS=1` to speak
+By default the reply is spoken after the model finishes. Set `FISH_VOICE_STREAM_TTS=1` to speak
 while the model is still writing. The Fish socket opens with the request and the first
 sentence is flushed at once, so audio starts about when that sentence is done instead of when
 the whole reply is. The socket then gets one more flush at the end.
@@ -136,7 +136,7 @@ the whole reply is. The socket then gets one more flush at the end.
 
 ### Roleplay helpers
 
-Both are off by default because they also change ordinary English. `FISH_MOOD_LEAD=1` rewrites a sentence-leading mood word (`Excited, hello`) into a `[cue]`. `FISH_DROP_NARRATION=1` drops lines that are only stage directions (`She smiles.`).
+Both are off by default because they also change ordinary English. `FISH_TTS_MOOD_LEAD=1` rewrites a sentence-leading mood word (`Excited, hello`) into a `[cue]`. `FISH_TTS_DROP_NARRATION=1` drops lines that are only stage directions (`She smiles.`).
 
 ## Extras
 
@@ -159,7 +159,7 @@ Required:
 | --- | --- |
 | `FISH_API_KEY` | none |
 | `FISH_VOICE_ID` | none |
-| `FISH_LLM_KEY` (fallback: the provider's own key variable, see above) | none. Duplex only |
+| `FISH_LLM_API_KEY` (fallback: the provider's own key variable, see above) | none. Duplex only |
 | `FISH_LLM_MODEL` (the provider's model variable first; `OPENROUTER_MODEL` for OpenRouter and custom hosts) | none. Duplex only |
 
 Speech:
@@ -178,7 +178,7 @@ Speech:
 | `FISH_SAMPLE_RATE` | `44100` |
 | `FISH_ASR_LANGUAGE` | omitted |
 | `FISH_ASR_MODEL` | `transcribe-1` (or `transcribe-1-pro`) |
-| `FISH_PLAYBACK` | `sounddevice` |
+| `FISH_VOICE_PLAYBACK` | `sounddevice` |
 | `FISH_VOICE_DEVICE` | host default. A PortAudio index or name |
 
 LLM:
@@ -196,35 +196,70 @@ LLM:
 | `FISH_LLM_PROVIDER_SORT` | `throughput` | Used with `FISH_LLM_NITRO` |
 | `FISH_LLM_REFERER`, `FISH_LLM_TITLE`, `FISH_LLM_CATEGORIES` | this project's | OpenRouter attribution. Empty disables |
 | `FISH_LLM_CONTINUE` | off | Send one more request when a reply stops mid-sentence |
-| `FISH_SYSTEM_PROMPT` | the kit default | System prompt text |
-| `FISH_HISTORY_TURNS` | `20` | User and assistant pairs kept |
-| `FISH_STREAM_TTS` | off | Speak the reply while the model is still writing it. See streaming below |
-| `FISH_VOICE_REPEAT_WINDOW_S` | `1.5` | A line equal to the previous one is dropped only if it ends this soon after the mic opens. 0 never drops a repeat |
-| `FISH_MOOD_LEAD`, `FISH_DROP_NARRATION` | off | See roleplay helpers |
+| `FISH_VOICE_SYSTEM_PROMPT` | the kit default | System prompt text. Set but blank sends no system prompt |
+| `FISH_VOICE_HISTORY_TURNS` | `20` | User and assistant pairs kept |
+| `FISH_VOICE_STREAM_TTS` | off | Speak the reply while the model is still writing it. See streaming above |
+| `FISH_VOICE_REPEAT_WINDOW` | `1.5` | Seconds. A line equal to the previous one is dropped only if it ends this soon after the mic opens. 0 never drops a repeat |
+| `FISH_TTS_MOOD_LEAD`, `FISH_TTS_DROP_NARRATION` | off | See roleplay helpers |
 
 Listen and interrupt. Times are approximate at 30 ms frames.
 
 | Variable | Default | Effect |
 | --- | --- | --- |
 | `FISH_VOICE_SPEECH_FRAMES` | `4` | About 120 ms before speech counts |
-| `FISH_VOICE_PRE_PAD` | `20` | Frames kept before the start |
+| `FISH_VOICE_PRE_PAD_FRAMES` | `20` | Frames kept before the start |
 | `FISH_VOICE_MIN_RMS` | `200` | Listen floor seed. It can rise in a loud room |
-| `FISH_VOICE_MIN_VOICED` | `12` | About 360 ms of voice. Drops a cough |
+| `FISH_VOICE_MIN_VOICED_FRAMES` | `12` | About 360 ms of voice. Drops a cough |
 | `FISH_VOICE_SILENCE_FRAMES` | `40` | About 1.2 s of quiet ends the turn |
 | `FISH_VOICE_VAD` | `1` | WebRTC VAD mode, 0–3. Higher is pickier |
 | `FISH_VOICE_COOLDOWN` | `0.8` | Seconds after playback |
 | `FISH_VOICE_BLEED_DELAY` | `0.9` | Used when AEC is off or missing |
 | `FISH_VOICE_AEC` | on | `0` disables in-process echo cancellation |
 | `FISH_VOICE_AEC_WET` | `0.85` | Mix of cleaned mic into the raw mic, 0 to 1 |
-| `FISH_VOICE_AEC_BLEED` | `0.3` | Bleed delay once AEC3 is loaded |
+| `FISH_VOICE_AEC_BLEED_DELAY` | `0.3` | Bleed delay once AEC3 is loaded |
 | `FISH_VOICE_BARGE_FRAMES` | `10` | Loud voiced frames in a row that interrupt (about 300 ms) |
 | `FISH_VOICE_BARGE_RMS` | `220` | Barge floor seed. It follows the room, never below this |
-| `FISH_VOICE_BARGE_OVER` | `2.2` | Floor multiplier while the speaker plays and AEC is off. At least 1 |
+| `FISH_VOICE_BARGE_PLAYING_GAIN` | `2.2` | Floor multiplier while the speaker plays and AEC is off. At least 1 |
 | `FISH_VOICE_DEBUG` | off | `1` or `--debug` logs events. `2`, `trace` or `--trace` adds mic heartbeats, raw audio events and HTTP lines |
 
-`dev.sh` also reads `FISH_VOICE_ENV` (env file path), `FISH_VOICE_PORTAUDIO_LIB` (library directories), and `FISH_VOICE_NIX=1` (build PortAudio with nix on a host that is not NixOS).
+`dev.sh` also reads `FISH_VOICE_ENV_FILE` (env file path), `FISH_VOICE_PORTAUDIO_LIB` (library directories), and `FISH_VOICE_NIX=1` (build PortAudio with nix on a host that is not NixOS).
 
 Commented copies live in [`.env.example`](../../.env.example).
+
+### Renamed in 0.2.0
+
+These variables were renamed. Until the next minor release the old name still works when the new one is unset, with a `fish-voice: <old> is deprecated; use <new>` warning on stderr. The new name wins when both are set.
+
+| Old | New |
+| --- | --- |
+| `FISH_PLAYBACK` | `FISH_VOICE_PLAYBACK` |
+| `FISH_HISTORY_TURNS` | `FISH_VOICE_HISTORY_TURNS` |
+| `FISH_SYSTEM_PROMPT` | `FISH_VOICE_SYSTEM_PROMPT` |
+| `FISH_STREAM_TTS` | `FISH_VOICE_STREAM_TTS` |
+| `FISH_VOICE_REPEAT_WINDOW_S` | `FISH_VOICE_REPEAT_WINDOW` |
+| `FISH_VOICE_PRE_PAD` | `FISH_VOICE_PRE_PAD_FRAMES` |
+| `FISH_VOICE_MIN_VOICED` | `FISH_VOICE_MIN_VOICED_FRAMES` |
+| `FISH_VOICE_BARGE_OVER` | `FISH_VOICE_BARGE_PLAYING_GAIN` |
+| `FISH_VOICE_AEC_BLEED` | `FISH_VOICE_AEC_BLEED_DELAY` |
+| `FISH_MOOD_LEAD` | `FISH_TTS_MOOD_LEAD` |
+| `FISH_DROP_NARRATION` | `FISH_TTS_DROP_NARRATION` |
+| `FISH_LLM_KEY` | `FISH_LLM_API_KEY` |
+| `FISH_MODEL` | `FISH_TTS_MODEL` (also read by the proxy, so one `.env` serves both) |
+| `FISH_SPEED_SCALE` | `FISH_SPEED` (also read by the proxy) |
+| `FISH_VOICE_ENV` (`dev.sh`) | `FISH_VOICE_ENV_FILE` |
+
+Python names renamed in the same release keep their old spelling for one minor release too, with a `DeprecationWarning`:
+
+| Old | New |
+| --- | --- |
+| `IsolatedResult` | `TtsResult` |
+| `IsolatedResult.ttfa_ms`, `.llm_ttfs_ms` | `TtsResult.tts_first_audio_ms`, `.tts_first_text_ms` |
+| `IsolatedFishTts.speak_stream_isolated` | `IsolatedFishTts.speak_deltas_isolated` |
+| `DuplexSession.stop` | `DuplexSession.quit_requested` |
+| `LlmTune`, `.key`, `.openrouter` | `LlmSettings`, `.api_key`, `.uses_openrouter_sdk` |
+| `ListenTune.silence_frames_end`, `.speech_frames_start`, `.min_voiced` | `.end_silence_frames`, `.start_speech_frames`, `.min_voiced_frames` |
+| `BargeTune.over` | `BargeTune.playing_gain` |
+| `AecTune.bleed_s` | `AecTune.bleed_delay_s` |
 
 ## License
 
