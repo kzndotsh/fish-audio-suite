@@ -1,0 +1,28 @@
+# Install with `uvx pre-commit install`. These are the fast gates from CI; the
+# type check and the tests stay in `just check` because they need the full env.
+# Revisions are commit hashes, like the GitHub Actions pins. Refresh them with
+# `uvx pre-commit autoupdate --freeze`.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c # frozen: v6.0.0
+    hooks:
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+        exclude: \.md$
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: 2eeb5678de71a00c0902cbda7105d328432f72cb # frozen: v0.16.8
+    hooks:
+      # CI lints and formats `packages` only, so the hooks do the same.
+      - id: ruff-check
+        files: ^packages/
+      - id: ruff-format
+        files: ^packages/
+  - repo: https://github.com/astral-sh/uv-pre-commit
+    rev: 0f4b65a503cc866b9b5e62dda2020f7943b01a65 # frozen: 0.12.22
+    hooks:
+      # Fails when a pyproject changed and uv.lock was not regenerated.
+      - id: uv-lock
+        args: [--check]

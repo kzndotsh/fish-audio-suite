@@ -20,7 +20,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
       - name: Install uv
@@ -52,7 +52,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
       - name: Install uv
@@ -88,6 +88,21 @@ jobs:
         run: uv build --all --out-dir dist
       - name: Check metadata
         run: uvx twine check --strict dist/*
+      - name: Generate the SBOM
+        # A runtime-only CycloneDX SBOM: the three packages, their dependencies and
+        # the voice extras, without the dev and test tools. It stays out of dist/
+        # so twine and PyPI never see it.
+        run: |
+          mkdir sbom
+          uv export --frozen --all-packages --all-extras --no-dev --no-group test \
+            --format cyclonedx1.5 --output-file sbom/fish-audio-suite.cdx.json
+      - name: Upload the SBOM
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: sbom
+          path: sbom/
+          if-no-files-found: error
+          retention-days: 90
       - name: Upload the distributions
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
