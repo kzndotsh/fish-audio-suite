@@ -13,7 +13,7 @@ from fish_audio_suite_voice.barge import (
     _BARGE_VAD,
     BARGE_MISS_DECAY_FRAMES,
     DEFAULT_BARGE_HIT_FRAMES,
-    DEFAULT_BARGE_OVER,
+    DEFAULT_BARGE_PLAYING_GAIN,
     DEFAULT_BARGE_RMS,
     DEFAULT_BLEED_DELAY_S,
     DEFAULT_POST_SPEAK_COOLDOWN_S,
@@ -37,9 +37,9 @@ from fish_audio_suite_voice.listen import (
     trailing_start_hits,
 )
 from fish_audio_suite_voice.tune import (
+    DEFAULT_END_SILENCE_FRAMES,
     DEFAULT_MIN_SPEECH_RMS,
     DEFAULT_MIN_VOICED_FRAMES,
-    DEFAULT_SILENCE_FRAMES_END,
     DEFAULT_VAD_AGGRESSIVENESS,
     IMPULSE_START_EXTRA,
     MAX_UTTERANCE_FRAMES,
@@ -72,9 +72,9 @@ def test_listen_tune_keeps_vad_and_pre_pad_in_range(monkeypatch: pytest.MonkeyPa
     monkeypatch.setenv("FISH_VOICE_MIN_RMS", "-5")
     assert ListenTune.from_env().min_speech_rms == DEFAULT_MIN_SPEECH_RMS
     monkeypatch.setenv("FISH_VOICE_SILENCE_FRAMES", "0")
-    assert ListenTune.from_env().end_silence_frames == DEFAULT_SILENCE_FRAMES_END
+    assert ListenTune.from_env().end_silence_frames == DEFAULT_END_SILENCE_FRAMES
     monkeypatch.setenv("FISH_VOICE_SILENCE_FRAMES", "-3")
-    assert ListenTune.from_env().end_silence_frames == DEFAULT_SILENCE_FRAMES_END
+    assert ListenTune.from_env().end_silence_frames == DEFAULT_END_SILENCE_FRAMES
     monkeypatch.setenv("FISH_VOICE_MIN_VOICED_FRAMES", str(MAX_UTTERANCE_FRAMES + 1))
     assert ListenTune.from_env().min_voiced_frames == DEFAULT_MIN_VOICED_FRAMES
     monkeypatch.setenv("FISH_VOICE_MIN_VOICED_FRAMES", "40")
@@ -354,7 +354,7 @@ def test_barge_over_speaker_raises_need() -> None:
     )
     assert barge_rms_need(220.0, far_playing=True, playing_gain=2.2, aec_on=True) == 220.0
     assert barge_rms_need(220.0, far_playing=True, playing_gain=0, aec_on=False) == pytest.approx(
-        220.0 * DEFAULT_BARGE_OVER
+        220.0 * DEFAULT_BARGE_PLAYING_GAIN
     )
     assert barge_rms_need(220.0, far_playing=True, playing_gain=1, aec_on=False) == 220.0
 

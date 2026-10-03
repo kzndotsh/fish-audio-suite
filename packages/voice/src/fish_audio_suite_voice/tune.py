@@ -24,16 +24,16 @@ from fish_audio_suite_voice._aliases import resolve_alias
 from fish_audio_suite_voice.debug import warn
 
 __all__ = [
-    "DEFAULT_AEC_BLEED_S",
+    "DEFAULT_AEC_BLEED_DELAY_S",
     "DEFAULT_BARGE_HIT_FRAMES",
-    "DEFAULT_BARGE_OVER",
+    "DEFAULT_BARGE_PLAYING_GAIN",
     "DEFAULT_BARGE_RMS",
     "DEFAULT_BLEED_DELAY_S",
+    "DEFAULT_END_SILENCE_FRAMES",
     "DEFAULT_HISTORY_TURNS",
     "DEFAULT_MIN_SPEECH_RMS",
     "DEFAULT_MIN_VOICED_FRAMES",
     "DEFAULT_POST_SPEAK_COOLDOWN_S",
-    "DEFAULT_SILENCE_FRAMES_END",
     "DEFAULT_VAD_AGGRESSIVENESS",
     "EXPERIENTIAL_API_BASE",
     "IMPULSE_START_EXTRA",
@@ -58,8 +58,8 @@ __all__ = [
 
 DEFAULT_VAD_AGGRESSIVENESS: Final = 1
 VAD_MODE_HI: Final = 3
-DEFAULT_SILENCE_FRAMES_END: Final = 40
-DEFAULT_SPEECH_FRAMES_START: Final = 4
+DEFAULT_END_SILENCE_FRAMES: Final = 40
+DEFAULT_START_SPEECH_FRAMES: Final = 4
 DEFAULT_MIN_SPEECH_RMS: Final = 200.0
 DEFAULT_PRE_PAD_FRAMES: Final = 20
 DEFAULT_MIN_VOICED_FRAMES: Final = 12
@@ -68,11 +68,11 @@ IMPULSE_START_EXTRA: Final = 6
 
 DEFAULT_BARGE_HIT_FRAMES: Final = 10
 DEFAULT_BARGE_RMS: Final = 220.0
-DEFAULT_BARGE_OVER: Final = 2.2
+DEFAULT_BARGE_PLAYING_GAIN: Final = 2.2
 DEFAULT_BLEED_DELAY_S: Final = 0.9
 DEFAULT_POST_SPEAK_COOLDOWN_S: Final = 0.8
 
-DEFAULT_AEC_BLEED_S: Final = 0.3
+DEFAULT_AEC_BLEED_DELAY_S: Final = 0.3
 DEFAULT_AEC_WET: Final = 0.85
 
 OPENROUTER_API_BASE: Final = "https://openrouter.ai/api/v1"
@@ -358,8 +358,8 @@ class ListenTune:
     """
 
     vad_aggressiveness: int = DEFAULT_VAD_AGGRESSIVENESS
-    end_silence_frames: int = DEFAULT_SILENCE_FRAMES_END
-    start_speech_frames: int = DEFAULT_SPEECH_FRAMES_START
+    end_silence_frames: int = DEFAULT_END_SILENCE_FRAMES
+    start_speech_frames: int = DEFAULT_START_SPEECH_FRAMES
     min_speech_rms: float = DEFAULT_MIN_SPEECH_RMS
     pre_pad_frames: int = DEFAULT_PRE_PAD_FRAMES
     min_voiced_frames: int = DEFAULT_MIN_VOICED_FRAMES
@@ -373,7 +373,7 @@ class ListenTune:
         ListenTune
             Validated tune. A bad value is replaced by its default with a warning.
         """
-        start = read_int("FISH_VOICE_SPEECH_FRAMES", DEFAULT_SPEECH_FRAMES_START, lo=1)
+        start = read_int("FISH_VOICE_SPEECH_FRAMES", DEFAULT_START_SPEECH_FRAMES, lo=1)
         pad = read_int(
             env_renamed("FISH_VOICE_PRE_PAD_FRAMES", "FISH_VOICE_PRE_PAD", warn=warn_renamed),
             DEFAULT_PRE_PAD_FRAMES,
@@ -384,7 +384,7 @@ class ListenTune:
                 "FISH_VOICE_VAD", DEFAULT_VAD_AGGRESSIVENESS, lo=0, hi=VAD_MODE_HI
             ),
             end_silence_frames=read_int(
-                "FISH_VOICE_SILENCE_FRAMES", DEFAULT_SILENCE_FRAMES_END, lo=1
+                "FISH_VOICE_SILENCE_FRAMES", DEFAULT_END_SILENCE_FRAMES, lo=1
             ),
             start_speech_frames=start,
             min_speech_rms=read_float("FISH_VOICE_MIN_RMS", DEFAULT_MIN_SPEECH_RMS, positive=True),
@@ -422,7 +422,7 @@ class BargeTune:
 
     hit_frames: int = DEFAULT_BARGE_HIT_FRAMES
     min_rms: float = DEFAULT_BARGE_RMS
-    playing_gain: float = DEFAULT_BARGE_OVER
+    playing_gain: float = DEFAULT_BARGE_PLAYING_GAIN
     bleed_delay_s: float = DEFAULT_BLEED_DELAY_S
     cooldown_s: float = DEFAULT_POST_SPEAK_COOLDOWN_S
 
@@ -442,7 +442,7 @@ class BargeTune:
                 env_renamed(
                     "FISH_VOICE_BARGE_PLAYING_GAIN", "FISH_VOICE_BARGE_OVER", warn=warn_renamed
                 ),
-                DEFAULT_BARGE_OVER,
+                DEFAULT_BARGE_PLAYING_GAIN,
                 lo=1.0,
             ),
             bleed_delay_s=read_float("FISH_VOICE_BLEED_DELAY", DEFAULT_BLEED_DELAY_S, lo=0.0),
@@ -469,7 +469,7 @@ class AecTune:
 
     enabled: bool = True
     wet: float = DEFAULT_AEC_WET
-    bleed_delay_s: float = DEFAULT_AEC_BLEED_S
+    bleed_delay_s: float = DEFAULT_AEC_BLEED_DELAY_S
 
     @classmethod
     def from_env(cls) -> Self:
@@ -487,7 +487,7 @@ class AecTune:
                 env_renamed(
                     "FISH_VOICE_AEC_BLEED_DELAY", "FISH_VOICE_AEC_BLEED", warn=warn_renamed
                 ),
-                DEFAULT_AEC_BLEED_S,
+                DEFAULT_AEC_BLEED_DELAY_S,
                 lo=0.0,
             ),
         )

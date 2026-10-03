@@ -21,7 +21,7 @@ from fish_audio_suite_voice.floor import AdaptiveFloor
 from fish_audio_suite_voice.playback import load_sounddevice, pcm_stream_kwargs
 from fish_audio_suite_voice.tune import (
     DEFAULT_BARGE_HIT_FRAMES,
-    DEFAULT_BARGE_OVER,
+    DEFAULT_BARGE_PLAYING_GAIN,
     DEFAULT_BARGE_RMS,
     DEFAULT_BLEED_DELAY_S,
     DEFAULT_POST_SPEAK_COOLDOWN_S,
@@ -32,7 +32,7 @@ from fish_audio_suite_voice.tune import (
 __all__ = [
     "BARGE_MISS_DECAY_FRAMES",
     "DEFAULT_BARGE_HIT_FRAMES",
-    "DEFAULT_BARGE_OVER",
+    "DEFAULT_BARGE_PLAYING_GAIN",
     "DEFAULT_BARGE_RMS",
     "DEFAULT_BLEED_DELAY_S",
     "DEFAULT_POST_SPEAK_COOLDOWN_S",
@@ -102,7 +102,7 @@ def barge_rms_need(
     """
     if far_playing and not aec_on:
         # Below 1 the floor drops while the speaker is on, so bleed trips barge-in.
-        gain = playing_gain if playing_gain >= 1 else DEFAULT_BARGE_OVER
+        gain = playing_gain if playing_gain >= 1 else DEFAULT_BARGE_PLAYING_GAIN
         return min_rms * gain
     return min_rms
 

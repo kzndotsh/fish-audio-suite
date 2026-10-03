@@ -6,7 +6,7 @@ import pytest
 from fish_audio_suite_voice.aec import EchoCanceller, FarEndTap, resample_int16
 from fish_audio_suite_voice.floor import AdaptiveFloor
 from fish_audio_suite_voice.playback import SounddeviceSink, dac_slice_bytes, iter_pcm_slices
-from fish_audio_suite_voice.tune import DEFAULT_AEC_BLEED_S, AecTune
+from fish_audio_suite_voice.tune import DEFAULT_AEC_BLEED_DELAY_S, AecTune
 
 
 def test_resample_44100_to_16000_length() -> None:
@@ -37,12 +37,12 @@ def test_effective_bleed_without_processor(monkeypatch: pytest.MonkeyPatch) -> N
     off = EchoCanceller(AecTune(enabled=False))
     assert off.effective_bleed_s(0.9) == 0.9
     assert off.effective_bleed_s(-1) == 0.0
-    on = EchoCanceller(AecTune(bleed_delay_s=DEFAULT_AEC_BLEED_S))
+    on = EchoCanceller(AecTune(bleed_delay_s=DEFAULT_AEC_BLEED_DELAY_S))
     monkeypatch.setattr(on, "load", object)
-    assert on.effective_bleed_s(0.9) == DEFAULT_AEC_BLEED_S
+    assert on.effective_bleed_s(0.9) == DEFAULT_AEC_BLEED_DELAY_S
     negative = EchoCanceller(AecTune(bleed_delay_s=-1.0))
     monkeypatch.setattr(negative, "load", object)
-    assert negative.effective_bleed_s(0.9) == DEFAULT_AEC_BLEED_S
+    assert negative.effective_bleed_s(0.9) == DEFAULT_AEC_BLEED_DELAY_S
 
 
 def test_echo_canceller_instances_do_not_share_a_tap() -> None:
