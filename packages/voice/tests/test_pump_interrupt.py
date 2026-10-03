@@ -12,6 +12,8 @@ from fish_audio_suite_voice.wire import EventAcc, Heard, TurnRun, TurnSpec, _pum
 
 
 class _Sink:
+    output_latency_s = 0.0
+
     def __init__(self) -> None:
         self.chunks: list[bytes] = []
 

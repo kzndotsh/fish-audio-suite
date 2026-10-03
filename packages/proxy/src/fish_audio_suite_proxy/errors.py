@@ -8,7 +8,25 @@ from typing import Any
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
-from fish_audio_suite_kit import parse_fish_error, utf8_text
+from fish_audio_suite_kit import (
+    FishErrorBody,
+    FishHttpError,
+    OpenAIError,
+    OpenAIErrorBody,
+    parse_fish_error,
+    utf8_text,
+)
+
+__all__ = [
+    "ProxyError",
+    "json_error",
+    "json_from_error_body",
+    "json_from_fish_error",
+    "json_from_upstream",
+    "openai_error_body",
+    "proxy_error_response",
+    "read_json_object",
+]
 
 _ERROR_TYPES = {
     401: "authentication_error",
@@ -39,8 +57,8 @@ class ProxyError(Exception):
         message : str
             Client-facing reason.
         """
-        self.status = int(status)
-        self.message = message
+        self.status: int = int(status)
+        self.message: str = message
         super().__init__(message)
 
 
@@ -53,7 +71,7 @@ def _openai_error_type(status: int) -> str:
     return "invalid_request_error"
 
 
-def openai_error_body(status: int, message: str, *, provider: bool = False) -> dict[str, Any]:
+def openai_error_body(status: int, message: str, *, provider: bool = False) -> OpenAIErrorBody:
     """OpenAI ``{error: {code, message, type}}`` object.
 
     Parameters
@@ -68,10 +86,10 @@ def openai_error_body(status: int, message: str, *, provider: bool = False) -> d
 
     Returns
     -------
-    dict
+    OpenAIErrorBody
         The envelope, not a response.
     """
-    err: dict[str, Any] = {
+    err: OpenAIError = {
         "code": int(status),
         "message": utf8_text(str(message)),
         "type": "provider_error" if provider else _openai_error_type(status),
@@ -97,6 +115,23 @@ def json_error(status: int, message: str) -> JSONResponse:
         OpenAI envelope with the matching status code.
     """
     return JSONResponse(openai_error_body(status, message), status_code=status)
+
+
+def json_from_fish_error(err: FishHttpError) -> JSONResponse:
+    """Turn a kit error into the local error envelope.
+
+    Parameters
+    ----------
+    err : FishHttpError
+        An error built by the kit: unreachable, timed out or an unusable body.
+
+    Returns
+    -------
+    JSONResponse
+        OpenAI envelope with the error's status and fixed message. It is not
+        marked as a Fish provider error, because Fish never answered.
+    """
+    return json_error(err.status, err.message)
 
 
 def proxy_error_response(_request: Request, exc: Exception) -> JSONResponse:
@@ -162,9 +197,24 @@ def json_from_upstream(status: int, raw: Any) -> JSONResponse:
         ``type`` is ``provider_error`` and ``metadata.provider_name`` is
         ``fish-audio``. The response status is the parsed Fish status.
     """
-    detail = parse_fish_error(status, raw)
-    code = int(detail["status"])
+    return json_from_error_body(parse_fish_error(status, raw))
+
+
+def json_from_error_body(detail: FishErrorBody) -> JSONResponse:
+    """Turn an already parsed Fish error into an OpenAI provider error.
+
+    Parameters
+    ----------
+    detail : FishErrorBody
+        The status and message from ``parse_fish_error``.
+
+    Returns
+    -------
+    JSONResponse
+        ``type`` is ``provider_error`` and ``metadata.provider_name`` is
+        ``fish-audio``. The response status is ``detail.status``.
+    """
     return JSONResponse(
-        openai_error_body(code, str(detail["message"]), provider=True),
-        status_code=code,
+        openai_error_body(detail.status, detail.message, provider=True),
+        status_code=detail.status,
     )

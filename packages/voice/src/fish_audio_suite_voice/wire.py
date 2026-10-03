@@ -4,17 +4,26 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import AsyncIterable, AsyncIterator, Awaitable, Callable, Iterable
+from collections.abc import (
+    AsyncIterable,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    Iterable,
+    Mapping,
+)
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import Any, Final, cast
 
 import httpx
 from fishaudio import AsyncFishAudio, FlushEvent, TextEvent
 from fishaudio.exceptions import APIError, ValidationError, WebSocketError
-from fishaudio.types import AudioFormat, LatencyMode, Model, TTSConfig
+from fishaudio.types import LatencyMode, Model, TTSConfig
 
 from fish_audio_suite_kit import (
     FISH_RETRY_ATTEMPTS,
+    AudioFormat,
+    FishHttpError,
     elapsed_ms,
     fish_attempt_exhausted,
     fish_request_error,
@@ -26,10 +35,29 @@ from fish_audio_suite_voice.debug import debug, warn, with_detail
 from fish_audio_suite_voice.playback import PlaybackSink
 from fish_audio_suite_voice.spoken import spoken_prefix
 
-ANEXT_POLL_S = 0.25
+__all__ = [
+    "EventAcc",
+    "Heard",
+    "IsolatedResult",
+    "TtsFailure",
+    "TurnRun",
+    "TurnSpec",
+    "as_async",
+    "flush_if_sent",
+    "is_cancel_noise",
+    "isolated_result",
+    "own_cancel",
+    "quiet_shutdown",
+    "reap",
+    "send_turn",
+    "text_events",
+    "turn_failure",
+]
+
+ANEXT_POLL_S: Final = 0.25
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class IsolatedResult:
     """What one TTS turn actually played.
 
@@ -44,8 +72,19 @@ class IsolatedResult:
         True after the first Fish audio chunk.
     cancelled : bool
         True when barge-in or Ctrl+C stopped the turn.
+    ttfa_ms : float or None
+        Milliseconds from the start of the turn to the first audio chunk.
+        None when no audio arrived.
+    llm_ttfs_ms : float or None
+        Milliseconds from the start of the turn to the first text event sent to
+        Fish. None when no text was sent.
     error_status : int or None
-        Fish HTTP status when the turn failed. 401, 402, and 403 end duplex.
+        Fish HTTP status when the turn failed. A socket drop has no status.
+    error_message : str or None
+        Text of the failure, set for a socket drop too.
+    error : FishHttpError or None
+        The failure as a kit error, set when there is a status. Test it with
+        ``isinstance``: ``FishAuthError`` (401, 402, 403) ends duplex.
     """
 
     spoken_so_far: str
@@ -56,9 +95,10 @@ class IsolatedResult:
     llm_ttfs_ms: float | None
     error_status: int | None = None
     error_message: str | None = None
+    error: FishHttpError | None = None
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class TurnSpec:
     """Inputs for one Fish websocket. Built by ``IsolatedFishTts``, not by apps.
 
@@ -72,16 +112,16 @@ class TurnSpec:
     base_url: str
     voice_id: str
     model: str
-    audio_format: str
-    latency: str
+    audio_format: AudioFormat
+    latency: LatencyMode
     speed: float
     sample_rate: int
     partial_chars: int
-    trace_headers: dict[str, str]
+    trace_headers: Mapping[str, str]
     config: TTSConfig
 
 
-@dataclass
+@dataclass(slots=True)
 class Heard:
     """Audio that actually arrived on this Fish websocket."""
 
@@ -89,7 +129,7 @@ class Heard:
     ttfa_ms: float | None = None
 
 
-@dataclass
+@dataclass(slots=True)
 class EventAcc:
     """Text events and first-sentence timing collected during one turn."""
 
@@ -97,7 +137,7 @@ class EventAcc:
     ttfs_ms: float | None = None
 
 
-@dataclass
+@dataclass(slots=True)
 class TurnRun:
     """Mutable state for one Fish websocket turn."""
 
@@ -186,7 +226,7 @@ async def as_async(deltas: Iterable[str] | AsyncIterable[str]) -> AsyncIterator[
 
 # Last resort when a teardown error is not an exception type we know. Matching
 # on message text breaks when an SDK rewords it, so a hit is logged.
-_CANCEL_NOISE = (
+_CANCEL_NOISE: Final = (
     "athrow",
     "cancel scope",
     "generator didn't stop",
@@ -303,8 +343,8 @@ async def send_turn(
     stream = client.tts.stream_websocket(
         _tee_text_events(replay, run.t0, run.acc),
         reference_id=spec.voice_id,
-        format=cast(AudioFormat, spec.audio_format),
-        latency=cast(LatencyMode, spec.latency),
+        format=spec.audio_format,
+        latency=spec.latency,
         speed=spec.speed,
         config=spec.config,
         model=cast(Model, spec.model),
@@ -331,10 +371,10 @@ def _note_first_audio(
         on_first_audio()
 
 
-_STREAM_END = object()
+_STREAM_END: Final = object()
 # A cancelled reader unwinds in milliseconds. A longer wait means a stuck socket,
 # which the loop shutdown cleans up.
-_REAP_TIMEOUT_S = 2.0
+_REAP_TIMEOUT_S: Final = 2.0
 
 
 async def _read_stream(stream: AsyncIterator[Any], queue: asyncio.Queue[Any]) -> None:
@@ -448,7 +488,7 @@ def isolated_result(run: TurnRun) -> IsolatedResult:
         # A socket drop has no HTTP status. The message is still a failed turn.
         failed=run.err_status is not None or bool(run.err_message),
         speed=spec.speed,
-        output_latency_s=float(getattr(run.sink, "output_latency_s", 0.0) or 0.0),
+        output_latency_s=float(run.sink.output_latency_s),
     )
     return IsolatedResult(
         spoken_so_far=spoken,
@@ -459,6 +499,11 @@ def isolated_result(run: TurnRun) -> IsolatedResult:
         llm_ttfs_ms=run.acc.ttfs_ms,
         error_status=run.err_status,
         error_message=run.err_message,
+        error=(
+            None
+            if run.err_status is None
+            else FishHttpError.from_status(run.err_status, run.err_message or "")
+        ),
     )
 
 
@@ -491,8 +536,20 @@ async def quiet_shutdown(loop: asyncio.AbstractEventLoop) -> None:
         await asyncio.gather(*pending, return_exceptions=True)
 
 
-@dataclass(frozen=True)
-class _TtsFailure:
+@dataclass(frozen=True, slots=True)
+class TtsFailure:
+    """How one failed Fish attempt should be handled.
+
+    Attributes
+    ----------
+    retry : bool
+        Whether the turn should be tried again.
+    err_status : int or None
+        Fish HTTP status, when the failure had one.
+    err_message : str or None
+        Text to report. None when the failure was a barge-in.
+    """
+
     retry: bool
     err_status: int | None = None
     err_message: str | None = None
@@ -505,7 +562,7 @@ def turn_failure(
     sent_text: str,
     got_audio: bool,
     cancel: threading.Event,
-) -> _TtsFailure:
+) -> TtsFailure:
     """Decide whether a Fish exception can be retried.
 
     Parameters
@@ -524,28 +581,28 @@ def turn_failure(
 
     Returns
     -------
-    _TtsFailure
+    TtsFailure
         ``retry`` is True only for 429 or 5xx before audio, with text to replay,
         and attempts left.
     """
     root = _root_exc(exc)
     retry, status, message = _classify_fish_exc(root)
     if cancel.is_set() or (is_cancel_noise(root) and not got_audio):
-        return _TtsFailure(retry=False)
+        return TtsFailure(retry=False)
     # The socket died after audio started, and the turn was not cancelled.
     # Recording the unplayed tail makes the next turn assume it was heard.
     if is_cancel_noise(root):
         err_message = str(root)
         warn(f"[tts] {err_message}")
-        return _TtsFailure(retry=False, err_message=err_message)
+        return TtsFailure(retry=False, err_message=err_message)
     last = fish_attempt_exhausted(attempt)
     can_replay = bool(sent_text) and not got_audio
     if retry and not last and can_replay:
         warn(f"[tts] retry status={status} attempt={attempt + 1}/{FISH_RETRY_ATTEMPTS}")
-        return _TtsFailure(retry=True)
+        return TtsFailure(retry=True)
     err_message = message or str(root)
     warn(f"[tts] {status} {err_message}" if status is not None else f"[tts] {err_message}")
-    return _TtsFailure(retry=False, err_status=status, err_message=err_message)
+    return TtsFailure(retry=False, err_status=status, err_message=err_message)
 
 
 def _classify_fish_exc(exc: BaseException) -> tuple[bool, int | None, str]:

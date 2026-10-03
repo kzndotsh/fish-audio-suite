@@ -5,35 +5,39 @@ from __future__ import annotations
 import json
 import threading
 from contextlib import AsyncExitStack
-from typing import Any
+from typing import Any, Final, cast
 
 import httpx
 
 from fish_audio_suite_kit import (
     FISH_ASR_PATH,
     FISH_RETRY_ATTEMPTS,
+    AsrBody,
     FishHttpError,
     SuiteDefaults,
     bearer,
     fish_attempt_exhausted,
     fish_backoff_s,
-    fish_non_json,
     fish_request_error,
-    fish_unreachable,
     is_asr_hallucination,
     is_caption_watermark,
     parse_asr_body,
     parse_fish_error,
+    retry_after_seconds,
     scrub_asr,
-    should_retry_fish_status,
     strip_base,
     without_watermark_segments,
 )
 from fish_audio_suite_voice.debug import debug, public_meta, with_detail
-from fish_audio_suite_voice.pause import header_retry_after, sleep_unless
+from fish_audio_suite_voice.pause import sleep_unless
 
-_ASR_TIMEOUT_S = 60.0
-_ASR_CONNECT_S = 10.0
+__all__ = [
+    "asr_client",
+    "fish_asr",
+]
+
+_ASR_TIMEOUT_S: Final = 60.0
+_ASR_CONNECT_S: Final = 10.0
 
 
 async def _pause_or_raise(
@@ -72,22 +76,24 @@ async def _post_fish(
             response = await client.post(url, **kwargs)
         except httpx.RequestError as exc:
             status, message = fish_request_error(exc, httpx.TimeoutException)
-            last_error = FishHttpError(status, with_detail(message, exc))
+            last_error = FishHttpError.from_status(status, with_detail(message, exc))
             if await _pause_or_raise(attempt, last_error, exc, cancel):
                 return None
             continue
         if response.status_code >= 400:
             detail = parse_fish_error(response.status_code, response.text)
-            last_error = FishHttpError(int(detail["status"]), str(detail["message"]))
-            if should_retry_fish_status(last_error.status):
-                retry_after = header_retry_after(response.headers)
-                if await _pause_or_raise(attempt, last_error, None, cancel, retry_after):
+            last_error = FishHttpError.from_status(
+                detail.status,
+                detail.message,
+                retry_after=retry_after_seconds(response.headers),
+            )
+            if last_error.retryable:
+                if await _pause_or_raise(attempt, last_error, None, cancel, last_error.retry_after):
                     return None
                 continue
             raise last_error
         return response
-    status, message = fish_unreachable()
-    raise last_error or FishHttpError(status, message)
+    raise last_error or FishHttpError.unreachable()
 
 
 def asr_client() -> httpx.AsyncClient:
@@ -161,11 +167,11 @@ async def fish_asr(
         **(extra_headers or {}),
     }
     files = {"audio": ("utterance.wav", audio_wav, "audio/wav")}
-    data: dict[str, str] = {}
+    form: dict[str, str] = {}
     # A newline in the language value starts another multipart part.
     lang = _form_language(language)
     if lang:
-        data["language"] = lang
+        form["language"] = lang
     async with AsyncExitStack() as stack:
         http = client or await stack.enter_async_context(asr_client())
         response = await _post_fish(
@@ -174,15 +180,14 @@ async def fish_asr(
             cancel,
             headers=headers,
             files=files,
-            data=data or None,
+            data=form or None,
         )
         if response is None:
             return ""
     try:
         body = response.json()
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        status, message = fish_non_json()
-        raise FishHttpError(status, message) from exc
+        raise FishHttpError.non_json() from exc
     if isinstance(body, dict):
         meta = public_meta(body)
         debug(
@@ -194,17 +199,17 @@ async def fish_asr(
             meta.get("text_chars"),
             response.headers.get("x-fish-trace-id", "")[:12],
         )
-    data, raw_text = parse_asr_body(body)
+    parsed, raw_text = parse_asr_body(body)
     text = scrub_asr(raw_text.strip(), strip_cues=True)
     # Duplex only hears this string. A blank field or a caption watermark
     # still drops words that Fish put in segments.
     if is_asr_hallucination(text):
-        alt = _segment_text(data)
+        alt = _segment_text(parsed)
         if alt and not is_asr_hallucination(alt):
             return alt
     # The whole transcript is real speech plus a watermark sentence. The
     # hallucination check keeps that text, and the next turn answers it.
-    trimmed = without_watermark_segments(text, data.get("segments"), strip_cues=True)
+    trimmed = without_watermark_segments(text, parsed.get("segments"), strip_cues=True)
     if trimmed != text and trimmed and not is_asr_hallucination(trimmed):
         return trimmed
     return text
@@ -218,15 +223,17 @@ def _form_language(language: str) -> str:
     return text
 
 
-def _segment_text(data: dict[str, Any]) -> str:
-    segments = data.get("segments")
+def _segment_text(body: AsrBody) -> str:
+    # Fish may send any shape. The kit only checks "text", so each piece is
+    # narrowed here before it is read.
+    segments: object = body.get("segments")
     if not isinstance(segments, list):
         return ""
     parts: list[str] = []
-    for seg in segments:
+    for seg in cast(list[object], segments):
         if not isinstance(seg, dict):
             continue
-        raw = seg.get("text")
+        raw = cast(dict[str, object], seg).get("text")
         if not isinstance(raw, str):
             continue
         piece = scrub_asr(raw.strip(), strip_cues=True)

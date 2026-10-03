@@ -6,17 +6,31 @@ import json
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Final, Protocol
 
 import httpx
 
-from fish_audio_suite_kit import MS_PER_S, bearer, strip_base, utf8_text
+from fish_audio_suite_kit import (
+    MS_PER_S,
+    ChatMessage,
+    bearer,
+    retry_after_seconds,
+    strip_base,
+    utf8_text,
+)
 from fish_audio_suite_voice.debug import debug, env_debug, warn
-from fish_audio_suite_voice.pause import header_retry_after, seconds_value
 from fish_audio_suite_voice.tune import LlmTune
 
-_ABORT_CHARS = 800
-_SSE_DATA = "data:"
+__all__ = [
+    "ChatCall",
+    "chat_completions_url",
+    "chat_events",
+    "http_client",
+    "openrouter_client",
+]
+
+_ABORT_CHARS: Final = 800
+_SSE_DATA: Final = "data:"
 
 
 class _AbortStats(Protocol):
@@ -25,7 +39,7 @@ class _AbortStats(Protocol):
     retry_after_s: float | None
 
 
-@dataclass
+@dataclass(slots=True)
 class ChatCall:
     """One duplex chat request, shared by the OpenRouter SDK and httpx SSE paths.
 
@@ -37,7 +51,7 @@ class ChatCall:
     OpenAI-compatible path.
     """
 
-    messages: list[dict[str, str]]
+    messages: list[ChatMessage]
     tune: LlmTune
     route_model: str
     client: Any | None
@@ -195,7 +209,7 @@ def _abort_http(
 
 
 def _retry_after_seconds(headers: httpx.Headers | None, body: str) -> float | None:
-    found = header_retry_after(headers)
+    found = retry_after_seconds(headers)
     if found is not None:
         return found
     return _seconds_in_json(body)
@@ -209,11 +223,19 @@ def _seconds_in_json(body: str) -> float | None:
     return _find_retry_seconds(parsed)
 
 
+def _json_seconds(raw: object) -> float | None:
+    # The kit owns what counts as a usable wait. A JSON number is read the same
+    # way a Retry-After header is, so a negative, nan or huge value is dropped.
+    if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+        return None
+    return retry_after_seconds({"Retry-After": str(raw)})
+
+
 def _find_retry_seconds(value: object) -> float | None:
     if isinstance(value, dict):
         for key in ("retry_after_seconds", "Retry-After", "retry-after"):
             if key in value:
-                found = seconds_value(value[key])
+                found = _json_seconds(value[key])
                 if found is not None:
                     return found
         for item in value.values():

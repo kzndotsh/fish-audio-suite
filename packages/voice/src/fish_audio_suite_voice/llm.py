@@ -14,11 +14,11 @@ import re
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, Protocol, cast
+from typing import Any, Final, Protocol, cast
 
 import httpx
 
-from fish_audio_suite_kit import MS_PER_S, ends_sentence, utf8_text
+from fish_audio_suite_kit import MS_PER_S, ChatMessage, ends_sentence, utf8_text
 from fish_audio_suite_voice.debug import console_print, debug, short_model, trace, warn
 from fish_audio_suite_voice.live import is_cancel_noise
 from fish_audio_suite_voice.pause import sleep_unless
@@ -31,16 +31,23 @@ from fish_audio_suite_voice.transports import (
 from fish_audio_suite_voice.tune import LlmTune, openrouter_host
 from fish_audio_suite_voice.wire import own_cancel, reap
 
+__all__ = [
+    "ChatBackend",
+    "check_openrouter_model",
+    "llm_token_stream",
+    "open_chat_backend",
+]
+
 # A longer Retry-After than this ends the reply instead of stalling the turn.
-_LLM_429_CAP_S = 15.0
+_LLM_429_CAP_S: Final = 15.0
 # A cue after a finished sentence is not a cut-off. "Hello. [break]" is done.
-_TRAIL_CUE_RE = re.compile(r"(?:\s*\[[^\[\]]{0,80}\])+\s*$")
+_TRAIL_CUE_RE: Final = re.compile(r"(?:\s*\[[^\[\]]{0,80}\])+\s*$")
 # A follow-up with no sentence end past this is a runaway, not the missing words.
-_CONT_SCAN = 240
-_CONT_BARE = 80
-_MODEL_LOOKUP_S = 15
-_MODEL_LOOKUP_MS = _MODEL_LOOKUP_S * MS_PER_S
-_LOOKUP_BODY_CHARS = 200
+_CONT_SCAN: Final = 240
+_CONT_BARE: Final = 80
+_MODEL_LOOKUP_S: Final = 15
+_MODEL_LOOKUP_MS: Final = _MODEL_LOOKUP_S * MS_PER_S
+_LOOKUP_BODY_CHARS: Final = 200
 
 
 def _route_suffix(model: str) -> str:
@@ -116,7 +123,7 @@ def _event_field(event: object, name: str) -> Any:
     return value
 
 
-_TEXT_PARTS = frozenset({"text", "output_text"})
+_TEXT_PARTS: Final = frozenset({"text", "output_text"})
 
 
 def _part_text(part: object) -> str:
@@ -194,7 +201,7 @@ def _delta_content(chunk: object, *, already: bool = False) -> str:
     return _refusal_text(_event_field(ch0, "message"))
 
 
-@dataclass
+@dataclass(slots=True)
 class _ChatStats:
     yielded: int = 0
     last_finish: str | None = None
@@ -331,7 +338,7 @@ async def _event_or_cancel(pending: asyncio.Task[object], cancel: asyncio.Event 
     return pending in done
 
 
-_SELECTED_PROVIDER = re.compile(r"selected=([^,]+)")
+_SELECTED_PROVIDER: Final = re.compile(r"selected=([^,]+)")
 
 
 def _provider_brief(provider: object) -> str:
@@ -402,7 +409,7 @@ class ChatBackend(Protocol):
 
     def stream(
         self,
-        messages: list[dict[str, str]],
+        messages: list[ChatMessage],
         *,
         cancel: asyncio.Event | None = None,
         trace_id: str | None = None,
@@ -448,7 +455,7 @@ class _Backend:
 
     def stream(
         self,
-        messages: list[dict[str, str]],
+        messages: list[ChatMessage],
         *,
         cancel: asyncio.Event | None = None,
         trace_id: str | None = None,
@@ -506,7 +513,7 @@ async def open_chat_backend(
 
 
 async def llm_token_stream(
-    messages: list[dict[str, str]],
+    messages: list[ChatMessage],
     *,
     tune: LlmTune | None = None,
     base: str = "",
@@ -564,7 +571,7 @@ async def llm_token_stream(
         model=model,
     )
     route_model = _nitro_route(tune.model, nitro=_want_nitro(tune.model, tune))
-    batch = messages
+    batch: list[ChatMessage] = messages
     spoken: list[str] = []
     generations = (1, 2) if tune.continuation else (1,)
     for generation in generations:
@@ -634,7 +641,7 @@ def _first_sentence(text: str) -> str:
 
 
 async def _stream_generation(
-    messages: list[dict[str, str]],
+    messages: list[ChatMessage],
     *,
     tune: LlmTune,
     route_model: str,

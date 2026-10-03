@@ -8,6 +8,7 @@ import pytest
 
 from fish_audio_suite_kit import (
     FISH_RETRY_ATTEMPTS,
+    FishErrorBody,
     FishHttpError,
     bearer,
     fish_backoff_s,
@@ -48,7 +49,8 @@ def test_retry_pause_stops_on_the_last_attempt(monkeypatch: pytest.MonkeyPatch) 
     async def run() -> tuple[bool, bool]:
         return await fish_retry_pause(0), await fish_retry_pause(4)
 
-    early, last = asyncio.run(run())
+    with pytest.warns(DeprecationWarning, match="fish_sleep_before_retry"):
+        early, last = asyncio.run(run())
     assert early is False
     assert last is True
     assert slept == [1.0]
@@ -142,7 +144,7 @@ def test_fish_error_falls_back_when_the_body_is_empty() -> None:
 
 def test_parse_asr_body_text_or_502() -> None:
     data, text = parse_asr_body({"text": "hello"})
-    assert data["text"] == "hello"
+    assert data.get("text") == "hello"
     assert text == "hello"
     assert parse_asr_body({})[1] == ""
     assert parse_asr_body({"text": None})[1] == ""
@@ -169,14 +171,16 @@ def test_fish_error_shape_and_retry_policy() -> None:
     assert not should_retry_fish_status(401)
     assert not should_retry_fish_status(402)
     assert not should_retry_fish_status(404)
-    assert fish_backoff_seconds(0) == 1.0
-    assert fish_backoff_seconds(2) == 4.0
-    assert parse_fish_error(401, {"message": "Invalid Token", "status": 401}) == {
-        "message": "Invalid Token",
-        "status": 401,
-    }
-    assert parse_fish_error(400, b"not json")["message"] == "not json"
-    assert parse_fish_error(502, {"error": {"message": "upstream"}})["message"] == "upstream"
+    with pytest.warns(DeprecationWarning, match="fish_backoff_s"):
+        first = fish_backoff_seconds(0)
+    with pytest.warns(DeprecationWarning, match="fish_backoff_s"):
+        third = fish_backoff_seconds(2)
+    assert (first, third) == (1.0, 4.0)
+    assert parse_fish_error(401, {"message": "Invalid Token", "status": 401}) == FishErrorBody(
+        401, "Invalid Token"
+    )
+    assert parse_fish_error(400, b"not json").message == "not json"
+    assert parse_fish_error(502, {"error": {"message": "upstream"}}).message == "upstream"
     assert fish_error_body(402, "Insufficient credits")["status"] == 402
 
 
@@ -223,10 +227,13 @@ def test_sleep_before_retry_reports_whether_to_try_again(monkeypatch: pytest.Mon
 
 
 def test_fish_http_error_constructors_match_the_tuple_helpers() -> None:
-    for built, pair in (
-        (FishHttpError.unreachable(), fish_unreachable()),
-        (FishHttpError.non_json(), fish_non_json()),
-        (FishHttpError.non_object(), fish_non_object()),
+    with pytest.warns(DeprecationWarning, match="is deprecated since") as caught:
+        pairs = (fish_unreachable(), fish_non_json(), fish_non_object())
+    assert len(caught) == 3
+    for built, pair in zip(
+        (FishHttpError.unreachable(), FishHttpError.non_json(), FishHttpError.non_object()),
+        pairs,
+        strict=True,
     ):
         assert (built.status, built.message) == pair
     timed_out = FishHttpError.timed_out()

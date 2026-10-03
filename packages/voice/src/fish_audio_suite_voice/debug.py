@@ -13,17 +13,41 @@ import re
 import sys
 import time
 from collections.abc import Callable
-from typing import Any, TypeGuard
+from enum import IntEnum
+from typing import Any, Final, TypeGuard, override
 
 from fishaudio.resources import realtime as _fish_rt
 from loguru import logger
 
 from fish_audio_suite_kit import env_bool
 
-_SECRET_HEADER = frozenset({"authorization", "proxy-authorization", "cookie", "set-cookie"})
-_HIDDEN_KEYS = frozenset({"text", "content", "audio", "messages"})
-_META_DEPTH = 3
-_PUBLIC_HEADERS = frozenset(
+__all__ = [
+    "DebugLevel",
+    "clear_turn",
+    "configure_voice_logging",
+    "console_print",
+    "conversation",
+    "debug",
+    "debug_level",
+    "end_reply_line",
+    "env_debug",
+    "header_meta",
+    "heartbeat_due",
+    "install_fish_ws_tap",
+    "mark_turn",
+    "public_meta",
+    "short_model",
+    "trace",
+    "warn",
+    "with_detail",
+    "write_reply_token",
+    "ws_event_view",
+]
+
+_SECRET_HEADER: Final = frozenset({"authorization", "proxy-authorization", "cookie", "set-cookie"})
+_HIDDEN_KEYS: Final = frozenset({"text", "content", "audio", "messages"})
+_META_DEPTH: Final = 3
+_PUBLIC_HEADERS: Final = frozenset(
     {
         "content-type",
         "retry-after",
@@ -49,14 +73,14 @@ class _WsTap:
     skipped: bool = False
 
 
-_WS_TAP = _WsTap()
+_WS_TAP: Final = _WsTap()
 
 
 class _ReplyLine:
     open: bool = False
 
 
-_REPLY = _ReplyLine()
+_REPLY: Final = _ReplyLine()
 
 
 def with_detail(message: str, exc: BaseException) -> str:
@@ -127,6 +151,14 @@ def end_reply_line() -> None:
     _REPLY.open = False
 
 
+class DebugLevel(IntEnum):
+    """How much the voice CLI logs."""
+
+    OFF = 0
+    EVENTS = 1
+    TRACE = 2
+
+
 class _Debug:
     """Debug level set by ``configure_voice_logging``. Avoids writing os.environ.
 
@@ -135,24 +167,24 @@ class _Debug:
     still honor ``FISH_VOICE_DEBUG``.
     """
 
-    level: int = 0
-    frozen: int | None = None
+    level: DebugLevel = DebugLevel.OFF
+    frozen: DebugLevel | None = None
 
 
-_DEBUG = _Debug()
-_TRACE_WORDS = frozenset({"2", "trace"})
+_DEBUG: Final = _Debug()
+_TRACE_WORDS: Final = frozenset({"2", "trace"})
 
 
-def debug_level() -> int:
-    """Return the debug level: 0 off, 1 events, 2 events plus heartbeats and raw traffic.
+def debug_level() -> DebugLevel:
+    """Return how much to log: off, events, or events plus heartbeats and raw traffic.
 
     Returns
     -------
-    int
+    DebugLevel
         The level ``configure_voice_logging`` fixed, which is the higher of its
         argument and ``FISH_VOICE_DEBUG`` at that moment. Before logging is
         configured the environment is read on each call. ``2`` or ``trace`` is
-        level 2, any other true value is level 1.
+        ``TRACE``, any other true value is ``EVENTS``.
 
     Notes
     -----
@@ -164,10 +196,10 @@ def debug_level() -> int:
     return max(_DEBUG.level, _env_level())
 
 
-def _env_level() -> int:
+def _env_level() -> DebugLevel:
     if os.environ.get("FISH_VOICE_DEBUG", "").strip().lower() in _TRACE_WORDS:
-        return 2
-    return int(env_bool("FISH_VOICE_DEBUG"))
+        return DebugLevel.TRACE
+    return DebugLevel.EVENTS if env_bool("FISH_VOICE_DEBUG") else DebugLevel.OFF
 
 
 def env_debug() -> bool:
@@ -179,7 +211,7 @@ def env_debug() -> bool:
         True after ``configure_voice_logging(debug=True)``, or when
         ``FISH_VOICE_DEBUG`` is set to a true value.
     """
-    return debug_level() >= 1
+    return debug_level() >= DebugLevel.EVENTS
 
 
 def debug(message: str, *args: Any, **fields: Any) -> None:
@@ -191,14 +223,14 @@ def debug(message: str, *args: Any, **fields: Any) -> None:
 
 def trace(message: str, *args: Any, **fields: Any) -> None:
     """Log only at level 2. Use for per-frame and per-chunk detail."""
-    if debug_level() >= 2:
+    if debug_level() >= DebugLevel.TRACE:
         end_reply_line()
         logger.debug(message, *args, **fields)
 
 
 def heartbeat_due(idle_frames: int, every: int) -> bool:
     """Return whether a heartbeat should print on this idle frame (level 2 only)."""
-    return debug_level() >= 2 and idle_frames % every == 0
+    return debug_level() >= DebugLevel.TRACE and idle_frames % every == 0
 
 
 class _Turn:
@@ -206,8 +238,8 @@ class _Turn:
     count: int = 0
 
 
-_TURN = _Turn()
-_RULE_WIDTH = 56
+_TURN: Final = _Turn()
+_RULE_WIDTH: Final = 56
 
 
 def mark_turn() -> None:
@@ -225,10 +257,10 @@ def clear_turn() -> None:
     _TURN.t0 = None
 
 
-_TAGGED = re.compile(r"^([a-z]+)\.([a-z_]+)\b ?(.*)$", re.DOTALL)
-_BRACKETED = re.compile(r"^\[([A-Za-z-]+)\]\s*(.*)$", re.DOTALL)
-_TAG_WIDTH = 7
-_TAG_COLORS = {
+_TAGGED: Final = re.compile(r"^([a-z]+)\.([a-z_]+)\b ?(.*)$", re.DOTALL)
+_BRACKETED: Final = re.compile(r"^\[([A-Za-z-]+)\]\s*(.*)$", re.DOTALL)
+_TAG_WIDTH: Final = 7
+_TAG_COLORS: Final = {
     "you": "96",
     "listen": "36",
     "asr": "33",
@@ -295,7 +327,7 @@ def _now_stamp() -> str:
     return time.strftime("%H:%M:%S", time.localtime(now)) + f".{millis:03d}"
 
 
-_ROLE_COLORS = {"you": "96", "llm": "95"}
+_ROLE_COLORS: Final = {"you": "96", "llm": "95"}
 
 
 def _stdout_tty() -> bool:
@@ -341,7 +373,7 @@ class _Configured:
     on: bool = False
 
 
-_CONFIGURED = _Configured()
+_CONFIGURED: Final = _Configured()
 
 
 def warn(message: str) -> None:
@@ -354,6 +386,7 @@ def warn(message: str) -> None:
 
 
 class _InterceptHandler(logging.Handler):
+    @override
     def emit(self, record: logging.LogRecord) -> None:
         try:
             level: str | int = logger.level(record.levelname).name
@@ -367,20 +400,20 @@ class _InterceptHandler(logging.Handler):
         logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
 
 
-_INTERCEPTED = ("httpx", "httpcore", "websockets", "asyncio")
+_INTERCEPTED: Final = ("httpx", "httpcore", "websockets", "asyncio")
 # httpcore DEBUG prints raw header bytes (b'...'), including Set-Cookie.
 # httpx INFO is the one-line "HTTP Request: METHOD url status" record.
-_HTTPX_DEBUG_LEVEL = logging.INFO
+_HTTPX_DEBUG_LEVEL: Final = logging.INFO
 
 
-def _intercept_libraries(*, level: int) -> None:
+def _intercept_libraries(*, level: DebugLevel) -> None:
     handler = _InterceptHandler()
     for name in _INTERCEPTED:
         lib = logging.getLogger(name)
         lib.handlers.clear()
         lib.addHandler(handler)
         lib.propagate = False
-        if name == "httpx" and level >= 2:
+        if name == "httpx" and level >= DebugLevel.TRACE:
             lib.setLevel(_HTTPX_DEBUG_LEVEL)
         else:
             lib.setLevel(logging.WARNING)
@@ -396,31 +429,36 @@ def _stderr_logger(level: str) -> None:
     )
 
 
-def configure_voice_logging(*, debug: bool | int) -> None:
+def configure_voice_logging(*, debug: bool | int | DebugLevel) -> None:
     """Idempotent stderr sink. DEBUG when on; otherwise WARNING. Call from the CLI only.
 
     Parameters
     ----------
-    debug : bool or int
-        ``False`` or 0 logs warnings only. ``True`` or 1 adds events. 2 adds the
-        heartbeats, raw websocket audio and HTTP request lines.
+    debug : bool or int or DebugLevel
+        ``False``, 0 or ``OFF`` logs warnings only. ``True``, 1 or ``EVENTS``
+        adds events. 2 or ``TRACE`` adds the heartbeats, raw websocket audio and
+        HTTP request lines. Larger numbers count as ``TRACE``.
     """
-    level = max(int(debug), _env_level())
+    level = max(DebugLevel(min(max(int(debug), 0), DebugLevel.TRACE)), _env_level())
     _DEBUG.level = level
     _DEBUG.frozen = level
-    _stderr_logger("DEBUG" if level >= 1 else "WARNING")
+    _stderr_logger("DEBUG" if level >= DebugLevel.EVENTS else "WARNING")
     _CONFIGURED.on = True
     _intercept_libraries(level=level)
-    if level >= 1:
+    if level >= DebugLevel.EVENTS:
         install_fish_ws_tap()
-        shown = "events, heartbeats and raw traffic" if level >= 2 else "events (--trace adds more)"
+        shown = (
+            "events, heartbeats and raw traffic"
+            if level >= DebugLevel.TRACE
+            else "events (--trace adds more)"
+        )
         logger.debug("debug.on {}", shown)
 
 
 # The Fish SDK has no public hook for its websocket events, so the debug tap
 # wraps these two private functions. Both are looked up by name and checked
 # before use, so an SDK change turns the tap off instead of breaking a stream.
-_TAPPED_FUNCTIONS = ("_should_stop", "_process_audio_event")
+_TAPPED_FUNCTIONS: Final = ("_should_stop", "_process_audio_event")
 _Tapped = Callable[[dict[str, Any]], Any]
 
 

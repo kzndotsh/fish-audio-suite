@@ -8,7 +8,7 @@ import threading
 import time
 from collections.abc import AsyncIterator, Callable, Coroutine
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Final
 
 import httpx
 from fishaudio import AsyncFishAudio
@@ -37,7 +37,7 @@ from fish_audio_suite_voice.wire import (
     turn_failure,
 )
 
-_WS_TIMEOUT_S = 240.0
+_WS_TIMEOUT_S: Final = 240.0
 
 __all__ = [
     "IsolatedResult",
@@ -86,7 +86,7 @@ class _HeldClient:
             await client.close()
 
 
-@dataclass
+@dataclass(slots=True)
 class _Turn:
     run: TurnRun
     held: _HeldClient

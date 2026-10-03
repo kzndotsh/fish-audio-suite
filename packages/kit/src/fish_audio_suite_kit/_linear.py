@@ -10,6 +10,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 
+__all__ = [
+    "blank_table_separators",
+    "collapse_space_before_stop",
+    "emphasis_runs",
+    "flatten_table_rows",
+    "strip_space_before_newline",
+]
+
 _SPACES = frozenset(" \t")
 _STOPS = frozenset(".!?…。！？,;:，；：")
 _MARKS = frozenset("*_`~")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import threading
 import wave
 from pathlib import Path
@@ -14,6 +15,8 @@ from fish_audio_suite_voice.live import IsolatedFishTts, IsolatedResult, is_canc
 from fish_audio_suite_voice.playback import (
     FileSink,
     MpvSink,
+    PlaybackKind,
+    PlaybackSink,
     PortAudioMissingError,
     SounddeviceSink,
     StdoutSink,
@@ -21,6 +24,8 @@ from fish_audio_suite_voice.playback import (
     duplex_playback_problem,
     make_sink,
     missing_portaudio,
+    parse_playback,
+    write_mono_wav,
 )
 from fish_audio_suite_voice.wire import (
     _classify_fish_exc,
@@ -216,6 +221,8 @@ def test_speak_isolated_reraises_a_sink_that_fails_to_open() -> None:
     tts = IsolatedFishTts(api_key="k", voice_id="v")
 
     class Sink:
+        output_latency_s = 0.0
+
         def start(self) -> None:
             raise PortAudioMissingError("missing")
 
@@ -296,3 +303,54 @@ def test_speak_isolated_works_inside_asyncio_run(
     result = asyncio.run(outer())
     assert result.got_audio
     assert result.bytes_played == 128
+
+
+def test_parse_playback_names_every_sink_and_rejects_the_rest() -> None:
+    assert parse_playback(" MPV ") is PlaybackKind.MPV
+    assert parse_playback("Speakers") is PlaybackKind.SPEAKERS
+    assert parse_playback("nope") is None
+    assert parse_playback("") is None
+    assert {kind.value for kind in PlaybackKind} == {
+        "sounddevice",
+        "speakers",
+        "pcm",
+        "stdout",
+        "mpv",
+        "file",
+    }
+
+
+def test_only_the_sound_card_sinks_are_speakers() -> None:
+    speakers = {kind for kind in PlaybackKind if kind.is_speaker}
+    assert speakers == {PlaybackKind.SOUNDDEVICE, PlaybackKind.SPEAKERS, PlaybackKind.PCM}
+
+
+@pytest.mark.parametrize("name", ["sounddevice", "SPEAKERS", " pcm "])
+def test_make_sink_builds_the_sound_card_sink_for_each_speaker_name(name: str) -> None:
+    assert isinstance(make_sink(name), SounddeviceSink)
+
+
+def test_make_sink_and_the_duplex_check_agree_on_unknown_names() -> None:
+    with pytest.raises(ValueError, match="unknown playback sink"):
+        make_sink("nope")
+    assert duplex_playback_problem("nope") == "unknown playback sink 'nope'"
+
+
+def test_every_sink_reports_an_output_latency() -> None:
+    for sink in (StdoutSink(), FileSink(Path("x.wav")), MpvSink(), SounddeviceSink()):
+        assert isinstance(sink, PlaybackSink)
+        assert sink.output_latency_s == 0.0
+
+
+def test_write_mono_wav_accepts_a_path_a_string_and_a_file_object(tmp_path: Path) -> None:
+    pcm = b"\x01\x00" * 160
+    target = tmp_path / "clip.wav"
+    write_mono_wav(target, pcm, 16_000)
+    write_mono_wav(str(tmp_path / "text.wav"), pcm, 16_000)
+    buf = io.BytesIO()
+    write_mono_wav(buf, pcm, 16_000)
+    for source in (target, tmp_path / "text.wav", io.BytesIO(buf.getvalue())):
+        with wave.open(str(source) if isinstance(source, Path) else source, "rb") as wf:
+            assert wf.getnchannels() == 1
+            assert wf.getframerate() == 16_000
+            assert wf.getnframes() == 160

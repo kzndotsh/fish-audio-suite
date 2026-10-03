@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from fish_audio_suite_kit import (
     ensure_trace_headers,
     make_traceparent,
@@ -17,22 +19,27 @@ def test_canonical_traceparent() -> None:
     assert canonical_traceparent("00-" + "0" * 32 + "-" + "0" * 16 + "-01") is None
     forbidden = "ff-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
     assert canonical_traceparent(forbidden) is None
-    assert w3c_trace_headers({"traceparent": forbidden}) == {}
+    assert ensure_trace_headers({"traceparent": forbidden})["traceparent"] != forbidden
+    with pytest.warns(DeprecationWarning, match="ensure_trace_headers"):
+        assert w3c_trace_headers({"traceparent": forbidden}) == {}
 
 
 def test_w3c_trace_headers_and_mint() -> None:
-    headers = w3c_trace_headers({"Traceparent": _SAMPLE_PARENT, "tracestate": "congo=t61rcWkgMzE"})
+    headers = ensure_trace_headers(
+        {"Traceparent": _SAMPLE_PARENT, "tracestate": "congo=t61rcWkgMzE"}
+    )
     assert headers["traceparent"] == _SAMPLE_PARENT
     assert headers["tracestate"] == "congo=t61rcWkgMzE"
-    injected = w3c_trace_headers(
+    injected = ensure_trace_headers(
         {"traceparent": _SAMPLE_PARENT, "tracestate": "congo=ok\r\nX-Injected: 1"}
     )
     assert injected == {"traceparent": _SAMPLE_PARENT}
-    nulled = w3c_trace_headers({"traceparent": _SAMPLE_PARENT, "tracestate": "congo=ok\x00"})
+    nulled = ensure_trace_headers({"traceparent": _SAMPLE_PARENT, "tracestate": "congo=ok\x00"})
     assert "tracestate" not in nulled
-    surrogate = w3c_trace_headers({"traceparent": _SAMPLE_PARENT, "tracestate": "vendor=\ud800"})
+    surrogate = ensure_trace_headers({"traceparent": _SAMPLE_PARENT, "tracestate": "vendor=\ud800"})
     assert surrogate == {"traceparent": _SAMPLE_PARENT}
-    assert w3c_trace_headers({}) == {}
+    with pytest.warns(DeprecationWarning, match="ensure_trace_headers"):
+        assert w3c_trace_headers({}) == {}
     forwarded = ensure_trace_headers({"traceparent": _SAMPLE_PARENT})
     assert forwarded["traceparent"] == _SAMPLE_PARENT
     minted_out = ensure_trace_headers({})

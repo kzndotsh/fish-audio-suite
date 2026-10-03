@@ -13,6 +13,12 @@ from fish_audio_suite_kit._charsets import (
 )
 from fish_audio_suite_kit.defaults import SuiteDefaults
 
+__all__ = [
+    "ends_sentence",
+    "next_tts_cut",
+    "split_tts_piece",
+]
+
 # Flush a long clause when no sentence end has arrived. Default is 40.
 _PARTIAL_CHARS = SuiteDefaults().tts_partial_chars
 # A partial cut at the last space is used only when that space is at least this
@@ -286,6 +292,16 @@ def next_tts_cut(buf: str, *, partial_chars: int = _PARTIAL_CHARS) -> int:
     or newline before ``partial_chars``, or ``partial_chars`` itself when
     there is no usable break. A cut that would land inside ``[whispering]``
     or ``[hello. there]`` moves to the bracket instead.
+
+    Examples
+    --------
+    >>> text = "Hello there. How are you? Fine."
+    >>> next_tts_cut(text)
+    13
+    >>> text[:13]
+    'Hello there. '
+    >>> next_tts_cut("Dr. Smith is here. Okay.")
+    19
     """
     if not buf:
         return -1

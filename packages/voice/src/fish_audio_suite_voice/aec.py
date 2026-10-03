@@ -9,21 +9,31 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Any
+from typing import Any, Final
 
 import numpy as np
 
 from fish_audio_suite_voice.debug import debug
 from fish_audio_suite_voice.tune import DEFAULT_AEC_BLEED_S, AecTune
 
-AEC_RATE = 16_000
-SAMPLE_BYTES = 2
-_FAR_HOLD_S = 2
-FAR_HOLD_SAMPLES = AEC_RATE * _FAR_HOLD_S
-_FAR_RECENT_S = 0.4
-_RMS_FLOOR = 1e-9
-FAR_SILENCE_RMS = 40.0
-_FULL_WET = 0.999
+__all__ = [
+    "AEC_RATE",
+    "SAMPLE_BYTES",
+    "EchoCanceller",
+    "FarEndTap",
+    "even_pcm",
+    "pcm_rms",
+    "resample_int16",
+]
+
+AEC_RATE: Final = 16_000
+SAMPLE_BYTES: Final = 2
+_FAR_HOLD_S: Final = 2
+FAR_HOLD_SAMPLES: Final = AEC_RATE * _FAR_HOLD_S
+_FAR_RECENT_S: Final = 0.4
+_RMS_FLOOR: Final = 1e-9
+FAR_SILENCE_RMS: Final = 40.0
+_FULL_WET: Final = 0.999
 
 
 def even_pcm(pcm: bytes) -> bytes:
@@ -38,8 +48,8 @@ def _realign(buf: bytearray) -> None:
         del buf[:extra]
 
 
-_INT16_LO = -32_768
-_INT16_HI = 32_767
+_INT16_LO: Final = -32_768
+_INT16_HI: Final = 32_767
 
 
 def _int16_bytes(samples: Any) -> bytes:
@@ -141,9 +151,9 @@ def pcm_rms(frame: bytes) -> float:
     return float(np.sqrt(np.mean(samples * samples)) + _RMS_FLOOR)
 
 
-_ALIGN_MIN_S = 0.06
-_ALIGN_MARGIN_S = 0.06
-_DEFAULT_OUTPUT_LATENCY_S = 0.0
+_ALIGN_MIN_S: Final = 0.06
+_ALIGN_MARGIN_S: Final = 0.06
+_DEFAULT_OUTPUT_LATENCY_S: Final = 0.0
 
 
 class EchoCanceller:
@@ -161,9 +171,9 @@ class EchoCanceller:
     """
 
     def __init__(self, tune: AecTune | None = None) -> None:
-        self.tune = tune or AecTune()
-        self.tap = FarEndTap()
-        self.output_latency_s = _DEFAULT_OUTPUT_LATENCY_S
+        self.tune: AecTune = tune or AecTune()
+        self.tap: FarEndTap = FarEndTap()
+        self.output_latency_s: float = _DEFAULT_OUTPUT_LATENCY_S
         self._proc: Any = None
         self._tried = False
         self._lock = threading.Lock()

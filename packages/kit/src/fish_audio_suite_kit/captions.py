@@ -8,6 +8,12 @@ from typing import NamedTuple
 
 from fish_audio_suite_kit.defaults import MS_PER_S
 
+__all__ = [
+    "CaptionCue",
+    "format_as_srt",
+    "format_as_vtt",
+]
+
 
 class CaptionCue(NamedTuple):
     """One timed ASR phrase for SubRip or WebVTT.
@@ -100,6 +106,12 @@ def format_as_srt(cues: list[CaptionCue]) -> str:
     -------
     str
         A trailing-newline SRT document, or ``""`` when nothing is speakable.
+
+    Examples
+    --------
+    >>> cues = [CaptionCue(0.0, 1.5, "Hello"), CaptionCue(1.5, 3.25, "world")]
+    >>> format_as_srt(cues).splitlines()[:3]
+    ['1', '00:00:00,000 --> 00:00:01,500', 'Hello']
     """
     spans = _spans(cues, ",", escape=False)
     if not spans:

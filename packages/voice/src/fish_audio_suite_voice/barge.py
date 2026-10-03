@@ -7,7 +7,7 @@ import threading
 from collections import deque
 from collections.abc import Iterator
 from dataclasses import replace
-from typing import Any
+from typing import Any, Final
 
 from fish_audio_suite_kit import MS_PER_S
 from fish_audio_suite_voice.aec import (
@@ -30,27 +30,32 @@ from fish_audio_suite_voice.tune import (
 )
 
 __all__ = [
+    "BARGE_MISS_DECAY_FRAMES",
     "DEFAULT_BARGE_HIT_FRAMES",
     "DEFAULT_BARGE_OVER",
     "DEFAULT_BARGE_RMS",
     "DEFAULT_BLEED_DELAY_S",
     "DEFAULT_POST_SPEAK_COOLDOWN_S",
+    "FRAME_BYTES",
+    "FRAME_MS",
+    "LISTEN_HEARTBEAT_FRAMES",
+    "SAMPLE_RATE",
     "BargeGate",
     "barge_rms_need",
     "frame_is_speech",
     "mic_frames",
 ]
 
-SAMPLE_RATE = AEC_RATE
-FRAME_MS = 30
-FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // MS_PER_S
-FRAME_BYTES = FRAME_SAMPLES * SAMPLE_BYTES
-LISTEN_HEARTBEAT_FRAMES = 20
-BARGE_MISS_DECAY_FRAMES = 3
-BARGE_LOOKBACK_FRAMES = 20
-_BARGE_POLL_S = 0.2
+SAMPLE_RATE: Final = AEC_RATE
+FRAME_MS: Final = 30
+FRAME_SAMPLES: Final = SAMPLE_RATE * FRAME_MS // MS_PER_S
+FRAME_BYTES: Final = FRAME_SAMPLES * SAMPLE_BYTES
+LISTEN_HEARTBEAT_FRAMES: Final = 20
+BARGE_MISS_DECAY_FRAMES: Final = 3
+BARGE_LOOKBACK_FRAMES: Final = 20
+_BARGE_POLL_S: Final = 0.2
 # Mode 3 dropped frames listen already accepted (RMS above the floor, hit stayed 0).
-_BARGE_VAD = 1
+_BARGE_VAD: Final = 1
 
 
 def _barge_step(
@@ -161,8 +166,8 @@ class BargeGate:
         min_rms: float | None = None,
     ) -> None:
         base = tune or BargeTune()
-        self.device = device
-        self.tune = replace(
+        self.device: str | int | None = device
+        self.tune: BargeTune = replace(
             base,
             bleed_delay_s=base.bleed_delay_s
             if bleed_delay_s is None or bleed_delay_s < 0
@@ -172,17 +177,17 @@ class BargeGate:
         )
         # None means no AEC. A default EchoCanceller would load AEC3 and shorten
         # the bleed delay without ever receiving the sink's far-end audio.
-        self.aec = aec if aec is not None else EchoCanceller(AecTune(enabled=False))
+        self.aec: EchoCanceller = aec if aec is not None else EchoCanceller(AecTune(enabled=False))
         # An explicit delay is the caller's choice. It must win over the shorter
         # AEC default, or a longer window could never be forced.
         self._bleed_override = (
             bleed_delay_s if bleed_delay_s is not None and bleed_delay_s >= 0 else None
         )
-        self.bleed_delay_s = self.tune.bleed_delay_s
-        self.hit_frames = self.tune.hit_frames
-        self.min_rms = self.tune.min_rms
+        self.bleed_delay_s: float = self.tune.bleed_delay_s
+        self.hit_frames: int = self.tune.hit_frames
+        self.min_rms: float = self.tune.min_rms
         self._heard: deque[bytes] = deque(maxlen=BARGE_LOOKBACK_FRAMES)
-        self.captured = b""
+        self.captured: bytes = b""
         self.failure: Exception | None = None
 
     def _bleed_wait(self) -> float:

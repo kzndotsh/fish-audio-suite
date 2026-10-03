@@ -5,7 +5,8 @@ from __future__ import annotations
 import re
 import unicodedata
 import zlib
-from typing import cast
+from collections.abc import Sequence, Set
+from typing import Final, cast
 
 from fish_audio_suite_kit._charsets import (
     ANGLE_TOKEN_RE,
@@ -17,6 +18,19 @@ from fish_audio_suite_kit._charsets import (
 )
 from fish_audio_suite_kit._linear import collapse_space_before_stop
 from fish_audio_suite_kit.dialogue import DEFAULT_MIN_LETTERS, DEFAULT_SHORT_WORDS
+from fish_audio_suite_kit.payloads import AsrSegment
+
+__all__ = [
+    "DEFAULT_BACKCHANNELS",
+    "DEFAULT_QUIT_PHRASES",
+    "is_asr_hallucination",
+    "is_backchannel",
+    "is_caption_watermark",
+    "is_quit_utterance",
+    "same_utterance",
+    "scrub_asr",
+    "without_watermark_segments",
+]
 
 _SPEAKER_RE = re.compile(r"<\|speaker:\d+\|>")
 _H_SPACE_RE = re.compile(r"[ \t]+")
@@ -42,7 +56,7 @@ _ASR_CUE_RE = re.compile(r"\[(?!\d+(?:\s*[-–]\s*\d+)?\])[^\[\]\n]{1,40}\]")
 # English spellings plus the Chinese, Japanese, and Korean fillers models emit.
 # "right" and "sure" are real answers, so they are not here. A caller can pass
 # its own set to is_backchannel.
-DEFAULT_BACKCHANNELS = frozenset(
+DEFAULT_BACKCHANNELS: Final = frozenset(
     {
         "yeah",
         "yep",
@@ -93,7 +107,7 @@ DEFAULT_BACKCHANNELS = frozenset(
 # Whole utterance, after folding. These end the session, so they are explicit
 # goodbyes. "stop" is not here: people say it to interrupt speech. A caller can
 # pass its own set to is_quit_utterance.
-DEFAULT_QUIT_PHRASES = frozenset(
+DEFAULT_QUIT_PHRASES: Final = frozenset(
     {
         "quit",
         "exit",
@@ -294,7 +308,7 @@ def _watermark_pattern(phrase: str) -> re.Pattern[str] | None:
 
 def without_watermark_segments(
     text: str,
-    segments: object,
+    segments: Sequence[AsrSegment] | None,
     *,
     strip_speakers: bool = True,
     strip_cues: bool = False,
@@ -305,8 +319,10 @@ def without_watermark_segments(
     ----------
     text : str
         Scrubbed full transcript.
-    segments : object
-        Fish ``segments``. A non-list leaves ``text`` unchanged.
+    segments : Sequence of AsrSegment, or None
+        Fish ``segments``. None, or anything that is not a list at run time (the
+        body is untrusted JSON), leaves ``text`` unchanged, and entries that are
+        not objects with a string ``text`` are skipped.
     strip_speakers : bool, optional
         Passed to ``scrub_asr`` for each segment. Default True.
     strip_cues : bool, optional
@@ -367,7 +383,7 @@ def is_asr_hallucination(
     text: str,
     *,
     min_letters: int = DEFAULT_MIN_LETTERS,
-    short_words: frozenset[str] | None = None,
+    short_words: Set[str] | None = None,
 ) -> bool:
     """Return whether an ASR string is silence, a caption watermark, or too thin.
 
@@ -378,7 +394,7 @@ def is_asr_hallucination(
     min_letters : int, optional
         Fewest letters that count as speech. Default 2, so ``no``, ``ok``,
         and ``hi`` are kept and a lone letter is dropped.
-    short_words : frozenset of str or None, optional
+    short_words : AbstractSet of str or None, optional
         Lowercase words kept even below ``min_letters``. Default
         ``DEFAULT_SHORT_WORDS``. Matters when a caller raises the floor.
 
@@ -419,22 +435,22 @@ def is_asr_hallucination(
     return letters < min_letters
 
 
-def _known_phrase(text: str, phrases: frozenset[str]) -> bool:
+def _known_phrase(text: str, phrases: Set[str]) -> bool:
     return _folded(text) in phrases
 
 
-def _folded_phrases(phrases: frozenset[str] | set[str]) -> frozenset[str]:
+def _folded_phrases(phrases: Set[str]) -> frozenset[str]:
     return frozenset(_folded(phrase) for phrase in phrases)
 
 
-def is_backchannel(text: str, *, phrases: frozenset[str] | set[str] | None = None) -> bool:
+def is_backchannel(text: str, *, phrases: Set[str] | None = None) -> bool:
     """Return whether the utterance is only a listener noise.
 
     Parameters
     ----------
     text : str
         Short transcript such as ``yeah``, ``uh huh``, or ``嗯``.
-    phrases : frozenset of str or set of str or None, optional
+    phrases : AbstractSet of str or None, optional
         Phrases that count as noise. Folded (lowercase, punctuation removed)
         before matching. Default ``DEFAULT_BACKCHANNELS``.
 
@@ -448,14 +464,14 @@ def is_backchannel(text: str, *, phrases: frozenset[str] | set[str] | None = Non
     return _known_phrase(text, known)
 
 
-def is_quit_utterance(text: str, *, phrases: frozenset[str] | set[str] | None = None) -> bool:
+def is_quit_utterance(text: str, *, phrases: Set[str] | None = None) -> bool:
     """Return whether the utterance asks the loop to stop.
 
     Parameters
     ----------
     text : str
         Transcript such as ``bye`` or ``quit``.
-    phrases : frozenset of str or set of str or None, optional
+    phrases : AbstractSet of str or None, optional
         Whole-utterance phrases that quit. Folded before matching. Default
         ``DEFAULT_QUIT_PHRASES``.
 

@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 import threading
 from collections.abc import AsyncIterable, AsyncIterator, Iterable
-from typing import Any
+from typing import Any, Final
 
 from fishaudio import FlushEvent, TextEvent
 
@@ -23,6 +23,10 @@ from fish_audio_suite_kit import (
     split_tts_piece,
 )
 from fish_audio_suite_voice.wire import as_async, flush_if_sent
+
+__all__ = [
+    "delta_events",
+]
 
 
 def _text_event(piece: str) -> TextEvent | None:
@@ -71,7 +75,7 @@ def _stable_prefix(
 
 # A closer split from its word ("words" then "** ") is not an operator.
 # " * " still is: the mark does not start the chunk.
-_ORPHAN_CLOSER_RE = re.compile(r"^[*_`~]+(?=\s)")
+_ORPHAN_CLOSER_RE: Final = re.compile(r"^[*_`~]+(?=\s)")
 
 
 def _fold_stream_breaks(text: str) -> str:

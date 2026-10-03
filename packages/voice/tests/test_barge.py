@@ -360,10 +360,10 @@ def test_barge_over_speaker_raises_need() -> None:
 
 
 def test_start_hit_requires_vad_and_full_floor() -> None:
-    assert not start_hit(200.0, False, 200.0)
-    assert start_hit(200.0, True, 200.0)
-    assert not start_hit(121.0, True, 200.0)
-    assert not start_hit(111.0, True, 200.0)
+    assert not start_hit(200.0, 200.0, vad_speech=False)
+    assert start_hit(200.0, 200.0, vad_speech=True)
+    assert not start_hit(121.0, 200.0, vad_speech=True)
+    assert not start_hit(111.0, 200.0, vad_speech=True)
 
 
 def test_start_frames_needed_raises_on_spike() -> None:

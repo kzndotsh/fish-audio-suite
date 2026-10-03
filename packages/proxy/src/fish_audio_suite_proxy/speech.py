@@ -7,7 +7,7 @@ import binascii
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypedDict
 
 import ormsgpack
 from fastapi.responses import JSONResponse
@@ -20,6 +20,8 @@ from fish_audio_suite_kit import (
     TTS_SPEED_LO,
     UNIT_HI,
     UNIT_LO,
+    AudioFormat,
+    FishLatency,
     SuiteDefaults,
     chunk_length_hi,
     clamp_num,
@@ -31,8 +33,10 @@ from fish_audio_suite_kit import (
 )
 from fish_audio_suite_proxy.errors import ProxyError, json_error
 from fish_audio_suite_proxy.fields import (
+    ClientFormat,
     explicit_bool,
     first_choice,
+    fish_audio_format,
     media_type,
     pcm_sample_rate,
     pick_format,
@@ -40,6 +44,16 @@ from fish_audio_suite_proxy.fields import (
     traced_model_headers,
 )
 from fish_audio_suite_proxy.models import resolve_tts_model
+
+__all__ = [
+    "ClipError",
+    "PackedTts",
+    "SpeechControls",
+    "TtsBody",
+    "decode_audio_b64",
+    "pack_tts",
+    "speech_controls",
+]
 
 _PHONEME_MARK_RE = re.compile(r"<\|phoneme_(?:start|end)\|>")
 _DATA_URI = "data:"
@@ -96,7 +110,7 @@ _REQUEST_SPEED = 1.0
 _CACHE_MODES = frozenset({"on", "off"})
 
 
-def _pick_latency(body: dict[str, Any], default: str) -> str:
+def _pick_latency(body: dict[str, Any], default: FishLatency) -> FishLatency:
     raw = first_choice(body, "latency", "fish_latency", default=default)
     return known_latency(raw, default)
 
@@ -114,25 +128,26 @@ def _want_quality_guard(body: dict[str, Any], default: bool) -> bool:
     return default
 
 
-class ClipError(Exception):
+class ClipError(ProxyError):
     """A reference clip could not be decoded. The route returns 400.
 
     Attributes
     ----------
+    status : int
+        Always 400.
     message : str
         Shown in the OpenAI error envelope.
     """
 
     def __init__(self, message: str) -> None:
-        """Store ``message`` as both the attribute and the exception text.
+        """Store ``message`` with status 400.
 
         Parameters
         ----------
         message : str
-            Client-facing reason. No status code; the route maps this to 400.
+            Client-facing reason.
         """
-        self.message = message
-        super().__init__(message)
+        super().__init__(400, message)
 
 
 def _b64_audio(value: str) -> bytes:
@@ -302,7 +317,7 @@ def _body_int(body: dict[str, Any], key: str, default: int) -> int:
     return _fit_int(_body_num(body, key, default, int), default)
 
 
-def _bounded_rate(fmt: str, body: dict[str, Any], default: int) -> int:
+def _bounded_rate(fmt: ClientFormat, body: dict[str, Any], default: int) -> int:
     rate = pcm_sample_rate(fmt, body, default)
     if _MSGPACK_INT_LO <= rate <= _MSGPACK_INT_HI:
         return rate
@@ -313,8 +328,8 @@ def _bounded_rate(fmt: str, body: dict[str, Any], default: int) -> int:
 def _codec_fields(
     body: dict[str, Any],
     defaults: SuiteDefaults,
-    fmt: str,
-    native_fmt: str,
+    fmt: ClientFormat,
+    native_fmt: AudioFormat,
 ) -> dict[str, Any]:
     if native_fmt == "mp3":
         return {
@@ -331,12 +346,30 @@ def _codec_fields(
     return {"sample_rate": _bounded_rate(fmt, body, defaults.sample_rate)}
 
 
-@dataclass(frozen=True)
-class _SpeechControls:
+@dataclass(frozen=True, slots=True)
+class SpeechControls:
+    """The speech fields after clamping, ready to build a Fish request.
+
+    Attributes
+    ----------
+    model : str
+        Fish TTS model id.
+    speed : float
+        Speech speed multiplier.
+    fmt : ClientFormat
+        Audio format the client asked for.
+    latency : FishLatency
+        Fish latency mode.
+    chunk_length : int
+        Fish chunk length.
+    min_chunk_length : int
+        Fish minimum chunk length.
+    """
+
     model: str
     speed: float
-    fmt: str
-    latency: str
+    fmt: ClientFormat
+    latency: FishLatency
     chunk_length: int
     min_chunk_length: int
 
@@ -344,13 +377,13 @@ class _SpeechControls:
 def _fish_tts_payload(
     body: dict[str, Any],
     defaults: SuiteDefaults,
-    controls: _SpeechControls,
+    controls: SpeechControls,
     spoken: str,
     *,
     quality_guard: bool = False,
 ) -> dict[str, Any]:
     fmt = controls.fmt
-    native_fmt = "pcm" if fmt == "pcm16" else fmt
+    native_fmt = fish_audio_format(fmt)
     payload: dict[str, Any] = {
         "text": spoken,
         "format": native_fmt,
@@ -436,7 +469,9 @@ def speech_controls(
     body: dict[str, Any],
     defaults: SuiteDefaults,
     aliases: Mapping[str, str] | None = None,
-) -> _SpeechControls:
+    *,
+    default_format: ClientFormat | None = None,
+) -> SpeechControls:
     """Clamp speed, format, latency, and chunk lengths for one speech call.
 
     Parameters
@@ -447,10 +482,14 @@ def speech_controls(
         Env-backed knobs. Request ``speed`` is multiplied by ``defaults.speed``.
     aliases : Mapping or None, optional
         TTS model alias table. ``None`` maps the OpenAI names to the default.
+    default_format : ClientFormat or None, optional
+        Format used when the request names none. ``None`` uses
+        ``defaults.audio_format``. The proxy passes ``FISH_FORMAT`` here, which
+        can be ``pcm16``, a name Fish itself does not know.
 
     Returns
     -------
-    _SpeechControls
+    SpeechControls
         Values safe to put on the Fish payload. Cloud chunk length stays
         within 100-300.
 
@@ -460,10 +499,10 @@ def speech_controls(
         With status 400 when the request names an unsupported audio format.
     """
     raw_speed = _body_float(body, "speed", _REQUEST_SPEED) * defaults.speed
-    return _SpeechControls(
+    return SpeechControls(
         model=resolve_tts_model(body.get("model"), defaults.tts_model, aliases),
         speed=clamp_num(raw_speed, TTS_SPEED_LO, TTS_SPEED_HI, defaults.speed, float),
-        fmt=pick_format(body, defaults.audio_format),
+        fmt=pick_format(body, default_format or defaults.audio_format),
         latency=_pick_latency(body, defaults.latency),
         chunk_length=_clamped_int(
             body,
@@ -484,10 +523,29 @@ def speech_controls(
     )
 
 
-@dataclass(frozen=True)
-class _PackedTts:
+class TtsBody(TypedDict, total=False):
+    """The body part of a Fish TTS request: JSON, or MessagePack bytes with clips."""
+
+    json: dict[str, Any]
+    content: bytes
+
+
+@dataclass(frozen=True, slots=True)
+class PackedTts:
+    """A Fish TTS request ready for ``fish_send``.
+
+    Attributes
+    ----------
+    headers : dict
+        Request headers, including the trace and the model.
+    request_kw : TtsBody
+        Either ``json`` or ``content``, to pass on to ``fish_send``.
+    media_type : str
+        Media type of the audio the client gets back.
+    """
+
     headers: dict[str, str]
-    request_kw: dict[str, Any]
+    request_kw: TtsBody
     media_type: str
 
 
@@ -510,11 +568,11 @@ def pack_tts(
     body: dict[str, Any],
     defaults: SuiteDefaults,
     incoming: Mapping[str, str],
-    controls: _SpeechControls,
+    controls: SpeechControls,
     spoken: str,
     *,
     quality_guard: bool = False,
-) -> _PackedTts | JSONResponse:
+) -> PackedTts | JSONResponse:
     """Build the Fish TTS request, JSON or MessagePack when clips are attached.
 
     Parameters
@@ -525,7 +583,7 @@ def pack_tts(
         Runtime knobs.
     incoming : Mapping
         Client headers. A valid trace is forwarded; otherwise one is minted.
-    controls : _SpeechControls
+    controls : SpeechControls
         Already clamped speech fields.
     spoken : str
         Scrubbed text. This is what Fish speaks, not the raw ``input``.
@@ -534,7 +592,7 @@ def pack_tts(
 
     Returns
     -------
-    _PackedTts or JSONResponse
+    PackedTts or JSONResponse
         Headers, body, and response media type, or a 400 when a clip fails.
 
     Notes
@@ -553,7 +611,7 @@ def pack_tts(
     payload = _json_ready(payload)
     if clips is None:
         content_type = "application/json"
-        request_kw: dict[str, Any] = {"json": payload}
+        request_kw: TtsBody = {"json": payload}
     else:
         content_type = "application/msgpack"
         try:
@@ -561,7 +619,7 @@ def pack_tts(
         except (TypeError, OverflowError, ValueError):
             return json_error(400, "speech fields contain a number that cannot be encoded")
         request_kw = {"content": encoded}
-    return _PackedTts(
+    return PackedTts(
         headers={
             "Content-Type": content_type,
             **traced_model_headers(controls.model, incoming),

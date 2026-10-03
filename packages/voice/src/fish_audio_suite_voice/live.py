@@ -7,9 +7,10 @@ import threading
 from collections.abc import AsyncIterable, Callable, Coroutine, Iterable
 from dataclasses import dataclass, field
 from functools import cache
-from typing import Any, cast
+from types import MappingProxyType
+from typing import Any, Final
 
-from fishaudio.types import AudioFormat, LatencyMode, Prosody, TTSConfig
+from fishaudio.types import LatencyMode, Prosody, TTSConfig
 
 from fish_audio_suite_kit import (
     CHUNK_LENGTH_LO,
@@ -18,6 +19,8 @@ from fish_audio_suite_kit import (
     TTS_SPEED_LO,
     UNIT_HI,
     UNIT_LO,
+    AudioFormat,
+    FishLatency,
     SuiteDefaults,
     clamp_num,
     known_mp3_bitrate,
@@ -39,13 +42,18 @@ from fish_audio_suite_voice.session import (
 )
 from fish_audio_suite_voice.stream_scrub import delta_events
 
-_STOCK = SuiteDefaults()
+_STOCK: Final = SuiteDefaults()
 # The installed SDK Prosody model rejects anything outside this range.
-_SDK_VOLUME_LO = -20.0
-_SDK_VOLUME_HI = 20.0
+_SDK_VOLUME_LO: Final = -20.0
+_SDK_VOLUME_HI: Final = 20.0
 
 
-_SDK_FORMATS = frozenset({"wav", "pcm", "mp3", "opus"})
+_SDK_FORMATS: Final[dict[str, AudioFormat]] = {
+    "wav": "wav",
+    "pcm": "pcm",
+    "mp3": "mp3",
+    "opus": "opus",
+}
 
 
 @cache
@@ -63,10 +71,11 @@ def _sdk_format(fmt: str) -> AudioFormat:
     elif key in {"aac", "flac"}:
         _warn_coerced("audio format", key, "mp3")
         key = "mp3"
-    if key not in _SDK_FORMATS:
+    chosen = _SDK_FORMATS.get(key)
+    if chosen is None:
         _warn_coerced("audio format", key, "pcm")
-        key = "pcm"
-    return cast(AudioFormat, key)
+        return "pcm"
+    return chosen
 
 
 def _sdk_latency(latency: str) -> LatencyMode:
@@ -126,7 +135,7 @@ class IsolatedFishTts:
     api_key: str = field(repr=False)
     voice_id: str
     model: str = _STOCK.tts_model
-    latency: str = _STOCK.latency
+    latency: FishLatency = _STOCK.latency
     speed: float = _STOCK.speed
     audio_format: str = "pcm"
     sample_rate: int = _STOCK.sample_rate
@@ -150,6 +159,7 @@ class IsolatedFishTts:
         self,
         text: str,
         sink: PlaybackSink,
+        *,
         cancel: threading.Event | None = None,
         on_first_audio: Callable[[], None] | None = None,
     ) -> IsolatedResult:
@@ -174,26 +184,32 @@ class IsolatedFishTts:
 
         Raises
         ------
-        Exception
-            Re-raised from the private thread. A sink that fails to open,
-            including ``PortAudioMissingError``, must not look like silence.
+        PortAudioMissingError
+            ``sounddevice`` could not load libportaudio when the sink opened.
+        OSError
+            The sink could not open or write, for example ``mpv`` is not on
+            PATH or the disk is full.
 
         Notes
         -----
-        Safe to call from ``asyncio.run`` or ``to_thread``. The Fish websocket
+        Any other error the sink raises is re-raised too, so a sink that fails
+        to open never looks like a silent turn. A Fish failure is not raised: it
+        comes back in ``IsolatedResult``. Safe to call from ``asyncio.run`` or
+        ``to_thread``. The Fish websocket
         must not share the LLM's event loop. On cancel, close the httpx client.
         Do not ``aclose()`` the websocket iterator.
         """
-        cancel = cancel or threading.Event()
+        stop = cancel or threading.Event()
         return self._run_on_thread(
-            lambda: self.speak(text, sink, cancel, on_first_audio=on_first_audio), cancel
+            lambda: self.speak(text, sink, stop, on_first_audio=on_first_audio), stop
         )
 
     def speak_stream_isolated(
         self,
         deltas: Iterable[str] | AsyncIterable[str],
         sink: PlaybackSink,
-        cancel: threading.Event,
+        *,
+        cancel: threading.Event | None = None,
         on_first_audio: Callable[[], None] | None = None,
     ) -> IsolatedResult:
         """Speak a token stream on a private thread while the model is still writing.
@@ -205,21 +221,24 @@ class IsolatedFishTts:
             must not depend on the caller's loop.
         sink : PlaybackSink
             Where PCM or encoded audio is written.
-        cancel : threading.Event
-            Set to stop the turn.
+        cancel : threading.Event or None, optional
+            Set to stop the turn. A new event is created when omitted.
         on_first_audio : Callable or None, optional
             Called once on the websocket's thread at the first audio chunk.
 
         Returns
         -------
         IsolatedResult
-            How much was spoken. ``sent_text`` is empty, so a failed turn is not
-            replayed here. The caller can speak the finished reply instead.
+            How much was spoken. Tokens arrive as a stream, so there is no
+            full text to replay: a failed turn is not retried here, and the
+            caller can speak the finished reply instead.
 
         Raises
         ------
-        Exception
-            Re-raised from the private thread, as ``speak_isolated`` does.
+        PortAudioMissingError
+            ``sounddevice`` could not load libportaudio when the sink opened.
+        OSError
+            The sink could not open or write, as for ``speak_isolated``.
 
         Notes
         -----
@@ -227,11 +246,12 @@ class IsolatedFishTts:
         text until a chunk fills or a flush arrives, so one flush at the end
         would keep the reply silent until the model finished.
         """
+        stop = cancel or threading.Event()
         return self._run_on_thread(
             lambda: self.speak_deltas(
-                deltas, sink, cancel, early_flush=True, on_first_audio=on_first_audio
+                deltas, sink, stop, early_flush=True, on_first_audio=on_first_audio
             ),
-            cancel,
+            stop,
         )
 
     def _run_on_thread(
@@ -333,8 +353,8 @@ class IsolatedFishTts:
         Returns
         -------
         IsolatedResult
-            Played audio. ``sent_text`` stays empty because the text arrived
-            as deltas, so a retry cannot replay the turn.
+            Played audio. The text arrived as deltas, so there is no full text
+            to replay and a failed turn is not retried.
 
         Notes
         -----
@@ -372,7 +392,7 @@ class IsolatedFishTts:
             speed=_sdk_speed(self.speed),
             sample_rate=_sdk_sample_rate(self.sample_rate),
             partial_chars=self.partial_chars,
-            trace_headers=self.trace_headers,
+            trace_headers=MappingProxyType(dict(self.trace_headers)),
             config=self._tts_config(),
         )
 
@@ -395,4 +415,8 @@ class IsolatedFishTts:
         )
 
 
-__all__ = ["IsolatedFishTts", "IsolatedResult", "is_cancel_noise"]
+__all__ = [
+    "IsolatedFishTts",
+    "IsolatedResult",
+    "is_cancel_noise",
+]

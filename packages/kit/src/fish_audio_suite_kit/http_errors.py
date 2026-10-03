@@ -6,29 +6,117 @@ import asyncio
 import json
 import math
 import random
-from typing import Any, cast
+import re
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any, Final, Literal, Self, cast
 
 from fish_audio_suite_kit._charsets import utf8_text
+from fish_audio_suite_kit._deprecation import deprecated
 from fish_audio_suite_kit.defaults import number_or
+from fish_audio_suite_kit.payloads import AsrBody
 
-FISH_TTS_PATH = "/v1/tts"
-FISH_ASR_PATH = "/v1/asr"
-FISH_RETRY_ATTEMPTS = 5
-FISH_TIMEOUT_STATUS = 504
-FISH_TIMEOUT_MESSAGE = "Fish request timed out"
-FISH_UNREACHABLE_STATUS = 502
-FISH_UNREACHABLE_MESSAGE = "Fish upstream unreachable"
-FISH_NON_JSON_MESSAGE = "Fish returned a non-JSON body"
-FISH_NON_OBJECT_MESSAGE = "Fish returned a non-object body"
+__all__ = [
+    "FISH_ASR_PATH",
+    "FISH_BACKOFF_CAP_S",
+    "FISH_NON_JSON_MESSAGE",
+    "FISH_NON_OBJECT_MESSAGE",
+    "FISH_RETRY_AFTER_CAP_S",
+    "FISH_RETRY_ATTEMPTS",
+    "FISH_TIMEOUT_MESSAGE",
+    "FISH_TIMEOUT_STATUS",
+    "FISH_TTS_PATH",
+    "FISH_UNREACHABLE_MESSAGE",
+    "FISH_UNREACHABLE_STATUS",
+    "FishAudioSuiteError",
+    "FishAuthError",
+    "FishErrorBody",
+    "FishHttpError",
+    "FishRateLimitError",
+    "FishTimeoutError",
+    "FishUpstreamError",
+    "bearer",
+    "fish_attempt_exhausted",
+    "fish_backoff_s",
+    "fish_backoff_seconds",
+    "fish_error_body",
+    "fish_non_json",
+    "fish_non_object",
+    "fish_request_error",
+    "fish_retry_pause",
+    "fish_sleep_before_retry",
+    "fish_transport_error",
+    "fish_unreachable",
+    "parse_asr_body",
+    "parse_fish_error",
+    "retry_after_seconds",
+    "should_retry_fish_status",
+]
+
+FISH_TTS_PATH: Final = "/v1/tts"
+FISH_ASR_PATH: Final = "/v1/asr"
+FISH_RETRY_ATTEMPTS: Final = 5
+FISH_TIMEOUT_STATUS: Final = 504
+FISH_TIMEOUT_MESSAGE: Final = "Fish request timed out"
+FISH_UNREACHABLE_STATUS: Final = 502
+FISH_UNREACHABLE_MESSAGE: Final = "Fish upstream unreachable"
+FISH_NON_JSON_MESSAGE: Final = "Fish returned a non-JSON body"
+FISH_NON_OBJECT_MESSAGE: Final = "Fish returned a non-object body"
 # Longest single wait between retries, and the longest Retry-After we honor.
-FISH_BACKOFF_CAP_S = 30.0
-FISH_RETRY_AFTER_CAP_S = 60.0
+FISH_BACKOFF_CAP_S: Final = 30.0
+FISH_RETRY_AFTER_CAP_S: Final = 60.0
+# A Retry-After longer than a day is not a retry hint, so the parser drops it.
+_RETRY_AFTER_MAX_S: Final = 86_400.0
+_AUTH_STATUSES: Final = frozenset({401, 402, 403})
+# Whole or decimal seconds only. The HTTP-date form is not a wait we can use.
+_SECONDS_RE: Final = re.compile(r"[0-9]+(?:\.[0-9]+)?")
 
 
-class FishHttpError(Exception):
-    """REST/WS-adjacent Fish failure after retries or a non-retryable status."""
+class FishAudioSuiteError(Exception):
+    """Base class for the errors this toolkit raises on purpose."""
 
-    def __init__(self, status: int, message: str) -> None:
+
+class FishHttpError(FishAudioSuiteError):
+    """A Fish failure after retries, or a status that should not be retried.
+
+    Attributes
+    ----------
+    status : int
+        HTTP status of the failure.
+    message : str
+        Human-readable Fish or transport message.
+    retry_after : float or None
+        Seconds Fish asked the caller to wait, when it sent a usable hint.
+    """
+
+    status: int
+    message: str
+    retry_after: float | None
+
+    def __new__(cls, status: int, message: str, *, retry_after: float | None = None) -> Self:
+        """Pick the subclass that matches the status when called on the base class.
+
+        Parameters
+        ----------
+        status : int
+            HTTP status. ``FishHttpError(401, ...)`` is a ``FishAuthError``, so code
+            that catches by type sees the same class whichever way the error was built.
+        message : str
+            Not used here. Stored by ``__init__``.
+        retry_after : float or None, optional
+            Not used here. Stored by ``__init__``.
+
+        Returns
+        -------
+        Self
+            An instance of the matching subclass, or of ``cls`` for a subclass call.
+        """
+        del message, retry_after
+        target = _class_for_status(int(status)) if cls is FishHttpError else cls
+        # The subclass is a FishHttpError, and Self is at least that.
+        return super().__new__(cast("type[Self]", target))
+
+    def __init__(self, status: int, message: str, *, retry_after: float | None = None) -> None:
         """Store a Fish status and a UTF-8 message.
 
         Parameters
@@ -37,34 +125,120 @@ class FishHttpError(Exception):
             HTTP status. Coerced with ``int``.
         message : str
             Human-readable Fish or transport message. Invalid UTF-8 is replaced.
+        retry_after : float or None, optional
+            Seconds from a ``Retry-After`` header. A negative or non-finite value is
+            stored as None.
         """
         self.status = int(status)
         self.message = utf8_text(str(message))
+        usable = retry_after is not None and math.isfinite(retry_after) and retry_after >= 0
+        self.retry_after = float(retry_after) if usable and retry_after is not None else None
         super().__init__(f"HTTP {self.status}: {self.message}")
 
+    @property
+    def retryable(self) -> bool:
+        """Whether the same request can be tried again (429 and 5xx)."""
+        return should_retry_fish_status(self.status)
+
     @classmethod
-    def unreachable(cls) -> FishHttpError:
+    def from_status(
+        cls,
+        status: int,
+        message: str,
+        *,
+        retry_after: float | None = None,
+    ) -> FishHttpError:
+        """Build the error class that matches an HTTP status.
+
+        Parameters
+        ----------
+        status : int
+            HTTP status.
+        message : str
+            Human-readable message.
+        retry_after : float or None, optional
+            Seconds from a ``Retry-After`` header.
+
+        Returns
+        -------
+        FishHttpError
+            ``FishAuthError`` for 401, 402 and 403, ``FishRateLimitError`` for 429,
+            ``FishTimeoutError`` for 504, ``FishUpstreamError`` for any other
+            5xx, and a plain ``FishHttpError`` for the rest.
+
+        Examples
+        --------
+        >>> FishHttpError.from_status(429, "slow down", retry_after=3).retry_after
+        3.0
+        >>> type(FishHttpError.from_status(503, "down")).__name__
+        'FishUpstreamError'
+        >>> FishHttpError.from_status(404, "missing").retryable
+        False
+        """
+        return FishHttpError(int(status), message, retry_after=retry_after)
+
+    @classmethod
+    def unreachable(cls) -> FishUpstreamError:
         """Build the 502 for a retry loop that ended with no Fish response."""
-        return cls(FISH_UNREACHABLE_STATUS, FISH_UNREACHABLE_MESSAGE)
+        return FishUpstreamError(FISH_UNREACHABLE_STATUS, FISH_UNREACHABLE_MESSAGE)
 
     @classmethod
-    def timed_out(cls) -> FishHttpError:
+    def timed_out(cls) -> FishTimeoutError:
         """Build the 504 for a Fish request that timed out."""
-        return cls(FISH_TIMEOUT_STATUS, FISH_TIMEOUT_MESSAGE)
+        return FishTimeoutError(FISH_TIMEOUT_STATUS, FISH_TIMEOUT_MESSAGE)
 
     @classmethod
-    def non_json(cls) -> FishHttpError:
+    def non_json(cls) -> FishUpstreamError:
         """Build the 502 for a Fish body that is not JSON."""
-        return cls(FISH_UNREACHABLE_STATUS, FISH_NON_JSON_MESSAGE)
+        return FishUpstreamError(FISH_UNREACHABLE_STATUS, FISH_NON_JSON_MESSAGE)
 
     @classmethod
-    def non_object(cls) -> FishHttpError:
+    def non_object(cls) -> FishUpstreamError:
         """Build the 502 for JSON that is not an object, or a non-string ASR text."""
-        return cls(FISH_UNREACHABLE_STATUS, FISH_NON_OBJECT_MESSAGE)
+        return FishUpstreamError(FISH_UNREACHABLE_STATUS, FISH_NON_OBJECT_MESSAGE)
+
+
+class FishAuthError(FishHttpError):
+    """401, 402 or 403: the key is missing, wrong or out of credit. Never retryable."""
+
+
+class FishRateLimitError(FishHttpError):
+    """429: Fish asked the caller to slow down. ``retry_after`` carries its hint."""
+
+
+class FishUpstreamError(FishHttpError):
+    """A 5xx other than 504, or a Fish that could not be reached or understood."""
+
+
+class FishTimeoutError(FishHttpError):
+    """504: the request to Fish timed out."""
+
+
+def _class_for_status(code: int) -> type[FishHttpError]:
+    if code in _AUTH_STATUSES:
+        return FishAuthError
+    if code == 429:
+        return FishRateLimitError
+    if code == FISH_TIMEOUT_STATUS:
+        return FishTimeoutError
+    if code >= 500:
+        return FishUpstreamError
+    return FishHttpError
 
 
 def should_retry_fish_status(status: int) -> bool:
-    """Retry 429 and 5xx only. Other 4xx need a different request."""
+    """Say whether a failed request is worth sending again.
+
+    Parameters
+    ----------
+    status : int
+        HTTP status of the failed response.
+
+    Returns
+    -------
+    bool
+        True for 429 and any 5xx. Other 4xx statuses need a different request.
+    """
     return status == 429 or status >= 500
 
 
@@ -84,9 +258,29 @@ def fish_attempt_exhausted(attempt: int) -> bool:
     return attempt + 1 >= FISH_RETRY_ATTEMPTS
 
 
-def fish_backoff_seconds(attempt: int) -> float:
-    """Return the documented base wait, ``2 ** attempt`` seconds, with no jitter."""
+def _base_wait(attempt: int) -> float:
     return float(2 ** max(0, attempt))
+
+
+@deprecated("fish_backoff_s", "0.1.0")
+def fish_backoff_seconds(attempt: int) -> float:
+    """Return the documented base wait, ``2 ** attempt`` seconds, with no jitter.
+
+    Parameters
+    ----------
+    attempt : int
+        Zero-based attempt that just failed. Negative values count as 0.
+
+    Returns
+    -------
+    float
+        ``2 ** attempt`` seconds.
+
+    Notes
+    -----
+    Deprecated. ``fish_backoff_s`` adds jitter and honors ``Retry-After``.
+    """
+    return _base_wait(attempt)
 
 
 def fish_backoff_s(
@@ -114,7 +308,7 @@ def fish_backoff_s(
         Exponential base (``2 ** attempt``, capped at ``FISH_BACKOFF_CAP_S``)
         with equal jitter: a uniform draw between half the base and the base.
     """
-    base = min(FISH_BACKOFF_CAP_S, fish_backoff_seconds(attempt))
+    base = min(FISH_BACKOFF_CAP_S, _base_wait(attempt))
     draw = (rng or random).random()
     wait = base / 2 + draw * base / 2
     if retry_after is not None and math.isfinite(retry_after) and retry_after >= 0:
@@ -151,6 +345,7 @@ async def fish_sleep_before_retry(
     return True
 
 
+@deprecated("fish_sleep_before_retry", "0.1.0")
 async def fish_retry_pause(attempt: int) -> bool:
     """Sleep ``2 ** attempt`` seconds, or report that this attempt is the last.
 
@@ -174,7 +369,7 @@ async def fish_retry_pause(attempt: int) -> bool:
     """
     if fish_attempt_exhausted(attempt):
         return True
-    await asyncio.sleep(fish_backoff_seconds(attempt))
+    await asyncio.sleep(_base_wait(attempt))
     return False
 
 
@@ -199,6 +394,7 @@ def bearer(key: str) -> str:
     return f"Bearer {token}"
 
 
+@deprecated("FishHttpError.unreachable()", "0.1.0")
 def fish_unreachable() -> tuple[int, str]:
     """Status and message when a retry loop ends with no Fish response.
 
@@ -206,10 +402,15 @@ def fish_unreachable() -> tuple[int, str]:
     -------
     tuple of int and str
         ``(502, "Fish upstream unreachable")``.
+
+    Notes
+    -----
+    Deprecated. ``FishHttpError.unreachable()`` carries the same status and message.
     """
     return FISH_UNREACHABLE_STATUS, FISH_UNREACHABLE_MESSAGE
 
 
+@deprecated("FishHttpError.non_json()", "0.1.0")
 def fish_non_json() -> tuple[int, str]:
     """Status and message when Fish's body is not JSON.
 
@@ -217,10 +418,15 @@ def fish_non_json() -> tuple[int, str]:
     -------
     tuple of int and str
         ``(502, "Fish returned a non-JSON body")``.
+
+    Notes
+    -----
+    Deprecated. ``FishHttpError.non_json()`` carries the same status and message.
     """
     return FISH_UNREACHABLE_STATUS, FISH_NON_JSON_MESSAGE
 
 
+@deprecated("FishHttpError.non_object()", "0.1.0")
 def fish_non_object() -> tuple[int, str]:
     """Status and message when JSON is not an object, or ASR ``text`` is not a string.
 
@@ -228,21 +434,93 @@ def fish_non_object() -> tuple[int, str]:
     -------
     tuple of int and str
         ``(502, "Fish returned a non-object body")``.
+
+    Notes
+    -----
+    Deprecated. ``FishHttpError.non_object()`` carries the same status and message.
     """
     return FISH_UNREACHABLE_STATUS, FISH_NON_OBJECT_MESSAGE
 
 
-def parse_asr_body(body: object) -> tuple[dict[str, Any], str]:
-    """ASR JSON object plus its text. Missing text is empty. A bad shape is 502."""
+def parse_asr_body(body: object) -> tuple[AsrBody, str]:
+    """Read a Fish ASR response and its transcript text.
+
+    Parameters
+    ----------
+    body : object
+        The decoded JSON from ``/v1/asr``.
+
+    Returns
+    -------
+    tuple of AsrBody and str
+        The response object and its ``text``. Missing or null text is the empty
+        string. Only ``text`` is checked: the other keys keep whatever Fish sent,
+        so ``AsrBody`` describes the expected shape and does not enforce it.
+
+    Raises
+    ------
+    FishHttpError
+        A 502 when the body is not a JSON object or ``text`` is not a string.
+
+    Examples
+    --------
+    >>> data, text = parse_asr_body({"text": "hello", "duration": 1.5})
+    >>> text, data["duration"]
+    ('hello', 1.5)
+    >>> parse_asr_body({})[1]
+    ''
+    """
     data = _as_dict(body)
     if data is None:
         raise FishHttpError.non_object()
     raw = data.get("text")
     if raw is None:
-        return data, ""
+        return cast(AsrBody, data), ""
     if not isinstance(raw, str):
         raise FishHttpError.non_object()
-    return data, raw
+    return cast(AsrBody, data), raw
+
+
+def retry_after_seconds(headers: Mapping[str, str] | None) -> float | None:
+    """Read a usable ``Retry-After`` wait, in seconds, from response headers.
+
+    Parameters
+    ----------
+    headers : Mapping of str to str, or None
+        Response headers. The name is matched without regard to case, so an
+        ``httpx.Headers`` object works as well as a plain dict.
+
+    Returns
+    -------
+    float or None
+        Whole or decimal seconds, or None when the header is absent or cannot
+        be used: negative, ``nan``, ``inf``, an exponent form, an HTTP date, or
+        longer than a day.
+
+    Examples
+    --------
+    >>> retry_after_seconds({"Retry-After": "7"})
+    7.0
+    >>> retry_after_seconds({"retry-after": "-1"}) is None
+    True
+    >>> retry_after_seconds({"Retry-After": "nan"}) is None
+    True
+    >>> retry_after_seconds(None) is None
+    True
+    """
+    if not headers:
+        return None
+    raw = ""
+    for key, value in headers.items():
+        if str(key).lower() == "retry-after":
+            raw = str(value).strip()
+            break
+    if not _SECONDS_RE.fullmatch(raw):
+        return None
+    seconds = float(raw)
+    if not math.isfinite(seconds) or seconds > _RETRY_AFTER_MAX_S:
+        return None
+    return seconds
 
 
 def fish_transport_error(exc: BaseException | None, *, timed_out: bool) -> tuple[int, str]:
@@ -261,12 +539,12 @@ def fish_transport_error(exc: BaseException | None, *, timed_out: bool) -> tuple
     -------
     tuple of int and str
         ``(504, "Fish request timed out")`` on timeout, otherwise the fixed
-        ``fish_unreachable`` pair (502, "Fish upstream unreachable").
+        fixed pair (502, "Fish upstream unreachable").
     """
     del exc
     if timed_out:
         return FISH_TIMEOUT_STATUS, FISH_TIMEOUT_MESSAGE
-    return fish_unreachable()
+    return FISH_UNREACHABLE_STATUS, FISH_UNREACHABLE_MESSAGE
 
 
 def fish_request_error(exc: BaseException, timeout_type: type[BaseException]) -> tuple[int, str]:
@@ -287,6 +565,68 @@ def fish_request_error(exc: BaseException, timeout_type: type[BaseException]) ->
     return fish_transport_error(exc, timed_out=isinstance(exc, timeout_type))
 
 
+@dataclass(frozen=True, slots=True)
+class FishErrorBody:
+    """A Fish ``{message, status}`` error, with the text already made safe.
+
+    Attributes
+    ----------
+    status : int
+        HTTP status of the error.
+    message : str
+        Error text after a UTF-8 round trip.
+    """
+
+    status: int
+    message: str
+
+    @classmethod
+    def of(cls, status: int, message: str) -> FishErrorBody:
+        """Build a body from raw values.
+
+        Parameters
+        ----------
+        status : int
+            HTTP status. Coerced with ``int``.
+        message : str
+            Error text. Coerced with ``str`` and cleaned of invalid UTF-8.
+
+        Returns
+        -------
+        FishErrorBody
+            The normalized body.
+        """
+        return cls(int(status), utf8_text(str(message)))
+
+    def as_dict(self) -> dict[str, str | int]:
+        """Return the Fish wire shape ``{"message": ..., "status": ...}``."""
+        return {"message": self.message, "status": self.status}
+
+    def __getitem__(self, key: Literal["status", "message"]) -> str | int:
+        """Read a field by name, for code that still treats the body as a dict.
+
+        Parameters
+        ----------
+        key : str
+            ``"status"`` or ``"message"``.
+
+        Returns
+        -------
+        str or int
+            The field value.
+
+        Raises
+        ------
+        KeyError
+            For any other key.
+        """
+        if key == "status":
+            return self.status
+        if key == "message":
+            return self.message
+        raise KeyError(key)
+
+
 def fish_error_body(status: int, message: str) -> dict[str, str | int]:
     """Fish-shaped error object.
 
@@ -302,7 +642,7 @@ def fish_error_body(status: int, message: str) -> dict[str, str | int]:
     dict
         ``{"message": ..., "status": ...}``.
     """
-    return {"message": utf8_text(str(message)), "status": int(status)}
+    return FishErrorBody.of(status, message).as_dict()
 
 
 def _as_dict(value: Any) -> dict[str, Any] | None:
@@ -398,8 +738,31 @@ def _validation_msgs(items: list[Any]) -> str | None:
     return "; ".join(parts)
 
 
-def parse_fish_error(status: int, raw: Any) -> dict[str, str | int]:
-    """Normalize Fish `{message, status}` or a plain-text parse error."""
+def parse_fish_error(status: int, raw: Any) -> FishErrorBody:
+    """Normalize a Fish error body into a status and a message.
+
+    Parameters
+    ----------
+    status : int
+        HTTP status of the response. It wins when the body carries a status
+        outside 400-599.
+    raw : Any
+        The body: bytes, text, JSON, a decoded object or a validation list.
+
+    Returns
+    -------
+    FishErrorBody
+        The status and a readable message. Validation lists become their
+        messages joined, a plain-text body is used as is, and an empty one
+        becomes ``"HTTP <status>"``.
+
+    Examples
+    --------
+    >>> parse_fish_error(402, {"message": "Insufficient credits", "status": 402}).message
+    'Insufficient credits'
+    >>> parse_fish_error(500, b"").message
+    'HTTP 500'
+    """
     data = _as_dict(raw)
     if data is not None:
         msg = _message_of(data)
@@ -408,23 +771,23 @@ def parse_fish_error(status: int, raw: Any) -> dict[str, str | int]:
         # 200 or 0 in the body must not turn an HTTP 500 into a success.
         if code < 400 or code > 599:
             code = status
-        return fish_error_body(code, _fallback_message(text, status))
+        return FishErrorBody.of(code, _fallback_message(text, status))
 
     if isinstance(raw, list):
         summary = _validation_msgs(cast(list[Any], raw))
         if summary:
-            return fish_error_body(status, summary)
+            return FishErrorBody.of(status, summary)
 
     stripped = _decoded(raw).strip()
     if stripped:
         try:
             loaded = json.loads(stripped)
         except json.JSONDecodeError:
-            return fish_error_body(status, stripped)
+            return FishErrorBody.of(status, stripped)
         if isinstance(loaded, list):
             summary = _validation_msgs(cast(list[Any], loaded))
             if summary:
-                return fish_error_body(status, summary)
+                return FishErrorBody.of(status, summary)
         elif _as_dict(loaded) is not None:
             return parse_fish_error(status, loaded)
-    return fish_error_body(status, _fallback_message(stripped, status))
+    return FishErrorBody.of(status, _fallback_message(stripped, status))

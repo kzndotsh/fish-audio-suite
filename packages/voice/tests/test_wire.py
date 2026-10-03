@@ -5,7 +5,7 @@ import threading
 import time
 from collections.abc import AsyncIterator, Iterable
 from dataclasses import replace
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import ormsgpack
@@ -14,7 +14,15 @@ from fishaudio import AsyncFishAudio
 from fishaudio.exceptions import RateLimitError, ValidationError, WebSocketError
 from fishaudio.types import TTSConfig
 
-from fish_audio_suite_kit import FISH_RETRY_ATTEMPTS, SuiteDefaults, normalize_cues, scrub_tts
+from fish_audio_suite_kit import (
+    FISH_RETRY_ATTEMPTS,
+    FishAuthError,
+    FishLatency,
+    FishRateLimitError,
+    SuiteDefaults,
+    normalize_cues,
+    scrub_tts,
+)
 from fish_audio_suite_voice.live import IsolatedFishTts
 from fish_audio_suite_voice.session import _HeldClient, run_turn
 from fish_audio_suite_voice.stream_scrub import delta_events
@@ -650,9 +658,12 @@ def test_sdk_limits_are_applied_before_the_socket() -> None:
     )
     spec = tts._spec()
     assert spec.latency == "balanced"
-    loud = IsolatedFishTts(api_key="k", voice_id="v", latency=" LOW ")._spec()
+    # Out-of-contract spellings that a caller reading an env var could pass.
+    loud = IsolatedFishTts(api_key="k", voice_id="v", latency=cast(FishLatency, " LOW "))._spec()
     assert loud.latency == "balanced"
-    spaced = IsolatedFishTts(api_key="k", voice_id="v", latency=" balanced ")._spec()
+    spaced = IsolatedFishTts(
+        api_key="k", voice_id="v", latency=cast(FishLatency, " balanced ")
+    )._spec()
     assert spaced.latency == "balanced"
     assert spec.speed == 2.0
     assert spec.config.temperature == 1.0
@@ -952,6 +963,8 @@ def test_client_close_after_audio_does_not_forget_the_line(
     tts = IsolatedFishTts(api_key="k", voice_id="v", sample_rate=16_000, audio_format="pcm")
 
     class Sink:
+        output_latency_s = 0.0
+
         def __init__(self) -> None:
             self.n = 0
 
@@ -992,6 +1005,9 @@ def test_run_turn_stops_when_the_api_key_cannot_be_a_header(
     result = asyncio.run(run_turn(spec, no_events(), sink, threading.Event(), sent_text="hello"))
     assert called["n"] == 0
     assert result.error_status == 401
+    assert isinstance(result.error, FishAuthError)
+    assert result.error.status == 401
+    assert not result.error.retryable
     assert result.got_audio is False
 
 
@@ -1059,6 +1075,8 @@ def test_run_turn_retries_before_audio_and_stops_after(
     assert calls["n"] == 1
     assert slept == []
     assert failed.error_status == 429
+    assert isinstance(failed.error, FishRateLimitError)
+    assert failed.error.retryable
     assert failed.got_audio is True
 
     calls["n"] = 0
@@ -1090,6 +1108,7 @@ def test_run_turn_retries_before_audio_and_stops_after(
     )
     assert calls["n"] == 1
     assert dropped.error_status is None
+    assert dropped.error is None
     assert dropped.got_audio is True
     assert dropped.spoken_so_far == "hello"
 
@@ -1478,3 +1497,20 @@ def test_run_isolated_does_not_swallow_a_keyboard_interrupt_but_still_closes_the
         run_isolated(work())
     assert seen
     assert seen[0].is_closed()
+
+
+def test_a_turn_spec_copies_and_freezes_its_trace_headers() -> None:
+    tts = IsolatedFishTts(api_key="k", voice_id="v", trace_headers={"traceparent": "00-a"})
+    spec = tts._spec()
+    tts.trace_headers["traceparent"] = "00-changed"
+    assert spec.trace_headers["traceparent"] == "00-a"
+    with pytest.raises(TypeError):
+        cast(Any, spec.trace_headers)["x"] = "y"
+
+
+def test_speak_isolated_takes_cancel_by_keyword_only() -> None:
+    tts = IsolatedFishTts(api_key="k", voice_id="v")
+    with pytest.raises(TypeError):
+        cast(Any, tts.speak_isolated)("hi", _Sink(), threading.Event())
+    with pytest.raises(TypeError):
+        cast(Any, tts.speak_stream_isolated)(["hi"], _Sink(), threading.Event())

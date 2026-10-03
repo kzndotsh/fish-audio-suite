@@ -3,15 +3,20 @@
 from __future__ import annotations
 
 import collections
+from typing import Final
 
 import numpy as np
 
-_FLOOR_WINDOW = 80
-_FLOOR_FILL = 25
-_FLOOR_PERCENTILE = 20.0
-_FLOOR_GAIN = 2.5
-_FLOOR_LO = 80.0
-_FLOOR_HI = 450.0
+__all__ = [
+    "AdaptiveFloor",
+]
+
+_FLOOR_WINDOW: Final = 80
+_FLOOR_FILL: Final = 25
+_FLOOR_PERCENTILE: Final = 20.0
+_FLOOR_GAIN: Final = 2.5
+_FLOOR_LO: Final = 80.0
+_FLOOR_HI: Final = 450.0
 
 
 class AdaptiveFloor:

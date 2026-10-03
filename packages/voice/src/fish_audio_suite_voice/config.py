@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from typing import Final
 from urllib.parse import urlsplit
 
 from fish_audio_suite_kit import (
@@ -14,6 +15,7 @@ from fish_audio_suite_kit import (
     TTS_SPEED_LO,
     UNIT_HI,
     UNIT_LO,
+    FishLatency,
     SuiteDefaults,
     chunk_length_hi,
     clamp_num,
@@ -42,12 +44,17 @@ from fish_audio_suite_voice.tune import (
 
 # A fresh utterance cannot end sooner: the turn needs about 1.2 s of silence plus
 # the minimum voiced time. A faster clip is mostly pre-roll or leftover audio.
-DEFAULT_REPEAT_WINDOW_S = 1.5
+DEFAULT_REPEAT_WINDOW_S: Final = 1.5
 
-__all__ = ["OPENROUTER_API_BASE", "VoiceCliConfig", "cfg", "warn_if_insecure_base"]
+__all__ = [
+    "OPENROUTER_API_BASE",
+    "VoiceCliConfig",
+    "cfg",
+    "warn_if_insecure_base",
+]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class VoiceCliConfig:
     """Duplex settings read from the process environment. No YAML.
 
@@ -85,7 +92,7 @@ class VoiceCliConfig:
     fish_voice_id: str
     fish_asr_language: str
     tts_model: str
-    latency: str
+    latency: FishLatency
     speed: float
     temperature: float
     top_p: float
