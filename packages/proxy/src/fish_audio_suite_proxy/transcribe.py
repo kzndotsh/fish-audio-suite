@@ -760,7 +760,10 @@ def _verbose_body(
     strip_speakers: bool,
     strip_cues: bool,
 ) -> dict[str, Any]:
-    raw_lang = _json_text(data.get("language_code")) or _json_text(data.get("language")) or language
+    # OpenAI names the language in lowercase ("english"). Fish sends the name
+    # ("English") and the ISO code ("en"); the name is preferred.
+    name = _json_text(data.get("language"))
+    raw_lang = (name.lower() if name else None) or _json_text(data.get("language_code")) or language
     # A surrogate in the language tag makes the JSON response fail to encode,
     # so the client never receives the transcript.
     spoken_lang = utf8_text(raw_lang) if isinstance(raw_lang, str) else raw_lang
@@ -804,11 +807,14 @@ def transcription_body(
     cues : list of CaptionCue
         Phrase cues from ``caption_cues``, returned as ``segments`` with an ``id``.
     data : AsrBody
-        Decoded Fish JSON, used for ``duration`` (seconds) and language. With
+        Decoded Fish JSON, used for ``duration`` (seconds) and language. The
+        ``verbose_json`` language is Fish's ``language`` name in lowercase, as
+        OpenAI sends it (``english``), else ``language_code``, else
+        ``language`` below. With
         ``word`` granularity, ``verbose_json`` adds ``words``: one row per Fish
         word segment, or the body's own ``words`` array when it has one.
     language : str or None
-        Client or env language hint.
+        The language hint sent to Fish, used when Fish names none.
     granularities : sequence of str
         ``timestamp_granularities`` values.
     strip_speakers : bool, optional

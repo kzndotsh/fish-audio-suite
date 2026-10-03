@@ -440,7 +440,7 @@ async def transcriptions(request: Request) -> Response | dict[str, Any]:
         text,
         cues,
         data,
-        language=inbound.language,
+        language=lang or None,
         granularities=granularities,
         strip_speakers=settings.asr_strip_speakers,
         strip_cues=settings.asr_strip_cues,

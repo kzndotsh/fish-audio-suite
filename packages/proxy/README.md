@@ -70,7 +70,7 @@ The same fields are under Admin, Settings, Audio.
 | `speed` | Multiplied by `FISH_SPEED`, then clamped to 0.5–2.0 |
 | `response_format=srt` or `vtt` | Caption file. Fish segments are single words, so they are grouped into phrase cues: a cue ends after a sentence end, a pause of 0.7 s or more, a speaker change, or before it passes 84 characters or 6 seconds. Punctuation and case come from the transcript, matched on its letters and digits, so a Chinese or Japanese sentence ends at its `。` and a word Fish wrote as `35` shows as the transcript's `3.5`. Speaker markers never show; a `[cue]` before a word stays with it unless `FISH_PROXY_ASR_STRIP_CUES` is on |
 | Transcription `response_format` other than `json`, `text`, `verbose_json`, `srt`, `vtt` | 400, never a different format |
-| `verbose_json` and word timestamps | `segments` always: the phrase cues above, each with an `id`. With `timestamp_granularities=word`, `words` lists every Fish word segment (`word`, `start`, `end`) |
+| `verbose_json` and word timestamps | `segments` always: the phrase cues above, each with an `id`. With `timestamp_granularities=word`, `words` lists every Fish word segment (`word`, `start`, `end`). `language` is the language name in lowercase, as OpenAI sends it (`english`), else Fish's code, else the hint sent |
 | Transcription body | Multipart `file`, or JSON `input_audio` (base64, optional `data:` URI) |
 | `references`, `input_references` | Decoded and sent as MessagePack. Without clips the body is JSON |
 | `seed`, `use_memory_cache` | Forwarded (`on` / `off`) |

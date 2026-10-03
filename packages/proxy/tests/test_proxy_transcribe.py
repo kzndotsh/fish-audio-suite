@@ -659,3 +659,45 @@ def test_a_transcription_log_names_the_fish_request_id(
     with caplog.at_level("INFO", logger="fish-audio-suite-proxy"), TestClient(app) as client:
         assert client.post("/v1/audio/transcriptions", files=WAV_UPLOAD).status_code == 200
     assert "request_id=0b6f4c1e" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("fish", "hint", "language"),
+    [
+        ({"language": "English", "language_code": "en"}, "en", "english"),
+        ({"language": "Chinese"}, None, "chinese"),
+        ({"language": "", "language_code": "zh"}, "en", "zh"),
+        ({"language_code": "ja"}, None, "ja"),
+        ({}, "de", "de"),
+        ({"language": 7}, None, None),
+    ],
+)
+def test_verbose_language_is_the_lowercase_name(
+    fish: dict[str, Any], hint: str | None, language: str | None
+) -> None:
+    body = transcription_body(
+        "verbose_json",
+        "hi",
+        [CaptionCue(0.0, 1.0, "hi")],
+        {"text": "hi", **fish},
+        language=hint,
+        granularities=[],
+    )
+    assert isinstance(body, dict)
+    assert body["language"] == language
+
+
+def test_verbose_language_falls_back_to_the_hint_sent(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _NoLanguage(AsrJson):
+        def json(self) -> dict[str, Any]:
+            return {"text": "hallo", "duration": 1.0}
+
+    monkeypatch.delenv("FISH_ASR_LANGUAGE", raising=False)
+    capture_upstream(monkeypatch, _NoLanguage())
+    with TestClient(app) as client:
+        reply = client.post(
+            "/v1/audio/transcriptions",
+            files=WAV_UPLOAD,
+            data={"response_format": "verbose_json", "language": "de-DE"},
+        )
+    assert reply.json()["language"] == "de"
