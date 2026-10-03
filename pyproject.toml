@@ -14,7 +14,7 @@ members = ["packages/*"]
 [dependency-groups]
 dev = [
     "pytest>=9.0",
-    "ruff>=0.13",
+    "ruff>=0.16.9",
     "basedpyright==1.40.1",
     "pydoclint>=0.7.3",
 ]
