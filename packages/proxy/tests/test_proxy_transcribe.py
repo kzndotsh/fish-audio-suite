@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from proxy_helpers import WAV_UPLOAD, AsrJson, capture_upstream
 from starlette.datastructures import UploadFile
 from starlette.responses import JSONResponse
 
@@ -17,8 +18,6 @@ from fish_audio_suite_proxy.server import app
 from fish_audio_suite_proxy.transcribe import (
     transcription_body,
 )
-
-from .helpers import WAV_UPLOAD, AsrJson, capture_upstream
 
 
 def test_transcriptions_srt_and_granularities_bracket(
@@ -69,7 +68,7 @@ def test_verbose_language_surrogate_still_encodes() -> None:
         language=None,
         granularities=[],
     )
-    encoded = JSONResponse(body).body
+    encoded = bytes(JSONResponse(body).body)
     assert b"hello there" in encoded
     assert "\\ud800" not in encoded.decode()
 

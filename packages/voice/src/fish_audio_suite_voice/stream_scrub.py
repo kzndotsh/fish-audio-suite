@@ -162,7 +162,7 @@ def _scrub_chunk(
     return spoken
 
 
-async def delta_events(
+async def delta_events(  # noqa: PLR0915 - one state machine, waiting for the scrubber-class extraction
     deltas: Iterable[str] | AsyncIterable[str],
     cancel: threading.Event,
     *,

@@ -346,7 +346,9 @@ async def _read_stream(stream: AsyncIterator[Any], queue: asyncio.Queue[Any]) ->
             await queue.put(chunk)
     except asyncio.CancelledError:
         raise
-    except BaseException as exc:
+    except (Exception, BaseExceptionGroup) as exc:  # noqa: BLE001 - handed to the pump, which re-raises it
+        # KeyboardInterrupt and SystemExit are deliberately not caught: queued,
+        # they would wait behind the audio instead of stopping the process.
         await queue.put(exc)
     else:
         await queue.put(_STREAM_END)

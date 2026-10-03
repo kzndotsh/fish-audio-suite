@@ -15,16 +15,22 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Framework :: FastAPI",
     "Topic :: Multimedia :: Sound/Audio :: Speech",
     "Topic :: Internet :: WWW/HTTP",
 ]
 dependencies = [
-    "fastapi>=0.115",
+    # fastapi and python-multipart are deliberately not capped: both are 0.x and ship
+    # fixes often, so a cap would hold users on vulnerable releases. CI tests the
+    # floors below with `uv sync --resolution lowest-direct`. 0.115.7 is the first
+    # fastapi whose Starlette does not leak a stream under the test client, and
+    # python-multipart 0.0.18 fixes a boundary-parsing denial of service.
+    "fastapi>=0.115.7",
     "uvicorn[standard]>=0.32",
     "httpx>=0.28",
     "ormsgpack>=1.5",
-    "python-multipart>=0.0.12",
+    "python-multipart>=0.0.18",
     "fish-audio-suite-kit>=0.1,<0.2",
 ]
 

@@ -7,6 +7,7 @@ import httpx
 import ormsgpack
 import pytest
 from fastapi.testclient import TestClient
+from proxy_helpers import AudioStream, FakeUpstream, capture_upstream, not_response, run_fish_send
 from starlette.datastructures import FormData
 from starlette.responses import JSONResponse
 
@@ -41,8 +42,6 @@ from fish_audio_suite_proxy.transcribe import (
     form_strings,
     transcription_body,
 )
-
-from .helpers import AudioStream, FakeUpstream, capture_upstream, run_fish_send
 
 
 def test_prepare_tts_normalizes_cues() -> None:
@@ -387,7 +386,7 @@ def test_null_quality_guard_does_not_hide_the_alias(
     spoken = "Hello there friend"
 
     def features(body: dict[str, Any]) -> object:
-        packed = pack_tts(body, defaults, {}, speech_controls(body, defaults), spoken)
+        packed = not_response(pack_tts(body, defaults, {}, speech_controls(body, defaults), spoken))
         return packed.request_kw["json"].get("features")
 
     assert features({"input": spoken, "quality_guard": None, "fish_quality_guard": True}) == [
@@ -405,12 +404,14 @@ def test_surrogate_in_pronunciation_still_encodes() -> None:
             {"items": [{"value": "<|phoneme_start|>\ud800ah<|phoneme_end|>"}]}
         ],
     }
-    packed = pack_tts(
-        body,
-        defaults,
-        {},
-        speech_controls(body, defaults),
-        "Hello there friend",
+    packed = not_response(
+        pack_tts(
+            body,
+            defaults,
+            {},
+            speech_controls(body, defaults),
+            "Hello there friend",
+        )
     )
     request = httpx.Request("POST", "https://api.fish.audio/v1/tts", **packed.request_kw)
     request.read()
@@ -430,7 +431,7 @@ def test_surrogate_in_speech_text_still_encodes() -> None:
     assert "there friend" in spoken
     defaults = SuiteDefaults()
     body = {"input": raw}
-    packed = pack_tts(body, defaults, {}, speech_controls(body, defaults), spoken)
+    packed = not_response(pack_tts(body, defaults, {}, speech_controls(body, defaults), spoken))
     request = httpx.Request("POST", "https://api.fish.audio/v1/tts", **packed.request_kw)
     request.read()
     sample = base64.b64encode(b"RIFF").decode()
@@ -438,12 +439,14 @@ def test_surrogate_in_speech_text_still_encodes() -> None:
         "input": "Hello there friend",
         "references": [{"audio": sample, "text": "sample \ud800 line"}],
     }
-    clip_packed = pack_tts(
-        clip_body,
-        defaults,
-        {},
-        speech_controls(clip_body, defaults),
-        "Hello there friend",
+    clip_packed = not_response(
+        pack_tts(
+            clip_body,
+            defaults,
+            {},
+            speech_controls(clip_body, defaults),
+            "Hello there friend",
+        )
     )
     unpacked = ormsgpack.unpackb(clip_packed.request_kw["content"])
     clip_text = unpacked["references"][0]["text"]

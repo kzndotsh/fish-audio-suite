@@ -252,7 +252,7 @@ class IsolatedFishTts:
                 if not is_cancel_noise(e, cancelled=cancel.is_set()):
                     warn(f"[tts] {e}")
                 result = _quiet_result(cancel.is_set())
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - re-raised on the caller thread after join
                 error = exc
 
         thread = threading.Thread(target=worker, name="fish-tts", daemon=True)

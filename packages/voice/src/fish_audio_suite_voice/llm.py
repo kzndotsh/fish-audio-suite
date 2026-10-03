@@ -93,7 +93,7 @@ async def check_openrouter_model(client: Any, tune: LlmTune) -> None:
         else:
             warn(f"[llm] models.get HTTP {e.status_code}: {e.body[:_LOOKUP_BODY_CHARS]}")
         return
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - best-effort lookup must never stop the session
         warn(f"[llm] models.get {e}")
         return
     data = _event_field(res, "data")
@@ -684,7 +684,7 @@ async def _stream_generation(
                 held.stopped = "cancel"
                 return
             warn(f"[llm] {_group_text(exc)}")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - stream boundary: reported by warn, then retry or finish
             if is_cancel_noise(e, cancelled=cancel is not None and cancel.is_set()):
                 held.stopped = "cancel"
                 return

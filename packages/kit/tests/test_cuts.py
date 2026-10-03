@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from kit_timing import assert_linear_time
 
 from fish_audio_suite_kit import (
     ends_sentence,
@@ -165,11 +166,11 @@ def test_no_and_co_before_a_word_still_end_the_sentence() -> None:
     assert next_tts_cut("We met at the co. Then left.", partial_chars=400) == 18
 
 
-def test_many_short_sentences_are_cut_in_linear_time() -> None:
-    import time
+@pytest.mark.perf
+@pytest.mark.parametrize("text", ["a. " * 7_000, "Dr. " * 5_000, "No. 5 " * 3_000])
+def test_many_short_sentences_are_cut_in_linear_time(text: str) -> None:
+    def run(chunk: str) -> None:
+        next_tts_cut(chunk)
+        ends_sentence(chunk)
 
-    for text in ("a. " * 7_000, "Dr. " * 5_000, "No. 5 " * 3_000):
-        started = time.perf_counter()
-        next_tts_cut(text)
-        ends_sentence(text)
-        assert time.perf_counter() - started < 0.5
+    assert_linear_time(run, text)

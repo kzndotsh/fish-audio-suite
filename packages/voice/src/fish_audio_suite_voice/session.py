@@ -113,7 +113,7 @@ async def _one_attempt(turn: _Turn, events: AsyncIterator[Any], attempt: int) ->
         if run.cancel.is_set() or is_cancel_noise(exc):
             return True
         raise
-    except (Exception, BaseExceptionGroup) as exc:
+    except (Exception, BaseExceptionGroup) as exc:  # noqa: BLE001 - turn boundary: classified by turn_failure and reported in the result
         fate = turn_failure(
             exc,
             attempt=attempt,

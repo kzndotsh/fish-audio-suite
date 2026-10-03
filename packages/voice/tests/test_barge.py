@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import collections
+import collections.abc
 import io
-import sys
 import threading
-import time
 import wave
 
 import pytest
+from voice_fakes import install_vad
 
 from fish_audio_suite_voice.aec import EchoCanceller
 from fish_audio_suite_voice.barge import (
@@ -220,12 +219,11 @@ def test_encode_wav_keeps_pcm_samples() -> None:
 def test_bleed_wait_ends_when_the_turn_is_cancelled() -> None:
     gate = BargeGate(bleed_delay_s=30)
     cancel = threading.Event()
-    started = time.monotonic()
     thread = gate.start_after_bleed(cancel)
     cancel.set()
+    # A 30 s bleed that ended inside the join timeout proves cancel cut it short.
     thread.join(timeout=1)
     assert thread.is_alive() is False
-    assert time.monotonic() - started < 1
 
 
 def test_barge_vad_matches_listen() -> None:
@@ -432,9 +430,6 @@ def test_barge_watch_logs_a_mic_failure_without_cancelling(
         def __init__(self, mode: int) -> None:
             self.mode = mode
 
-    class Mod:
-        Vad = SpeechVad
-
     def boom(
         device: str | int | None,
         stop: threading.Event | None,
@@ -445,7 +440,7 @@ def test_barge_watch_logs_a_mic_failure_without_cancelling(
         del device, stop, timeout, aec
         raise OSError("no device")
 
-    monkeypatch.setitem(sys.modules, "webrtcvad", Mod)
+    install_vad(monkeypatch, SpeechVad)
     monkeypatch.setattr("fish_audio_suite_voice.barge.mic_frames", boom)
     gate = BargeGate(hit_frames=2, min_rms=1.0, bleed_delay_s=0)
     cancel = threading.Event()
@@ -528,10 +523,7 @@ def _install_listen_fakes(
         def is_speech(self, frame: bytes, rate: int) -> bool:
             return frame[:2] != b"\x00\x00"
 
-    class Mod:
-        Vad = SpeechVad
-
-    monkeypatch.setitem(sys.modules, "webrtcvad", Mod)
+    install_vad(monkeypatch, SpeechVad)
 
     def fake_mic(
         device: str | int | None,
@@ -593,11 +585,7 @@ def _watch_with(
             del frame, rate
             return vad_speech
 
-    class Mod:
-        pass
-
-    Mod.Vad = Vad
-    monkeypatch.setitem(sys.modules, "webrtcvad", Mod)
+    install_vad(monkeypatch, Vad)
 
     def fake_mic(
         device: str | int | None,
@@ -704,9 +692,6 @@ def test_speech_between_the_floor_and_the_boosted_need_does_not_raise_the_floor(
             del frame, rate
             return False
 
-    class Mod:
-        Vad = SilentVad
-
     def mic(
         device: str | int | None,
         stop: threading.Event | None,
@@ -717,7 +702,7 @@ def test_speech_between_the_floor_and_the_boosted_need_does_not_raise_the_floor(
         del device, stop, timeout, aec
         yield from [_constant_frame(300)] * 5
 
-    monkeypatch.setitem(sys.modules, "webrtcvad", Mod)
+    install_vad(monkeypatch, SilentVad)
     monkeypatch.setattr("fish_audio_suite_voice.barge.mic_frames", mic)
     monkeypatch.setattr("fish_audio_suite_voice.barge.AdaptiveFloor", Floor)
     aec = EchoCanceller(AecTune(enabled=False))

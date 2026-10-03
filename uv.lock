@@ -330,8 +330,8 @@ test = [
 dev = [
     { name = "basedpyright", specifier = "==1.40.1" },
     { name = "pydoclint", specifier = ">=0.7.3" },
-    { name = "pytest", specifier = ">=8.3" },
-    { name = "ruff", specifier = ">=0.8" },
+    { name = "pytest", specifier = ">=9.0" },
+    { name = "ruff", specifier = ">=0.13" },
 ]
 test = [
     { name = "pytest-cov", specifier = ">=7" },
@@ -360,11 +360,11 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fastapi", specifier = ">=0.115" },
+    { name = "fastapi", specifier = ">=0.115.7" },
     { name = "fish-audio-suite-kit", editable = "packages/kit" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "ormsgpack", specifier = ">=1.5" },
-    { name = "python-multipart", specifier = ">=0.0.12" },
+    { name = "python-multipart", specifier = ">=0.0.18" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
 ]
 

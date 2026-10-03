@@ -6,10 +6,17 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
+from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from fish_audio_suite_proxy.server import app
 from fish_audio_suite_proxy.upstream import RetryPolicy, fish_send
+
+
+def not_response[T](value: T | JSONResponse) -> T:
+    """Narrow a ``value | JSONResponse`` result to ``value``, failing if it was an error."""
+    assert not isinstance(value, JSONResponse)
+    return value
 
 
 class FakeUpstream:

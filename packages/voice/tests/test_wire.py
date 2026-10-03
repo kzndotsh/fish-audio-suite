@@ -1378,7 +1378,7 @@ def test_early_flush_is_not_sent_after_a_cancel() -> None:
     cancel = threading.Event()
 
     async def run() -> list[str]:
-        kinds = []
+        kinds: list[str] = []
         async for event in delta_events(
             ["Hello there my friend. ", "How are you doing today?"],
             cancel,
