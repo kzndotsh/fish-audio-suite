@@ -443,6 +443,9 @@ _CUE_MAX: Final = 64
 _TRAILING: Final = frozenset(".,!?;:…‥。！？，、；：\"'”’»›)]}」』）】〉》〕〗")
 _OPENERS: Final = frozenset("\"'“‘«‹([{「『（【〈《〔〖¿¡")
 _EDGE_MAX: Final = 8
+# A Latin word shows its whole space-delimited token from the transcript, so
+# "$3.5," stays whole when Fish splits it into "3" and "5". Bounded for long runs.
+_TOKEN_MAX: Final = 48
 # A turn that starts this close after a word's start still begins at that word.
 _TURN_SLACK_S: Final = 1e-6
 
@@ -529,16 +532,46 @@ class _Transcript:
             return False
         return _is_wide(text[last]) or last + 1 >= len(text) or not text[last + 1].isalnum()
 
+    def start_of(self, found: int) -> int:
+        """Return where the stream index ``found`` sits in ``text``."""
+        return self.origin[found]
+
     def display(self, found: int, size: int, floor: int, *, keep_cues: bool) -> tuple[str, int]:
         """Return the transcript text for a match and where it ends in ``text``."""
         text = self.text
         first, last = self.origin[found], self.origin[found + size - 1]
+        if not _is_wide(text[first]):
+            return self._token(first, last, floor, keep_cues=keep_cues)
         stop = last + 1
         while stop < len(text) and stop - last <= _EDGE_MAX and text[stop] in _TRAILING:
             stop += 1
         begin = first
         while begin > floor and first - begin < _EDGE_MAX and text[begin - 1] in _OPENERS:
             begin -= 1
+        lead = self._lead_cue(begin, floor) if keep_cues else ""
+        return lead + text[begin:stop], stop
+
+    def _token(self, first: int, last: int, floor: int, *, keep_cues: bool) -> tuple[str, int]:
+        # The space-delimited token around a Latin match. It stops at a cue or
+        # marker edge ("]" or ">") so a cue glued to the word is not shown as text.
+        text = self.text
+        begin = first
+        while (
+            begin > floor
+            and first - begin < _TOKEN_MAX
+            and not text[begin - 1].isspace()
+            and text[begin - 1] not in "]>"
+        ):
+            begin -= 1
+        stop = last + 1
+        while (
+            stop < len(text)
+            and stop - last <= _TOKEN_MAX
+            and not text[stop].isspace()
+            and text[stop] not in "[<"
+            and not _is_wide(text[stop])
+        ):
+            stop += 1
         lead = self._lead_cue(begin, floor) if keep_cues else ""
         return lead + text[begin:stop], stop
 
@@ -571,6 +604,12 @@ def _punctuated(words: list[CaptionCue], text: str, *, keep_cues: bool) -> list[
         found = stream.find(key, at, spaced=any(ch.isspace() for ch in cue.text)) if key else None
         if found is None:
             out.append(cue)
+            continue
+        if out and stream.start_of(found) < floor:
+            # Fish split one transcript token ("3.5") into several words. The
+            # first already shows the whole token, so this one only extends it.
+            out[-1] = CaptionCue(out[-1].start, cue.end, out[-1].text)
+            at = found + len(key)
             continue
         shown, floor = stream.display(found, len(key), floor, keep_cues=keep_cues)
         out.append(CaptionCue(cue.start, cue.end, shown))

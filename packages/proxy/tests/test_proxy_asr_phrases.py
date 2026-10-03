@@ -281,3 +281,27 @@ def test_the_documented_example_through_the_route(monkeypatch: pytest.MonkeyPatc
         "[高兴]很开心认识你。",
         "我也是。",
     ]
+
+
+def test_a_number_fish_splits_stays_one_token_and_does_not_end_the_sentence() -> None:
+    # Live Fish output for "The price is $3.5, okay? Thanks.": "3" and "5" are
+    # separate words. The "." of "3.5" is not a sentence end.
+    data = {
+        "segments": _words(
+            ("The", 0.0, 0.2),
+            ("price", 0.2, 0.5),
+            ("is", 0.5, 0.6),
+            ("3", 0.6, 0.8),
+            ("5", 0.8, 1.0),
+            ("okay", 1.0, 1.3),
+            ("Thanks", 1.6, 2.0),
+        ),
+    }
+    cues = _cues(data, "The price is $3.5, okay? Thanks.")
+    assert [cue.text for cue in cues] == ["The price is $3.5, okay?", "Thanks."]
+    assert (cues[0].start, cues[0].end) == (0.0, 1.3)
+
+
+def test_a_hyphenated_word_fish_splits_is_shown_once() -> None:
+    data = {"segments": _words(("well", 0.0, 0.2), ("known", 0.2, 0.5), ("fact", 0.5, 0.8))}
+    assert [cue.text for cue in _cues(data, "A well-known fact.")] == ["well-known fact."]
