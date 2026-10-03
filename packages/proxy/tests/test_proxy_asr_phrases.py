@@ -2,9 +2,15 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any, cast
 
+import pytest
+from fastapi.testclient import TestClient
+from proxy_helpers import WAV_UPLOAD, capture_upstream
+
 from fish_audio_suite_kit import AsrBody, CaptionCue
+from fish_audio_suite_proxy.server import app
 from fish_audio_suite_proxy.transcribe import caption_cues, transcription_body
 
 
@@ -134,3 +140,144 @@ def test_srt_has_one_cue_per_phrase_not_per_word() -> None:
     assert "1\n00:00:00,000 --> 00:00:00,600\nOne two." in text
     assert "2\n00:00:00,600 --> 00:00:00,900\nThree." in text
     assert "\n3\n" not in text
+
+
+def _texts(data: dict[str, Any], text: str, *, strip_cues: bool = False) -> list[str]:
+    cues = caption_cues(_body(data), text, strip_speakers=True, strip_cues=strip_cues)
+    return [cue.text for cue in cues]
+
+
+# The transcribe-1-pro example in Fish's speech-to-text guide.
+_DOC_TEXT = "<|speaker:0|> 你好。 <|speaker:1|> [高兴]很开心认识你。 <|speaker:0|> 我也是。"
+_DOC_BODY: dict[str, Any] = {
+    "text": _DOC_TEXT,
+    "duration": 6.4,
+    "segments": _words(
+        ("你", 0.32, 0.56),
+        ("好", 0.56, 0.88),
+        ("很", 1.84, 2.04),
+        ("开", 2.04, 2.24),
+        ("心", 2.24, 2.48),
+        ("认", 2.48, 2.68),
+        ("识", 2.68, 2.88),
+        ("你", 2.88, 3.2),
+        ("我", 4.56, 4.8),
+        ("也", 4.8, 5.0),
+        ("是", 5.0, 5.36),
+    ),
+    "speaker_turns": [
+        {"speaker": "speaker:0", "text": "你好。", "start": 0.32, "end": 0.88},
+        {"speaker": "speaker:1", "text": "[高兴]很开心认识你。", "start": 1.84, "end": 3.2},
+        {"speaker": "speaker:0", "text": "我也是。", "start": 4.56, "end": 5.36},
+    ],
+    "language_code": "zh",
+    "language": "Chinese",
+}
+
+
+def test_the_documented_chinese_example_makes_one_cue_per_sentence() -> None:
+    # The cue stays, as in Fish's own speaker_turns text, unless cues are stripped.
+    assert _texts(_DOC_BODY, _DOC_TEXT) == ["你好。", "[高兴]很开心认识你。", "我也是。"]
+    assert _texts(_DOC_BODY, _DOC_TEXT, strip_cues=True) == ["你好。", "很开心认识你。", "我也是。"]
+    cues = caption_cues(_body(_DOC_BODY), _DOC_TEXT, strip_speakers=True)
+    assert [(cue.start, cue.end) for cue in cues] == [(0.32, 0.88), (1.84, 3.2), (4.56, 5.36)]
+
+
+def test_cjk_sentences_split_on_the_ideographic_stop_without_speaker_turns() -> None:
+    data = {"segments": _DOC_BODY["segments"]}
+    assert _texts(data, "你好。很开心认识你！我也是？") == ["你好。", "很开心认识你！", "我也是？"]
+
+
+def test_latin_words_take_their_commas_and_periods() -> None:
+    data = {"segments": _words(("hi", 0.0, 0.2), ("there", 0.2, 0.5), ("friend", 0.5, 0.9))}
+    assert _texts(data, "Hi there, friend.") == ["Hi there, friend."]
+
+
+def test_a_normalized_number_shows_as_the_transcript_wrote_it() -> None:
+    data = {"segments": _words(("it", 0.0, 0.2), ("is", 0.2, 0.3), ("35", 0.3, 0.6))}
+    assert _texts(data, "It is 3.5.") == ["It is 3.5."]
+
+
+def test_a_word_equal_to_its_neighbour_start_and_end_is_kept() -> None:
+    # Fish can send start == end for a short word.
+    data = {"segments": _words(("a", 1.0, 1.0), ("cat", 1.0, 1.3))}
+    assert caption_cues(_body(data), "A cat.", strip_speakers=True) == [
+        CaptionCue(1.0, 1.3, "A cat.")
+    ]
+
+
+def test_inline_speaker_markers_and_cues_are_skipped() -> None:
+    data = {"segments": _words(("well", 0.0, 0.3), ("hello", 0.3, 0.6), ("there", 0.6, 0.9))}
+    text = '<|speaker:0|> [laughs] "Well, <|speaker:1|> hello [sighs] there."'
+    assert _texts(data, text) == ['[laughs] "Well, hello [sighs] there."']
+    assert _texts(data, text, strip_cues=True) == ['"Well, hello there."']
+
+
+def test_a_digit_bracket_is_speech_not_a_cue() -> None:
+    data = {"segments": _words(("page", 0.0, 0.3), ("5", 0.3, 0.6))}
+    assert _texts(data, "Page [5].") == ["Page [5]."]
+
+
+def test_a_missing_word_does_not_move_the_alignment() -> None:
+    data = {
+        "segments": _words(("so", 0.0, 0.2), ("uh", 0.2, 0.3), ("yes", 0.3, 0.5), ("no", 0.5, 0.7))
+    }
+    assert _texts(data, "So, yes. No.") == ["So, uh yes.", "No."]
+
+
+def test_a_word_does_not_match_inside_a_longer_word() -> None:
+    data = {"segments": _words(("um", 0.0, 0.2), ("drum", 0.2, 0.5))}
+    assert _texts(data, "Drum.") == ["um Drum."]
+
+
+def test_a_repeated_word_matches_the_nearest_occurrence() -> None:
+    data = {"segments": _words(("no", 0.0, 0.2), ("no", 0.2, 0.4), ("way", 0.4, 0.6))}
+    assert _texts(data, "No, no, way!") == ["No, no, way!"]
+
+
+def test_a_word_far_ahead_is_not_reached() -> None:
+    # Only a short stretch past the last match is searched, so a word the
+    # transcript dropped cannot jump the alignment to a later sentence.
+    filler = " ".join(["blah"] * 20)
+    data = {"segments": _words(("start", 0.0, 0.2), ("end", 0.2, 0.4))}
+    assert _texts(data, f"Start. {filler} end!") == ["Start.", "end"]
+
+
+def _align_seconds(size: int) -> float:
+    unit = "[[<|<|a " * 2 + "word, "
+    text = unit * (size // len(unit))
+    # Every Fish word misses, so each one searches its whole window.
+    words = _words(*(("wordy", i * 0.1, i * 0.1 + 0.1) for i in range(size // 10)))
+    started = time.perf_counter()
+    caption_cues(_body({"segments": words}), text, strip_speakers=True)
+    return time.perf_counter() - started
+
+
+def test_alignment_stays_linear_on_hostile_input() -> None:
+    # Unclosed "[" and "<|" openers and words that never match. A fast run
+    # passes outright; a slow one must not grow like the square of the input.
+    whole = min(_align_seconds(40_000) for _ in range(2))
+    if whole > 0.5:
+        quarter = min(_align_seconds(10_000) for _ in range(2))
+        assert whole < 10 * quarter
+
+
+def test_the_documented_example_through_the_route(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Pro:
+        def json(self) -> dict[str, Any]:
+            return _DOC_BODY
+
+    for name in ("FISH_PROXY_ASR_STRIP_CUES", "FISH_ASR_STRIP_CUES"):
+        monkeypatch.delenv(name, raising=False)
+    capture_upstream(monkeypatch, _Pro())
+    with TestClient(app) as client:
+        reply = client.post(
+            "/v1/audio/transcriptions", files=WAV_UPLOAD, data={"response_format": "verbose_json"}
+        )
+    body = reply.json()
+    assert body["text"] == "你好。 [高兴]很开心认识你。 我也是。"
+    assert [row["text"] for row in body["segments"]] == [
+        "你好。",
+        "[高兴]很开心认识你。",
+        "我也是。",
+    ]

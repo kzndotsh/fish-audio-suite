@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import bisect
 import math
-import re
 import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -292,10 +291,21 @@ _PHRASE_PAUSE_S: Final = 0.7
 # About two 42-character caption lines, and a few seconds on screen.
 _PHRASE_MAX_CHARS: Final = 84
 _PHRASE_MAX_S: Final = 6.0
-# How far ahead in the transcript a Fish word is looked for when its punctuation
-# is recovered. A word the transcript lacks is used as Fish sent it.
-_ALIGN_LOOKAHEAD: Final = 3
-_WORD_KEY_RE: Final = re.compile(r"[^\w']+")
+# A Fish word is looked for in the transcript's letters and digits, at most this
+# many of them ahead of the last match. A word the transcript lacks is used as
+# Fish sent it, and the search does not move.
+_ALIGN_WINDOW: Final = 24
+# A ``<|speaker:0|>`` marker or ``[laughter]`` cue in the transcript is not
+# speech. Both are bounded so an unclosed opener cannot start a long scan.
+_MARKER_MAX: Final = 200
+_CUE_MAX: Final = 64
+# Characters a word keeps from the transcript: punctuation and closers right
+# after it, and an opening quote or bracket right before it. A cue's brackets
+# never touch a matched word, because the cue is not in the stream, so "[" and
+# "]" here only ever belong to speech such as "[5]".
+_TRAILING: Final = frozenset(".,!?;:…‥。！？，、；：\"'”’»›)]}」』）】〉》〕〗")
+_OPENERS: Final = frozenset("\"'“‘«‹([{「『（【〈《〔〖¿¡")
+_EDGE_MAX: Final = 8
 # A turn that starts this close after a word's start still begins at that word.
 _TURN_SLACK_S: Final = 1e-6
 
@@ -313,30 +323,121 @@ def _word_cues(data: AsrBody, *, strip_speakers: bool, strip_cues: bool) -> list
     return words
 
 
-def _word_key(word: str) -> str:
-    return _WORD_KEY_RE.sub("", word).casefold()
+def _folded(text: str) -> str:
+    # Case-folded letters and digits only: "3.5" and "35" fold the same, and so
+    # do "Hello," and "hello".
+    return "".join(ch for ch in text.casefold() if ch.isalnum())
 
 
-def _punctuated(words: list[CaptionCue], text: str) -> list[CaptionCue]:
-    """Give each Fish word the punctuation and case it has in the transcript."""
-    tokens = text.split()
+def _skipped_span(text: str, i: int) -> int:
+    """Return the end of a speaker marker or cue that starts at ``i``, or ``i``."""
+    if text.startswith("<|", i):
+        close = text.find("|>", i + 2, i + 4 + _MARKER_MAX)
+        return close + 2 if close != -1 else i
+    if text[i] == "[":
+        close = text.find("]", i + 1, i + 2 + _CUE_MAX)
+        if close != -1 and _is_cue(text[i + 1 : close]):
+            return close + 1
+    return i
+
+
+def _is_cue(inner: str) -> bool:
+    # A bracket with only digits, such as "[5]", is something the speaker said.
+    return "[" not in inner and "\n" not in inner and any(ch.isalpha() for ch in inner)
+
+
+class _Transcript:
+    """The transcript as a stream of folded letters and digits, mapped back to it."""
+
+    def __init__(self, text: str) -> None:
+        self.text = text
+        keys: list[str] = []
+        self.origin: list[int] = []
+        i = 0
+        while i < len(text):
+            skip = _skipped_span(text, i)
+            if skip != i:
+                i = skip
+                continue
+            for ch in _folded(text[i]):
+                keys.append(ch)
+                self.origin.append(i)
+            i += 1
+        self.keys = "".join(keys)
+
+    def find(self, key: str, at: int, *, spaced: bool) -> int | None:
+        """Return the stream index where ``key`` starts as a whole word near ``at``."""
+        limit = min(len(self.keys), at + _ALIGN_WINDOW + len(key))
+        found = self.keys.find(key, at, limit)
+        while found != -1:
+            if self._whole(found, len(key), spaced=spaced):
+                return found
+            found = self.keys.find(key, found + 1, limit)
+        return None
+
+    def _whole(self, found: int, size: int, *, spaced: bool) -> bool:
+        text, origin = self.text, self.origin
+        first, last = origin[found], origin[found + size - 1]
+        # A match must not start or end inside one character's folding ("ß").
+        if found > 0 and origin[found - 1] == first:
+            return False
+        if found + size < len(origin) and origin[found + size] == last:
+            return False
+        span = text[first : last + 1]
+        if any(ch in "[<" or (ch.isspace() and not spaced) for ch in span):
+            return False
+        # A Latin word must not match inside a longer one ("um" in "drum").
+        # CJK is written without spaces, so a single character stands alone.
+        if not _is_wide(text[first]) and first > 0 and text[first - 1].isalnum():
+            return False
+        return _is_wide(text[last]) or last + 1 >= len(text) or not text[last + 1].isalnum()
+
+    def display(self, found: int, size: int, floor: int, *, keep_cues: bool) -> tuple[str, int]:
+        """Return the transcript text for a match and where it ends in ``text``."""
+        text = self.text
+        first, last = self.origin[found], self.origin[found + size - 1]
+        stop = last + 1
+        while stop < len(text) and stop - last <= _EDGE_MAX and text[stop] in _TRAILING:
+            stop += 1
+        begin = first
+        while begin > floor and first - begin < _EDGE_MAX and text[begin - 1] in _OPENERS:
+            begin -= 1
+        lead = self._lead_cue(begin, floor) if keep_cues else ""
+        return lead + text[begin:stop], stop
+
+    def _lead_cue(self, begin: int, floor: int) -> str:
+        # A cue right before the word, such as "[laughs] Well", stays with it.
+        text = self.text
+        end = begin
+        while end > floor and begin - end < _EDGE_MAX and text[end - 1].isspace():
+            end -= 1
+        if end <= floor or text[end - 1] != "]":
+            return ""
+        opener = text.rfind("[", max(floor, end - 2 - _CUE_MAX), end - 1)
+        if opener == -1 or not _is_cue(text[opener + 1 : end - 1]):
+            return ""
+        return text[opener:end] + (" " if end < begin else "")
+
+
+def _punctuated(words: list[CaptionCue], text: str, *, keep_cues: bool) -> list[CaptionCue]:
+    """Give each Fish word the punctuation and case it has in the transcript.
+
+    Words are aligned on the transcript's letters and digits, not on its
+    whitespace, so a CJK character finds the "。" after it and "35" finds "3.5".
+    """
+    stream = _Transcript(text)
     out: list[CaptionCue] = []
     at = 0
+    floor = 0
     for cue in words:
-        key = _word_key(cue.text)
-        found = next(
-            (
-                i
-                for i in range(at, min(at + _ALIGN_LOOKAHEAD, len(tokens)))
-                if key and _word_key(tokens[i]) == key
-            ),
-            None,
-        )
+        key = _folded(cue.text)
+        found = stream.find(key, at, spaced=any(ch.isspace() for ch in cue.text)) if key else None
         if found is None:
             out.append(cue)
             continue
-        out.append(CaptionCue(cue.start, cue.end, tokens[found]))
-        at = found + 1
+        shown, floor = stream.display(found, len(key), floor, keep_cues=keep_cues)
+        out.append(CaptionCue(cue.start, cue.end, shown))
+        at = found + len(key)
     return out
 
 
@@ -347,8 +448,12 @@ def _is_wide(ch: str) -> bool:
 def _join_words(left: str, right: str) -> str:
     if not left:
         return right
-    # CJK words are written without spaces between them.
-    if _is_wide(left[-1]) and _is_wide(right[0]):
+    # CJK words are written without spaces between them. A cue in front of a
+    # word, as in "[高兴]很", is joined by the character after it.
+    head = right
+    if right.startswith("[") and "]" in right[:-1]:
+        head = right[right.index("]") + 1 :]
+    if _is_wide(left[-1]) and _is_wide(head[0]):
         return left + right
     return f"{left} {right}"
 
@@ -404,10 +509,14 @@ def caption_cues(
     """Build phrase cues from Fish word segments, or one cue for the whole transcript.
 
     Fish ``segments`` are word-level: each holds one word with ``start`` and
-    ``end`` in seconds. Words are grouped into phrases, taking punctuation and
-    case from ``text``. A cue ends after a sentence end, a pause of 0.7 s or
-    more, a ``speaker_turns`` boundary, or before it would pass 84 characters
-    (two caption lines) or 6 seconds.
+    ``end`` in seconds, with no punctuation, and a CJK word is usually one
+    character. Words are grouped into phrases, taking punctuation and case
+    from ``text``: each word is found among the transcript's letters and
+    digits a little ahead of the last match, so "35" finds "3.5" and a CJK
+    character finds the "。" after it. A word the transcript lacks is used as
+    Fish sent it. Speaker markers are never shown. A cue ends after a sentence
+    end, a pause of 0.7 s or more, a ``speaker_turns`` boundary, or before it
+    would pass 84 characters (two caption lines) or 6 seconds.
 
     Parameters
     ----------
@@ -419,7 +528,9 @@ def caption_cues(
     strip_speakers : bool
         Drop speaker labels inside each word.
     strip_cues : bool, optional
-        Drop ``[cue]`` annotations inside each word. Default False.
+        Drop ``[cue]`` annotations inside each word. Default False, which also
+        keeps a cue that ``text`` puts right before a word in front of that
+        word (``[laughs] Well,``), as Fish's own ``speaker_turns`` text does.
 
     Returns
     -------
@@ -429,7 +540,7 @@ def caption_cues(
         covering ``text``, or an empty list when ``text`` is empty.
     """
     words = _word_cues(data, strip_speakers=strip_speakers, strip_cues=strip_cues)
-    phrases = _phrases(_punctuated(words, text), _turn_starts(data))
+    phrases = _phrases(_punctuated(words, text, keep_cues=not strip_cues), _turn_starts(data))
     cues = [cue for cue in phrases if not is_caption_watermark(cue.text)]
     if cues:
         return cues
