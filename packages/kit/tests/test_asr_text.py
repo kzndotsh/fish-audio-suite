@@ -9,7 +9,7 @@ from fish_audio_suite_kit import (
     is_backchannel,
     is_caption_watermark,
     is_quit_utterance,
-    same_utterance,
+    is_same_utterance,
     scrub_asr,
     scrub_tts,
     without_watermark_segments,
@@ -40,29 +40,29 @@ def test_asr_emoji_and_mixed() -> None:
 
 
 def test_a_curly_apostrophe_is_the_same_line() -> None:
-    assert same_utterance("I don\u2019t know the answer", "I don't know the answer")
-    assert not same_utterance("well go home today", "we'll go home today")
-    assert same_utterance("افتح الباب اليوم", "افتح الباب اليوم؟")
-    assert same_utterance("hello there friend", "hello there friend،")
-    assert same_utterance("hello there friend", "hello there friend।")
+    assert is_same_utterance("I don\u2019t know the answer", "I don't know the answer")
+    assert not is_same_utterance("well go home today", "we'll go home today")
+    assert is_same_utterance("افتح الباب اليوم", "افتح الباب اليوم؟")
+    assert is_same_utterance("hello there friend", "hello there friend،")
+    assert is_same_utterance("hello there friend", "hello there friend।")
     assert is_quit_utterance("bye؟")
     assert is_backchannel("yeah؟")
-    assert not same_utterance("open the door", "open the other door")
-    assert same_utterance("افتح الباب اليوم", "افتح البـاب اليوم")
-    assert same_utterance("مرحبا يا صديقي", "مرحبا يا صديـقي")
-    assert not same_utterance("افتح الباب اليوم", "افتح النافذة اليوم")
+    assert not is_same_utterance("open the door", "open the other door")
+    assert is_same_utterance("افتح الباب اليوم", "افتح البـاب اليوم")
+    assert is_same_utterance("مرحبا يا صديقي", "مرحبا يا صديـقي")
+    assert not is_same_utterance("افتح الباب اليوم", "افتح النافذة اليوم")
 
 
 def test_a_decomposed_accent_is_the_same_line() -> None:
     composed = "the caf\u00e9 is open today"
     decomposed = "the cafe\u0301 is open today"
-    assert same_utterance(decomposed, composed)
-    assert not same_utterance("the cafe is open today", composed)
+    assert is_same_utterance(decomposed, composed)
+    assert not is_same_utterance("the cafe is open today", composed)
 
 
 def test_invisible_characters_do_not_hide_a_repeat_or_a_quit() -> None:
     heard = scrub_asr("hello \u200bthere")
-    assert same_utterance(heard, "hello there")
+    assert is_same_utterance(heard, "hello there")
     assert is_quit_utterance(scrub_asr("bye\u200b"))
     assert is_asr_hallucination(scrub_asr("Thanks for watching.\u200b"))
     assert not is_quit_utterance(scrub_asr("hello there friend"))

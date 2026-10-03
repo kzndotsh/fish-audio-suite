@@ -11,7 +11,7 @@ from fishaudio import FlushEvent, TextEvent
 from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 
-from fish_audio_suite_kit import ends_sentence, skip_empty_delta
+from fish_audio_suite_kit import ends_sentence, is_empty_delta
 from fish_audio_suite_voice.stream_scrub import delta_events
 
 # Pieces that exercise the scrubber's state machine: spans that hold text until
@@ -112,7 +112,7 @@ def test_only_text_and_flush_events_come_out_and_never_an_empty_one(
     for event in events:
         assert isinstance(event, TextEvent | FlushEvent)
         if isinstance(event, TextEvent):
-            assert not skip_empty_delta(event.text)
+            assert not is_empty_delta(event.text)
 
 
 @_SETTINGS

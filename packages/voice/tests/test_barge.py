@@ -13,7 +13,7 @@ from fish_audio_suite_voice.barge import (
     _BARGE_VAD,
     BARGE_MISS_DECAY_FRAMES,
     DEFAULT_BARGE_HIT_FRAMES,
-    DEFAULT_BARGE_OVER,
+    DEFAULT_BARGE_PLAYING_GAIN,
     DEFAULT_BARGE_RMS,
     DEFAULT_BLEED_DELAY_S,
     DEFAULT_POST_SPEAK_COOLDOWN_S,
@@ -28,8 +28,8 @@ from fish_audio_suite_voice.listen import (
     _clip_wav,
     _encode_wav,
     _Listen,
+    _prime_listen,
     listen_reject_reason,
-    prime_listen,
     record_utterance,
     spike_start_allowed,
     start_frames_needed,
@@ -37,9 +37,9 @@ from fish_audio_suite_voice.listen import (
     trailing_start_hits,
 )
 from fish_audio_suite_voice.tune import (
+    DEFAULT_END_SILENCE_FRAMES,
     DEFAULT_MIN_SPEECH_RMS,
     DEFAULT_MIN_VOICED_FRAMES,
-    DEFAULT_SILENCE_FRAMES_END,
     DEFAULT_VAD_AGGRESSIVENESS,
     IMPULSE_START_EXTRA,
     MAX_UTTERANCE_FRAMES,
@@ -51,38 +51,38 @@ from fish_audio_suite_voice.tune import (
 
 def test_listen_tune_keeps_vad_and_pre_pad_in_range(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FISH_VOICE_VAD", "9")
-    monkeypatch.setenv("FISH_VOICE_PRE_PAD", "-1")
+    monkeypatch.setenv("FISH_VOICE_PRE_PAD_FRAMES", "-1")
     tune = ListenTune.from_env()
     assert tune.vad_aggressiveness == 1
     assert tune.pre_pad_frames == 20
     monkeypatch.setenv("FISH_VOICE_VAD", "3")
-    monkeypatch.setenv("FISH_VOICE_PRE_PAD", "0")
+    monkeypatch.setenv("FISH_VOICE_PRE_PAD_FRAMES", "0")
     monkeypatch.setenv("FISH_VOICE_SPEECH_FRAMES", "0")
-    monkeypatch.setenv("FISH_VOICE_MIN_VOICED", "-1")
+    monkeypatch.setenv("FISH_VOICE_MIN_VOICED_FRAMES", "-1")
     tune = ListenTune.from_env()
     assert tune.vad_aggressiveness == 3
-    assert tune.pre_pad_frames == tune.speech_frames_start + IMPULSE_START_EXTRA
-    assert tune.speech_frames_start == 4
-    assert tune.min_voiced == 12
+    assert tune.pre_pad_frames == tune.start_speech_frames + IMPULSE_START_EXTRA
+    assert tune.start_speech_frames == 4
+    assert tune.min_voiced_frames == 12
     monkeypatch.setenv("FISH_VOICE_SPEECH_FRAMES", "2")
-    monkeypatch.setenv("FISH_VOICE_MIN_VOICED", "6")
+    monkeypatch.setenv("FISH_VOICE_MIN_VOICED_FRAMES", "6")
     tune = ListenTune.from_env()
-    assert tune.speech_frames_start == 2
-    assert tune.min_voiced == 6
+    assert tune.start_speech_frames == 2
+    assert tune.min_voiced_frames == 6
     monkeypatch.setenv("FISH_VOICE_MIN_RMS", "-5")
     assert ListenTune.from_env().min_speech_rms == DEFAULT_MIN_SPEECH_RMS
     monkeypatch.setenv("FISH_VOICE_SILENCE_FRAMES", "0")
-    assert ListenTune.from_env().silence_frames_end == DEFAULT_SILENCE_FRAMES_END
+    assert ListenTune.from_env().end_silence_frames == DEFAULT_END_SILENCE_FRAMES
     monkeypatch.setenv("FISH_VOICE_SILENCE_FRAMES", "-3")
-    assert ListenTune.from_env().silence_frames_end == DEFAULT_SILENCE_FRAMES_END
-    monkeypatch.setenv("FISH_VOICE_MIN_VOICED", str(MAX_UTTERANCE_FRAMES + 1))
-    assert ListenTune.from_env().min_voiced == DEFAULT_MIN_VOICED_FRAMES
-    monkeypatch.setenv("FISH_VOICE_MIN_VOICED", "40")
-    assert ListenTune.from_env().min_voiced == 40
+    assert ListenTune.from_env().end_silence_frames == DEFAULT_END_SILENCE_FRAMES
+    monkeypatch.setenv("FISH_VOICE_MIN_VOICED_FRAMES", str(MAX_UTTERANCE_FRAMES + 1))
+    assert ListenTune.from_env().min_voiced_frames == DEFAULT_MIN_VOICED_FRAMES
+    monkeypatch.setenv("FISH_VOICE_MIN_VOICED_FRAMES", "40")
+    assert ListenTune.from_env().min_voiced_frames == 40
 
 
 def test_pre_pad_zero_still_starts_on_speech(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("FISH_VOICE_PRE_PAD", "0")
+    monkeypatch.setenv("FISH_VOICE_PRE_PAD_FRAMES", "0")
     monkeypatch.setenv("FISH_VOICE_SPEECH_FRAMES", "2")
     monkeypatch.setenv("FISH_VOICE_MIN_RMS", "200")
 
@@ -157,7 +157,7 @@ def test_a_dip_after_the_length_cap_does_not_end_the_utterance() -> None:
     loud = _pcm(500)
     for _ in range(MAX_UTTERANCE_FRAMES):
         assert heard.take(loud, 0) is False
-    assert len(heard.voiced) >= MAX_UTTERANCE_FRAMES
+    assert len(heard.clip_frames) >= MAX_UTTERANCE_FRAMES
     Vad.speech = False
     quiet = _pcm(0)
     assert heard.take(quiet, 0) is False
@@ -179,8 +179,8 @@ def test_a_long_utterance_keeps_only_the_recent_frames() -> None:
     heard.take(first, 0)
     for _ in range(MAX_UTTERANCE_FRAMES + 20):
         assert heard.take(rest, 0) is False
-    assert len(heard.voiced) == MAX_UTTERANCE_FRAMES
-    assert first not in heard.voiced
+    assert len(heard.clip_frames) == MAX_UTTERANCE_FRAMES
+    assert first not in heard.clip_frames
     assert heard.speech_hits == MAX_UTTERANCE_FRAMES
 
 
@@ -193,7 +193,7 @@ def test_trimmed_barge_credit_does_not_keep_a_short_tail() -> None:
     tune = ListenTune(1, 40, 1, 200.0, 4, 12)
     heard = _Listen(tune, Vad())
     loud = _pcm(800)
-    prime_listen(heard, loud * 4)
+    _prime_listen(heard, loud * 4)
     assert heard.primed_hits == 4
     quiet = _pcm(0)
     for _ in range(MAX_UTTERANCE_FRAMES):
@@ -286,23 +286,23 @@ def test_barge_prefix_meets_the_listen_minimum() -> None:
     tune = ListenTune(1, 1, 4, 200.0, 20, DEFAULT_MIN_VOICED_FRAMES)
     heard = _Listen(tune, object())
     loud = (1000).to_bytes(2, "little", signed=True) * (FRAME_BYTES // 2)
-    prime_listen(heard, loud * DEFAULT_BARGE_HIT_FRAMES)
+    _prime_listen(heard, loud * DEFAULT_BARGE_HIT_FRAMES)
     assert heard.speech_hits == DEFAULT_BARGE_HIT_FRAMES
     wav = _clip_wav(heard, tune)
     assert wav is not None
     assert wav.startswith(b"RIFF")
     spike = (4000).to_bytes(2, "little", signed=True) * (FRAME_BYTES // 2)
     bang = _Listen(tune, object())
-    prime_listen(bang, spike * DEFAULT_BARGE_HIT_FRAMES)
+    _prime_listen(bang, spike * DEFAULT_BARGE_HIT_FRAMES)
     kept = _clip_wav(bang, tune)
     assert kept is not None
     assert kept.startswith(b"RIFF")
     assert (
         listen_reject_reason(
-            voiced_frames=14,
+            clip_frames=14,
             speech_hits=14,
             peak_rms=4000,
-            min_voiced=DEFAULT_MIN_VOICED_FRAMES,
+            min_voiced_frames=DEFAULT_MIN_VOICED_FRAMES,
             min_speech_rms=200.0,
         )
         == "impulse"
@@ -314,7 +314,7 @@ def test_barge_prefix_counts_under_a_higher_listen_floor() -> None:
     heard = _Listen(tune, object())
     speech = (256).to_bytes(2, "little", signed=True) * (FRAME_BYTES // 2)
     quiet = b"\x01\x00" * (FRAME_BYTES // 2)
-    prime_listen(heard, quiet + speech * DEFAULT_BARGE_HIT_FRAMES)
+    _prime_listen(heard, quiet + speech * DEFAULT_BARGE_HIT_FRAMES)
     assert heard.speech_hits == DEFAULT_BARGE_HIT_FRAMES
     assert _clip_wav(heard, tune) is not None
 
@@ -324,9 +324,9 @@ def test_prime_listen_counts_loud_prefix_frames() -> None:
     heard = _Listen(tune, object())
     loud = b"\x00\x10" * 480
     quiet = b"\x01\x00" * 480
-    prime_listen(heard, quiet + loud)
+    _prime_listen(heard, quiet + loud)
     assert heard.triggered
-    assert len(heard.voiced) == 2
+    assert len(heard.clip_frames) == 2
     assert heard.speech_hits == 1
     assert heard.silence == 0
 
@@ -348,15 +348,15 @@ def test_barge_defaults_without_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_barge_over_speaker_raises_need() -> None:
-    assert barge_rms_need(220.0, far_playing=False, over=2.2) == 220.0
-    assert barge_rms_need(220.0, far_playing=True, over=2.2, aec_on=False) == pytest.approx(
+    assert barge_rms_need(220.0, far_playing=False, playing_gain=2.2) == 220.0
+    assert barge_rms_need(220.0, far_playing=True, playing_gain=2.2, aec_on=False) == pytest.approx(
         220.0 * 2.2
     )
-    assert barge_rms_need(220.0, far_playing=True, over=2.2, aec_on=True) == 220.0
-    assert barge_rms_need(220.0, far_playing=True, over=0, aec_on=False) == pytest.approx(
-        220.0 * DEFAULT_BARGE_OVER
+    assert barge_rms_need(220.0, far_playing=True, playing_gain=2.2, aec_on=True) == 220.0
+    assert barge_rms_need(220.0, far_playing=True, playing_gain=0, aec_on=False) == pytest.approx(
+        220.0 * DEFAULT_BARGE_PLAYING_GAIN
     )
-    assert barge_rms_need(220.0, far_playing=True, over=1, aec_on=False) == 220.0
+    assert barge_rms_need(220.0, far_playing=True, playing_gain=1, aec_on=False) == 220.0
 
 
 def test_start_hit_requires_vad_and_full_floor() -> None:
@@ -486,10 +486,10 @@ def test_quiet_vad_frame_holds_the_turn() -> None:
 def test_listen_reject_cough_and_impulse() -> None:
     def reason(voiced: int, hits: int, peak: float) -> str | None:
         return listen_reject_reason(
-            voiced_frames=voiced,
+            clip_frames=voiced,
             speech_hits=hits,
             peak_rms=peak,
-            min_voiced=12,
+            min_voiced_frames=12,
             min_speech_rms=200.0,
         )
 
@@ -511,9 +511,9 @@ def _install_listen_fakes(
     frames: list[bytes],
 ) -> ListenTune:
     monkeypatch.setenv("FISH_VOICE_SILENCE_FRAMES", "2")
-    monkeypatch.setenv("FISH_VOICE_MIN_VOICED", "2")
+    monkeypatch.setenv("FISH_VOICE_MIN_VOICED_FRAMES", "2")
     monkeypatch.setenv("FISH_VOICE_SPEECH_FRAMES", "2")
-    monkeypatch.setenv("FISH_VOICE_PRE_PAD", "2")
+    monkeypatch.setenv("FISH_VOICE_PRE_PAD_FRAMES", "2")
     monkeypatch.setenv("FISH_VOICE_MIN_RMS", "200")
 
     class SpeechVad:
@@ -559,7 +559,7 @@ def test_record_utterance_drops_a_finished_clip_when_quit_is_set(
     tune = _install_listen_fakes(monkeypatch, [loud, loud, quiet, quiet])
     stop = threading.Event()
     stop.set()
-    assert record_utterance(stop=stop, tune=tune) is None
+    assert record_utterance(quit_requested=stop, tune=tune) is None
 
 
 def test_record_utterance_drops_a_clip_that_never_starts(
@@ -708,7 +708,7 @@ def test_speech_between_the_floor_and_the_boosted_need_does_not_raise_the_floor(
     aec = EchoCanceller(AecTune(enabled=False))
     # The speaker is playing and AEC is off, so ``need`` is 220 x 2.2 = 484.
     aec.tap_playback(b"\x00\x00" * 16000, 16000)
-    gate = BargeGate(tune=BargeTune(min_rms=220.0, over=2.2), aec=aec)
+    gate = BargeGate(tune=BargeTune(min_rms=220.0, playing_gain=2.2), aec=aec)
     gate.watch(threading.Event())
     assert len(seen) == 5
     assert all(not quiet for _, quiet in seen)
@@ -723,7 +723,7 @@ def test_a_gate_without_an_aec_runs_without_one() -> None:
 def test_an_explicit_bleed_delay_wins_over_the_aec_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    aec = EchoCanceller(AecTune(enabled=True, bleed_s=0.3))
+    aec = EchoCanceller(AecTune(enabled=True, bleed_delay_s=0.3))
     monkeypatch.setattr(aec, "available", lambda: True)
     assert BargeGate(aec=aec)._bleed_wait() == 0.3
     assert BargeGate(aec=aec, bleed_delay_s=1.5)._bleed_wait() == 1.5

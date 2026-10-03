@@ -1,7 +1,7 @@
 """Duplex LLM token stream behind a swappable ``ChatBackend``.
 
 Two backends ship: an OpenAI-compatible httpx client for any chat-completions
-server, and the OpenRouter SDK as an opt-in adapter. ``LlmTune.backend`` picks
+server, and the OpenRouter SDK as an opt-in adapter. ``LlmSettings.backend`` picks
 one. Both share the event consumer, the 429 retry, and the cut-off continuation.
 """
 
@@ -28,8 +28,8 @@ from fish_audio_suite_voice.transports import (
     http_client,
     openrouter_client,
 )
-from fish_audio_suite_voice.tune import LlmTune, openrouter_host
-from fish_audio_suite_voice.wire import own_cancel, reap
+from fish_audio_suite_voice.tune import LlmSettings, is_openrouter_host
+from fish_audio_suite_voice.wire import is_own_cancel, reap
 
 __all__ = [
     "ChatBackend",
@@ -54,8 +54,8 @@ def _route_suffix(model: str) -> str:
     return model.rsplit("/", maxsplit=1)[-1]
 
 
-def _want_nitro(model: str, tune: LlmTune) -> bool:
-    if not tune.openrouter or not tune.nitro:
+def _want_nitro(model: str, tune: LlmSettings) -> bool:
+    if not tune.uses_openrouter_sdk or not tune.nitro:
         return False
     return ":" not in _route_suffix(model)
 
@@ -75,14 +75,14 @@ def _model_author_slug(model: str) -> tuple[str, str] | None:
     return author, slug
 
 
-async def check_openrouter_model(client: Any, tune: LlmTune) -> None:
+async def check_openrouter_model(client: Any, tune: LlmSettings) -> None:
     """Resolve the configured model via ``models.get``. Warn on 404; never abort duplex.
 
     Parameters
     ----------
     client : Any
         An open OpenRouter SDK client.
-    tune : LlmTune
+    tune : LlmSettings
         Supplies the model id and whether ``:nitro`` is added.
     """
     route = _nitro_route(tune.model, nitro=_want_nitro(tune.model, tune))
@@ -442,7 +442,7 @@ class _Backend:
 
     def __init__(
         self,
-        tune: LlmTune,
+        tune: LlmSettings,
         *,
         session_id: str | None = None,
         client: Any | None = None,
@@ -481,7 +481,7 @@ class _Backend:
 
 @asynccontextmanager
 async def open_chat_backend(
-    tune: LlmTune,
+    tune: LlmSettings,
     *,
     session_id: str | None = None,
 ) -> AsyncGenerator[ChatBackend, None]:
@@ -489,7 +489,7 @@ async def open_chat_backend(
 
     Parameters
     ----------
-    tune : LlmTune
+    tune : LlmSettings
         Backend, base URL, key, model, and request settings.
     session_id : str or None, optional
         Sent with every OpenRouter request so its logs group by session.
@@ -500,7 +500,7 @@ async def open_chat_backend(
         Ready to stream. Closed when the context exits. The OpenRouter backend
         also resolves the model once and warns when it is unknown.
     """
-    if tune.openrouter:
+    if tune.uses_openrouter_sdk:
         async with openrouter_client(tune) as sdk:
             await check_openrouter_model(sdk, tune)
             yield _Backend(tune, session_id=session_id, client=sdk)
@@ -515,7 +515,7 @@ async def open_chat_backend(
 async def llm_token_stream(
     messages: list[ChatMessage],
     *,
-    tune: LlmTune | None = None,
+    tune: LlmSettings | None = None,
     base: str = "",
     key: str = "",
     model: str = "",
@@ -531,7 +531,7 @@ async def llm_token_stream(
     ----------
     messages : list of dict
         OpenAI-style chat messages, including the system prompt.
-    tune : LlmTune or None, optional
+    tune : LlmSettings or None, optional
         Backend and request settings. When omitted one is built from ``base``,
         ``key`` and ``model``, choosing OpenRouter only for an ``openrouter.ai``
         host.
@@ -564,10 +564,10 @@ async def llm_token_stream(
     continues the sentence is yielded. A ``reasoning`` field on a stream event
     is not spoken.
     """
-    tune = tune or LlmTune(
-        backend="openrouter" if openrouter_host(base) else "openai",
+    tune = tune or LlmSettings(
+        backend="openrouter" if is_openrouter_host(base) else "openai",
         base=base,
-        key=key,
+        api_key=key,
         model=model,
     )
     route_model = _nitro_route(tune.model, nitro=_want_nitro(tune.model, tune))
@@ -643,7 +643,7 @@ def _first_sentence(text: str) -> str:
 async def _stream_generation(
     messages: list[ChatMessage],
     *,
-    tune: LlmTune,
+    tune: LlmSettings,
     route_model: str,
     cancel: asyncio.Event | None,
     client: Any | None,
@@ -680,7 +680,7 @@ async def _stream_generation(
             held.stopped = "cancel"
             # Only our own cancel flag may end the stream quietly. An outer
             # cancellation (asyncio.timeout, a task group) has to propagate.
-            if not own_cancel(cancel):
+            if not is_own_cancel(cancel):
                 raise
             return
         except GeneratorExit:

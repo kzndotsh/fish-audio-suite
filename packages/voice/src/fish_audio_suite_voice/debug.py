@@ -28,9 +28,9 @@ __all__ = [
     "console_print",
     "conversation",
     "debug",
+    "debug_enabled",
     "debug_level",
     "end_reply_line",
-    "env_debug",
     "header_meta",
     "heartbeat_due",
     "install_fish_ws_tap",
@@ -202,7 +202,7 @@ def _env_level() -> DebugLevel:
     return DebugLevel.EVENTS if env_bool("FISH_VOICE_DEBUG") else DebugLevel.OFF
 
 
-def env_debug() -> bool:
+def debug_enabled() -> bool:
     """Return whether debug logging is on.
 
     Returns
@@ -216,7 +216,7 @@ def env_debug() -> bool:
 
 def debug(message: str, *args: Any, **fields: Any) -> None:
     """Log at debug when FISH_VOICE_DEBUG is on, after closing the token line."""
-    if env_debug():
+    if debug_enabled():
         end_reply_line()
         logger.debug(message, *args, **fields)
 
@@ -246,7 +246,7 @@ def mark_turn() -> None:
     """Start the per-turn clock and print a rule. Later debug lines show seconds since now."""
     _TURN.t0 = time.perf_counter()
     _TURN.count += 1
-    if env_debug():
+    if debug_enabled():
         end_reply_line()
         title = f" turn {_TURN.count} "
         _write_stderr(_dim(title.center(_RULE_WIDTH, "\u2500")) + "\n")
@@ -354,7 +354,7 @@ def conversation(role: str, text: str) -> None:
     """
     end_reply_line()
     label = f"{role} \u25b8"
-    if not (env_debug() and _stdout_tty()):
+    if not (debug_enabled() and _stdout_tty()):
         console_print(f"{label} {text}", flush=True)
         return
     color = _ROLE_COLORS.get(role, "97")

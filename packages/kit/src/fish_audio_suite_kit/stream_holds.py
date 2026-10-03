@@ -1,7 +1,7 @@
 """Holds that keep an unfinished span out of a streamed TTS send.
 
 Each check returns the index where an unfinished span starts, or None when
-the buffer is stable. ``hold_tts`` takes the earliest. Every hold mirrors a
+the buffer is stable. ``tts_hold_at`` takes the earliest. Every hold mirrors a
 scrub rule in ``scrub_markdown``: releasing the span early would speak markup
 the scrubber removes only once it is complete.
 """
@@ -19,6 +19,7 @@ from fish_audio_suite_kit._charsets import (
     THOUGHT_OPEN_RE,
     THOUGHT_WORDS,
 )
+from fish_audio_suite_kit._deprecation import deprecated
 from fish_audio_suite_kit.cues import mood_lead_hold_at, spoken_mood_span
 from fish_audio_suite_kit.cuts import next_tts_cut
 from fish_audio_suite_kit.scrub_markdown import (
@@ -31,8 +32,10 @@ from fish_audio_suite_kit.scrub_markdown import (
 
 __all__ = [
     "hold_tts",
+    "is_empty_delta",
     "sentence_closer_hold_at",
     "skip_empty_delta",
+    "tts_hold_at",
 ]
 
 _Hold = Callable[[str], int | None]
@@ -450,7 +453,7 @@ def sentence_closer_hold_at(text: str, *, lead: bool = False) -> int | None:
     return index
 
 
-def skip_empty_delta(piece: str) -> bool:
+def is_empty_delta(piece: str) -> bool:
     """Return whether a TTS delta has no speakable characters.
 
     Parameters
@@ -548,7 +551,7 @@ _TEXT_HOLDS: tuple[_Hold, ...] = (
 )
 
 
-def hold_tts(
+def tts_hold_at(
     text: str,
     *,
     line_start: bool,
@@ -589,3 +592,27 @@ def hold_tts(
         marks.append(_sentence_lead_hold(text, sentence_start=sentence_start, before=before))
     starts = [mark for mark in marks if mark is not None]
     return min(starts) if starts else len(text)
+
+
+# --- Deprecated names -------------------------------------------------------------------
+
+
+@deprecated("is_empty_delta", "0.2.0")
+def skip_empty_delta(piece: str) -> bool:
+    """Call ``is_empty_delta``. Deprecated since 0.2.0."""
+    return is_empty_delta(piece)
+
+
+@deprecated("tts_hold_at", "0.2.0")
+def hold_tts(
+    text: str,
+    *,
+    line_start: bool,
+    sentence_start: bool,
+    before: str = "",
+    lead: bool = False,
+) -> int:
+    """Call ``tts_hold_at``. Deprecated since 0.2.0."""
+    return tts_hold_at(
+        text, line_start=line_start, sentence_start=sentence_start, before=before, lead=lead
+    )

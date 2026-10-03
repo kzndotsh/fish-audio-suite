@@ -16,8 +16,8 @@ from fish_audio_suite_kit import (
     is_asr_hallucination,
     is_backchannel,
     is_quit_utterance,
+    is_same_utterance,
     make_traceparent,
-    same_utterance,
     trace_id_of,
 )
 from fish_audio_suite_voice.asr import fish_asr
@@ -26,18 +26,18 @@ from fish_audio_suite_voice.debug import (
     console_print,
     conversation,
     debug,
-    env_debug,
+    debug_enabled,
     mark_turn,
     trace,
     warn,
 )
-from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexState
+from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexContext
 from fish_audio_suite_voice.listen import record_utterance
 from fish_audio_suite_voice.playback import PortAudioMissingError
 
 __all__ = [
     "HeardLine",
-    "accept_asr",
+    "classify_transcript",
     "hear_line",
     "recognize",
 ]
@@ -48,7 +48,7 @@ def _skip_asr(reason: str, text: str) -> Literal["skip"]:
     return "skip"
 
 
-def accept_asr(
+def classify_transcript(
     text: str,
     last_user: str,
     *,
@@ -63,7 +63,7 @@ def accept_asr(
         return "quit"
     # Only a clip that ended almost as the mic opened can be a stale copy. A
     # later repeat is the user saying it again on purpose.
-    if stale and same_utterance(text, last_user):
+    if stale and is_same_utterance(text, last_user):
         return "skip"
     return "ok"
 
@@ -81,14 +81,14 @@ class HeardLine:
 
 
 async def recognize(
-    loop: DuplexState,
+    ctx: DuplexContext,
     wav: bytes,
     last_user: str,
     *,
     stale: bool = True,
 ) -> HeardLine:
     """Send one utterance to Fish ASR and classify the text it returns."""
-    c = loop.config
+    c = ctx.config
     started = time.perf_counter()
     asr_parent = make_traceparent()
     try:
@@ -99,11 +99,11 @@ async def recognize(
             language=c.fish_asr_language,
             model=c.asr_model,
             extra_headers={"traceparent": asr_parent},
-            cancel=loop.session.stop,
-            client=loop.asr_http,
+            cancel=ctx.session.quit_requested,
+            client=ctx.asr_http,
         )
     except FishHttpError as e:
-        if loop.session.stop.is_set():
+        if ctx.session.quit_requested.is_set():
             return HeardLine("bye")
         warn(f"[asr] {e.status} {e.message}")
         if isinstance(e, FishAuthError):
@@ -112,14 +112,14 @@ async def recognize(
     except (httpx.HTTPError, OSError) as e:
         # A network failure is worth another try on the next utterance. Any
         # other error is a bug and propagates instead of looping silently.
-        if loop.session.stop.is_set():
+        if ctx.session.quit_requested.is_set():
             return HeardLine("bye")
         warn(f"[asr] {e}")
         return HeardLine("again")
-    if loop.session.stop.is_set():
+    if ctx.session.quit_requested.is_set():
         return HeardLine("bye")
     asr_ms = elapsed_ms(started)
-    decision = accept_asr(text, last_user, stale=stale)
+    decision = classify_transcript(text, last_user, stale=stale)
     if decision == "quit":
         return HeardLine("bye")
     if decision == "skip":
@@ -134,41 +134,41 @@ async def recognize(
     )
 
 
-async def hear_line(loop: DuplexState, last_user: str) -> HeardLine:
+async def hear_line(ctx: DuplexContext, last_user: str) -> HeardLine:
     """Open the mic, record one utterance, and return what was heard."""
-    if env_debug():
+    if debug_enabled():
         debug("listen.waiting for you")
     else:
         console_print("listening…")
     clear_turn()
-    trace("listen.waiting device={}", loop.device)
+    trace("listen.waiting device={}", ctx.device)
     try:
-        prefix = loop.barge_prefix
-        loop.barge_prefix = b""
+        prefix = ctx.barge_prefix
+        ctx.barge_prefix = b""
         opened = time.monotonic()
         wav = await asyncio.to_thread(
             record_utterance,
-            loop.device,
-            loop.session.stop,
+            ctx.device,
+            ctx.session.quit_requested,
             prefix=prefix,
-            tune=loop.config.listen,
-            aec=loop.session.aec,
+            tune=ctx.config.listen,
+            aec=ctx.session.aec,
         )
     except PortAudioMissingError as e:
         warn(str(e))
         return HeardLine("fatal", code=EXIT_FATAL)
-    if loop.session.stop.is_set():
+    if ctx.session.quit_requested.is_set():
         return HeardLine("bye")
     if not wav:
         debug("listen.dropped (too short or none)")
         return HeardLine("again")
     mark_turn()
     # A barge-in clip carries fresh speech, so it is never a stale copy.
-    window = loop.config.repeat_window_s
+    window = ctx.config.repeat_window_s
     stale = not prefix and time.monotonic() - opened < window
-    heard = await recognize(loop, wav, last_user, stale=stale)
+    heard = await recognize(ctx, wav, last_user, stale=stale)
     # Quit during the Fish request used to come back as a normal line, so
     # the LLM still answered after Ctrl+C.
-    if loop.session.stop.is_set():
+    if ctx.session.quit_requested.is_set():
         return HeardLine("bye")
     return heard

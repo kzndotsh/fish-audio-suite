@@ -262,7 +262,7 @@ _MPV_BUFFER_S: Final = 0.2
 
 
 class PlaybackKind(StrEnum):
-    """Sink names accepted by ``FISH_PLAYBACK`` and ``--playback``."""
+    """Sink names accepted by ``FISH_VOICE_PLAYBACK`` and ``--playback``."""
 
     SOUNDDEVICE = "sounddevice"
     SPEAKERS = "speakers"
@@ -469,7 +469,7 @@ def playback_key(name: str) -> str:
     Parameters
     ----------
     name : str
-        ``FISH_PLAYBACK`` or ``--playback``.
+        ``FISH_VOICE_PLAYBACK`` or ``--playback``.
 
     Returns
     -------
@@ -486,7 +486,7 @@ def parse_playback(name: str) -> PlaybackKind | None:
     Parameters
     ----------
     name : str
-        ``FISH_PLAYBACK`` or ``--playback``, in any case and with surrounding space.
+        ``FISH_VOICE_PLAYBACK`` or ``--playback``, in any case and with surrounding space.
 
     Returns
     -------
@@ -538,7 +538,7 @@ def make_sink(
     cancel: threading.Event | None = None,
     aec: EchoCanceller | None = None,
 ) -> PlaybackSink:
-    """Build the sink named by ``FISH_PLAYBACK`` or ``--playback``.
+    """Build the sink named by ``FISH_VOICE_PLAYBACK`` or ``--playback``.
 
     Parameters
     ----------

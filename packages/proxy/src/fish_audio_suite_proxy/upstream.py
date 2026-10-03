@@ -18,9 +18,9 @@ from fish_audio_suite_kit import (
     FishHttpError,
     fish_backoff_s,
     parse_fish_error,
-    retry_after_seconds,
+    retry_after_s,
 )
-from fish_audio_suite_proxy.errors import json_error, json_from_error_body, json_from_fish_error
+from fish_audio_suite_proxy.errors import json_error, json_from_call_failure, provider_json_error
 
 __all__ = ["FishFiles", "FishHttp", "RetryPolicy", "fish_send"]
 
@@ -96,9 +96,9 @@ def _transport_error(exc: httpx.RequestError) -> FishHttpError:
         never sent to the client.
     """
     if isinstance(exc, httpx.TimeoutException):
-        return FishHttpError.timed_out()
+        return FishHttpError.for_timeout()
     log.warning("fish transport error: %s", exc)
-    return FishHttpError.unreachable()
+    return FishHttpError.for_unreachable()
 
 
 async def _closed_error(upstream: httpx.Response) -> tuple[JSONResponse, FishHttpError]:
@@ -129,9 +129,9 @@ async def _closed_error(upstream: httpx.Response) -> tuple[JSONResponse, FishHtt
         failure = FishHttpError.from_status(
             code,
             _BODY_UNREADABLE.format(code=code),
-            retry_after=retry_after_seconds(upstream.headers),
+            retry_after=retry_after_s(upstream.headers),
         )
-        return json_from_error_body(FishErrorBody(code, failure.message)), failure
+        return provider_json_error(FishErrorBody(code, failure.message)), failure
     finally:
         await upstream.aclose()
     detail = parse_fish_error(upstream.status_code, body)
@@ -139,9 +139,9 @@ async def _closed_error(upstream: httpx.Response) -> tuple[JSONResponse, FishHtt
     failure = FishHttpError.from_status(
         upstream.status_code,
         detail.message,
-        retry_after=retry_after_seconds(upstream.headers),
+        retry_after=retry_after_s(upstream.headers),
     )
-    return json_from_error_body(detail), failure
+    return provider_json_error(detail), failure
 
 
 def _remaining(policy: RetryPolicy, started: float) -> float | None:
@@ -222,7 +222,7 @@ async def fish_send(
             # Fish may already be working on it, so it is not sent again.
             return json_error(_DEADLINE_STATUS, _DEADLINE_MESSAGE)
         except httpx.RequestError as exc:
-            last_error = json_from_fish_error(_transport_error(exc))
+            last_error = json_from_call_failure(_transport_error(exc))
             if not isinstance(exc, _RETRY_TRANSPORT):
                 return last_error
         else:
@@ -252,4 +252,4 @@ async def fish_send(
         if is_disconnected is not None and await is_disconnected():
             return json_error(_CLIENT_CLOSED, "client closed the request")
         await asyncio.sleep(pause)
-    return last_error or json_from_fish_error(FishHttpError.unreachable())
+    return last_error or json_from_call_failure(FishHttpError.for_unreachable())

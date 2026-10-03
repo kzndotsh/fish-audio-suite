@@ -1,5 +1,9 @@
 """Unofficial Fish Audio text helpers. Not affiliated with Fish Audio."""
 
+import warnings
+from typing import Final
+
+from fish_audio_suite_kit._deprecation import deprecated, deprecated_fields
 from fish_audio_suite_kit._version import read_version
 from fish_audio_suite_kit.asr_text import (
     DEFAULT_BACKCHANNELS,
@@ -8,6 +12,7 @@ from fish_audio_suite_kit.asr_text import (
     is_backchannel,
     is_caption_watermark,
     is_quit_utterance,
+    is_same_utterance,
     same_utterance,
     scrub_asr,
     without_watermark_segments,
@@ -21,31 +26,33 @@ from fish_audio_suite_kit.cues import (
 )
 from fish_audio_suite_kit.cuts import ends_sentence, next_tts_cut, split_tts_piece
 from fish_audio_suite_kit.defaults import (
+    CHUNK_LENGTH_CLOUD_HI,
     CHUNK_LENGTH_LO,
-    CLOUD_CHUNK_HI,
+    CHUNK_LENGTH_SELF_HOSTED_HI,
     DEFAULT_SEED_EXCHANGE,
     DEFAULT_SYSTEM_PROMPT,
     FISH_LATENCIES,
     FISH_TTS_MODEL_IDS,
-    MIN_CHUNK_HI,
-    MIN_CHUNK_LO,
+    MIN_CHUNK_LENGTH_HI,
+    MIN_CHUNK_LENGTH_LO,
     MS_PER_S,
-    SELF_HOST_CHUNK_HI,
     TTS_SPEED_HI,
     TTS_SPEED_LO,
-    UNIT_HI,
-    UNIT_LO,
+    UNIT_INTERVAL_HI,
+    UNIT_INTERVAL_LO,
     LatencySnapshot,
     SuiteDefaults,
     catalog_tts_model,
     chunk_length_hi,
     clamp_num,
+    clamp_number,
     elapsed_ms,
     env_base,
     env_bool,
     env_float,
     env_int,
     env_off,
+    env_renamed,
     env_text,
     env_token,
     is_insecure_fish_base,
@@ -55,7 +62,9 @@ from fish_audio_suite_kit.defaults import (
     known_mp3_bitrate,
     known_opus_bitrate,
     known_tts_model,
+    normalize_tts_model,
     number_or,
+    parse_number,
     strip_base,
 )
 from fish_audio_suite_kit.dialogue import DEFAULT_SHORT_WORDS
@@ -71,6 +80,8 @@ from fish_audio_suite_kit.http_errors import (
     FishTimeoutError,
     FishUpstreamError,
     bearer,
+    describe_request_error,
+    describe_transport_error,
     fish_attempt_exhausted,
     fish_backoff_s,
     fish_backoff_seconds,
@@ -84,6 +95,7 @@ from fish_audio_suite_kit.http_errors import (
     fish_unreachable,
     parse_asr_body,
     parse_fish_error,
+    retry_after_s,
     retry_after_seconds,
     should_retry_fish_status,
 )
@@ -99,16 +111,17 @@ from fish_audio_suite_kit.payloads import (
     AsrBody,
     AsrSegment,
     AsrWord,
-    OpenAIError,
     OpenAIErrorBody,
+    OpenAIErrorDetail,
 )
+from fish_audio_suite_kit.stream_holds import hold_tts, skip_empty_delta
 from fish_audio_suite_kit.text_filters import (
     extract_quoted_speech,
-    hold_tts,
+    is_empty_delta,
     is_tts_junk,
     scrub_tts,
     sentence_closer_hold_at,
-    skip_empty_delta,
+    tts_hold_at,
     utf8_text,
 )
 from fish_audio_suite_kit.trace_context import (
@@ -122,8 +135,9 @@ from fish_audio_suite_kit.trace_context import (
 __version__ = read_version()
 
 __all__ = [
+    "CHUNK_LENGTH_CLOUD_HI",
     "CHUNK_LENGTH_LO",
-    "CLOUD_CHUNK_HI",
+    "CHUNK_LENGTH_SELF_HOSTED_HI",
     "DEFAULT_BACKCHANNELS",
     "DEFAULT_QUIT_PHRASES",
     "DEFAULT_SEED_EXCHANGE",
@@ -134,14 +148,13 @@ __all__ = [
     "FISH_RETRY_ATTEMPTS",
     "FISH_TTS_MODEL_IDS",
     "FISH_TTS_PATH",
-    "MIN_CHUNK_HI",
-    "MIN_CHUNK_LO",
+    "MIN_CHUNK_LENGTH_HI",
+    "MIN_CHUNK_LENGTH_LO",
     "MS_PER_S",
-    "SELF_HOST_CHUNK_HI",
     "TTS_SPEED_HI",
     "TTS_SPEED_LO",
-    "UNIT_HI",
-    "UNIT_LO",
+    "UNIT_INTERVAL_HI",
+    "UNIT_INTERVAL_LO",
     "AsrBody",
     "AsrFormat",
     "AsrSegment",
@@ -159,8 +172,8 @@ __all__ = [
     "FishTimeoutError",
     "FishUpstreamError",
     "LatencySnapshot",
-    "OpenAIError",
     "OpenAIErrorBody",
+    "OpenAIErrorDetail",
     "SuiteDefaults",
     "TtsModel",
     "__version__",
@@ -169,6 +182,11 @@ __all__ = [
     "catalog_tts_model",
     "chunk_length_hi",
     "clamp_num",
+    "clamp_number",
+    "deprecated",
+    "deprecated_fields",
+    "describe_request_error",
+    "describe_transport_error",
     "elapsed_ms",
     "ends_sentence",
     "ensure_lead_cue",
@@ -178,6 +196,7 @@ __all__ = [
     "env_float",
     "env_int",
     "env_off",
+    "env_renamed",
     "env_text",
     "env_token",
     "extract_quoted_speech",
@@ -198,8 +217,10 @@ __all__ = [
     "is_asr_hallucination",
     "is_backchannel",
     "is_caption_watermark",
+    "is_empty_delta",
     "is_insecure_fish_base",
     "is_quit_utterance",
+    "is_same_utterance",
     "is_tts_junk",
     "known_asr_format",
     "known_audio_format",
@@ -211,9 +232,12 @@ __all__ = [
     "mood_lead_hold_at",
     "next_tts_cut",
     "normalize_cues",
+    "normalize_tts_model",
     "number_or",
     "parse_asr_body",
     "parse_fish_error",
+    "parse_number",
+    "retry_after_s",
     "retry_after_seconds",
     "same_utterance",
     "scrub_asr",
@@ -225,7 +249,50 @@ __all__ = [
     "strip_base",
     "strip_cue_tags",
     "trace_id_of",
+    "tts_hold_at",
     "utf8_text",
     "w3c_trace_headers",
     "without_watermark_segments",
 ]
+
+# Renamed constants and classes, old name -> (new name, version that renamed it).
+# Each still resolves through ``__getattr__`` with a DeprecationWarning and is kept
+# out of ``__all__``. Renamed functions are wrapped with ``deprecated`` instead.
+_DEPRECATED_ALIASES: Final[dict[str, tuple[str, str]]] = {
+    "CLOUD_CHUNK_HI": ("CHUNK_LENGTH_CLOUD_HI", "0.2.0"),
+    "SELF_HOST_CHUNK_HI": ("CHUNK_LENGTH_SELF_HOSTED_HI", "0.2.0"),
+    "MIN_CHUNK_LO": ("MIN_CHUNK_LENGTH_LO", "0.2.0"),
+    "MIN_CHUNK_HI": ("MIN_CHUNK_LENGTH_HI", "0.2.0"),
+    "UNIT_LO": ("UNIT_INTERVAL_LO", "0.2.0"),
+    "UNIT_HI": ("UNIT_INTERVAL_HI", "0.2.0"),
+    "OpenAIError": ("OpenAIErrorDetail", "0.2.0"),
+}
+
+
+def __getattr__(name: str) -> object:
+    """Resolve a renamed constant or class by its old name, with a warning.
+
+    Parameters
+    ----------
+    name : str
+        The attribute that normal lookup did not find.
+
+    Returns
+    -------
+    object
+        The object now exported under the new name.
+
+    Raises
+    ------
+    AttributeError
+        When ``name`` is not a deprecated alias either.
+    """
+    alias = _DEPRECATED_ALIASES.get(name)
+    if alias is None:
+        msg = f"module {__name__!r} has no attribute {name!r}"
+        raise AttributeError(msg)
+    new, since = alias
+    warnings.warn(
+        f"{name} is deprecated since {since}; use {new}.", DeprecationWarning, stacklevel=2
+    )
+    return globals()[new]

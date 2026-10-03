@@ -12,34 +12,37 @@ from dataclasses import dataclass
 from typing import Any, Final, Literal, cast
 from urllib.parse import urlsplit
 
+from fish_audio_suite_kit._deprecation import deprecated, deprecated_fields
 from fish_audio_suite_kit.literals import AsrFormat, AudioFormat, FishLatency, TtsModel
 
 __all__ = [
+    "CHUNK_LENGTH_CLOUD_HI",
     "CHUNK_LENGTH_LO",
-    "CLOUD_CHUNK_HI",
+    "CHUNK_LENGTH_SELF_HOSTED_HI",
     "DEFAULT_SEED_EXCHANGE",
     "DEFAULT_SYSTEM_PROMPT",
     "FISH_LATENCIES",
     "FISH_TTS_MODEL_IDS",
-    "MIN_CHUNK_HI",
-    "MIN_CHUNK_LO",
+    "MIN_CHUNK_LENGTH_HI",
+    "MIN_CHUNK_LENGTH_LO",
     "MS_PER_S",
-    "SELF_HOST_CHUNK_HI",
     "TTS_SPEED_HI",
     "TTS_SPEED_LO",
-    "UNIT_HI",
-    "UNIT_LO",
+    "UNIT_INTERVAL_HI",
+    "UNIT_INTERVAL_LO",
     "LatencySnapshot",
     "SuiteDefaults",
     "catalog_tts_model",
     "chunk_length_hi",
     "clamp_num",
+    "clamp_number",
     "elapsed_ms",
     "env_base",
     "env_bool",
     "env_float",
     "env_int",
     "env_off",
+    "env_renamed",
     "env_text",
     "env_token",
     "is_insecure_fish_base",
@@ -49,7 +52,9 @@ __all__ = [
     "known_mp3_bitrate",
     "known_opus_bitrate",
     "known_tts_model",
+    "normalize_tts_model",
     "number_or",
+    "parse_number",
     "strip_base",
 ]
 
@@ -124,19 +129,55 @@ class SuiteDefaults:
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
 
 
+@deprecated_fields(
+    "0.2.0",
+    llm_ttft="llm_first_token_ms",
+    llm_ttfs="tts_first_text_ms",
+    ttfa="tts_first_audio_ms",
+    voice_to_voice="voice_to_voice_ms",
+    first_audio="first_audio_ms",
+)
 @dataclass(frozen=True, slots=True)
 class LatencySnapshot:
-    """One cascade turn. Times are milliseconds. Never store utterance text."""
+    """One cascade turn. Times are milliseconds. Never store utterance text.
+
+    Attributes
+    ----------
+    asr_ms : float or None
+        From sending the finished utterance to Fish ASR until its transcript is back.
+    llm_first_token_ms : float or None
+        From the LLM request until its first token.
+    tts_first_text_ms : float or None
+        From the start of the TTS turn until the first text is sent to Fish. When
+        the reply streams, this includes waiting for the model's first piece.
+    tts_first_audio_ms : float or None
+        From the start of the TTS turn until the first audio chunk arrives from Fish.
+    voice_to_voice_ms : float or None
+        From sending the utterance to ASR until the TTS turn ends, after playback
+        finishes or is cut off.
+    trace_id : str or None
+        W3C trace id of the turn, when one was made.
+    first_audio_ms : float or None
+        From sending the utterance to ASR until the first Fish audio chunk goes to
+        the speaker. This is the wait the user hears after they stop talking.
+
+    Notes
+    -----
+    The fields keep their order, so a snapshot built by position keeps its
+    meaning; a new field goes last and is not keyword-only. The 0.1 names
+    (``llm_ttft``, ``llm_ttfs``, ``ttfa``, ``voice_to_voice``, ``first_audio``)
+    still work as keywords and attributes with a ``DeprecationWarning``.
+    """
 
     asr_ms: float | None = None
-    llm_ttft: float | None = None
-    llm_ttfs: float | None = None
-    ttfa: float | None = None
-    voice_to_voice: float | None = None
+    llm_first_token_ms: float | None = None
+    tts_first_text_ms: float | None = None
+    tts_first_audio_ms: float | None = None
+    voice_to_voice_ms: float | None = None
     trace_id: str | None = None
     # Last, and deliberately not keyword-only: a caller that builds a snapshot by
     # position keeps its meaning, and a new field must never shift the old ones.
-    first_audio: float | None = None
+    first_audio_ms: float | None = None
 
     def log_line(self) -> str:
         """One stdout timing line. Missing times are omitted. No utterance text.
@@ -144,15 +185,21 @@ class LatencySnapshot:
         Returns
         -------
         str
-            ``[timing asr=…ms … trace=…]``. ``trace`` appears only when set.
+            ``[timing asr=…ms … trace=…]``. Each key is its field name without
+            ``_ms``. ``trace`` appears only when set.
+
+        Examples
+        --------
+        >>> LatencySnapshot(asr_ms=40, tts_first_audio_ms=12.4).log_line()
+        '[timing asr=40ms tts_first_audio=12ms]'
         """
         parts = [
             _timing_field("asr", self.asr_ms),
-            _timing_field("llm_ttft", self.llm_ttft),
-            _timing_field("llm_ttfs", self.llm_ttfs),
-            _timing_field("ttfa", self.ttfa),
-            _timing_field("first_audio", self.first_audio),
-            _timing_field("voice_to_voice", self.voice_to_voice),
+            _timing_field("llm_first_token", self.llm_first_token_ms),
+            _timing_field("tts_first_text", self.tts_first_text_ms),
+            _timing_field("tts_first_audio", self.tts_first_audio_ms),
+            _timing_field("first_audio", self.first_audio_ms),
+            _timing_field("voice_to_voice", self.voice_to_voice_ms),
         ]
         if self.trace_id:
             parts.append(f"trace={self.trace_id}")
@@ -321,6 +368,39 @@ def env_text(name: str, default: str = "") -> str:
     return os.environ.get(name, default).strip()
 
 
+def env_renamed(new: str, old: str, *, warn: Callable[[str], None]) -> str:
+    """Pick which of a renamed variable's two names to read.
+
+    Parameters
+    ----------
+    new : str
+        The current environment variable name.
+    old : str
+        The name it replaced, still honored for one minor release.
+    warn : Callable
+        Called with ``"<old> is deprecated; use <new>"`` when the old name is the
+        one in use, so each package reports it its own way (a log line, a printed
+        warning).
+
+    Returns
+    -------
+    str
+        ``new`` when it is set to a non-blank value, else ``old`` when that is set
+        to a non-blank value, else ``new``. Pass the result to an ``env_*`` reader.
+
+    Examples
+    --------
+    >>> env_renamed("FISH_DOCTEST_NEW_UNSET", "FISH_DOCTEST_OLD_UNSET", warn=print)
+    'FISH_DOCTEST_NEW_UNSET'
+    """
+    if os.environ.get(new, "").strip():
+        return new
+    if os.environ.get(old, "").strip():
+        warn(f"{old} is deprecated; use {new}")
+        return old
+    return new
+
+
 def _whole_int(value: Any) -> int:
     # int("16000.0") raises, so a decimal string fell back to another rate
     # and the speaker played the buffer at the wrong speed.
@@ -345,7 +425,7 @@ def _parsed[T: int | float](value: Any, parse: Callable[[Any], T]) -> T:
     return parse(value)
 
 
-def number_or[T: int | float](value: Any, default: T, parse: Callable[[Any], T]) -> T:
+def parse_number[T: int | float](value: Any, default: T, parse: Callable[[Any], T]) -> T:
     """Parse a number from untrusted input.
 
     Parameters
@@ -386,7 +466,7 @@ def _env_num[T: int | float](name: str, default: T, parse: Callable[[str], T]) -
     raw = os.environ.get(name, "").strip()
     if not raw or not _ASCII_NUMBER_RE.fullmatch(raw):
         return default
-    return number_or(raw, default, parse)
+    return parse_number(raw, default, parse)
 
 
 def env_int(name: str, default: int) -> int:
@@ -434,14 +514,14 @@ def env_float(name: str, default: float) -> float:
 
 
 CHUNK_LENGTH_LO: Final = 100
-CLOUD_CHUNK_HI: Final = 300
-SELF_HOST_CHUNK_HI: Final = 1000
-MIN_CHUNK_LO: Final = 0
-MIN_CHUNK_HI: Final = 100
+CHUNK_LENGTH_CLOUD_HI: Final = 300
+CHUNK_LENGTH_SELF_HOSTED_HI: Final = 1000
+MIN_CHUNK_LENGTH_LO: Final = 0
+MIN_CHUNK_LENGTH_HI: Final = 100
 TTS_SPEED_LO: Final = 0.5
 TTS_SPEED_HI: Final = 2.0
-UNIT_LO: Final = 0.0
-UNIT_HI: Final = 1.0
+UNIT_INTERVAL_LO: Final = 0.0
+UNIT_INTERVAL_HI: Final = 1.0
 
 
 _CLOUD_HOST: Final = "api.fish.audio"
@@ -526,10 +606,10 @@ def chunk_length_hi(fish_base: str, *, self_hosted: bool | None = None) -> int:
         300 for the cloud API, 1000 for self-hosted fish-speech.
     """
     hosted = (not _is_cloud_base(fish_base)) if self_hosted is None else self_hosted
-    return SELF_HOST_CHUNK_HI if hosted else CLOUD_CHUNK_HI
+    return CHUNK_LENGTH_SELF_HOSTED_HI if hosted else CHUNK_LENGTH_CLOUD_HI
 
 
-def clamp_num[T: int | float](
+def clamp_number[T: int | float](
     value: Any,
     lo: T,
     hi: T,
@@ -605,10 +685,11 @@ _TTS_MODEL_BY_NAME: Final[dict[str, TtsModel]] = {
     "s2-pro": "s2-pro",
     "s2.1-pro": "s2.1-pro",
     "s2.1-pro-free": "s2.1-pro-free",
+    "drama-3-preview": "drama-3-preview",
 }
 
 
-def known_tts_model(name: str) -> str:
+def normalize_tts_model(name: str) -> str:
     """Catalog ids are lowercase. Any other single-token id is returned stripped.
 
     Parameters
@@ -620,7 +701,7 @@ def known_tts_model(name: str) -> str:
     -------
     str
         The lowercase catalog id, the stripped id when it is a single printable
-        token that Fish may know (a new model, ``drama-3-preview``), or the
+        token that Fish may know (a model newer than the catalog), or the
         default model when ``name`` is blank or could split a header. The result is
         ``str`` and not ``TtsModel`` because other ids pass through; use
         ``catalog_tts_model`` to narrow.
@@ -647,13 +728,15 @@ def catalog_tts_model(name: str) -> TtsModel | None:
     Returns
     -------
     TtsModel or None
-        The catalog id, or None for any other id, including ``drama-3-preview``.
+        The catalog id, or None for any other id.
 
     Examples
     --------
     >>> catalog_tts_model(" S2-Pro ")
     's2-pro'
-    >>> catalog_tts_model("drama-3-preview") is None
+    >>> catalog_tts_model("Drama-3-Preview")
+    'drama-3-preview'
+    >>> catalog_tts_model("mystery") is None
     True
     """
     return _TTS_MODEL_BY_NAME.get(name.strip().lower())
@@ -766,3 +849,30 @@ def known_opus_bitrate(rate: int) -> int:
     if rate in _OPUS_BITRATES:
         return rate
     return _OPUS_AUTO
+
+
+# --- Deprecated names -------------------------------------------------------------------
+
+
+@deprecated("parse_number", "0.2.0")
+def number_or[T: int | float](value: Any, default: T, parse: Callable[[Any], T]) -> T:
+    """Call ``parse_number``. Deprecated since 0.2.0."""
+    return parse_number(value, default, parse)
+
+
+@deprecated("clamp_number", "0.2.0")
+def clamp_num[T: int | float](
+    value: Any,
+    lo: T,
+    hi: T,
+    default: T,
+    parse: Callable[[Any], T],
+) -> T:
+    """Call ``clamp_number``. Deprecated since 0.2.0."""
+    return clamp_number(value, lo, hi, default, parse)
+
+
+@deprecated("normalize_tts_model", "0.2.0")
+def known_tts_model(name: str) -> str:
+    """Call ``normalize_tts_model``. Deprecated since 0.2.0."""
+    return normalize_tts_model(name)

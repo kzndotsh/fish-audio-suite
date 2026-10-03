@@ -11,7 +11,7 @@ from fishaudio.exceptions import AuthenticationError, RateLimitError
 from voice_fakes import make_result
 
 from fish_audio_suite_kit import SuiteDefaults
-from fish_audio_suite_voice.live import IsolatedFishTts, IsolatedResult, is_cancel_noise
+from fish_audio_suite_voice.live import IsolatedFishTts, TtsResult, is_cancel_noise
 from fish_audio_suite_voice.playback import (
     FileSink,
     MpvSink,
@@ -287,17 +287,19 @@ def test_speak_isolated_works_inside_asyncio_run(
         sink: FileSink,
         cancel: threading.Event,
         on_first_audio: object = None,
-    ) -> IsolatedResult:
+    ) -> TtsResult:
         sink.start()
         sink.write(b"\x00\x00" * 64)
         sink.finish()
-        return make_result("ok", bytes_played=128, got_audio=True, ttfa_ms=1.0, llm_ttfs_ms=1.0)
+        return make_result(
+            "ok", bytes_played=128, got_audio=True, tts_first_audio_ms=1.0, tts_first_text_ms=1.0
+        )
 
     monkeypatch.setattr(IsolatedFishTts, "speak", fake_speak)
     tts = IsolatedFishTts(api_key="k", voice_id="v")
     sink = FileSink(tmp_path / "t.wav", sample_rate=44100, wav=True)
 
-    async def outer() -> IsolatedResult:
+    async def outer() -> TtsResult:
         return tts.speak_isolated("[clear] hi", sink)
 
     result = asyncio.run(outer())

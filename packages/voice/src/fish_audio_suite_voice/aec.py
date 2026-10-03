@@ -14,7 +14,7 @@ from typing import Any, Final
 import numpy as np
 
 from fish_audio_suite_voice.debug import debug
-from fish_audio_suite_voice.tune import DEFAULT_AEC_BLEED_S, AecTune
+from fish_audio_suite_voice.tune import DEFAULT_AEC_BLEED_DELAY_S, AecTune
 
 __all__ = [
     "AEC_RATE",
@@ -260,13 +260,13 @@ class EchoCanceller:
         Returns
         -------
         float
-            ``AecTune.bleed_s`` when AEC3 is loaded, otherwise ``fallback_s``.
+            ``AecTune.bleed_delay_s`` when AEC3 is loaded, otherwise ``fallback_s``.
             Negative values become 0 or the AEC default.
         """
         if not self.available():
             return fallback_s if fallback_s >= 0 else 0.0
-        bleed = self.tune.bleed_s
-        return bleed if bleed >= 0 else DEFAULT_AEC_BLEED_S
+        bleed = self.tune.bleed_delay_s
+        return bleed if bleed >= 0 else DEFAULT_AEC_BLEED_DELAY_S
 
     def clean(self, near: bytes) -> bytes:
         """Cancel echo when far-end has energy; otherwise return ``near``.

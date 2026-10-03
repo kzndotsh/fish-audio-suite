@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Final
 
 from fish_audio_suite_voice.aec import EchoCanceller
-from fish_audio_suite_voice.config import VoiceCliConfig, cfg, warn_if_insecure_base
+from fish_audio_suite_voice.config import VoiceCliConfig, load_config, warn_if_insecure_base
 from fish_audio_suite_voice.debug import (
     DebugLevel,
     configure_voice_logging,
@@ -37,11 +37,11 @@ from fish_audio_suite_voice.playback import (
     playback_key,
 )
 from fish_audio_suite_voice.signals import DuplexSession
-from fish_audio_suite_voice.tune import LlmTune, provider_for_base
+from fish_audio_suite_voice.tune import LlmSettings, provider_for_base
 
 __all__ = [
     "apply_cli_env_files",
-    "cfg",
+    "load_config",
     "main",
     "run_loop",
     "smoke_test",
@@ -77,11 +77,13 @@ def _parse_device(raw: str | None) -> str | int | None:
         return text
 
 
-def llm_setting_names(llm: LlmTune) -> tuple[str, str]:
+def llm_setting_names(llm: LlmSettings) -> tuple[str, str]:
     """Name the key and model variables the selected provider reads."""
     provider = provider_for_base(llm.base)
     if provider is None:
-        return ("OPENROUTER_API_KEY" if llm.openrouter else "OPENAI_API_KEY"), "OPENROUTER_MODEL"
+        return (
+            "OPENROUTER_API_KEY" if llm.uses_openrouter_sdk else "OPENAI_API_KEY"
+        ), "OPENROUTER_MODEL"
     models = [provider.model_env]
     if provider.name == "openrouter":
         models.append("OPENROUTER_MODEL")
@@ -183,8 +185,8 @@ async def run_loop(c: VoiceCliConfig) -> int:
     if missing is not None:
         return missing
     key_name, model_names = llm_setting_names(c.llm)
-    if not c.llm.key:
-        return _blocker(f"FISH_LLM_KEY / {key_name}")
+    if not c.llm.api_key:
+        return _blocker(f"FISH_LLM_API_KEY / {key_name}")
     if not c.llm.model:
         return _blocker(f"FISH_LLM_MODEL / {model_names}")
     playback_problem = duplex_playback_problem(c.playback)
@@ -228,7 +230,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--playback",
         default=None,
-        help="sounddevice | file | stdout | mpv (overrides FISH_PLAYBACK)",
+        help="sounddevice | file | stdout | mpv (overrides FISH_VOICE_PLAYBACK)",
     )
     p.add_argument(
         "--env-file",
@@ -282,7 +284,7 @@ def main(argv: list[str] | None = None) -> int:
     level = max(level, debug_level())
     debug = level >= DebugLevel.EVENTS
     configure_voice_logging(debug=level)
-    c = cfg()
+    c = load_config()
     warn_if_insecure_base(c)
     if args.playback:
         c = replace(c, playback=playback_key(args.playback))

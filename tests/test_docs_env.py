@@ -30,7 +30,7 @@ OURS = re.compile(r"^(FISH|OPENROUTER|OPENAI|EXPLABS)_[A-Z0-9_]+$")
 # test_no_prefixed_name_is_left_unexplained fails and says to add it here.
 READER_CALL = re.compile(
     r"^(env_\w+|read_\w+|_first_\w+|_existing|_non_negative|_positive_float|_positive_int"
-    r"|_deprecated|_raw|LlmProvider)$"
+    r"|_raw|LlmProvider)$"
 )
 SHELL_REF = re.compile(r"\$\{?(FISH_[A-Z0-9_]+)")
 TICKED = re.compile(r"`([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)`")
@@ -45,6 +45,22 @@ DOC_ONLY = {
 ENV_EXAMPLE_SKIP = {
     "FISH_MODEL": "deprecated alias of FISH_TTS_MODEL",
     "FISH_SPEED_SCALE": "deprecated alias of FISH_SPEED",
+    "FISH_FORMAT": "deprecated alias of FISH_TTS_FORMAT",
+    "FISH_TTS_ALIASES": "deprecated alias of FISH_PROXY_TTS_ALIASES",
+    "FISH_ASR_STRIP_SPEAKERS": "deprecated alias of FISH_PROXY_ASR_STRIP_SPEAKERS",
+    "FISH_ASR_STRIP_CUES": "deprecated alias of FISH_PROXY_ASR_STRIP_CUES",
+    "FISH_MOOD_LEAD": "deprecated alias of FISH_TTS_MOOD_LEAD",
+    "FISH_DROP_NARRATION": "deprecated alias of FISH_TTS_DROP_NARRATION",
+    "FISH_PLAYBACK": "deprecated alias of FISH_VOICE_PLAYBACK",
+    "FISH_HISTORY_TURNS": "deprecated alias of FISH_VOICE_HISTORY_TURNS",
+    "FISH_SYSTEM_PROMPT": "deprecated alias of FISH_VOICE_SYSTEM_PROMPT",
+    "FISH_STREAM_TTS": "deprecated alias of FISH_VOICE_STREAM_TTS",
+    "FISH_VOICE_REPEAT_WINDOW_S": "deprecated alias of FISH_VOICE_REPEAT_WINDOW",
+    "FISH_VOICE_PRE_PAD": "deprecated alias of FISH_VOICE_PRE_PAD_FRAMES",
+    "FISH_VOICE_MIN_VOICED": "deprecated alias of FISH_VOICE_MIN_VOICED_FRAMES",
+    "FISH_VOICE_BARGE_OVER": "deprecated alias of FISH_VOICE_BARGE_PLAYING_GAIN",
+    "FISH_VOICE_AEC_BLEED": "deprecated alias of FISH_VOICE_AEC_BLEED_DELAY",
+    "FISH_LLM_KEY": "deprecated alias of FISH_LLM_API_KEY",
     "OPENROUTER_BASE_URL": "fallback name for FISH_LLM_BASE",
     "OPENROUTER_MODEL": "fallback name for FISH_LLM_MODEL",
     "WEB_CONCURRENCY": "the standard uvicorn fallback for FISH_PROXY_WORKERS",
@@ -81,8 +97,8 @@ DEFAULTS = {
         "proxy",
     ),
     "FISH_PROXY_RETRY_ATTEMPTS": ("fish_audio_suite_kit", "FISH_RETRY_ATTEMPTS", "proxy"),
-    "FISH_HISTORY_TURNS": ("fish_audio_suite_voice.tune", "DEFAULT_HISTORY_TURNS", "voice"),
-    "FISH_VOICE_REPEAT_WINDOW_S": (
+    "FISH_VOICE_HISTORY_TURNS": ("fish_audio_suite_voice.tune", "DEFAULT_HISTORY_TURNS", "voice"),
+    "FISH_VOICE_REPEAT_WINDOW": (
         "fish_audio_suite_voice.config",
         "DEFAULT_REPEAT_WINDOW_S",
         "voice",
@@ -92,7 +108,11 @@ DEFAULTS = {
     "FISH_LLM_TEMPERATURE": ("fish_audio_suite_voice.tune", "DEFAULT_LLM_TEMPERATURE", "voice"),
     "FISH_VOICE_BARGE_FRAMES": ("fish_audio_suite_voice.tune", "DEFAULT_BARGE_HIT_FRAMES", "voice"),
     "FISH_VOICE_BARGE_RMS": ("fish_audio_suite_voice.tune", "DEFAULT_BARGE_RMS", "voice"),
-    "FISH_VOICE_BARGE_OVER": ("fish_audio_suite_voice.tune", "DEFAULT_BARGE_OVER", "voice"),
+    "FISH_VOICE_BARGE_PLAYING_GAIN": (
+        "fish_audio_suite_voice.tune",
+        "DEFAULT_BARGE_PLAYING_GAIN",
+        "voice",
+    ),
     "FISH_VOICE_COOLDOWN": (
         "fish_audio_suite_voice.tune",
         "DEFAULT_POST_SPEAK_COOLDOWN_S",
@@ -100,20 +120,28 @@ DEFAULTS = {
     ),
     "FISH_VOICE_BLEED_DELAY": ("fish_audio_suite_voice.tune", "DEFAULT_BLEED_DELAY_S", "voice"),
     "FISH_VOICE_AEC_WET": ("fish_audio_suite_voice.tune", "DEFAULT_AEC_WET", "voice"),
-    "FISH_VOICE_AEC_BLEED": ("fish_audio_suite_voice.tune", "DEFAULT_AEC_BLEED_S", "voice"),
+    "FISH_VOICE_AEC_BLEED_DELAY": (
+        "fish_audio_suite_voice.tune",
+        "DEFAULT_AEC_BLEED_DELAY_S",
+        "voice",
+    ),
     "FISH_VOICE_SILENCE_FRAMES": (
         "fish_audio_suite_voice.tune",
-        "DEFAULT_SILENCE_FRAMES_END",
+        "DEFAULT_END_SILENCE_FRAMES",
         "voice",
     ),
     "FISH_VOICE_SPEECH_FRAMES": (
         "fish_audio_suite_voice.tune",
-        "DEFAULT_SPEECH_FRAMES_START",
+        "DEFAULT_START_SPEECH_FRAMES",
         "voice",
     ),
     "FISH_VOICE_MIN_RMS": ("fish_audio_suite_voice.tune", "DEFAULT_MIN_SPEECH_RMS", "voice"),
-    "FISH_VOICE_MIN_VOICED": ("fish_audio_suite_voice.tune", "DEFAULT_MIN_VOICED_FRAMES", "voice"),
-    "FISH_VOICE_PRE_PAD": ("fish_audio_suite_voice.tune", "DEFAULT_PRE_PAD_FRAMES", "voice"),
+    "FISH_VOICE_MIN_VOICED_FRAMES": (
+        "fish_audio_suite_voice.tune",
+        "DEFAULT_MIN_VOICED_FRAMES",
+        "voice",
+    ),
+    "FISH_VOICE_PRE_PAD_FRAMES": ("fish_audio_suite_voice.tune", "DEFAULT_PRE_PAD_FRAMES", "voice"),
     "FISH_VOICE_VAD": ("fish_audio_suite_voice.tune", "DEFAULT_VAD_AGGRESSIVENESS", "voice"),
 }
 

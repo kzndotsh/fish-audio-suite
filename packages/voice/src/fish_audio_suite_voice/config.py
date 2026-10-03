@@ -9,24 +9,25 @@ from urllib.parse import urlsplit
 
 from fish_audio_suite_kit import (
     CHUNK_LENGTH_LO,
-    MIN_CHUNK_HI,
-    MIN_CHUNK_LO,
+    MIN_CHUNK_LENGTH_HI,
+    MIN_CHUNK_LENGTH_LO,
     TTS_SPEED_HI,
     TTS_SPEED_LO,
-    UNIT_HI,
-    UNIT_LO,
+    UNIT_INTERVAL_HI,
+    UNIT_INTERVAL_LO,
     FishLatency,
     SuiteDefaults,
     chunk_length_hi,
-    clamp_num,
+    clamp_number,
     env_base,
     env_float,
     env_int,
+    env_renamed,
     env_text,
     env_token,
     is_insecure_fish_base,
     known_latency,
-    known_tts_model,
+    normalize_tts_model,
 )
 from fish_audio_suite_voice.debug import warn
 from fish_audio_suite_voice.playback import DEFAULT_PLAYBACK, playback_key
@@ -36,10 +37,11 @@ from fish_audio_suite_voice.tune import (
     AecTune,
     BargeTune,
     ListenTune,
-    LlmTune,
+    LlmSettings,
     read_flag,
     read_float,
     read_int,
+    warn_renamed,
 )
 
 # A fresh utterance cannot end sooner: the turn needs about 1.2 s of silence plus
@@ -49,7 +51,7 @@ DEFAULT_REPEAT_WINDOW_S: Final = 1.5
 __all__ = [
     "OPENROUTER_API_BASE",
     "VoiceCliConfig",
-    "cfg",
+    "load_config",
     "warn_if_insecure_base",
 ]
 
@@ -66,7 +68,7 @@ class VoiceCliConfig:
 
     Attributes
     ----------
-    llm : LlmTune
+    llm : LlmSettings
         Chat backend and request settings.
     listen : ListenTune
         Microphone capture limits.
@@ -105,7 +107,7 @@ class VoiceCliConfig:
     system_prompt: str
     device: str | None
     asr_model: str = "transcribe-1"
-    llm: LlmTune = field(default_factory=LlmTune)
+    llm: LlmSettings = field(default_factory=LlmSettings)
     listen: ListenTune = field(default_factory=ListenTune)
     barge: BargeTune = field(default_factory=BargeTune)
     aec: AecTune = field(default_factory=AecTune)
@@ -137,7 +139,7 @@ def warn_if_insecure_base(c: VoiceCliConfig) -> bool:
     Parameters
     ----------
     c : VoiceCliConfig
-        The settings built by ``cfg``.
+        The settings built by ``load_config``.
 
     Returns
     -------
@@ -152,7 +154,7 @@ def warn_if_insecure_base(c: VoiceCliConfig) -> bool:
             "unencrypted. Use https unless this host is on a network you trust."
         )
         warned = True
-    if c.llm.key and is_insecure_fish_base(c.llm.base):
+    if c.llm.api_key and is_insecure_fish_base(c.llm.base):
         warn(
             f"[llm] FISH_LLM_BASE host {_base_host(c.llm.base)} is plain http, so the LLM key is sent "
             "unencrypted. Use https unless this host is on a network you trust."
@@ -161,7 +163,7 @@ def warn_if_insecure_base(c: VoiceCliConfig) -> bool:
     return warned
 
 
-def cfg() -> VoiceCliConfig:
+def load_config() -> VoiceCliConfig:
     """Read ``VoiceCliConfig`` from the current process environment.
 
     Returns
@@ -174,6 +176,12 @@ def cfg() -> VoiceCliConfig:
     -----
     ``FISH_API_KEY`` uses ``env_text``, so a blank value stays blank instead
     of falling back to a default key. There is no default voice id.
+
+    A key renamed in 0.2.0 (for example ``FISH_PLAYBACK``, now
+    ``FISH_VOICE_PLAYBACK``) is still read when its new name is unset, with a
+    printed warning, until the next minor release. ``FISH_MODEL`` and
+    ``FISH_SPEED_SCALE`` are read the same way, as the proxy reads them, so one
+    ``.env`` gives both packages the same model and speed.
     """
     d = SuiteDefaults()
     fish_base = env_base("FISH_BASE", d.fish_base)
@@ -183,51 +191,92 @@ def cfg() -> VoiceCliConfig:
         fish_base=fish_base,
         fish_voice_id=env_text("FISH_VOICE_ID"),
         fish_asr_language=env_text("FISH_ASR_LANGUAGE", d.asr_language),
-        tts_model=known_tts_model(env_token("FISH_TTS_MODEL", d.tts_model)),
+        tts_model=normalize_tts_model(
+            env_token(env_renamed("FISH_TTS_MODEL", "FISH_MODEL", warn=warn_renamed), d.tts_model)
+        ),
         latency=known_latency(env_token("FISH_LATENCY", d.latency), d.latency),
-        speed=clamp_num(
-            env_float("FISH_SPEED", d.speed),
+        speed=clamp_number(
+            env_float(env_renamed("FISH_SPEED", "FISH_SPEED_SCALE", warn=warn_renamed), d.speed),
             TTS_SPEED_LO,
             TTS_SPEED_HI,
             d.speed,
             float,
         ),
-        temperature=clamp_num(
+        temperature=clamp_number(
             env_float("FISH_TEMPERATURE", d.temperature),
-            UNIT_LO,
-            UNIT_HI,
+            UNIT_INTERVAL_LO,
+            UNIT_INTERVAL_HI,
             d.temperature,
             float,
         ),
-        top_p=clamp_num(env_float("FISH_TOP_P", d.top_p), UNIT_LO, UNIT_HI, d.top_p, float),
+        top_p=clamp_number(
+            env_float("FISH_TOP_P", d.top_p), UNIT_INTERVAL_LO, UNIT_INTERVAL_HI, d.top_p, float
+        ),
         repetition_penalty=env_float("FISH_REPETITION_PENALTY", d.repetition_penalty),
-        chunk_length=clamp_num(
+        chunk_length=clamp_number(
             env_int("FISH_CHUNK_LENGTH", d.chunk_length),
             CHUNK_LENGTH_LO,
             chunk_length_hi(fish_base),
             d.chunk_length,
             int,
         ),
-        min_chunk_length=clamp_num(
+        min_chunk_length=clamp_number(
             env_int("FISH_MIN_CHUNK_LENGTH", d.min_chunk_length),
-            MIN_CHUNK_LO,
-            MIN_CHUNK_HI,
+            MIN_CHUNK_LENGTH_LO,
+            MIN_CHUNK_LENGTH_HI,
             d.min_chunk_length,
             int,
         ),
         volume=env_float("FISH_VOLUME", d.volume),
         sample_rate=sample_rate if sample_rate > 0 else d.sample_rate,
-        playback=playback_key(env_token("FISH_PLAYBACK", DEFAULT_PLAYBACK)),
-        system_prompt=os.environ.get("FISH_SYSTEM_PROMPT", d.system_prompt),
+        playback=playback_key(
+            env_token(
+                env_renamed("FISH_VOICE_PLAYBACK", "FISH_PLAYBACK", warn=warn_renamed),
+                DEFAULT_PLAYBACK,
+            )
+        ),
+        system_prompt=_system_prompt(d.system_prompt),
         device=os.environ.get("FISH_VOICE_DEVICE"),
         asr_model=_asr_model(d.asr_model),
-        llm=LlmTune.from_env(),
+        llm=LlmSettings.from_env(),
         listen=ListenTune.from_env(),
         barge=BargeTune.from_env(),
         aec=AecTune.from_env(),
-        history_turns=read_int("FISH_HISTORY_TURNS", DEFAULT_HISTORY_TURNS, lo=1),
-        repeat_window_s=read_float("FISH_VOICE_REPEAT_WINDOW_S", DEFAULT_REPEAT_WINDOW_S, lo=0.0),
-        mood_lead=read_flag("FISH_MOOD_LEAD", default=False),
-        drop_narration=read_flag("FISH_DROP_NARRATION", default=False),
-        stream_tts=read_flag("FISH_STREAM_TTS", default=False),
+        history_turns=read_int(
+            env_renamed("FISH_VOICE_HISTORY_TURNS", "FISH_HISTORY_TURNS", warn=warn_renamed),
+            DEFAULT_HISTORY_TURNS,
+            lo=1,
+        ),
+        repeat_window_s=read_float(
+            env_renamed(
+                "FISH_VOICE_REPEAT_WINDOW", "FISH_VOICE_REPEAT_WINDOW_S", warn=warn_renamed
+            ),
+            DEFAULT_REPEAT_WINDOW_S,
+            lo=0.0,
+        ),
+        mood_lead=read_flag(
+            env_renamed("FISH_TTS_MOOD_LEAD", "FISH_MOOD_LEAD", warn=warn_renamed), default=False
+        ),
+        drop_narration=read_flag(
+            env_renamed("FISH_TTS_DROP_NARRATION", "FISH_DROP_NARRATION", warn=warn_renamed),
+            default=False,
+        ),
+        stream_tts=read_flag(
+            env_renamed("FISH_VOICE_STREAM_TTS", "FISH_STREAM_TTS", warn=warn_renamed),
+            default=False,
+        ),
     )
+
+
+def _system_prompt(default: str) -> str:
+    # A prompt set but blank means "no system prompt", so unlike the other keys
+    # a blank value still counts here. env_renamed treats blank as unset, which
+    # would give an old blank FISH_SYSTEM_PROMPT the default prompt instead.
+    prompt = os.environ.get("FISH_VOICE_SYSTEM_PROMPT")
+    if prompt is not None:
+        return prompt
+    old = os.environ.get("FISH_SYSTEM_PROMPT")
+    if old is None:
+        return default
+    warn_renamed("FISH_SYSTEM_PROMPT is deprecated; use FISH_VOICE_SYSTEM_PROMPT")
+    return old

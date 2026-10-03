@@ -55,7 +55,7 @@ flowchart LR
     spk -. "you talk over it: barge-in" .-> ear
 ```
 
-With `FISH_STREAM_TTS=1` the first sentence goes to Fish as soon as it is complete, so you hear it while the model is still writing. The flush waits for the end of the sentence, because a flush earlier makes Fish speak half a sentence as if it were finished. Without that setting the reply is spoken after the model finishes.
+With `FISH_VOICE_STREAM_TTS=1` the first sentence goes to Fish as soon as it is complete, so you hear it while the model is still writing. The flush waits for the end of the sentence, because a flush earlier makes Fish speak half a sentence as if it were finished. Without that setting the reply is spoken after the model finishes.
 
 You can talk over it. Echo cancellation removes the speaker from the mic signal, and a barge-in stops the reply and keeps the audio that tripped it, so your interruption becomes the next turn. The chat history records a word-aligned estimate of the part that was played, not the full reply you cut off.
 
@@ -157,9 +157,11 @@ The ones you touch first. Every package lists its full table.
 | `FISH_BASE` | proxy, voice | `https://api.fish.audio` |
 | `FISH_PROXY_HOST` / `FISH_PROXY_PORT` | proxy | `127.0.0.1` / `8849` |
 | `FISH_PROXY_API_KEYS` | proxy | none, any client key accepted |
-| `FISH_STREAM_TTS` | voice | off (`1` speaks while the model writes) |
+| `FISH_VOICE_STREAM_TTS` | voice | off (`1` speaks while the model writes) |
 
-FYI: Self-hosted [fish-speech](https://github.com/fishaudio/fish-speech) is `FISH_BASE=http://127.0.0.1:8080`. Full tables: [proxy](packages/proxy/README.md#settings), [voice](packages/voice/README.md#settings).
+FYI: `FISH_SPEED` is the default speech speed. The proxy multiplies a `speed` the client sends by it. Variables renamed in 0.2.0 still work and print a warning that names the new one.
+
+Self-hosted [fish-speech](https://github.com/fishaudio/fish-speech) is `FISH_BASE=http://127.0.0.1:8080`. Full tables: [proxy](packages/proxy/README.md#settings), [voice](packages/voice/README.md#settings).
 
 ## Run it as a service
 

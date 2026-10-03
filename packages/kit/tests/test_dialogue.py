@@ -4,9 +4,9 @@ import pytest
 
 from fish_audio_suite_kit import (
     extract_quoted_speech,
+    is_empty_delta,
     is_tts_junk,
     scrub_tts,
-    skip_empty_delta,
 )
 
 
@@ -89,9 +89,9 @@ def test_extract_quoted_open_passthrough_and_empty() -> None:
     assert "你好朋友" in extract_quoted_speech('"你好朋友')
 
 
-def test_skip_empty_delta() -> None:
-    assert skip_empty_delta("  ")
-    assert not skip_empty_delta("hi")
+def test_is_empty_delta() -> None:
+    assert is_empty_delta("  ")
+    assert not is_empty_delta("hi")
 
 
 @pytest.mark.parametrize(

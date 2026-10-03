@@ -4,7 +4,8 @@ import asyncio
 import base64
 import json
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
+from dataclasses import dataclass
 from typing import Any, cast
 from unittest.mock import AsyncMock
 
@@ -147,7 +148,7 @@ def test_speech_without_clips_is_json_and_with_clips_is_msgpack(
 
 
 def test_models_have_the_openai_fields_and_list_aliases(monkeypatch: pytest.MonkeyPatch) -> None:
-    fresh_app_env(monkeypatch, FISH_TTS_ALIASES="my-voice=s2-pro, broken ,=x")
+    fresh_app_env(monkeypatch, FISH_PROXY_TTS_ALIASES="my-voice=s2-pro, broken ,=x")
     with TestClient(app) as client:
         data: list[dict[str, Any]] = client.get("/v1/models").json()["data"]
     assert data
@@ -158,7 +159,7 @@ def test_models_have_the_openai_fields_and_list_aliases(monkeypatch: pytest.Monk
 
 
 def test_custom_alias_resolves_on_the_speech_route(monkeypatch: pytest.MonkeyPatch) -> None:
-    fresh_app_env(monkeypatch, FISH_TTS_ALIASES="my-voice=s2-pro")
+    fresh_app_env(monkeypatch, FISH_PROXY_TTS_ALIASES="my-voice=s2-pro")
     response, captured = post_speech(
         monkeypatch, {"input": "Hello there friend", "model": "my-voice"}
     )
@@ -180,13 +181,128 @@ def test_new_env_names_win_and_old_names_still_work(monkeypatch: pytest.MonkeyPa
     assert load_settings().tts_aliases["tts-1"] == "s1"
 
 
+@dataclass(frozen=True)
+class _Renamed:
+    new: str
+    old: str
+    value: str
+    other: str
+    read: Callable[[ProxySettings], object]
+    expected: object
+
+
+# value: what is set; other: a different valid value for the losing name.
+_RENAMED_ENV = [
+    _Renamed(
+        "FISH_TTS_MODEL", "FISH_MODEL", "s2-pro", "s1", lambda s: s.defaults.tts_model, "s2-pro"
+    ),
+    _Renamed("FISH_SPEED", "FISH_SPEED_SCALE", "1.25", "0.75", lambda s: s.defaults.speed, 1.25),
+    _Renamed("FISH_TTS_FORMAT", "FISH_FORMAT", "wav", "opus", lambda s: s.tts_format, "wav"),
+    _Renamed(
+        "FISH_PROXY_TTS_ALIASES",
+        "FISH_TTS_ALIASES",
+        "my-voice=s2-pro",
+        "my-voice=s1",
+        lambda s: s.tts_aliases.get("my-voice"),
+        "s2-pro",
+    ),
+    _Renamed(
+        "FISH_PROXY_ASR_STRIP_SPEAKERS",
+        "FISH_ASR_STRIP_SPEAKERS",
+        "1",
+        "0",
+        lambda s: s.asr_strip_speakers,
+        True,
+    ),
+    _Renamed(
+        "FISH_PROXY_ASR_STRIP_CUES",
+        "FISH_ASR_STRIP_CUES",
+        "1",
+        "0",
+        lambda s: s.asr_strip_cues,
+        True,
+    ),
+    _Renamed("FISH_TTS_MOOD_LEAD", "FISH_MOOD_LEAD", "1", "0", lambda s: s.tts_mood_lead, True),
+    _Renamed(
+        "FISH_TTS_DROP_NARRATION",
+        "FISH_DROP_NARRATION",
+        "1",
+        "0",
+        lambda s: s.tts_drop_narration,
+        True,
+    ),
+]
+
+
+def _clear_renamed_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    for case in _RENAMED_ENV:
+        monkeypatch.delenv(case.new, raising=False)
+        monkeypatch.delenv(case.old, raising=False)
+
+
+@pytest.mark.parametrize("case", _RENAMED_ENV, ids=lambda case: case.old)
+def test_an_old_env_name_still_works_and_logs_its_replacement(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, case: _Renamed
+) -> None:
+    _clear_renamed_env(monkeypatch)
+    assert case.read(load_settings()) != case.expected
+    monkeypatch.setenv(case.old, case.value)
+    with caplog.at_level("WARNING", logger="fish-audio-suite-proxy"):
+        settings = load_settings()
+    assert case.read(settings) == case.expected
+    assert f"{case.old} is deprecated; use {case.new}" in caplog.text
+
+
+def test_an_old_env_name_is_reported_once_however_often_settings_load(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # FISH_FORMAT feeds two fields, and startup loads the settings twice.
+    _clear_renamed_env(monkeypatch)
+    monkeypatch.setenv("FISH_FORMAT", "wav")
+    with caplog.at_level("WARNING", logger="fish-audio-suite-proxy"):
+        load_settings()
+        load_settings()
+    assert caplog.text.count("FISH_FORMAT is deprecated; use FISH_TTS_FORMAT") == 1
+
+
+@pytest.mark.parametrize("case", _RENAMED_ENV, ids=lambda case: case.new)
+def test_the_new_env_name_wins_over_the_old_one_without_a_warning(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, case: _Renamed
+) -> None:
+    _clear_renamed_env(monkeypatch)
+    monkeypatch.setenv(case.new, case.value)
+    monkeypatch.setenv(case.old, case.other)
+    with caplog.at_level("WARNING", logger="fish-audio-suite-proxy"):
+        settings = load_settings()
+    assert case.read(settings) == case.expected
+    assert "deprecated" not in caplog.text
+
+
+def test_health_shows_the_tts_keys_under_new_and_old_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _clear_renamed_env(monkeypatch)
+    fresh_app_env(monkeypatch, FISH_TTS_MODEL="s1", FISH_TTS_FORMAT="opus", FISH_SPEED="1.5")
+    with TestClient(app) as client:
+        health = client.get("/health").json()["defaults"]
+    assert (health["tts_model"], health["tts_format"], health["tts_speed"]) == ("s1", "opus", 1.5)
+    # The old keys stay, with the same values, for one minor release.
+    assert (health["model"], health["format"], health["speed_scale"]) == ("s1", "opus", 1.5)
+
+
 def test_text_opt_ins_default_off_and_read_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    for name in ("FISH_MOOD_LEAD", "FISH_DROP_NARRATION", "FISH_TTS_DIALOGUE_ONLY"):
+    for name in (
+        "FISH_TTS_MOOD_LEAD",
+        "FISH_MOOD_LEAD",
+        "FISH_TTS_DROP_NARRATION",
+        "FISH_DROP_NARRATION",
+        "FISH_TTS_DIALOGUE_ONLY",
+    ):
         monkeypatch.delenv(name, raising=False)
     off = load_settings()
     assert (off.tts_mood_lead, off.tts_drop_narration, off.tts_dialogue_only) == (False,) * 3
-    monkeypatch.setenv("FISH_MOOD_LEAD", "1")
-    monkeypatch.setenv("FISH_DROP_NARRATION", "yes")
+    monkeypatch.setenv("FISH_TTS_MOOD_LEAD", "1")
+    monkeypatch.setenv("FISH_TTS_DROP_NARRATION", "yes")
     on = load_settings()
     assert on.tts_mood_lead is True
     assert on.tts_drop_narration is True

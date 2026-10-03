@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import base64
-import binascii
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -14,33 +12,35 @@ from fastapi.responses import JSONResponse
 
 from fish_audio_suite_kit import (
     CHUNK_LENGTH_LO,
-    MIN_CHUNK_HI,
-    MIN_CHUNK_LO,
+    MIN_CHUNK_LENGTH_HI,
+    MIN_CHUNK_LENGTH_LO,
     TTS_SPEED_HI,
     TTS_SPEED_LO,
-    UNIT_HI,
-    UNIT_LO,
+    UNIT_INTERVAL_HI,
+    UNIT_INTERVAL_LO,
     AudioFormat,
     FishLatency,
     SuiteDefaults,
     chunk_length_hi,
-    clamp_num,
+    clamp_number,
     known_latency,
     known_mp3_bitrate,
     known_opus_bitrate,
-    number_or,
+    parse_number,
     utf8_text,
 )
 from fish_audio_suite_proxy.errors import ProxyError, json_error
 from fish_audio_suite_proxy.fields import (
+    AudioDecodeError,
     ClientFormat,
-    explicit_bool,
-    first_choice,
+    decode_audio_b64,
     fish_audio_format,
     media_type,
     pcm_sample_rate,
-    pick_format,
-    pick_reference_id,
+    read_choice,
+    read_flag,
+    read_format,
+    read_reference_id,
     traced_model_headers,
 )
 from fish_audio_suite_proxy.models import resolve_tts_model
@@ -50,13 +50,11 @@ __all__ = [
     "PackedTts",
     "SpeechControls",
     "TtsBody",
-    "decode_audio_b64",
     "pack_tts",
     "speech_controls",
 ]
 
 _PHONEME_MARK_RE = re.compile(r"<\|phoneme_(?:start|end)\|>")
-_DATA_URI = "data:"
 _MAX_PRONUNCIATION_ENTRIES = 512
 # ormsgpack rejects integers outside this range. A bigger seed would 500
 # the speech route when a reference clip forces MessagePack. The same range
@@ -82,7 +80,7 @@ def _clamped_int(
         break
     if raw is None:
         raw = default
-    return clamp_num(raw, lo, hi, default, int)
+    return clamp_number(raw, lo, hi, default, int)
 
 
 def _scrub_pronunciation_item(item: Any) -> Any:
@@ -110,90 +108,42 @@ _REQUEST_SPEED = 1.0
 _CACHE_MODES = frozenset({"on", "off"})
 
 
-def _pick_latency(body: dict[str, Any], default: FishLatency) -> FishLatency:
-    raw = first_choice(body, "latency", "fish_latency", default=default)
+def _read_latency(body: dict[str, Any], default: FishLatency) -> FishLatency:
+    raw = read_choice(body, "latency", "fish_latency", default=default)
     return known_latency(raw, default)
 
 
 def _want_quality_guard(body: dict[str, Any], default: bool) -> bool:
     for key in ("quality_guard", "fish_quality_guard"):
         if key in body and body[key] is not None:
-            # explicit_bool stops at the first present value. A null
+            # read_flag stops at the first present value. A null
             # quality_guard is present, so passing both keys ignored
             # fish_quality_guard and used the configured default instead.
-            return explicit_bool(body, key, default=default)
+            return read_flag(body, key, default=default)
     features = body.get("features")
     if isinstance(features, list) and "quality-guard" in features:
         return True
     return default
 
 
-class ClipError(ProxyError):
-    """A reference clip could not be decoded. The route returns 400.
+class ClipError(AudioDecodeError):
+    """A reference clip could not be read. The route returns 400.
 
     Attributes
     ----------
     status : int
         Always 400.
     message : str
-        Shown in the OpenAI error envelope.
+        Shown in the OpenAI error envelope. It names the reference, such as
+        ``"reference audio is empty"``.
     """
 
-    def __init__(self, message: str) -> None:
-        """Store ``message`` with status 400.
 
-        Parameters
-        ----------
-        message : str
-            Client-facing reason.
-        """
-        super().__init__(400, message)
-
-
-def _b64_audio(value: str) -> bytes:
-    raw = "".join(value.strip().split())
-    # The data-URI scheme is case-insensitive. "DATA:" failed the base64
-    # check, so the speech request was rejected before Fish heard the clip.
-    head, sep, tail = raw.partition(",")
-    if sep and head.lower().startswith(_DATA_URI):
-        raw = tail
-    # URL-safe alphabets use - and _. The strict decoder rejects those, so a
-    # real clip would 400 and the request would speak with no reference.
-    raw = raw.replace("-", "+").replace("_", "/")
-    padded = raw + ("=" * ((-len(raw)) % 4))
+def _decode_clip(value: Any) -> bytes:
     try:
-        return base64.b64decode(padded, validate=True)
-    except (binascii.Error, ValueError) as exc:
-        raise ClipError("reference audio is not valid base64") from exc
-
-
-def decode_audio_b64(value: Any) -> bytes:
-    """Decode reference audio from raw bytes or base64, including a data URI.
-
-    Parameters
-    ----------
-    value : Any
-        ``bytes``, or a base64 string. Whitespace inside the string is removed.
-
-    Returns
-    -------
-    bytes
-        Decoded audio. Never empty.
-
-    Raises
-    ------
-    ClipError
-        When the value is empty or not valid base64.
-    """
-    if isinstance(value, (bytes, bytearray)):
-        audio = bytes(value)
-    elif isinstance(value, str) and value.strip():
-        audio = _b64_audio(value)
-    else:
-        audio = b""
-    if not audio:
-        raise ClipError("reference audio is empty")
-    return audio
+        return decode_audio_b64(value, field="reference audio")
+    except AudioDecodeError as exc:
+        raise ClipError(exc.message) from exc
 
 
 def _clip_text(text: object) -> str:
@@ -206,7 +156,7 @@ def _clip_text(text: object) -> str:
 
 
 def _clip(audio: Any, text: object) -> dict[str, Any]:
-    return {"audio": decode_audio_b64(audio), "text": _clip_text(text)}
+    return {"audio": _decode_clip(audio), "text": _clip_text(text)}
 
 
 def _normalize_references(raw: Any) -> Any:
@@ -237,7 +187,7 @@ def _clips_from_input_references(items: list[Any]) -> list[dict[str, Any]]:
             if not isinstance(inner, Mapping) or inner.get("data") is None:
                 continue
             try:
-                decoded = decode_audio_b64(inner.get("data"))
+                decoded = _decode_clip(inner.get("data"))
             except ClipError:
                 # A later empty or invalid part must not wipe a clip that
                 # already decoded, and must not fail that request.
@@ -300,7 +250,7 @@ def _body_num[T: int | float](
     default: T,
     parse: Callable[[Any], T],
 ) -> T:
-    return number_or(body.get(key, default), default, parse)
+    return parse_number(body.get(key, default), default, parse)
 
 
 def _body_float(body: dict[str, Any], key: str, default: float) -> float:
@@ -388,37 +338,41 @@ def _fish_tts_payload(
         "text": spoken,
         "format": native_fmt,
         "latency": controls.latency,
-        "temperature": clamp_num(
+        "temperature": clamp_number(
             _body_float(body, "temperature", defaults.temperature),
-            UNIT_LO,
-            UNIT_HI,
+            UNIT_INTERVAL_LO,
+            UNIT_INTERVAL_HI,
             defaults.temperature,
             float,
         ),
-        "top_p": clamp_num(
-            _body_float(body, "top_p", defaults.top_p), UNIT_LO, UNIT_HI, defaults.top_p, float
+        "top_p": clamp_number(
+            _body_float(body, "top_p", defaults.top_p),
+            UNIT_INTERVAL_LO,
+            UNIT_INTERVAL_HI,
+            defaults.top_p,
+            float,
         ),
         "chunk_length": controls.chunk_length,
         "min_chunk_length": controls.min_chunk_length,
-        "normalize": explicit_bool(body, "normalize", default=defaults.normalize),
+        "normalize": read_flag(body, "normalize", default=defaults.normalize),
         "prosody": {
             "speed": controls.speed,
             "volume": _body_float(body, "volume", defaults.volume),
-            "normalize_loudness": explicit_bool(
+            "normalize_loudness": read_flag(
                 body, "normalize_loudness", default=defaults.normalize_loudness
             ),
         },
         "repetition_penalty": _body_float(body, "repetition_penalty", defaults.repetition_penalty),
         "max_new_tokens": _body_int(body, "max_new_tokens", defaults.max_new_tokens),
-        "condition_on_previous_chunks": explicit_bool(
+        "condition_on_previous_chunks": read_flag(
             body,
             "condition_on_previous_chunks",
             default=defaults.condition_on_previous_chunks,
         ),
-        "early_stop_threshold": clamp_num(
+        "early_stop_threshold": clamp_number(
             _body_float(body, "early_stop_threshold", defaults.early_stop_threshold),
-            UNIT_LO,
-            UNIT_HI,
+            UNIT_INTERVAL_LO,
+            UNIT_INTERVAL_HI,
             defaults.early_stop_threshold,
             float,
         ),
@@ -435,14 +389,14 @@ def _seed(value: Any) -> int | None:
         return None
     # int("42.0") raises, so a whole-number decimal was omitted and Fish
     # picked a different seed than the one the client asked for.
-    parsed = number_or(value, _MSGPACK_INT_LO - 1, int)
+    parsed = parse_number(value, _MSGPACK_INT_LO - 1, int)
     if parsed < _MSGPACK_INT_LO or parsed > _MSGPACK_INT_HI:
         return None
     return parsed
 
 
 def _optional_tts(payload: dict[str, Any], body: dict[str, Any], *, quality_guard: bool) -> None:
-    voice = pick_reference_id(body)
+    voice = read_reference_id(body)
     if voice:
         payload["reference_id"] = voice
     seed = _seed(body.get("seed"))
@@ -484,7 +438,7 @@ def speech_controls(
         TTS model alias table. ``None`` maps the OpenAI names to the default.
     default_format : ClientFormat or None, optional
         Format used when the request names none. ``None`` uses
-        ``defaults.audio_format``. The proxy passes ``FISH_FORMAT`` here, which
+        ``defaults.audio_format``. The proxy passes ``FISH_TTS_FORMAT`` here, which
         can be ``pcm16``, a name Fish itself does not know.
 
     Returns
@@ -501,9 +455,9 @@ def speech_controls(
     raw_speed = _body_float(body, "speed", _REQUEST_SPEED) * defaults.speed
     return SpeechControls(
         model=resolve_tts_model(body.get("model"), defaults.tts_model, aliases),
-        speed=clamp_num(raw_speed, TTS_SPEED_LO, TTS_SPEED_HI, defaults.speed, float),
-        fmt=pick_format(body, default_format or defaults.audio_format),
-        latency=_pick_latency(body, defaults.latency),
+        speed=clamp_number(raw_speed, TTS_SPEED_LO, TTS_SPEED_HI, defaults.speed, float),
+        fmt=read_format(body, default_format or defaults.audio_format),
+        latency=_read_latency(body, defaults.latency),
         chunk_length=_clamped_int(
             body,
             "chunk_length",
@@ -516,8 +470,8 @@ def speech_controls(
             body,
             "min_chunk_length",
             "fish_min_chunk_length",
-            lo=MIN_CHUNK_LO,
-            hi=MIN_CHUNK_HI,
+            lo=MIN_CHUNK_LENGTH_LO,
+            hi=MIN_CHUNK_LENGTH_HI,
             default=defaults.min_chunk_length,
         ),
     )

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from fish_audio_suite_kit import (
@@ -7,7 +9,7 @@ from fish_audio_suite_kit import (
     LatencySnapshot,
     SuiteDefaults,
     chunk_length_hi,
-    clamp_num,
+    clamp_number,
     env_base,
     env_bool,
     env_float,
@@ -19,8 +21,8 @@ from fish_audio_suite_kit import (
     known_latency,
     known_mp3_bitrate,
     known_opus_bitrate,
-    known_tts_model,
-    number_or,
+    normalize_tts_model,
+    parse_number,
 )
 
 
@@ -32,27 +34,27 @@ def test_bitrate_snaps_to_documented_values() -> None:
     assert known_opus_bitrate(1) == -1000
 
 
-def test_clamp_num_keeps_fish_ranges() -> None:
-    assert clamp_num(900, 100, chunk_length_hi("https://api.fish.audio"), 200, int) == 300
-    assert clamp_num(800, 100, chunk_length_hi("http://127.0.0.1:8080"), 200, int) == 800
-    assert clamp_num("nope", 0.5, 2.0, 1.05, float) == 1.05
-    assert clamp_num(float("nan"), 0.5, 2.0, 1.05, float) == 1.05
-    assert clamp_num(float("inf"), 0.5, 2.0, 1.05, float) == 1.05
-    assert clamp_num(float("inf"), 100, 300, 200, int) == 200
-    assert clamp_num(9, 0.5, 2.0, 1.05, float) == 2.0
-    assert clamp_num(True, 0.0, 1.0, 0.7, float) == 0.7
-    assert number_or("16000.0", 44100, int) == 16000
-    assert number_or("16,000", 44100, int) == 44100
-    assert number_or("16,5", 44100, int) == 44100
-    assert number_or(True, 0.0, float) == 0.0
-    assert number_or(False, 3, int) == 3
+def test_clamp_number_keeps_fish_ranges() -> None:
+    assert clamp_number(900, 100, chunk_length_hi("https://api.fish.audio"), 200, int) == 300
+    assert clamp_number(800, 100, chunk_length_hi("http://127.0.0.1:8080"), 200, int) == 800
+    assert clamp_number("nope", 0.5, 2.0, 1.05, float) == 1.05
+    assert clamp_number(float("nan"), 0.5, 2.0, 1.05, float) == 1.05
+    assert clamp_number(float("inf"), 0.5, 2.0, 1.05, float) == 1.05
+    assert clamp_number(float("inf"), 100, 300, 200, int) == 200
+    assert clamp_number(9, 0.5, 2.0, 1.05, float) == 2.0
+    assert clamp_number(True, 0.0, 1.0, 0.7, float) == 0.7
+    assert parse_number("16000.0", 44100, int) == 16000
+    assert parse_number("16,000", 44100, int) == 44100
+    assert parse_number("16,5", 44100, int) == 44100
+    assert parse_number(True, 0.0, float) == 0.0
+    assert parse_number(False, 3, int) == 3
 
 
 def test_known_model_and_latency() -> None:
-    assert known_tts_model(" S2.1-PRO ") == "s2.1-pro"
-    assert known_tts_model("MyModel") == "MyModel"
-    assert known_tts_model("custom\r\nX-Injected: 1") == "s2.1-pro"
-    assert known_tts_model("MyModel\ud800") == "s2.1-pro"
+    assert normalize_tts_model(" S2.1-PRO ") == "s2.1-pro"
+    assert normalize_tts_model("MyModel") == "MyModel"
+    assert normalize_tts_model("custom\r\nX-Injected: 1") == "s2.1-pro"
+    assert normalize_tts_model("MyModel\ud800") == "s2.1-pro"
     assert known_latency(" Normal ", "balanced") == "normal"
     assert known_latency("turbo", "balanced") == "balanced"
 
@@ -67,14 +69,16 @@ def test_suite_defaults_and_timing() -> None:
     assert "[excited]" in DEFAULT_SYSTEM_PROMPT
     assert "change the cue" in DEFAULT_SYSTEM_PROMPT
     assert "do not tag every sentence" not in DEFAULT_SYSTEM_PROMPT
-    assert "first_audio=850ms" in LatencySnapshot(first_audio=850).log_line()
-    line = LatencySnapshot(ttfa=12.4).log_line()
-    assert "ttfa=12ms" in line
+    assert "first_audio=850ms" in LatencySnapshot(first_audio_ms=850).log_line()
+    line = LatencySnapshot(tts_first_audio_ms=12.4).log_line()
+    assert "tts_first_audio=12ms" in line
     assert "asr=" not in line
     heard = LatencySnapshot(asr_ms=40).log_line()
     assert "asr=40ms" in heard
     assert "trace=" not in line
-    traced = LatencySnapshot(ttfa=12.4, trace_id="4bf92f3577b34da6a3ce929d0e0e4736").log_line()
+    traced = LatencySnapshot(
+        tts_first_audio_ms=12.4, trace_id="4bf92f3577b34da6a3ce929d0e0e4736"
+    ).log_line()
     assert "trace=4bf92f3577b34da6a3ce929d0e0e4736" in traced
 
 
@@ -161,10 +165,46 @@ def test_chunk_length_hi_can_be_forced() -> None:
 
 
 def test_latency_snapshot_keeps_its_positional_fields() -> None:
-    snapshot = LatencySnapshot(1.0, 2.0, 3.0, 4.0, 5.0, "trace")
-    assert snapshot.voice_to_voice == 5.0
-    assert snapshot.trace_id == "trace"
-    assert snapshot.first_audio is None
+    snapshot = LatencySnapshot(1.0, 2.0, 3.0, 4.0, 5.0, "trace", 6.0)
+    assert snapshot == LatencySnapshot(
+        asr_ms=1.0,
+        llm_first_token_ms=2.0,
+        tts_first_text_ms=3.0,
+        tts_first_audio_ms=4.0,
+        voice_to_voice_ms=5.0,
+        trace_id="trace",
+        first_audio_ms=6.0,
+    )
+    assert LatencySnapshot(1.0).first_audio_ms is None
+
+
+def test_latency_snapshot_log_line_names_every_time() -> None:
+    line = LatencySnapshot(1.0, 2.0, 3.0, 4.0, 5.0, "t", 6.0).log_line()
+    assert line == (
+        "[timing asr=1ms llm_first_token=2ms tts_first_text=3ms tts_first_audio=4ms"
+        " first_audio=6ms voice_to_voice=5ms trace=t]"
+    )
+
+
+_SNAPSHOT_RENAMES = [
+    ("llm_ttft", "llm_first_token_ms"),
+    ("llm_ttfs", "tts_first_text_ms"),
+    ("ttfa", "tts_first_audio_ms"),
+    ("voice_to_voice", "voice_to_voice_ms"),
+    ("first_audio", "first_audio_ms"),
+]
+
+
+@pytest.mark.parametrize(("old", "new"), _SNAPSHOT_RENAMES)
+def test_latency_snapshot_old_field_names_still_work_and_warn(old: str, new: str) -> None:
+    kwargs: dict[str, Any] = {old: 7.0}
+    with pytest.warns(DeprecationWarning, match=rf"LatencySnapshot\({old}=\.\.\.\).*use {new}"):
+        snapshot = LatencySnapshot(**kwargs)
+    assert getattr(snapshot, new) == 7.0
+    with pytest.warns(
+        DeprecationWarning, match=rf"LatencySnapshot\.{old} is deprecated.*use {new}"
+    ):
+        assert getattr(snapshot, old) == 7.0
 
 
 @pytest.mark.parametrize(
@@ -191,7 +231,7 @@ def test_the_package_root_still_exports_the_helpers_it_used_to() -> None:
         "canonical_traceparent",
         "fish_error_body",
         "fish_non_object",
-        "fish_transport_error",
+        "describe_transport_error",
         "mood_lead_hold_at",
         "sentence_closer_hold_at",
     ):

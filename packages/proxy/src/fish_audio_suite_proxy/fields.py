@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import io
 import wave
 from collections.abc import Mapping
@@ -12,7 +14,7 @@ from fish_audio_suite_kit import (
     ensure_trace_headers,
     extract_quoted_speech,
     normalize_cues,
-    number_or,
+    parse_number,
     scrub_tts,
 )
 from fish_audio_suite_proxy.errors import ProxyError
@@ -20,17 +22,19 @@ from fish_audio_suite_proxy.errors import ProxyError
 __all__ = [
     "SILENT_MP3",
     "SUPPORTED_FORMATS",
+    "AudioDecodeError",
     "ClientFormat",
-    "explicit_bool",
-    "first_choice",
+    "decode_audio_b64",
     "fish_audio_format",
-    "format_or_default",
+    "known_client_format",
     "media_type",
     "pcm_sample_rate",
-    "pick_format",
-    "pick_reference_id",
     "prepare_tts_text",
-    "present_value",
+    "read_choice",
+    "read_flag",
+    "read_format",
+    "read_present",
+    "read_reference_id",
     "silent_speech",
     "traced_model_headers",
 ]
@@ -61,7 +65,7 @@ def fish_audio_format(fmt: ClientFormat) -> AudioFormat:
     Parameters
     ----------
     fmt : ClientFormat
-        A format from ``pick_format``.
+        A format from ``read_format``.
 
     Returns
     -------
@@ -105,7 +109,83 @@ def silent_speech(fmt: ClientFormat, sample_rate: int) -> tuple[bytes, str]:
     return SILENT_MP3, media_type("mp3")
 
 
-def pick_reference_id(body: dict[str, Any]) -> str | list[str] | None:
+_DATA_URI = "data:"
+
+
+class AudioDecodeError(ProxyError):
+    """Audio in a request body could not be decoded. The route returns 400.
+
+    Attributes
+    ----------
+    status : int
+        Always 400.
+    message : str
+        Shown in the OpenAI error envelope.
+    """
+
+    def __init__(self, message: str) -> None:
+        """Store ``message`` with status 400.
+
+        Parameters
+        ----------
+        message : str
+            Client-facing reason.
+        """
+        super().__init__(400, message)
+
+
+def _b64_audio(value: str, field: str) -> bytes:
+    raw = "".join(value.strip().split())
+    # The data-URI scheme is case-insensitive. "DATA:" failed the base64
+    # check, so the request was rejected before Fish heard the audio.
+    head, sep, tail = raw.partition(",")
+    if sep and head.lower().startswith(_DATA_URI):
+        raw = tail
+    # URL-safe alphabets use - and _. The strict decoder rejects those, so
+    # real audio would 400.
+    raw = raw.replace("-", "+").replace("_", "/")
+    padded = raw + ("=" * ((-len(raw)) % 4))
+    try:
+        return base64.b64decode(padded, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise AudioDecodeError(f"{field} is not valid base64") from exc
+
+
+def decode_audio_b64(value: Any, *, field: str = "audio") -> bytes:
+    """Decode audio from raw bytes or base64, including a data URI.
+
+    Parameters
+    ----------
+    value : Any
+        ``bytes``, or a base64 string. Whitespace inside the string is removed.
+    field : str, optional
+        What the client calls this audio, used to start the error message:
+        ``"input_audio"`` for a transcription, ``"reference audio"`` for a
+        voice clip. Default ``"audio"``.
+
+    Returns
+    -------
+    bytes
+        Decoded audio. Never empty.
+
+    Raises
+    ------
+    AudioDecodeError
+        When the value is empty or not valid base64, with a message such as
+        ``"audio is empty"`` or ``"audio is not valid base64"``.
+    """
+    if isinstance(value, (bytes, bytearray)):
+        audio = bytes(value)
+    elif isinstance(value, str) and value.strip():
+        audio = _b64_audio(value, field)
+    else:
+        audio = b""
+    if not audio:
+        raise AudioDecodeError(f"{field} is empty")
+    return audio
+
+
+def read_reference_id(body: dict[str, Any]) -> str | list[str] | None:
     """Read a Fish voice id from ``reference_id`` or OpenAI ``voice``.
 
     Parameters
@@ -133,7 +213,7 @@ def pick_reference_id(body: dict[str, Any]) -> str | list[str] | None:
     return None
 
 
-def present_value(body: dict[str, Any], *keys: str) -> Any:
+def read_present(body: dict[str, Any], *keys: str) -> Any:
     """Return the first key that exists, even when the value is false or empty.
 
     Parameters
@@ -160,9 +240,9 @@ _TRUE_WORDS = frozenset({"1", "true", "yes", "on"})
 _FALSE_WORDS = frozenset({"0", "false", "no", "off"})
 
 
-def explicit_bool(body: dict[str, Any], *keys: str, default: bool) -> bool:
+def read_flag(body: dict[str, Any], *keys: str, default: bool) -> bool:
     """Prefer a present request flag, including false, over the default."""
-    flag = present_value(body, *keys)
+    flag = read_present(body, *keys)
     if flag is None:
         return default
     if isinstance(flag, str):
@@ -176,7 +256,7 @@ def explicit_bool(body: dict[str, Any], *keys: str, default: bool) -> bool:
     return bool(flag)
 
 
-def first_choice(body: dict[str, Any], *keys: str, default: str) -> str:
+def read_choice(body: dict[str, Any], *keys: str, default: str) -> str:
     """Return the first non-empty string field, lowercased.
 
     Parameters
@@ -195,8 +275,8 @@ def first_choice(body: dict[str, Any], *keys: str, default: str) -> str:
 
     Notes
     -----
-    Unlike ``present_value``, a present-but-empty string falls through.
-    Use ``present_value`` when false is a real answer.
+    Unlike ``read_present``, a present-but-empty string falls through.
+    Use ``read_present`` when false is a real answer.
     """
     chosen: Any = default
     for key in keys:
@@ -207,7 +287,7 @@ def first_choice(body: dict[str, Any], *keys: str, default: str) -> str:
     return str(chosen).lower().strip()
 
 
-def pick_format(body: dict[str, Any], default: ClientFormat) -> ClientFormat:
+def read_format(body: dict[str, Any], default: ClientFormat) -> ClientFormat:
     """Read the audio format a request asks for.
 
     Parameters
@@ -229,7 +309,7 @@ def pick_format(body: dict[str, Any], default: ClientFormat) -> ClientFormat:
         such as ``aac`` or ``flac``. Returning other bytes than the client
         asked for would break its decoder.
     """
-    raw = first_choice(body, "format", "response_format", "fish_format", default="")
+    raw = read_choice(body, "format", "response_format", "fish_format", default="")
     if not raw:
         return default
     known = _CLIENT_FORMATS.get(raw)
@@ -239,13 +319,13 @@ def pick_format(body: dict[str, Any], default: ClientFormat) -> ClientFormat:
     raise ProxyError(400, f"unsupported response_format {raw[:32]!r}; use one of: {supported}")
 
 
-def format_or_default(name: str, default: ClientFormat) -> ClientFormat:
+def known_client_format(name: str, default: ClientFormat) -> ClientFormat:
     """Read a format from config, keeping ``default`` when the name is unsupported.
 
     Parameters
     ----------
     name : str
-        Env value such as ``FISH_FORMAT``. Compared after strip and lowercase.
+        Env value such as ``FISH_TTS_FORMAT``. Compared after strip and lowercase.
     default : ClientFormat
         Returned when ``name`` is blank or not a supported format.
 
@@ -263,7 +343,7 @@ def pcm_sample_rate(fmt: ClientFormat, body: dict[str, Any], default: int) -> in
     Parameters
     ----------
     fmt : ClientFormat
-        Format from ``pick_format``.
+        Format from ``read_format``.
     body : dict
         May contain ``sample_rate``.
     default : int
@@ -278,7 +358,7 @@ def pcm_sample_rate(fmt: ClientFormat, body: dict[str, Any], default: int) -> in
     raw = body.get("sample_rate")
     if raw is None:
         return fallback
-    rate = number_or(raw, fallback, int)
+    rate = parse_number(raw, fallback, int)
     return rate if rate > 0 else fallback
 
 
