@@ -110,3 +110,22 @@ def test_no_key_means_no_warning(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     assert warn_if_insecure_base(keyless) is False
     assert notes == []
+
+
+def test_the_warning_prints_only_the_host_never_credentials_in_the_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    notes: list[str] = []
+    monkeypatch.setattr("fish_audio_suite_voice.config.warn", notes.append)
+    config = _config(
+        fish_base="http://alice:hunter2@10.0.0.5:8080/v1?token=abc123",
+        llm=LlmTune(
+            backend="openai", base="http://bob:s3cret@10.0.0.6/v1?key=zzz", key=SECRET, model="m"
+        ),
+    )
+    assert warn_if_insecure_base(config) is True
+    text = " ".join(notes)
+    assert "10.0.0.5" in text
+    assert "10.0.0.6" in text
+    for leaked in ("alice", "hunter2", "abc123", "bob", "s3cret", "zzz"):
+        assert leaked not in text

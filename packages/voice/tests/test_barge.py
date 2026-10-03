@@ -758,3 +758,24 @@ def test_a_small_floor_window_still_warms_up() -> None:
     tiny = AdaptiveFloor(100.0, window=0)
     tiny.observe(60.0, quiet=True)
     assert tiny.value() == 150.0
+
+
+def test_a_setup_failure_in_the_watcher_thread_is_reported(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    gate = BargeGate(hit_frames=2, min_rms=1.0, bleed_delay_s=0)
+
+    def broken_bleed() -> float:
+        raise RuntimeError("aec failed to load")
+
+    monkeypatch.setattr(gate, "_bleed_wait", broken_bleed)
+    cancel = threading.Event()
+    thread = gate.start_after_bleed(cancel)
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+    assert isinstance(gate.failure, RuntimeError)
+    assert not cancel.is_set()
+    err = capsys.readouterr().err
+    assert "aec failed to load" in err
+    assert "off for this reply" in err

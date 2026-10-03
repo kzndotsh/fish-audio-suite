@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from urllib.parse import urlsplit
 
 from fish_audio_suite_kit import (
     CHUNK_LENGTH_LO,
@@ -114,6 +115,15 @@ def _asr_model(default: str) -> str:
     return chosen if chosen in {"transcribe-1", "transcribe-1-pro"} else default
 
 
+def _base_host(base: str) -> str:
+    # Only the hostname is safe to print. A base can carry user:password@ or a
+    # query string with a credential.
+    try:
+        return urlsplit(base).hostname or "unknown"
+    except ValueError:
+        return "unknown"
+
+
 def warn_if_insecure_base(c: VoiceCliConfig) -> bool:
     """Warn when an API key would travel over plain http to a non-loopback host.
 
@@ -131,13 +141,13 @@ def warn_if_insecure_base(c: VoiceCliConfig) -> bool:
     warned = False
     if c.fish_api_key and is_insecure_fish_base(c.fish_base):
         warn(
-            f"[fish] FISH_BASE {c.fish_base} is plain http, so FISH_API_KEY is sent "
+            f"[fish] FISH_BASE host {_base_host(c.fish_base)} is plain http, so FISH_API_KEY is sent "
             "unencrypted. Use https unless this host is on a network you trust."
         )
         warned = True
     if c.llm.key and is_insecure_fish_base(c.llm.base):
         warn(
-            f"[llm] FISH_LLM_BASE {c.llm.base} is plain http, so the LLM key is sent "
+            f"[llm] FISH_LLM_BASE host {_base_host(c.llm.base)} is plain http, so the LLM key is sent "
             "unencrypted. Use https unless this host is on a network you trust."
         )
         warned = True

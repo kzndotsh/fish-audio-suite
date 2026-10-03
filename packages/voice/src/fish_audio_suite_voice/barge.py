@@ -279,15 +279,22 @@ class BargeGate:
         """
 
         def _run() -> None:
-            delay = self._bleed_wait()
-            self.bleed_delay_s = delay
-            trace("barge.bleed sleep_s={}", delay)
-            # sleep() ignores cancel. A finished turn would wait out the rest
-            # of the bleed, or the next listen would open the mic twice.
-            if cancel.wait(timeout=delay):
-                debug("barge.bleed skipped (already cancelled)")
-                return
-            self.watch(cancel)
+            try:
+                delay = self._bleed_wait()
+                self.bleed_delay_s = delay
+                trace("barge.bleed sleep_s={}", delay)
+                # sleep() ignores cancel. A finished turn would wait out the rest
+                # of the bleed, or the next listen would open the mic twice.
+                if cancel.wait(timeout=delay):
+                    debug("barge.bleed skipped (already cancelled)")
+                    return
+                self.watch(cancel)
+            except Exception as e:
+                # Setup can fail before watch() has its own handler, for
+                # example loading AEC or the VAD. Without this the thread
+                # would die silently and the reply would play with no barge-in.
+                self.failure = e
+                warn(f"[barge-in] off for this reply: {e}")
 
         thread = threading.Thread(target=_run, daemon=True)
         thread.start()
