@@ -259,7 +259,7 @@ def _seconds(value: Any) -> float:
 
 
 def _duration_s(value: Any) -> float:
-    """Fish `duration` is a number. A string or boolean is not a caption length."""
+    """Fish ``duration`` is a number of seconds. A string or boolean is not a caption length."""
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return 0.0
     if not math.isfinite(value):
@@ -290,6 +290,9 @@ def caption_cues(
 ) -> list[CaptionCue]:
     """Build timed cues from Fish segments, or one cue for the whole transcript.
 
+    Fish ``segments`` are word-level: each holds one word with ``start`` and
+    ``end`` in seconds. They are used as they come, one cue per segment.
+
     Parameters
     ----------
     data : AsrBody
@@ -305,8 +308,8 @@ def caption_cues(
     -------
     list of CaptionCue
         Segment cues when any segment has text. A known caption watermark
-        segment is omitted. Otherwise one cue from 0 to ``duration`` covering
-        ``text``, or an empty list when ``text`` is empty.
+        segment is omitted. Otherwise one cue from 0 to ``duration`` (seconds)
+        covering ``text``, or an empty list when ``text`` is empty.
     """
     cues: list[CaptionCue] = []
     # Fish JSON is checked only for ``text``, so a segment list can hold anything.
@@ -362,9 +365,10 @@ def _word_rows(
     strip_speakers: bool,
     strip_cues: bool,
 ) -> list[dict[str, Any]]:
-    # Fish segments are phrases, not words, so they are never relabeled as
-    # words. Only real word timings from Fish are passed through, scrubbed the
-    # same way as the transcript so the flags hold for every field.
+    # Fish /v1/asr sends no ``words`` field: its ``segments`` already carry one
+    # word each. Filling OpenAI ``words`` from those segments is a separate
+    # change, so for now only a ``words`` array in the body is passed through,
+    # scrubbed the same way as the transcript so the flags hold for every field.
     raw: object = dict(data).get("words")
     if not isinstance(raw, list):
         return []
@@ -372,8 +376,8 @@ def _word_rows(
     for item in raw:
         if not isinstance(item, dict):
             continue
-        raw = _json_text(item.get("word")) or _json_text(item.get("text")) or ""
-        word = scrub_asr(raw, strip_speakers=strip_speakers, strip_cues=strip_cues).strip()
+        raw_word = _json_text(item.get("word")) or _json_text(item.get("text")) or ""
+        word = scrub_asr(raw_word, strip_speakers=strip_speakers, strip_cues=strip_cues).strip()
         start = _json_number(item.get("start"))
         end = _json_number(item.get("end"))
         if word and start is not None and end is not None:
@@ -433,11 +437,13 @@ def transcription_body(
     text : str
         Scrubbed transcript.
     cues : list of CaptionCue
-        Timed phrases returned as ``segments``.
+        Timed cues returned as ``segments``. From Fish segments these are one
+        word each.
     data : AsrBody
-        Decoded Fish JSON, used for duration and language. A ``words`` array is
-        returned for ``verbose_json`` with ``word`` granularity only when Fish
-        sent word timings. Segments are never relabeled as words.
+        Decoded Fish JSON, used for ``duration`` (seconds) and language. A
+        ``words`` array is returned for ``verbose_json`` with ``word``
+        granularity only when the body holds a ``words`` field, which Fish
+        does not send today.
     language : str or None
         Client or env language hint.
     granularities : sequence of str

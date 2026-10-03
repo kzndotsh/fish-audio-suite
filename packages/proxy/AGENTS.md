@@ -32,6 +32,6 @@ Invariants:
 - Never log request text above DEBUG unless `FISH_PROXY_LOG_TEXT` is set. Never put a key in `/health`.
 - Retry only 429, 5xx, and connections that never opened. A read timeout is not repeated.
 - Return the format the client asked for, or a 400. Do not swap it. This holds for speech and transcription.
-- A word array comes from Fish word timings only. Segments are not words.
+- Fish ASR `segments` are word-level (`text`, `start`, `end` per word) and `duration` is seconds. Fish sends no `words` field. Today `words` is only passed through when a body holds one; building it from segments is a separate change.
 - Forward valid `traceparent` and `tracestate`. Mint a sampled one when absent.
 - Fish errors become `{error:{code,message,type}}` with the upstream status. Fish bodies are `provider_error`.
