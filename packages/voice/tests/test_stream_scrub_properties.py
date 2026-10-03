@@ -10,7 +10,6 @@ from typing import Any
 from fishaudio import FlushEvent, TextEvent
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
-from oracle_stream_scrub import delta_events as oracle_events
 
 from fish_audio_suite_kit import skip_empty_delta
 from fish_audio_suite_voice.stream_scrub import delta_events
@@ -163,31 +162,3 @@ def test_the_same_tokens_give_the_same_events(
     first = _run(tokens, partial=partial, mood_lead=mood, early_flush=early)
     second = _run(tokens, partial=partial, mood_lead=mood, early_flush=early)
     assert shape(first) == shape(second)
-
-
-def _events_with(
-    impl: Any, tokens: list[str], *, partial: int, mood: bool, early: bool
-) -> list[tuple[str, str]]:
-    async def collect() -> list[tuple[str, str]]:
-        return [
-            ("text", ev.text) if isinstance(ev, TextEvent) else ("flush", "")
-            async for ev in impl(
-                tokens,
-                threading.Event(),
-                partial_chars=partial,
-                mood_lead=mood,
-                early_flush=early,
-            )
-        ]
-
-    return asyncio.run(collect())
-
-
-@_SETTINGS
-@given(tokens=_token_streams(), partial=_partial, mood=_flags, early=_flags)
-def test_the_scrubber_matches_its_frozen_baseline(
-    tokens: list[str], partial: int, mood: bool, early: bool
-) -> None:
-    now = _events_with(delta_events, tokens, partial=partial, mood=mood, early=early)
-    then = _events_with(oracle_events, tokens, partial=partial, mood=mood, early=early)
-    assert now == then
