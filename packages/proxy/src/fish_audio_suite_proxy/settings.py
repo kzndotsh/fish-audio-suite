@@ -134,7 +134,7 @@ class ProxySettings:
     defaults: SuiteDefaults = field(default_factory=SuiteDefaults)
     tts_aliases: Mapping[str, str] = field(default_factory=lambda: default_tts_aliases("s2.1-pro"))
     quality_guard: bool = False
-    asr_strip_speakers: bool = False
+    asr_strip_speakers: bool = True
     asr_strip_cues: bool = False
     tts_dialogue_only: bool = False
     tts_mood_lead: bool = False
@@ -327,8 +327,10 @@ def load_settings() -> ProxySettings:
         defaults=defaults,
         tts_aliases=aliases,
         quality_guard=env_bool("FISH_QUALITY_GUARD"),
+        # On by default: transcribe-1-pro labels speakers even when one person talks.
         asr_strip_speakers=env_bool(
-            env_renamed("FISH_PROXY_ASR_STRIP_SPEAKERS", "FISH_ASR_STRIP_SPEAKERS", warn=_warn)
+            env_renamed("FISH_PROXY_ASR_STRIP_SPEAKERS", "FISH_ASR_STRIP_SPEAKERS", warn=_warn),
+            default=True,
         ),
         asr_strip_cues=env_bool(
             env_renamed("FISH_PROXY_ASR_STRIP_CUES", "FISH_ASR_STRIP_CUES", warn=_warn)

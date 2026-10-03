@@ -209,10 +209,11 @@ _RENAMED_ENV = [
     _Renamed(
         "FISH_PROXY_ASR_STRIP_SPEAKERS",
         "FISH_ASR_STRIP_SPEAKERS",
-        "1",
+        # On by default, so the old name is proven by turning it off.
         "0",
+        "1",
         lambda s: s.asr_strip_speakers,
-        True,
+        False,
     ),
     _Renamed(
         "FISH_PROXY_ASR_STRIP_CUES",

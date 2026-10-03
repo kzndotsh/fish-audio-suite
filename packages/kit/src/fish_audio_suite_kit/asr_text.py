@@ -246,8 +246,8 @@ def scrub_asr(text: str, *, strip_speakers: bool = True, strip_cues: bool = Fals
     text : str
         Raw transcript.
     strip_speakers : bool, optional
-        Drop ``Speaker 1:`` style labels. Default True. The proxy turns this
-        off unless ``FISH_PROXY_ASR_STRIP_SPEAKERS`` or the client asks.
+        Drop ``Speaker 1:`` style labels. Default True. The proxy follows
+        ``FISH_PROXY_ASR_STRIP_SPEAKERS``, which is also on by default.
     strip_cues : bool, optional
         Drop ``[laughter]`` style annotations that ``transcribe-1-pro`` adds.
         Default False. A bracket with only digits, such as ``[1-2]``, stays.

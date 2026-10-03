@@ -130,7 +130,7 @@ Renamed variables: the old name still works when the new one is unset or blank, 
 | `FISH_TTS_FORMAT` | `mp3` | Format when a request names none: `mp3`, `opus`, `wav`, `pcm` or `pcm16` (24 kHz PCM, sent to Fish as `pcm`). Anything else is `mp3` |
 | `FISH_MP3_BITRATE` | `128` | 64, 128, 192 |
 | `FISH_QUALITY_GUARD` | off | |
-| `FISH_PROXY_ASR_STRIP_SPEAKERS` | off | |
+| `FISH_PROXY_ASR_STRIP_SPEAKERS` | on | Drop speaker labels such as `Speaker 1:` from the transcript. `transcribe-1-pro` labels speakers even when one person talks. `0` keeps them |
 | `FISH_PROXY_ASR_STRIP_CUES` | off | Drop `[laughter]` style annotations |
 | `FISH_TTS_DIALOGUE_ONLY` | off | |
 | `FISH_TTS_MOOD_LEAD` | off | |

@@ -362,3 +362,20 @@ def test_bad_json_input_audio_names_input_audio_not_a_reference(
     assert "reference" not in error["message"]
     assert error["type"] == "invalid_request_error"
     assert captured == {}
+
+
+def test_speaker_labels_are_stripped_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _Labelled:
+        def json(self) -> dict[str, Any]:
+            return {"text": "<|speaker:0|> Speaker 1: hello there"}
+
+    for name in ("FISH_PROXY_ASR_STRIP_SPEAKERS", "FISH_ASR_STRIP_SPEAKERS"):
+        monkeypatch.delenv(name, raising=False)
+    capture_upstream(monkeypatch, _Labelled())
+    with TestClient(app) as client:
+        stripped = client.post("/v1/audio/transcriptions", files=WAV_UPLOAD).json()
+    assert stripped == {"text": "hello there"}
+    monkeypatch.setenv("FISH_PROXY_ASR_STRIP_SPEAKERS", "0")
+    with TestClient(app) as client:
+        kept = client.post("/v1/audio/transcriptions", files=WAV_UPLOAD).json()
+    assert kept == {"text": "Speaker 1: hello there"}

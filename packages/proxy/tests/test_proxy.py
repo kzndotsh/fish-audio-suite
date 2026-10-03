@@ -532,7 +532,7 @@ def test_health_without_api_key() -> None:
         assert r.status_code == 200
         body = r.json()
         assert body["status"] == "ok"
-        assert body["defaults"]["asr_strip_speakers"] is False
+        assert body["defaults"]["asr_strip_speakers"] is True
         assert body["defaults"]["asr_strip_cues"] is False
         assert body["defaults"]["tts_dialogue_only"] is False
         models = client.get("/v1/models")
