@@ -86,7 +86,7 @@ Errors use `{error: {code, message, type}}`. A Fish body is `type: provider_erro
 
 ### Request fields
 
-Beyond the OpenAI fields, a speech request may set `latency`, `chunk_length`, `min_chunk_length`, `format`, `temperature`, `top_p`, `repetition_penalty`, `max_new_tokens`, `normalize`, `normalize_loudness`, `volume`, `sample_rate`, `mp3_bitrate`, `opus_bitrate`, `quality_guard`, and `dialogue_only`. The older `fish_latency`, `fish_format`, `fish_chunk_length`, `fish_min_chunk_length`, and `fish_quality_guard` spellings still work and are deprecated. Use the plain names.
+Beyond the OpenAI fields, a speech request may set `latency`, `chunk_length`, `min_chunk_length`, `format`, `temperature`, `top_p`, `repetition_penalty`, `max_new_tokens`, `normalize`, `normalize_loudness`, `volume`, `sample_rate`, `mp3_bitrate`, `opus_bitrate`, `quality_guard`, and `dialogue_only`.
 
 A transcription request may also set the `transcribe-1-pro` fields, as form fields or JSON keys. They are sent to Fish only when the request resolves to `transcribe-1-pro` (the default model) and are dropped for `transcribe-1`, which does not take them. An invalid value is a 400.
 
@@ -113,20 +113,7 @@ Transcription uses `FISH_PROXY_ASR_TIMEOUT` (900 seconds) as both its read timeo
 
 ## Settings
 
-Read once at startup. `GET /health` shows the values in effect under `defaults`, never a key. The TTS defaults are `tts_model`, `tts_format` and `tts_speed`. The older keys `model`, `format` and `speed_scale` carry the same values and stay for one minor release; read the new ones.
-
-Renamed variables: the old name still works when the new one is unset or blank, and the proxy logs `<old> is deprecated; use <new>` once at startup. The old names go away after one minor release.
-
-| Old name | New name |
-| --- | --- |
-| `FISH_MODEL` | `FISH_TTS_MODEL` |
-| `FISH_SPEED_SCALE` | `FISH_SPEED` |
-| `FISH_FORMAT` | `FISH_TTS_FORMAT` |
-| `FISH_TTS_ALIASES` | `FISH_PROXY_TTS_ALIASES` |
-| `FISH_ASR_STRIP_SPEAKERS` | `FISH_PROXY_ASR_STRIP_SPEAKERS` |
-| `FISH_ASR_STRIP_CUES` | `FISH_PROXY_ASR_STRIP_CUES` |
-| `FISH_MOOD_LEAD` | `FISH_TTS_MOOD_LEAD` |
-| `FISH_DROP_NARRATION` | `FISH_TTS_DROP_NARRATION` |
+Read once at startup. `GET /health` shows the values in effect under `defaults`, never a key. The TTS defaults are `tts_model`, `tts_format` and `tts_speed`.
 
 | Variable | Default | Notes |
 | --- | --- | --- |

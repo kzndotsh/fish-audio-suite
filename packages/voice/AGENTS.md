@@ -8,11 +8,11 @@ Library classes take settings and state as arguments. Application settings come 
 
 Public surface: every module lists its exports in `__all__`, and the package root exports every type a public signature uses. `tests/test_public_api.py` checks both. Constants are `Final`, sink and backend names are enums or literals, and chat messages are the kit's `ChatMessage`. A new boolean parameter is keyword-only.
 
-Renamed public names (0.2.0) keep working for one minor release. A class alias lives in the module's `_DEPRECATED_ALIASES` and resolves through a module `__getattr__` that calls `_aliases.resolve_alias` (root, `wire`, `live`, `tune`); a field uses kit `deprecated_fields`, a method or property kit `deprecated`. A renamed env key is read as `env_renamed(new, old, warn=warn_renamed)`. Old names stay out of `__all__`, and every caller here uses the new name, since the suite runs with warnings as errors. Tests: `test_deprecated_names.py`, `test_renamed_env.py`; the README lists both tables.
+Renamed names are just renamed: no aliases, shims or old env names (see the root rule). `tests/test_env_names.py` checks that each env name reaches its setting.
 
 | File | Owns |
 | --- | --- |
-| `tune.py` | Frozen `ListenTune`, `BargeTune`, `AecTune`, `LlmSettings`, their defaults, `read_int` / `read_float` / `read_flag`, and `warn_renamed` (the printed notice for a key read through kit `env_renamed`). `LlmSettings.from_env` picks the backend and keeps provider keys apart. |
+| `tune.py` | Frozen `ListenTune`, `BargeTune`, `AecTune`, `LlmSettings`, their defaults, `read_int` / `read_float` / `read_flag`. `LlmSettings.from_env` picks the backend and keeps provider keys apart. |
 | `config.py` | `VoiceCliConfig`: Fish/TTS fields plus the three tunes and `LlmSettings`, `history_turns`, `mood_lead`, `drop_narration`. |
 | `signals.py` | `DuplexSession` (quit flag `quit_requested`, `TurnSignals`, `EchoCanceller`) and `install_sigint`. No module-level flags. `TurnSignals.fire` is thread-safe for the asyncio event. |
 | `live.py` | `IsolatedFishTts` and `TtsResult` (`error` is a kit `FishHttpError`; duplex tells fatal from transient by `isinstance(..., FishAuthError)`, never by status numbers). `speak_isolated(text, sink, *, cancel=None, on_first_audio=None)` runs on a **private thread + loop**; `cancel` is keyword-only. SDK coercions (`low` latency, `aac`/`flac`) warn once. |

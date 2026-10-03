@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 
 from fish_audio_suite_kit import (
@@ -186,27 +184,6 @@ def test_latency_snapshot_log_line_names_every_time() -> None:
     )
 
 
-_SNAPSHOT_RENAMES = [
-    ("llm_ttft", "llm_first_token_ms"),
-    ("llm_ttfs", "tts_first_text_ms"),
-    ("ttfa", "tts_first_audio_ms"),
-    ("voice_to_voice", "voice_to_voice_ms"),
-    ("first_audio", "first_audio_ms"),
-]
-
-
-@pytest.mark.parametrize(("old", "new"), _SNAPSHOT_RENAMES)
-def test_latency_snapshot_old_field_names_still_work_and_warn(old: str, new: str) -> None:
-    kwargs: dict[str, Any] = {old: 7.0}
-    with pytest.warns(DeprecationWarning, match=rf"LatencySnapshot\({old}=\.\.\.\).*use {new}"):
-        snapshot = LatencySnapshot(**kwargs)
-    assert getattr(snapshot, new) == 7.0
-    with pytest.warns(
-        DeprecationWarning, match=rf"LatencySnapshot\.{old} is deprecated.*use {new}"
-    ):
-        assert getattr(snapshot, old) == 7.0
-
-
 @pytest.mark.parametrize(
     ("base", "expected"),
     [
@@ -230,7 +207,6 @@ def test_the_package_root_still_exports_the_helpers_it_used_to() -> None:
         "FISH_LATENCIES",
         "canonical_traceparent",
         "fish_error_body",
-        "fish_non_object",
         "describe_transport_error",
         "mood_lead_hold_at",
         "sentence_closer_hold_at",

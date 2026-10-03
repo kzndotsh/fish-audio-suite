@@ -63,24 +63,10 @@ _MSGPACK_INT_LO = -(2**63)
 _MSGPACK_INT_HI = 2**64 - 1
 
 
-def _clamped_int(
-    body: dict[str, Any],
-    *keys: str,
-    lo: int,
-    hi: int,
-    default: int,
-) -> int:
-    # A null chunk_length is an omitted field. Stopping there used the
-    # default and ignored fish_chunk_length. Zero is a real value.
-    raw: Any = None
-    for key in keys:
-        if key not in body or body[key] is None:
-            continue
-        raw = body[key]
-        break
-    if raw is None:
-        raw = default
-    return clamp_number(raw, lo, hi, default, int)
+def _clamped_int(body: dict[str, Any], key: str, *, lo: int, hi: int, default: int) -> int:
+    # A null chunk_length is an omitted field. Zero is a real value.
+    raw = body.get(key)
+    return clamp_number(default if raw is None else raw, lo, hi, default, int)
 
 
 def _scrub_pronunciation_item(item: Any) -> Any:
@@ -109,17 +95,13 @@ _CACHE_MODES = frozenset({"on", "off"})
 
 
 def _read_latency(body: dict[str, Any], default: FishLatency) -> FishLatency:
-    raw = read_choice(body, "latency", "fish_latency", default=default)
+    raw = read_choice(body, "latency", default=default)
     return known_latency(raw, default)
 
 
 def _want_quality_guard(body: dict[str, Any], default: bool) -> bool:
-    for key in ("quality_guard", "fish_quality_guard"):
-        if key in body and body[key] is not None:
-            # read_flag stops at the first present value. A null
-            # quality_guard is present, so passing both keys ignored
-            # fish_quality_guard and used the configured default instead.
-            return read_flag(body, key, default=default)
+    if body.get("quality_guard") is not None:
+        return read_flag(body, "quality_guard", default=default)
     features = body.get("features")
     if isinstance(features, list) and "quality-guard" in features:
         return True
@@ -461,7 +443,6 @@ def speech_controls(
         chunk_length=_clamped_int(
             body,
             "chunk_length",
-            "fish_chunk_length",
             lo=CHUNK_LENGTH_LO,
             hi=chunk_length_hi(defaults.fish_base),
             default=defaults.chunk_length,
@@ -469,7 +450,6 @@ def speech_controls(
         min_chunk_length=_clamped_int(
             body,
             "min_chunk_length",
-            "fish_min_chunk_length",
             lo=MIN_CHUNK_LENGTH_LO,
             hi=MIN_CHUNK_LENGTH_HI,
             default=defaults.min_chunk_length,

@@ -12,11 +12,7 @@ from fish_audio_suite_kit import (
     FishHttpError,
     bearer,
     fish_backoff_s,
-    fish_backoff_seconds,
-    fish_non_json,
-    fish_retry_pause,
     fish_sleep_before_retry,
-    fish_unreachable,
     parse_asr_body,
     parse_fish_error,
     should_retry_fish_status,
@@ -26,7 +22,6 @@ from fish_audio_suite_kit.http_errors import (
     FISH_RETRY_AFTER_CAP_S,
     describe_transport_error,
     fish_error_body,
-    fish_non_object,
 )
 
 
@@ -36,24 +31,6 @@ def test_fish_error_message_is_utf8() -> None:
     str(body["message"]).encode("utf-8")
     err = FishHttpError(502, "bad \ud800 byte")
     err.message.encode("utf-8")
-
-
-def test_retry_pause_stops_on_the_last_attempt(monkeypatch: pytest.MonkeyPatch) -> None:
-    slept: list[float] = []
-
-    async def fake_sleep(seconds: float) -> None:
-        slept.append(seconds)
-
-    monkeypatch.setattr("fish_audio_suite_kit.http_errors.asyncio.sleep", fake_sleep)
-
-    async def run() -> tuple[bool, bool]:
-        return await fish_retry_pause(0), await fish_retry_pause(4)
-
-    with pytest.warns(DeprecationWarning, match="fish_sleep_before_retry"):
-        early, last = asyncio.run(run())
-    assert early is False
-    assert last is True
-    assert slept == [1.0]
 
 
 def test_transport_error_timeout_and_blank() -> None:
@@ -171,11 +148,6 @@ def test_fish_error_shape_and_retry_policy() -> None:
     assert not should_retry_fish_status(401)
     assert not should_retry_fish_status(402)
     assert not should_retry_fish_status(404)
-    with pytest.warns(DeprecationWarning, match="fish_backoff_s"):
-        first = fish_backoff_seconds(0)
-    with pytest.warns(DeprecationWarning, match="fish_backoff_s"):
-        third = fish_backoff_seconds(2)
-    assert (first, third) == (1.0, 4.0)
     assert parse_fish_error(401, {"message": "Invalid Token", "status": 401}) == FishErrorBody(
         401, "Invalid Token"
     )
@@ -226,19 +198,12 @@ def test_sleep_before_retry_reports_whether_to_try_again(monkeypatch: pytest.Mon
     assert slept == [3]
 
 
-def test_fish_http_error_constructors_match_the_tuple_helpers() -> None:
-    with pytest.warns(DeprecationWarning, match="is deprecated since") as caught:
-        pairs = (fish_unreachable(), fish_non_json(), fish_non_object())
-    assert len(caught) == 3
-    for built, pair in zip(
-        (
-            FishHttpError.for_unreachable(),
-            FishHttpError.for_non_json(),
-            FishHttpError.for_non_object(),
-        ),
-        pairs,
-        strict=True,
+def test_fish_http_error_constructors_carry_the_documented_status_and_message() -> None:
+    for built, status, message in (
+        (FishHttpError.for_unreachable(), 502, "Fish upstream unreachable"),
+        (FishHttpError.for_non_json(), 502, "Fish returned a non-JSON body"),
+        (FishHttpError.for_non_object(), 502, "Fish returned a non-object body"),
     ):
-        assert (built.status, built.message) == pair
+        assert (built.status, built.message) == (status, message)
     timed_out = FishHttpError.for_timeout()
     assert (timed_out.status, timed_out.message) == (504, "Fish request timed out")

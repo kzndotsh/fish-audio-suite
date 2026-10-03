@@ -16,7 +16,6 @@ from fish_audio_suite_kit._charsets import (
     plain_breaks,
     utf8_text,
 )
-from fish_audio_suite_kit._deprecation import deprecated
 from fish_audio_suite_kit._linear import collapse_space_before_stop
 from fish_audio_suite_kit.dialogue import DEFAULT_MIN_LETTERS, DEFAULT_SHORT_WORDS
 from fish_audio_suite_kit.payloads import AsrSegment
@@ -30,7 +29,6 @@ __all__ = [
     "is_caption_watermark",
     "is_quit_utterance",
     "is_same_utterance",
-    "same_utterance",
     "scrub_asr",
     "without_watermark_segments",
 ]
@@ -539,9 +537,3 @@ def is_same_utterance(text: str, previous: str) -> bool:
     """
     folded = _folded(text)
     return bool(folded) and folded == _folded(previous)
-
-
-@deprecated("is_same_utterance", "0.2.0")
-def same_utterance(text: str, previous: str) -> bool:
-    """Call ``is_same_utterance``. Deprecated since 0.2.0."""
-    return is_same_utterance(text, previous)

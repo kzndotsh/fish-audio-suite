@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import asyncio
 import dataclasses
 import importlib
-import inspect
 import pkgutil
-import warnings
 from importlib import metadata
 from typing import Any, cast, get_args, get_type_hints
 
@@ -30,18 +27,13 @@ from fish_audio_suite_kit import (
     SuiteDefaults,
     TtsModel,
     catalog_tts_model,
-    describe_transport_error,
-    ensure_trace_headers,
     env_bool,
-    fish_backoff_s,
-    fish_sleep_before_retry,
     known_asr_format,
     known_audio_format,
     known_latency,
     parse_asr_body,
     retry_after_s,
 )
-from fish_audio_suite_kit._deprecation import deprecated
 from fish_audio_suite_kit._version import read_version
 
 # --- errors -----------------------------------------------------------------
@@ -252,45 +244,6 @@ def test_retry_after_s_accepts_only_a_sane_wait(
     headers: dict[str, str] | None, expected: float | None
 ) -> None:
     assert retry_after_s(headers) == expected
-
-
-# --- deprecation helper --------------------------------------------------------------
-
-
-def test_deprecated_warns_at_the_caller_and_keeps_the_behavior() -> None:
-    @deprecated("new_name", "0.1.0")
-    def old_name(value: int) -> int:
-        """Doubles it."""
-        return value * 2
-
-    with pytest.warns(
-        DeprecationWarning, match=r"old_name is deprecated since 0\.1\.0; use new_name"
-    ) as caught:
-        assert old_name(4) == 8
-    assert caught[0].filename == __file__
-    assert old_name.__name__ == "old_name"
-    assert old_name.__doc__ == "Doubles it."
-
-
-def test_deprecated_keeps_a_coroutine_function_a_coroutine_function() -> None:
-    @deprecated("new_name", "0.1.0")
-    async def old_name() -> str:
-        return "done"
-
-    assert inspect.iscoroutinefunction(old_name)
-    with pytest.warns(DeprecationWarning, match="old_name"):
-        assert asyncio.run(old_name()) == "done"
-
-
-def test_the_kit_does_not_call_its_own_deprecated_names() -> None:
-    # The suite turns warnings into errors, so any internal use would raise here.
-    with warnings.catch_warnings():
-        warnings.simplefilter("error")
-        assert fish_backoff_s(1, rng=None) > 0
-        assert describe_transport_error(OSError("x"), timed_out=False)[0] == 502
-        assert "traceparent" in ensure_trace_headers({})
-        assert parse_asr_body({"text": "x"})[1] == "x"
-        assert asyncio.run(fish_sleep_before_retry(kit.FISH_RETRY_ATTEMPTS - 1)) is False
 
 
 # --- call shapes, __all__ and version ----------------------------------------------------

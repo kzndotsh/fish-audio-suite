@@ -226,41 +226,6 @@ Listen and interrupt. Times are approximate at 30 ms frames.
 
 Commented copies live in [`.env.example`](../../.env.example).
 
-### Renamed in 0.2.0
-
-These variables were renamed. Until the next minor release the old name still works when the new one is unset or blank (except `FISH_VOICE_SYSTEM_PROMPT`, where a blank value means no system prompt), with a `fish-voice: <old> is deprecated; use <new>` warning on stderr. The new name wins when both are set.
-
-| Old | New |
-| --- | --- |
-| `FISH_PLAYBACK` | `FISH_VOICE_PLAYBACK` |
-| `FISH_HISTORY_TURNS` | `FISH_VOICE_HISTORY_TURNS` |
-| `FISH_SYSTEM_PROMPT` | `FISH_VOICE_SYSTEM_PROMPT` |
-| `FISH_STREAM_TTS` | `FISH_VOICE_STREAM_TTS` |
-| `FISH_VOICE_REPEAT_WINDOW_S` | `FISH_VOICE_REPEAT_WINDOW` |
-| `FISH_VOICE_PRE_PAD` | `FISH_VOICE_PRE_PAD_FRAMES` |
-| `FISH_VOICE_MIN_VOICED` | `FISH_VOICE_MIN_VOICED_FRAMES` |
-| `FISH_VOICE_BARGE_OVER` | `FISH_VOICE_BARGE_PLAYING_GAIN` |
-| `FISH_VOICE_AEC_BLEED` | `FISH_VOICE_AEC_BLEED_DELAY` |
-| `FISH_MOOD_LEAD` | `FISH_TTS_MOOD_LEAD` |
-| `FISH_DROP_NARRATION` | `FISH_TTS_DROP_NARRATION` |
-| `FISH_LLM_KEY` | `FISH_LLM_API_KEY` |
-| `FISH_MODEL` | `FISH_TTS_MODEL` (also read by the proxy, so one `.env` serves both) |
-| `FISH_SPEED_SCALE` | `FISH_SPEED` (also read by the proxy) |
-| `FISH_VOICE_ENV` (`dev.sh`) | `FISH_VOICE_ENV_FILE` |
-
-Python names renamed in the same release keep their old spelling for one minor release too, with a `DeprecationWarning`:
-
-| Old | New |
-| --- | --- |
-| `IsolatedResult` | `TtsResult` |
-| `IsolatedResult.ttfa_ms`, `.llm_ttfs_ms` | `TtsResult.tts_first_audio_ms`, `.tts_first_text_ms` |
-| `IsolatedFishTts.speak_stream_isolated` | `IsolatedFishTts.speak_deltas_isolated` |
-| `DuplexSession.stop` | `DuplexSession.quit_requested` |
-| `LlmTune`, `.key`, `.openrouter` | `LlmSettings`, `.api_key`, `.uses_openrouter_sdk` |
-| `ListenTune.silence_frames_end`, `.speech_frames_start`, `.min_voiced` | `.end_silence_frames`, `.start_speech_frames`, `.min_voiced_frames` |
-| `BargeTune.over` | `BargeTune.playing_gain` |
-| `AecTune.bleed_s` | `AecTune.bleed_delay_s` |
-
 ## License
 
 [MIT](../../LICENSE)

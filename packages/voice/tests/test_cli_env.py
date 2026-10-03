@@ -170,7 +170,6 @@ def test_llm_env_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
         "FISH_LLM_BASE",
         "OPENROUTER_BASE_URL",
         "FISH_LLM_API_KEY",
-        "FISH_LLM_KEY",
         "OPENROUTER_API_KEY",
         "OPENAI_API_KEY",
         "FISH_LLM_MODEL",

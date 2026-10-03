@@ -22,7 +22,7 @@ Three members under `packages/`. Usage: [`README.md`](README.md).
 | Voice smoke | `uv run --package fish-audio-suite-voice --extra cli fish-voice --smoke` · local: `./packages/voice/dev.sh --smoke` |
 | Flake | `nix flake check` · `nix flake show` |
 
-Public API: the names in each package root `__all__` (the proxy's also its HTTP API and documented settings); the rest is internal. 0.x: a minor release may break it, a patch never does. Deprecate with `DeprecationWarning` naming the replacement for at least one minor release before removal. No `CHANGELOG.md`: GitHub's generated release notes are the changelog (`gh release create vX.Y.Z --verify-tag --generate-notes`). Details in [CONTRIBUTING.md](CONTRIBUTING.md).
+Public API: the names in each package root `__all__` (the proxy's also its HTTP API and documented settings); the rest is internal. **Until 1.0.0 nothing is released** (no tags, no PyPI), so the versions stay at 0.1.0 and there is no changelog. Rename and remove public names freely, and do NOT add deprecation shims, aliases, `DeprecationWarning`s, or renamed-env-var fallbacks. The deprecation policy (one minor release of `DeprecationWarning`, SemVer breaking-change rules) applies only from 1.0.0, and from then GitHub's generated release notes are the changelog (`gh release create vX.Y.Z --verify-tag --generate-notes`). Details in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Python 3.12+. **uv** only. Root is virtual (`package = false`). Proxy and voice pin `fish-audio-suite-kit>=0.1,<0.2`; the workspace source overrides it in dev.
 
@@ -62,7 +62,7 @@ Read the nested file before editing that tree.
 | `FISH_VOICE_*` | Voice app behavior | `FISH_VOICE_PLAYBACK`, `FISH_VOICE_BARGE_FRAMES` |
 | `FISH_LLM_*` | The voice app's chat model | `FISH_LLM_API_KEY`, `FISH_LLM_MODEL` |
 
-`FISH_VOICE_ID` is the one exception: it is the Fish voice and maps to the wire field `reference_id`. Seconds are implied in env names (`FISH_VOICE_COOLDOWN`, `FISH_PROXY_READ_TIMEOUT`); other units are suffixed (`_FRAMES`, `_BYTES`, `_CHARS`). Python fields always carry the unit (`cooldown_s`). `FISH_SPEED` is the default speed; the proxy multiplies a client-sent `speed` by it. Rename a variable with kit `env_renamed`, which keeps the old name working with a warning, and add the old name to `ENV_EXAMPLE_SKIP` in `tests/test_docs_env.py`.
+`FISH_VOICE_ID` is the one exception: it is the Fish voice and maps to the wire field `reference_id`. Seconds are implied in env names (`FISH_VOICE_COOLDOWN`, `FISH_PROXY_READ_TIMEOUT`); other units are suffixed (`_FRAMES`, `_BYTES`, `_CHARS`). Python fields always carry the unit (`cooldown_s`). `FISH_SPEED` is the default speed; the proxy multiplies a client-sent `speed` by it. Renaming a variable is just a rename: change the code, `.env.example`, the READMEs and `tests/test_docs_env.py` together, and keep no old name.
 
 ## Gotchas
 

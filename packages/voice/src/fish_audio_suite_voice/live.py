@@ -23,7 +23,6 @@ from fish_audio_suite_kit import (
     FishLatency,
     SuiteDefaults,
     clamp_number,
-    deprecated,
     known_mp3_bitrate,
     normalize_cues,
     normalize_tts_model,
@@ -31,7 +30,6 @@ from fish_audio_suite_kit import (
     strip_base,
     utf8_text,
 )
-from fish_audio_suite_voice._aliases import resolve_alias
 from fish_audio_suite_voice.debug import warn
 from fish_audio_suite_voice.playback import PlaybackSink
 from fish_audio_suite_voice.stream_scrub import delta_events
@@ -262,20 +260,6 @@ class IsolatedFishTts:
             stop,
         )
 
-    @deprecated("IsolatedFishTts.speak_deltas_isolated", "0.2.0")
-    def speak_stream_isolated(
-        self,
-        deltas: Iterable[str] | AsyncIterable[str],
-        sink: PlaybackSink,
-        *,
-        cancel: threading.Event | None = None,
-        on_first_audio: Callable[[], None] | None = None,
-    ) -> TtsResult:
-        """Run ``speak_deltas_isolated``. Deprecated since 0.2.0 under this name."""
-        return self.speak_deltas_isolated(
-            deltas, sink, cancel=cancel, on_first_audio=on_first_audio
-        )
-
     def _run_on_thread(
         self,
         make: Callable[[], Coroutine[Any, Any, TtsResult]],
@@ -444,14 +428,3 @@ __all__ = [
     "TtsResult",
     "is_cancel_noise",
 ]
-
-# Renamed in 0.2.0. The old name still resolves through ``__getattr__`` with a
-# DeprecationWarning and is kept out of ``__all__``.
-_DEPRECATED_ALIASES: Final[dict[str, tuple[str, str]]] = {
-    "IsolatedResult": ("TtsResult", "0.2.0"),
-}
-
-
-def __getattr__(name: str) -> object:
-    """Resolve a renamed class by its old name, with a ``DeprecationWarning``."""
-    return resolve_alias(__name__, name, _DEPRECATED_ALIASES, globals())

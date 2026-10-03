@@ -10,7 +10,6 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from types import FrameType
 
-from fish_audio_suite_kit import deprecated_fields
 from fish_audio_suite_voice.aec import EchoCanceller
 
 __all__ = [
@@ -85,7 +84,6 @@ class TurnSignals:
         self._loop = None
 
 
-@deprecated_fields("0.2.0", stop="quit_requested")
 @dataclass
 class DuplexSession:
     """Cancel flags and echo state for one duplex run.
@@ -93,8 +91,7 @@ class DuplexSession:
     Attributes
     ----------
     quit_requested : threading.Event
-        Set on quit. Sticky for the session. Was ``stop``, which still reads
-        (and constructs) with a ``DeprecationWarning``.
+        Set on quit. Sticky for the session.
     turn : TurnSignals
         Handles for the reply in flight.
     aec : EchoCanceller

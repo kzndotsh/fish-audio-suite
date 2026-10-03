@@ -24,7 +24,6 @@ from fish_audio_suite_kit import (
     FISH_RETRY_ATTEMPTS,
     AudioFormat,
     FishHttpError,
-    deprecated_fields,
     describe_request_error,
     elapsed_ms,
     fish_attempt_exhausted,
@@ -32,7 +31,6 @@ from fish_audio_suite_kit import (
     should_retry_fish_status,
     split_tts_piece,
 )
-from fish_audio_suite_voice._aliases import resolve_alias
 from fish_audio_suite_voice.debug import debug, warn, with_detail
 from fish_audio_suite_voice.playback import PlaybackSink
 from fish_audio_suite_voice.spoken import spoken_prefix
@@ -58,14 +56,7 @@ __all__ = [
 
 QUEUE_POLL_S: Final = 0.25
 
-# Renamed in 0.2.0. Each old name still resolves through ``__getattr__`` with a
-# DeprecationWarning and is kept out of ``__all__``.
-_DEPRECATED_ALIASES: Final[dict[str, tuple[str, str]]] = {
-    "IsolatedResult": ("TtsResult", "0.2.0"),
-}
 
-
-@deprecated_fields("0.2.0", ttfa_ms="tts_first_audio_ms", llm_ttfs_ms="tts_first_text_ms")
 @dataclass(frozen=True, slots=True)
 class TtsResult:
     """What one TTS turn actually played.
@@ -83,12 +74,10 @@ class TtsResult:
         True when barge-in or Ctrl+C stopped the turn.
     tts_first_audio_ms : float or None
         Milliseconds from the start of the TTS turn to the first audio chunk from
-        Fish (Fish's time-to-first-audio). None when no audio arrived. Was
-        ``ttfa_ms``, which still reads with a ``DeprecationWarning``.
+        Fish (Fish's time-to-first-audio). None when no audio arrived.
     tts_first_text_ms : float or None
         Milliseconds from the start of the TTS turn to the first text event sent
-        to Fish. None when no text was sent. Was ``llm_ttfs_ms``, which still
-        reads with a ``DeprecationWarning``.
+        to Fish. None when no text was sent.
     error_status : int or None
         Fish HTTP status when the turn failed. A socket drop has no status.
     error_message : str or None
@@ -637,8 +626,3 @@ def _classify_fish_exc(exc: BaseException) -> tuple[bool, int | None, str]:
         status, message = describe_request_error(exc, httpx.TimeoutException)
         return True, status, with_detail(message, exc)
     return False, None, str(exc)
-
-
-def __getattr__(name: str) -> object:
-    """Resolve a renamed class by its old name, with a ``DeprecationWarning``."""
-    return resolve_alias(__name__, name, _DEPRECATED_ALIASES, globals())

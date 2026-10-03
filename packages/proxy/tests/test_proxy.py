@@ -170,7 +170,6 @@ def test_mp3_bitrate_env_snaps(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_format_env_uses_the_request_alias(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("FISH_FORMAT", raising=False)
     monkeypatch.setenv("FISH_TTS_FORMAT", " AAC ")
     assert runtime_defaults().audio_format == "mp3"
     assert load_settings().tts_format == "mp3"
@@ -379,31 +378,28 @@ def test_guillemet_dialogue_is_spoken(monkeypatch: pytest.MonkeyPatch) -> None:
         assert "Hello there friend" in captured["json"]["text"]
 
 
-def test_null_chunk_length_does_not_hide_the_alias() -> None:
+def test_null_chunk_length_means_the_default_and_zero_is_a_real_value() -> None:
+    defaults = SuiteDefaults()
+    nulls = speech_controls({"chunk_length": None, "min_chunk_length": None}, defaults)
+    assert nulls.chunk_length == defaults.chunk_length
+    assert nulls.min_chunk_length == defaults.min_chunk_length
+    given = speech_controls({"chunk_length": 120, "min_chunk_length": 0}, defaults)
+    assert given.chunk_length == 120
+    assert given.min_chunk_length == 0
+
+
+def test_the_old_request_field_spellings_are_ignored() -> None:
     defaults = SuiteDefaults()
     controls = speech_controls(
-        {
-            "chunk_length": None,
-            "fish_chunk_length": 180,
-            "min_chunk_length": None,
-            "fish_min_chunk_length": 40,
-        },
-        defaults,
+        {"fish_chunk_length": 180, "fish_min_chunk_length": 40, "fish_latency": "low"}, defaults
     )
-    assert controls.chunk_length == 180
-    assert controls.min_chunk_length == 40
-    primary = speech_controls(
-        {"chunk_length": 120, "fish_chunk_length": 180, "min_chunk_length": 0},
-        defaults,
-    )
-    assert primary.chunk_length == 120
-    assert primary.min_chunk_length == 0
+    assert controls.chunk_length == defaults.chunk_length
+    assert controls.min_chunk_length == defaults.min_chunk_length
+    assert controls.latency == defaults.latency
+    assert speech_controls({"fish_format": "wav"}, defaults).fmt == defaults.audio_format
 
 
-def test_null_quality_guard_does_not_hide_the_alias(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    del monkeypatch
+def test_quality_guard_reads_the_flag_then_the_features_list() -> None:
     defaults = SuiteDefaults()
     spoken = "Hello there friend"
 
@@ -411,10 +407,12 @@ def test_null_quality_guard_does_not_hide_the_alias(
         packed = not_response(pack_tts(body, defaults, {}, speech_controls(body, defaults), spoken))
         return json_part(packed).get("features")
 
-    assert features({"input": spoken, "quality_guard": None, "fish_quality_guard": True}) == [
+    assert features({"input": spoken, "quality_guard": True}) == ["quality-guard"]
+    assert features({"input": spoken, "quality_guard": False}) is None
+    assert features({"input": spoken, "quality_guard": None, "features": ["quality-guard"]}) == [
         "quality-guard"
     ]
-    assert features({"input": spoken, "quality_guard": False, "fish_quality_guard": True}) is None
+    assert features({"input": spoken, "fish_quality_guard": True}) is None
 
 
 def test_surrogate_in_pronunciation_still_encodes() -> None:

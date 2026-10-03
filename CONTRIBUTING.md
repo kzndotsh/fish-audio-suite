@@ -67,8 +67,8 @@ exported from the package root. Proxy and voice import kit only through its root
 
 Changing a public name, signature, return type or documented behavior is an API
 change. Kit has a contract test that records its root exports and the signatures
-proxy and voice call. When it fails and the change is intended, bump the kit
-version, then regenerate and review the file:
+proxy and voice call. When it fails and the change is intended, regenerate and review the file (the
+version stays 0.1.0 until 1.0.0):
 
 ```sh
 UPDATE_GOLDEN=1 uv run pytest packages/kit/tests/test_api_contract.py
@@ -77,30 +77,35 @@ git diff packages/kit/tests/golden/kit_api.json
 
 ## Versioning and deprecation
 
-Versions follow SemVer, read the 0.x way: a patch release (0.1.0 to 0.1.1) never
-breaks the public API, and a minor release (0.1 to 0.2) may. Proxy and voice pin
-kit to `>=0.1,<0.2`, so a kit minor bump needs a matching change in both. From
-1.0 a breaking change needs a major release.
+Nothing has been released: there are no tags and nothing is on PyPI, and nothing
+will be until 1.0.0. The three packages stay at 0.1.0 until then, and there is no
+changelog until a release. Until 1.0.0, rename and remove public names freely.
+Do NOT add deprecation shims, aliases, `DeprecationWarning`s, or renamed
+environment-variable fallbacks. A rename changes the code, `.env.example`, the
+READMEs and the docs-env test together, and keeps no old name.
 
+From 1.0.0 the versions follow SemVer. A patch release never breaks the public
+API, a minor release adds to it, and a breaking change needs a major release.
 Remove a public name only after it has been deprecated for at least one minor
 release. A deprecated name keeps working and emits `DeprecationWarning`, with
-`stacklevel=2` so the warning points at the caller. The message names the
-replacement and the version that deprecated the name. A renamed environment variable keeps
-its old name the same way and logs a warning that names the new one.
+`stacklevel=2` so the warning points at the caller, and the message names the
+replacement and the version that deprecated it. A renamed environment variable
+keeps its old name the same way and logs a warning that names the new one.
+Proxy and voice pin kit to `>=0.1,<0.2` today; the pin follows the kit release.
 
 ## Releases and release notes
 
-There is no `CHANGELOG.md`. The release notes are the changelog. GitHub's
-generated notes list every merged pull request by its title, and titles follow
+Nothing is published before 1.0.0, so these steps apply from then. There is no `CHANGELOG.md`. The release notes are the
+changelog. GitHub's generated notes list every merged pull request by its title, and titles follow
 Conventional Commits, so mark a breaking change with `!` (`feat(kit)!: ...`) and
 describe it in the pull request body. To release:
 
 1. Set the same new version in the three `packages/*/pyproject.toml` files and
    commit it. The release workflow fails when the tag and the versions differ.
-2. Tag that commit and push the tag, for example `git tag v0.2.0 && git push origin v0.2.0`.
+2. Tag that commit and push the tag, for example `git tag v1.0.0 && git push origin v1.0.0`.
    The workflow tests, builds and publishes when the repo variable `PYPI_PUBLISH` is `true`.
 3. Create the GitHub release with its notes:
-   `gh release create v0.2.0 --verify-tag --generate-notes`. The workflow does not do
+   `gh release create v1.0.0 --verify-tag --generate-notes`. The workflow does not do
    this itself, so it never holds a token that can write to the repository.
 
 ## Commits and pull requests

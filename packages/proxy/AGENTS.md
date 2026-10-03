@@ -15,7 +15,7 @@ CLI: `fish-audio-suite-proxy`. Import: `fish_audio_suite_proxy`. Start uvicorn w
 | Module | Owns |
 | --- | --- |
 | `server.py` | App, lifespan, routes, client-key check |
-| `settings.py` | `ProxySettings`, built once in lifespan on `app.state.settings`. No other module reads the env. A renamed variable is read with kit `env_renamed`, which logs the old name; list the pair in the README's rename table |
+| `settings.py` | `ProxySettings`, built once in lifespan on `app.state.settings`. No other module reads the env. |
 | `upstream.py` | `fish_send`: bounded retry, `Retry-After` (kit `retry_after_s`), deadline, stops on disconnect, optional per-request read timeout. `FishHttp` is the client Protocol. Transcription passes `FISH_PROXY_ASR_TIMEOUT` as its read timeout and deadline; speech keeps the client-wide ones |
 | `limits.py` | Request body cap middleware |
 | `models.py` | TTS aliases, ASR id rules, `/v1/models` ids |
@@ -30,7 +30,7 @@ Invariants:
 - Scrub and cue logic lives in kit. Do not copy it here.
 - Every module lists its public names in `__all__`, and a public signature uses only public types (`SpeechControls`, `PackedTts`, `InboundAsr`, `FishHttp`). Formats and models use the kit literals (`AudioFormat`, `AsrFormat`, `FishLatency`); `ClientFormat` adds `pcm16`, which is a request format only. Fish ASR JSON is `AsrBody`, but parse defensively: Fish may send any JSON.
 - Never log request text above DEBUG unless `FISH_PROXY_LOG_TEXT` is set. Never put a key in `/health`.
-- `/health` is public API. `tts_model`, `tts_format` and `tts_speed` replace `model`, `format` and `speed_scale`; the old keys stay, with the same values, for one minor release. Rename a key the same way.
+- `/health` is public API. Its keys (`tts_model`, `tts_format`, `tts_speed`, ...) are listed in the README; a renamed key is just renamed, with no old key kept.
 - Retry only 429, 5xx, and connections that never opened. A read timeout is not repeated.
 - Return the format the client asked for, or a 400. Do not swap it. This holds for speech and transcription.
 - Fish ASR `segments` are word-level (`text`, `start`, `end` per word) and `duration` is seconds. Fish sends no `words` field. OpenAI `words` are those word segments; OpenAI `segments` and SRT/VTT cues are phrases grouped from them (`caption_cues`), with punctuation taken from the transcript. A `words` array in a body still wins.

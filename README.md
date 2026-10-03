@@ -159,7 +159,7 @@ The ones you touch first. Every package lists its full table.
 | `FISH_PROXY_API_KEYS` | proxy | none, any client key accepted |
 | `FISH_VOICE_STREAM_TTS` | voice | off (`1` speaks while the model writes) |
 
-FYI: `FISH_SPEED` is the default speech speed. The proxy multiplies a `speed` the client sends by it. Variables renamed in 0.2.0 still work and print a warning that names the new one.
+FYI: `FISH_SPEED` is the default speech speed. The proxy multiplies a `speed` the client sends by it.
 
 Self-hosted [fish-speech](https://github.com/fishaudio/fish-speech) is `FISH_BASE=http://127.0.0.1:8080`. Full tables: [proxy](packages/proxy/README.md#settings), [voice](packages/voice/README.md#settings).
 
@@ -192,7 +192,7 @@ The module runs a hardened systemd service on `127.0.0.1:8849`. Options for `hos
 - Keys are left out of `repr()` and `/health`, nothing reads them at import, and an LLM key is sent only to the provider that owns it.
 - A set-but-blank `FISH_PROXY_API_KEYS` stops the proxy from starting instead of silently turning auth off, and a plain-`http` remote Fish base logs a warning.
 - The tests run in random order with warnings as errors and network sockets disabled, and CI enforces branch-coverage floors.
-- The public API is the set of names in each package's root `__all__`, plus the proxy's HTTP API. On 0.x a minor release may break it and a patch release never does. A name is deprecated, with a warning, for at least one minor release before it is removed. Details are in [CONTRIBUTING](CONTRIBUTING.md#the-public-api).
+- The public API is the set of names in each package's root `__all__`, plus the proxy's HTTP API. Nothing is released yet, so until 1.0.0 names change freely, with no deprecation period. Details are in [CONTRIBUTING](CONTRIBUTING.md#the-public-api).
 
 ## Development
 

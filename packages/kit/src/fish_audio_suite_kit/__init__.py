@@ -1,9 +1,5 @@
 """Unofficial Fish Audio text helpers. Not affiliated with Fish Audio."""
 
-import warnings
-from typing import Final
-
-from fish_audio_suite_kit._deprecation import deprecated, deprecated_fields
 from fish_audio_suite_kit._version import read_version
 from fish_audio_suite_kit.asr_text import (
     DEFAULT_BACKCHANNELS,
@@ -14,7 +10,6 @@ from fish_audio_suite_kit.asr_text import (
     is_caption_watermark,
     is_quit_utterance,
     is_same_utterance,
-    same_utterance,
     scrub_asr,
     without_watermark_segments,
 )
@@ -45,7 +40,6 @@ from fish_audio_suite_kit.defaults import (
     SuiteDefaults,
     catalog_tts_model,
     chunk_length_hi,
-    clamp_num,
     clamp_number,
     elapsed_ms,
     env_base,
@@ -53,7 +47,6 @@ from fish_audio_suite_kit.defaults import (
     env_float,
     env_int,
     env_off,
-    env_renamed,
     env_text,
     env_token,
     is_insecure_fish_base,
@@ -62,9 +55,7 @@ from fish_audio_suite_kit.defaults import (
     known_latency,
     known_mp3_bitrate,
     known_opus_bitrate,
-    known_tts_model,
     normalize_tts_model,
-    number_or,
     parse_number,
     strip_base,
 )
@@ -85,19 +76,11 @@ from fish_audio_suite_kit.http_errors import (
     describe_transport_error,
     fish_attempt_exhausted,
     fish_backoff_s,
-    fish_backoff_seconds,
     fish_error_body,
-    fish_non_json,
-    fish_non_object,
-    fish_request_error,
-    fish_retry_pause,
     fish_sleep_before_retry,
-    fish_transport_error,
-    fish_unreachable,
     parse_asr_body,
     parse_fish_error,
     retry_after_s,
-    retry_after_seconds,
     should_retry_fish_status,
 )
 from fish_audio_suite_kit.literals import (
@@ -115,7 +98,6 @@ from fish_audio_suite_kit.payloads import (
     OpenAIErrorBody,
     OpenAIErrorDetail,
 )
-from fish_audio_suite_kit.stream_holds import hold_tts, skip_empty_delta
 from fish_audio_suite_kit.text_filters import (
     extract_quoted_speech,
     is_empty_delta,
@@ -130,7 +112,6 @@ from fish_audio_suite_kit.trace_context import (
     ensure_trace_headers,
     make_traceparent,
     trace_id_of,
-    w3c_trace_headers,
 )
 
 __version__ = read_version()
@@ -183,10 +164,7 @@ __all__ = [
     "canonical_traceparent",
     "catalog_tts_model",
     "chunk_length_hi",
-    "clamp_num",
     "clamp_number",
-    "deprecated",
-    "deprecated_fields",
     "describe_request_error",
     "describe_transport_error",
     "elapsed_ms",
@@ -198,24 +176,15 @@ __all__ = [
     "env_float",
     "env_int",
     "env_off",
-    "env_renamed",
     "env_text",
     "env_token",
     "extract_quoted_speech",
     "fish_attempt_exhausted",
     "fish_backoff_s",
-    "fish_backoff_seconds",
     "fish_error_body",
-    "fish_non_json",
-    "fish_non_object",
-    "fish_request_error",
-    "fish_retry_pause",
     "fish_sleep_before_retry",
-    "fish_transport_error",
-    "fish_unreachable",
     "format_as_srt",
     "format_as_vtt",
-    "hold_tts",
     "is_asr_hallucination",
     "is_backchannel",
     "is_caption_watermark",
@@ -229,72 +198,24 @@ __all__ = [
     "known_latency",
     "known_mp3_bitrate",
     "known_opus_bitrate",
-    "known_tts_model",
     "make_traceparent",
     "mood_lead_hold_at",
     "next_tts_cut",
     "normalize_cues",
     "normalize_tts_model",
-    "number_or",
     "parse_asr_body",
     "parse_fish_error",
     "parse_number",
     "retry_after_s",
-    "retry_after_seconds",
-    "same_utterance",
     "scrub_asr",
     "scrub_tts",
     "sentence_closer_hold_at",
     "should_retry_fish_status",
-    "skip_empty_delta",
     "split_tts_piece",
     "strip_base",
     "strip_cue_tags",
     "trace_id_of",
     "tts_hold_at",
     "utf8_text",
-    "w3c_trace_headers",
     "without_watermark_segments",
 ]
-
-# Renamed constants and classes, old name -> (new name, version that renamed it).
-# Each still resolves through ``__getattr__`` with a DeprecationWarning and is kept
-# out of ``__all__``. Renamed functions are wrapped with ``deprecated`` instead.
-_DEPRECATED_ALIASES: Final[dict[str, tuple[str, str]]] = {
-    "CLOUD_CHUNK_HI": ("CHUNK_LENGTH_CLOUD_HI", "0.2.0"),
-    "SELF_HOST_CHUNK_HI": ("CHUNK_LENGTH_SELF_HOSTED_HI", "0.2.0"),
-    "MIN_CHUNK_LO": ("MIN_CHUNK_LENGTH_LO", "0.2.0"),
-    "MIN_CHUNK_HI": ("MIN_CHUNK_LENGTH_HI", "0.2.0"),
-    "UNIT_LO": ("UNIT_INTERVAL_LO", "0.2.0"),
-    "UNIT_HI": ("UNIT_INTERVAL_HI", "0.2.0"),
-    "OpenAIError": ("OpenAIErrorDetail", "0.2.0"),
-}
-
-
-def __getattr__(name: str) -> object:
-    """Resolve a renamed constant or class by its old name, with a warning.
-
-    Parameters
-    ----------
-    name : str
-        The attribute that normal lookup did not find.
-
-    Returns
-    -------
-    object
-        The object now exported under the new name.
-
-    Raises
-    ------
-    AttributeError
-        When ``name`` is not a deprecated alias either.
-    """
-    alias = _DEPRECATED_ALIASES.get(name)
-    if alias is None:
-        msg = f"module {__name__!r} has no attribute {name!r}"
-        raise AttributeError(msg)
-    new, since = alias
-    warnings.warn(
-        f"{name} is deprecated since {since}; use {new}.", DeprecationWarning, stacklevel=2
-    )
-    return globals()[new]

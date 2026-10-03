@@ -22,7 +22,6 @@ from fish_audio_suite_kit import (
     env_base,
     env_float,
     env_int,
-    env_renamed,
     env_text,
     env_token,
     is_insecure_fish_base,
@@ -41,7 +40,6 @@ from fish_audio_suite_voice.tune import (
     read_flag,
     read_float,
     read_int,
-    warn_renamed,
 )
 
 # A fresh utterance cannot end sooner: the turn needs about 1.2 s of silence plus
@@ -176,12 +174,6 @@ def load_config() -> VoiceCliConfig:
     -----
     ``FISH_API_KEY`` uses ``env_text``, so a blank value stays blank instead
     of falling back to a default key. There is no default voice id.
-
-    A key renamed in 0.2.0 (for example ``FISH_PLAYBACK``, now
-    ``FISH_VOICE_PLAYBACK``) is still read when its new name is unset, with a
-    printed warning, until the next minor release. ``FISH_MODEL`` and
-    ``FISH_SPEED_SCALE`` are read the same way, as the proxy reads them, so one
-    ``.env`` gives both packages the same model and speed.
     """
     d = SuiteDefaults()
     fish_base = env_base("FISH_BASE", d.fish_base)
@@ -191,12 +183,10 @@ def load_config() -> VoiceCliConfig:
         fish_base=fish_base,
         fish_voice_id=env_text("FISH_VOICE_ID"),
         fish_asr_language=env_text("FISH_ASR_LANGUAGE", d.asr_language),
-        tts_model=normalize_tts_model(
-            env_token(env_renamed("FISH_TTS_MODEL", "FISH_MODEL", warn=warn_renamed), d.tts_model)
-        ),
+        tts_model=normalize_tts_model(env_token("FISH_TTS_MODEL", d.tts_model)),
         latency=known_latency(env_token("FISH_LATENCY", d.latency), d.latency),
         speed=clamp_number(
-            env_float(env_renamed("FISH_SPEED", "FISH_SPEED_SCALE", warn=warn_renamed), d.speed),
+            env_float("FISH_SPEED", d.speed),
             TTS_SPEED_LO,
             TTS_SPEED_HI,
             d.speed,
@@ -231,7 +221,7 @@ def load_config() -> VoiceCliConfig:
         sample_rate=sample_rate if sample_rate > 0 else d.sample_rate,
         playback=playback_key(
             env_token(
-                env_renamed("FISH_VOICE_PLAYBACK", "FISH_PLAYBACK", warn=warn_renamed),
+                "FISH_VOICE_PLAYBACK",
                 DEFAULT_PLAYBACK,
             )
         ),
@@ -243,26 +233,22 @@ def load_config() -> VoiceCliConfig:
         barge=BargeTune.from_env(),
         aec=AecTune.from_env(),
         history_turns=read_int(
-            env_renamed("FISH_VOICE_HISTORY_TURNS", "FISH_HISTORY_TURNS", warn=warn_renamed),
+            "FISH_VOICE_HISTORY_TURNS",
             DEFAULT_HISTORY_TURNS,
             lo=1,
         ),
         repeat_window_s=read_float(
-            env_renamed(
-                "FISH_VOICE_REPEAT_WINDOW", "FISH_VOICE_REPEAT_WINDOW_S", warn=warn_renamed
-            ),
+            "FISH_VOICE_REPEAT_WINDOW",
             DEFAULT_REPEAT_WINDOW_S,
             lo=0.0,
         ),
-        mood_lead=read_flag(
-            env_renamed("FISH_TTS_MOOD_LEAD", "FISH_MOOD_LEAD", warn=warn_renamed), default=False
-        ),
+        mood_lead=read_flag("FISH_TTS_MOOD_LEAD", default=False),
         drop_narration=read_flag(
-            env_renamed("FISH_TTS_DROP_NARRATION", "FISH_DROP_NARRATION", warn=warn_renamed),
+            "FISH_TTS_DROP_NARRATION",
             default=False,
         ),
         stream_tts=read_flag(
-            env_renamed("FISH_VOICE_STREAM_TTS", "FISH_STREAM_TTS", warn=warn_renamed),
+            "FISH_VOICE_STREAM_TTS",
             default=False,
         ),
     )
@@ -270,13 +256,6 @@ def load_config() -> VoiceCliConfig:
 
 def _system_prompt(default: str) -> str:
     # A prompt set but blank means "no system prompt", so unlike the other keys
-    # a blank value still counts here. env_renamed treats blank as unset, which
-    # would give an old blank FISH_SYSTEM_PROMPT the default prompt instead.
+    # a blank value still counts here.
     prompt = os.environ.get("FISH_VOICE_SYSTEM_PROMPT")
-    if prompt is not None:
-        return prompt
-    old = os.environ.get("FISH_SYSTEM_PROMPT")
-    if old is None:
-        return default
-    warn_renamed("FISH_SYSTEM_PROMPT is deprecated; use FISH_VOICE_SYSTEM_PROMPT")
-    return old
+    return default if prompt is None else prompt

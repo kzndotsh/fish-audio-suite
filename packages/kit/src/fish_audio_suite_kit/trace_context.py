@@ -7,14 +7,11 @@ import secrets
 from collections.abc import Mapping
 from typing import Final
 
-from fish_audio_suite_kit._deprecation import deprecated
-
 __all__ = [
     "canonical_traceparent",
     "ensure_trace_headers",
     "make_traceparent",
     "trace_id_of",
-    "w3c_trace_headers",
 ]
 
 _TRACE_ID_BYTES: Final = 16
@@ -127,27 +124,6 @@ def ensure_trace_headers(incoming: Mapping[str, str]) -> dict[str, str]:
     if found:
         return found
     return {"traceparent": make_traceparent()}
-
-
-@deprecated("ensure_trace_headers", "0.1.0")
-def w3c_trace_headers(incoming: Mapping[str, str]) -> dict[str, str]:
-    """Copy a valid ``traceparent`` and optional ``tracestate``. Empty if none.
-
-    Parameters
-    ----------
-    incoming : Mapping of str to str
-        Request headers. Names are matched without regard to case.
-
-    Returns
-    -------
-    dict of str to str
-        The valid headers, or an empty dict.
-
-    Notes
-    -----
-    Deprecated. ``ensure_trace_headers`` does the same and mints one when absent.
-    """
-    return _forwarded_headers(incoming)
 
 
 def _forwarded_headers(incoming: Mapping[str, str]) -> dict[str, str]:

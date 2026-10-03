@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from typing import Any, Final, Literal, cast
 from urllib.parse import urlsplit
 
-from fish_audio_suite_kit._deprecation import deprecated, deprecated_fields
 from fish_audio_suite_kit.literals import AsrFormat, AudioFormat, FishLatency, TtsModel
 
 __all__ = [
@@ -34,7 +33,6 @@ __all__ = [
     "SuiteDefaults",
     "catalog_tts_model",
     "chunk_length_hi",
-    "clamp_num",
     "clamp_number",
     "elapsed_ms",
     "env_base",
@@ -42,7 +40,6 @@ __all__ = [
     "env_float",
     "env_int",
     "env_off",
-    "env_renamed",
     "env_text",
     "env_token",
     "is_insecure_fish_base",
@@ -51,9 +48,7 @@ __all__ = [
     "known_latency",
     "known_mp3_bitrate",
     "known_opus_bitrate",
-    "known_tts_model",
     "normalize_tts_model",
-    "number_or",
     "parse_number",
     "strip_base",
 ]
@@ -129,14 +124,6 @@ class SuiteDefaults:
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
 
 
-@deprecated_fields(
-    "0.2.0",
-    llm_ttft="llm_first_token_ms",
-    llm_ttfs="tts_first_text_ms",
-    ttfa="tts_first_audio_ms",
-    voice_to_voice="voice_to_voice_ms",
-    first_audio="first_audio_ms",
-)
 @dataclass(frozen=True, slots=True)
 class LatencySnapshot:
     """One cascade turn. Times are milliseconds. Never store utterance text.
@@ -164,9 +151,7 @@ class LatencySnapshot:
     Notes
     -----
     The fields keep their order, so a snapshot built by position keeps its
-    meaning; a new field goes last and is not keyword-only. The 0.1 names
-    (``llm_ttft``, ``llm_ttfs``, ``ttfa``, ``voice_to_voice``, ``first_audio``)
-    still work as keywords and attributes with a ``DeprecationWarning``.
+    meaning; a new field goes last and is not keyword-only.
     """
 
     asr_ms: float | None = None
@@ -366,39 +351,6 @@ def env_text(name: str, default: str = "") -> str:
         ``default``, so an empty key can be told apart from an unset one.
     """
     return os.environ.get(name, default).strip()
-
-
-def env_renamed(new: str, old: str, *, warn: Callable[[str], None]) -> str:
-    """Pick which of a renamed variable's two names to read.
-
-    Parameters
-    ----------
-    new : str
-        The current environment variable name.
-    old : str
-        The name it replaced, still honored for one minor release.
-    warn : Callable
-        Called with ``"<old> is deprecated; use <new>"`` when the old name is the
-        one in use, so each package reports it its own way (a log line, a printed
-        warning).
-
-    Returns
-    -------
-    str
-        ``new`` when it is set to a non-blank value, else ``old`` when that is set
-        to a non-blank value, else ``new``. Pass the result to an ``env_*`` reader.
-
-    Examples
-    --------
-    >>> env_renamed("FISH_DOCTEST_NEW_UNSET", "FISH_DOCTEST_OLD_UNSET", warn=print)
-    'FISH_DOCTEST_NEW_UNSET'
-    """
-    if os.environ.get(new, "").strip():
-        return new
-    if os.environ.get(old, "").strip():
-        warn(f"{old} is deprecated; use {new}")
-        return old
-    return new
 
 
 def _whole_int(value: Any) -> int:
@@ -849,30 +801,3 @@ def known_opus_bitrate(rate: int) -> int:
     if rate in _OPUS_BITRATES:
         return rate
     return _OPUS_AUTO
-
-
-# --- Deprecated names -------------------------------------------------------------------
-
-
-@deprecated("parse_number", "0.2.0")
-def number_or[T: int | float](value: Any, default: T, parse: Callable[[Any], T]) -> T:
-    """Call ``parse_number``. Deprecated since 0.2.0."""
-    return parse_number(value, default, parse)
-
-
-@deprecated("clamp_number", "0.2.0")
-def clamp_num[T: int | float](
-    value: Any,
-    lo: T,
-    hi: T,
-    default: T,
-    parse: Callable[[Any], T],
-) -> T:
-    """Call ``clamp_number``. Deprecated since 0.2.0."""
-    return clamp_number(value, lo, hi, default, parse)
-
-
-@deprecated("normalize_tts_model", "0.2.0")
-def known_tts_model(name: str) -> str:
-    """Call ``normalize_tts_model``. Deprecated since 0.2.0."""
-    return normalize_tts_model(name)

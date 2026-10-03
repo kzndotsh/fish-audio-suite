@@ -267,8 +267,7 @@ def test_the_documented_example_through_the_route(monkeypatch: pytest.MonkeyPatc
         def json(self) -> dict[str, Any]:
             return _DOC_BODY
 
-    for name in ("FISH_PROXY_ASR_STRIP_CUES", "FISH_ASR_STRIP_CUES"):
-        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("FISH_PROXY_ASR_STRIP_CUES", raising=False)
     capture_upstream(monkeypatch, _Pro())
     with TestClient(app) as client:
         reply = client.post(

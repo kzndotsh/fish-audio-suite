@@ -381,8 +381,7 @@ def test_speaker_labels_are_stripped_by_default(monkeypatch: pytest.MonkeyPatch)
         def json(self) -> dict[str, Any]:
             return {"text": "<|speaker:0|> Speaker 1: hello there"}
 
-    for name in ("FISH_PROXY_ASR_STRIP_SPEAKERS", "FISH_ASR_STRIP_SPEAKERS"):
-        monkeypatch.delenv(name, raising=False)
+    monkeypatch.delenv("FISH_PROXY_ASR_STRIP_SPEAKERS", raising=False)
     capture_upstream(monkeypatch, _Labelled())
     with TestClient(app) as client:
         stripped = client.post("/v1/audio/transcriptions", files=WAV_UPLOAD).json()

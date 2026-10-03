@@ -293,7 +293,7 @@ def read_format(body: dict[str, Any], default: ClientFormat) -> ClientFormat:
     Parameters
     ----------
     body : dict
-        Request object. ``format``, ``response_format``, then ``fish_format``.
+        Request object. ``format``, then ``response_format``.
     default : ClientFormat
         Used when the request names no format.
 
@@ -309,7 +309,7 @@ def read_format(body: dict[str, Any], default: ClientFormat) -> ClientFormat:
         such as ``aac`` or ``flac``. Returning other bytes than the client
         asked for would break its decoder.
     """
-    raw = read_choice(body, "format", "response_format", "fish_format", default="")
+    raw = read_choice(body, "format", "response_format", default="")
     if not raw:
         return default
     known = _CLIENT_FORMATS.get(raw)

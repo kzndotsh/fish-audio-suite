@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from typing import Any, Final, Literal, Self, cast
 
 from fish_audio_suite_kit._charsets import utf8_text
-from fish_audio_suite_kit._deprecation import deprecated
 from fish_audio_suite_kit.defaults import parse_number
 from fish_audio_suite_kit.payloads import AsrBody
 
@@ -40,19 +39,11 @@ __all__ = [
     "describe_transport_error",
     "fish_attempt_exhausted",
     "fish_backoff_s",
-    "fish_backoff_seconds",
     "fish_error_body",
-    "fish_non_json",
-    "fish_non_object",
-    "fish_request_error",
-    "fish_retry_pause",
     "fish_sleep_before_retry",
-    "fish_transport_error",
-    "fish_unreachable",
     "parse_asr_body",
     "parse_fish_error",
     "retry_after_s",
-    "retry_after_seconds",
     "should_retry_fish_status",
 ]
 
@@ -215,30 +206,6 @@ class FishHttpError(FishAudioSuiteError):
         """Build the 502 for JSON that is not an object, or a non-string ASR text."""
         return FishUpstreamError(FISH_UNREACHABLE_STATUS, FISH_NON_OBJECT_MESSAGE)
 
-    @classmethod
-    @deprecated("FishHttpError.for_unreachable()", "0.2.0")
-    def unreachable(cls) -> FishUpstreamError:
-        """Call ``for_unreachable``. Deprecated since 0.2.0."""
-        return cls.for_unreachable()
-
-    @classmethod
-    @deprecated("FishHttpError.for_timeout()", "0.2.0")
-    def timed_out(cls) -> FishTimeoutError:
-        """Call ``for_timeout``. Deprecated since 0.2.0."""
-        return cls.for_timeout()
-
-    @classmethod
-    @deprecated("FishHttpError.for_non_json()", "0.2.0")
-    def non_json(cls) -> FishUpstreamError:
-        """Call ``for_non_json``. Deprecated since 0.2.0."""
-        return cls.for_non_json()
-
-    @classmethod
-    @deprecated("FishHttpError.for_non_object()", "0.2.0")
-    def non_object(cls) -> FishUpstreamError:
-        """Call ``for_non_object``. Deprecated since 0.2.0."""
-        return cls.for_non_object()
-
 
 class FishAuthError(FishHttpError):
     """401, 402 or 403: the key is missing, wrong or out of credit. Never retryable."""
@@ -304,27 +271,6 @@ def _base_wait(attempt: int) -> float:
     return float(2 ** max(0, attempt))
 
 
-@deprecated("fish_backoff_s", "0.1.0")
-def fish_backoff_seconds(attempt: int) -> float:
-    """Return the documented base wait, ``2 ** attempt`` seconds, with no jitter.
-
-    Parameters
-    ----------
-    attempt : int
-        Zero-based attempt that just failed. Negative values count as 0.
-
-    Returns
-    -------
-    float
-        ``2 ** attempt`` seconds.
-
-    Notes
-    -----
-    Deprecated. ``fish_backoff_s`` adds jitter and honors ``Retry-After``.
-    """
-    return _base_wait(attempt)
-
-
 def fish_backoff_s(
     attempt: int,
     *,
@@ -387,34 +333,6 @@ async def fish_sleep_before_retry(
     return True
 
 
-@deprecated("fish_sleep_before_retry", "0.1.0")
-async def fish_retry_pause(attempt: int) -> bool:
-    """Sleep ``2 ** attempt`` seconds, or report that this attempt is the last.
-
-    Prefer ``fish_sleep_before_retry``. Its return value is the natural way
-    round, and it adds jitter and ``Retry-After``.
-
-    Parameters
-    ----------
-    attempt : int
-        Zero-based attempt that just failed.
-
-    Returns
-    -------
-    bool
-        True when the caller must stop. False after sleeping ``2 ** attempt``
-        seconds. The return value is the stop flag, not "pause succeeded".
-
-    Notes
-    -----
-    Callers that treat True as "paused" will exit the retry loop one try early.
-    """
-    if fish_attempt_exhausted(attempt):
-        return True
-    await asyncio.sleep(_base_wait(attempt))
-    return False
-
-
 def bearer(key: str) -> str:
     """Build an ``Authorization`` header value.
 
@@ -434,54 +352,6 @@ def bearer(key: str) -> str:
     if any(ord(ch) < 32 or ord(ch) >= 127 for ch in token):
         token = ""
     return f"Bearer {token}"
-
-
-@deprecated("FishHttpError.for_unreachable()", "0.1.0")
-def fish_unreachable() -> tuple[int, str]:
-    """Status and message when a retry loop ends with no Fish response.
-
-    Returns
-    -------
-    tuple of int and str
-        ``(502, "Fish upstream unreachable")``.
-
-    Notes
-    -----
-    Deprecated. ``FishHttpError.for_unreachable()`` carries the same status and message.
-    """
-    return FISH_UNREACHABLE_STATUS, FISH_UNREACHABLE_MESSAGE
-
-
-@deprecated("FishHttpError.for_non_json()", "0.1.0")
-def fish_non_json() -> tuple[int, str]:
-    """Status and message when Fish's body is not JSON.
-
-    Returns
-    -------
-    tuple of int and str
-        ``(502, "Fish returned a non-JSON body")``.
-
-    Notes
-    -----
-    Deprecated. ``FishHttpError.for_non_json()`` carries the same status and message.
-    """
-    return FISH_UNREACHABLE_STATUS, FISH_NON_JSON_MESSAGE
-
-
-@deprecated("FishHttpError.for_non_object()", "0.1.0")
-def fish_non_object() -> tuple[int, str]:
-    """Status and message when JSON is not an object, or ASR ``text`` is not a string.
-
-    Returns
-    -------
-    tuple of int and str
-        ``(502, "Fish returned a non-object body")``.
-
-    Notes
-    -----
-    Deprecated. ``FishHttpError.for_non_object()`` carries the same status and message.
-    """
-    return FISH_UNREACHABLE_STATUS, FISH_NON_OBJECT_MESSAGE
 
 
 def parse_asr_body(body: object) -> tuple[AsrBody, str]:
@@ -835,24 +705,3 @@ def parse_fish_error(status: int, raw: Any) -> FishErrorBody:
         elif _as_dict(loaded) is not None:
             return parse_fish_error(status, loaded)
     return FishErrorBody.of(status, _fallback_message(stripped, status))
-
-
-# --- Deprecated names -------------------------------------------------------------------
-
-
-@deprecated("retry_after_s", "0.2.0")
-def retry_after_seconds(headers: Mapping[str, str] | None) -> float | None:
-    """Call ``retry_after_s``. Deprecated since 0.2.0."""
-    return retry_after_s(headers)
-
-
-@deprecated("describe_transport_error", "0.2.0")
-def fish_transport_error(exc: BaseException | None, *, timed_out: bool) -> tuple[int, str]:
-    """Call ``describe_transport_error``. Deprecated since 0.2.0."""
-    return describe_transport_error(exc, timed_out=timed_out)
-
-
-@deprecated("describe_request_error", "0.2.0")
-def fish_request_error(exc: BaseException, timeout_type: type[BaseException]) -> tuple[int, str]:
-    """Call ``describe_request_error``. Deprecated since 0.2.0."""
-    return describe_request_error(exc, timeout_type)

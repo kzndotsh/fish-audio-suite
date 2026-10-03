@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-import pytest
-
 from fish_audio_suite_kit import (
     ensure_trace_headers,
     make_traceparent,
     trace_id_of,
 )
-from fish_audio_suite_kit.trace_context import canonical_traceparent, w3c_trace_headers
+from fish_audio_suite_kit.trace_context import canonical_traceparent
 
 _SAMPLE_PARENT = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
 
@@ -20,8 +18,6 @@ def test_canonical_traceparent() -> None:
     forbidden = "ff-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
     assert canonical_traceparent(forbidden) is None
     assert ensure_trace_headers({"traceparent": forbidden})["traceparent"] != forbidden
-    with pytest.warns(DeprecationWarning, match="ensure_trace_headers"):
-        assert w3c_trace_headers({"traceparent": forbidden}) == {}
 
 
 def test_w3c_trace_headers_and_mint() -> None:
@@ -38,8 +34,6 @@ def test_w3c_trace_headers_and_mint() -> None:
     assert "tracestate" not in nulled
     surrogate = ensure_trace_headers({"traceparent": _SAMPLE_PARENT, "tracestate": "vendor=\ud800"})
     assert surrogate == {"traceparent": _SAMPLE_PARENT}
-    with pytest.warns(DeprecationWarning, match="ensure_trace_headers"):
-        assert w3c_trace_headers({}) == {}
     forwarded = ensure_trace_headers({"traceparent": _SAMPLE_PARENT})
     assert forwarded["traceparent"] == _SAMPLE_PARENT
     minted_out = ensure_trace_headers({})
