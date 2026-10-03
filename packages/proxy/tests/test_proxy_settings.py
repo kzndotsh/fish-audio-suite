@@ -253,6 +253,18 @@ def test_an_old_env_name_still_works_and_logs_its_replacement(
     assert f"{case.old} is deprecated; use {case.new}" in caplog.text
 
 
+def test_an_old_env_name_is_reported_once_however_often_settings_load(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # FISH_FORMAT feeds two fields, and startup loads the settings twice.
+    _clear_renamed_env(monkeypatch)
+    monkeypatch.setenv("FISH_FORMAT", "wav")
+    with caplog.at_level("WARNING", logger="fish-audio-suite-proxy"):
+        load_settings()
+        load_settings()
+    assert caplog.text.count("FISH_FORMAT is deprecated; use FISH_TTS_FORMAT") == 1
+
+
 @pytest.mark.parametrize("case", _RENAMED_ENV, ids=lambda case: case.new)
 def test_the_new_env_name_wins_over_the_old_one_without_a_warning(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, case: _Renamed

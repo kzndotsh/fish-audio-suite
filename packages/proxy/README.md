@@ -102,7 +102,7 @@ Fish 429 and 5xx are retried until `FISH_PROXY_RETRY_ATTEMPTS` tries have been m
 
 Read once at startup. `GET /health` shows the values in effect under `defaults`, never a key. The TTS defaults are `tts_model`, `tts_format` and `tts_speed`. The older keys `model`, `format` and `speed_scale` carry the same values and stay for one minor release; read the new ones.
 
-Renamed variables: the old name still works when the new one is unset or blank, and the proxy logs `<old> is deprecated; use <new>` at startup. The old names go away after one minor release.
+Renamed variables: the old name still works when the new one is unset or blank, and the proxy logs `<old> is deprecated; use <new>` once at startup. The old names go away after one minor release.
 
 | Old name | New name |
 | --- | --- |

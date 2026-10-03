@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -65,8 +66,13 @@ _MAX_RETRY_ATTEMPTS = 10
 _LOOPBACK = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
+@functools.cache
 def _warn(message: str) -> None:
-    """Log a renamed variable's deprecation message from ``env_renamed``."""
+    """Log a renamed variable's deprecation message from ``env_renamed``, once per process.
+
+    The settings are read more than once at startup (the lifespan and the uvicorn
+    arguments), and one old name can feed two fields, so each message is logged once.
+    """
     log.warning("%s", message)
 
 
