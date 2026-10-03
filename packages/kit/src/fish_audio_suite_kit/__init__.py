@@ -8,6 +8,7 @@ from fish_audio_suite_kit._version import read_version
 from fish_audio_suite_kit.asr_text import (
     DEFAULT_BACKCHANNELS,
     DEFAULT_QUIT_PHRASES,
+    asr_language_hint,
     is_asr_hallucination,
     is_backchannel,
     is_caption_watermark,
@@ -177,6 +178,7 @@ __all__ = [
     "SuiteDefaults",
     "TtsModel",
     "__version__",
+    "asr_language_hint",
     "bearer",
     "canonical_traceparent",
     "catalog_tts_model",

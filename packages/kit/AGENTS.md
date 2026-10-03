@@ -17,7 +17,7 @@ Import: `fish_audio_suite_kit`. Tests: `uv run pytest packages/kit`. `tests/` ha
 | `dialogue` | `extract_quoted_speech`, `is_tts_junk`, narration, the letter floor |
 | `cues` | `normalize_cues`, `ensure_lead_cue`, `strip_cue_tags`, the S1 cue names |
 | `cuts` | `next_tts_cut`, `split_tts_piece`, `ends_sentence` |
-| `asr_text` | `scrub_asr`, `is_asr_hallucination`, backchannel and quit gates, watermarks |
+| `asr_text` | `scrub_asr`, `is_asr_hallucination`, `asr_language_hint`, backchannel and quit gates, watermarks |
 | `defaults` | `SuiteDefaults`, `LatencySnapshot`, clamps, env readers (`env_renamed` for a renamed variable), `chunk_length_hi`, `is_insecure_fish_base` |
 | `http_errors` | `FishHttpError` and its subclasses, `FishErrorBody`, retry and backoff helpers, `retry_after_s` |
 | `literals` | `FishLatency`, `AudioFormat`, `AsrFormat`, `TtsModel`, `ChatRole`, `ChatMessage`. Types only |

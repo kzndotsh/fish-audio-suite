@@ -24,6 +24,7 @@ from fish_audio_suite_kit.payloads import AsrSegment
 __all__ = [
     "DEFAULT_BACKCHANNELS",
     "DEFAULT_QUIT_PHRASES",
+    "asr_language_hint",
     "is_asr_hallucination",
     "is_backchannel",
     "is_caption_watermark",
@@ -201,6 +202,40 @@ def _gzip_repetitive(text: str) -> bool:
         return False
     compressed = zlib.compress(raw)
     return (len(raw) / max(len(compressed), 1)) >= _GZIP_RATIO
+
+
+_LANGUAGE_SUBTAG_RE: Final = re.compile(r"[-_]")
+
+
+def asr_language_hint(value: str) -> str:
+    """Reduce a language tag to the ISO 639-1 code Fish ASR accepts.
+
+    Parameters
+    ----------
+    value : str
+        A language hint as a client or the environment wrote it, such as
+        ``en``, ``EN``, ``en-US`` or ``zh_CN``.
+
+    Returns
+    -------
+    str
+        The primary subtag in lowercase when it is exactly two ASCII letters,
+        otherwise ``""``. Fish may answer 400 to ``en-US`` or ``English``, and
+        an empty hint lets it detect the language instead.
+
+    Examples
+    --------
+    >>> asr_language_hint(" en-US ")
+    'en'
+    >>> asr_language_hint("zh_CN")
+    'zh'
+    >>> asr_language_hint("English")
+    ''
+    """
+    primary = _LANGUAGE_SUBTAG_RE.split(value.strip().lower(), maxsplit=1)[0]
+    if len(primary) == 2 and primary.isascii() and primary.isalpha():
+        return primary
+    return ""
 
 
 def scrub_asr(text: str, *, strip_speakers: bool = True, strip_cues: bool = False) -> str:

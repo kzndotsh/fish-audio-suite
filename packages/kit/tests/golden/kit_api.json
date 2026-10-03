@@ -42,6 +42,7 @@
     "UNIT_INTERVAL_HI",
     "UNIT_INTERVAL_LO",
     "__version__",
+    "asr_language_hint",
     "bearer",
     "canonical_traceparent",
     "catalog_tts_model",

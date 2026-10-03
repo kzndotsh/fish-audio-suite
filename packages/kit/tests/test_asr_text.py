@@ -5,6 +5,7 @@ import pytest
 from fish_audio_suite_kit import (
     DEFAULT_BACKCHANNELS,
     DEFAULT_QUIT_PHRASES,
+    asr_language_hint,
     is_asr_hallucination,
     is_backchannel,
     is_caption_watermark,
@@ -270,3 +271,24 @@ def test_a_real_answer_is_not_a_backchannel(answer: str) -> None:
     assert not is_backchannel(answer)
     assert is_backchannel(answer, phrases={"right", "sure"})
     assert "right" not in DEFAULT_BACKCHANNELS
+
+
+@pytest.mark.parametrize(
+    ("raw", "hint"),
+    [
+        ("en", "en"),
+        ("en-US", "en"),
+        ("EN", "en"),
+        (" zh_CN ", "zh"),
+        ("English", ""),
+        ("", ""),
+        ("   ", ""),
+        ("e", ""),
+        ("eng", ""),
+        ("é1", ""),
+        ("日本", ""),
+        ("-US", ""),
+    ],
+)
+def test_asr_language_hint_keeps_only_a_two_letter_primary_subtag(raw: str, hint: str) -> None:
+    assert asr_language_hint(raw) == hint
