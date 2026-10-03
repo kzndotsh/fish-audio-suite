@@ -228,7 +228,7 @@ Commented copies live in [`.env.example`](../../.env.example).
 
 ### Renamed in 0.2.0
 
-These variables were renamed. Until the next minor release the old name still works when the new one is unset, with a `fish-voice: <old> is deprecated; use <new>` warning on stderr. The new name wins when both are set.
+These variables were renamed. Until the next minor release the old name still works when the new one is unset or blank (except `FISH_VOICE_SYSTEM_PROMPT`, where a blank value means no system prompt), with a `fish-voice: <old> is deprecated; use <new>` warning on stderr. The new name wins when both are set.
 
 | Old | New |
 | --- | --- |

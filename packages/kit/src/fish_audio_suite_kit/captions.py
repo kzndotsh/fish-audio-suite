@@ -16,7 +16,7 @@ __all__ = [
 
 
 class CaptionCue(NamedTuple):
-    """One timed ASR phrase for SubRip or WebVTT.
+    """One timed caption cue for SubRip or WebVTT.
 
     Attributes
     ----------
@@ -100,7 +100,7 @@ def format_as_srt(cues: list[CaptionCue]) -> str:
     Parameters
     ----------
     cues : list of CaptionCue
-        Timed phrases. Blank text is skipped. Clocks use a comma before milliseconds.
+        Timed cues. Blank text is skipped. Clocks use a comma before milliseconds.
 
     Returns
     -------
@@ -129,7 +129,7 @@ def format_as_vtt(cues: list[CaptionCue]) -> str:
     Parameters
     ----------
     cues : list of CaptionCue
-        Timed phrases. Blank text is skipped. Clocks use a period before milliseconds.
+        Timed cues. Blank text is skipped. Clocks use a period before milliseconds.
 
     Returns
     -------

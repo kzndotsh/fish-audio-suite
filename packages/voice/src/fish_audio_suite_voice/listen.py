@@ -264,7 +264,7 @@ def _clip_wav(heard: _Listen, tune: ListenTune) -> bytes | None:
     )
     if why is not None:
         debug(
-            "listen.reject {} frames={} voiced_hits={} peak_rms={:.0f} min_voiced={}",
+            "listen.reject {} frames={} voiced_hits={} peak_rms={:.0f} min_voiced_frames={}",
             why,
             len(heard.clip_frames),
             heard.speech_hits,
@@ -343,7 +343,8 @@ def record_utterance(
     heard = _Listen(tune, webrtcvad.Vad(tune.vad_aggressiveness))
     _prime_listen(heard, prefix)
     trace(
-        "listen.open vad={} start_frames={} min_rms={} min_voiced={} pre_pad={} silence_end={} prefix_frames={}",
+        "listen.open vad={} start_speech_frames={} min_rms={} min_voiced_frames={} "
+        "pre_pad_frames={} end_silence_frames={} prefix_frames={}",
         tune.vad_aggressiveness,
         tune.start_speech_frames,
         tune.min_speech_rms,
