@@ -1,30 +1,64 @@
 <div align="center">
-    <p>
-        <a href="https://github.com/kzndotsh/fish-audio-suite/actions/workflows/ci.yml">
-            <img alt="CI" src="https://github.com/kzndotsh/fish-audio-suite/actions/workflows/ci.yml/badge.svg"></a>
-        <a href="https://www.python.org/downloads/">
-            <img alt="Python" src="https://img.shields.io/badge/python-3.12%20%7C%203.13%20%7C%203.14-3776AB?logo=python&logoColor=white"></a>
-        <a href="https://docs.astral.sh/uv/">
-            <img alt="uv" src="https://img.shields.io/badge/uv-package%20manager-DE5FE9?logo=uv&logoColor=white"></a>
-        <a href="LICENSE">
-            <img alt="License" src="https://img.shields.io/badge/license-MIT-lightgrey"></a>
-    </p>
-    <h1>fish-audio-suite</h1>
-    <p><strong>Text, HTTP, and live speech for Fish Audio.</strong></p>
+
+<h1>fish-audio-suite</h1>
+
+An opinionated Python toolkit for Fish Audio TTS, ASR, and live speech.
+
+<p>
+    <a href="https://github.com/kzndotsh/fish-audio-suite/actions/workflows/ci.yml">
+        <img alt="CI" src="https://github.com/kzndotsh/fish-audio-suite/actions/workflows/ci.yml/badge.svg"></a>
+    <a href="https://www.python.org/downloads/">
+        <img alt="Python" src="https://img.shields.io/badge/python-3.12%20%7C%203.13%20%7C%203.14-3776AB?logo=python&logoColor=white"></a>
+    <a href="https://docs.astral.sh/uv/">
+        <img alt="uv" src="https://img.shields.io/badge/uv-workspace-DE5FE9?logo=uv&logoColor=white"></a>
+    <a href="LICENSE">
+        <img alt="License" src="https://img.shields.io/badge/license-MIT-lightgrey"></a>
+</p>
+
 </div>
 
 > [!NOTE]
-> Unofficial. Not a Fish Audio product.
+> Unofficial. Not affiliated with, endorsed by, or a product of Fish Audio.
+
+```text
+you ▸  Hey, can you hear me?
+llm ▸  [happy] Yes, I can hear you! [curious] What's on your mind today?
+  ↳ first audio 1.99s · asr 0.30s · llm first token 0.75s · tts first audio 1.69s · total 5.57s
+```
+
+<sub>One turn of `fish-voice`, copied from a real run. Your numbers depend on your network, model and Fish latency setting.</sub>
 
 ---
 
-## Quick start
+## What is in the box
 
-| You want | Start here |
-| --- | --- |
-| Open WebUI or any OpenAI audio client | [Proxy](#proxy) |
-| One live TTS turn from Python | [Voice](#voice) |
-| Cue tags and sentence cuts in your own client | [Kit](#kit) |
+| Package | What it is | Reach for it when |
+| --- | --- | --- |
+| [**`kit`**](packages/kit/README.md) | Pure text. Cue tags, markdown and thought scrubbing, sentence cuts, caption files, the Fish error types. No network, no audio, no dependencies. | You build your own Fish client and want the text handling right. |
+| [**`proxy`**](packages/proxy/README.md) | An OpenAI-compatible speech and transcription server in front of Fish, on `127.0.0.1:8849`. | Open WebUI, or any app that already speaks the OpenAI audio API. |
+| [**`voice`**](packages/voice/README.md) | One Fish websocket per turn, playback sinks, and `fish-voice`, a full duplex voice chat in your terminal. | You want to talk to a model, or play one Fish turn from Python. |
+
+`proxy` and `voice` both build on `kit`, and `kit` builds on nothing.
+
+## The voice loop
+
+```mermaid
+flowchart LR
+    mic["microphone"] --> ear["echo cancel + voice detection"]
+    ear --> asr["Fish ASR"]
+    asr --> llm["LLM<br/>OpenRouter, Experiential, or any OpenAI-compatible server"]
+    llm --> kit["kit: scrub, cues, sentence cuts"]
+    kit --> tts["Fish TTS websocket"]
+    tts --> spk["speakers"]
+    spk -. "you talk over it: barge-in" .-> ear
+```
+
+- **It can talk while the model is still writing.** Set `FISH_STREAM_TTS=1` and the first sentence goes to Fish the moment it is complete, so you hear it before the reply is finished. The flush waits for the sentence end, so Fish never says half a sentence as if it were finished. By default the reply is spoken after the model finishes.
+- **You can interrupt it.** Echo cancellation removes the speaker from the mic, and a barge-in stops the reply and keeps the audio that tripped it, so your interruption becomes the next turn.
+- **History holds only what you heard.** After a barge-in the chat history records a word-aligned estimate of the part that was played, never the full reply you cut off.
+- **Cue tags that vary.** Models copy their own earlier replies, so a chat settles on one `[cue]` per reply. A pinned opening exchange shows several, and the session stays expressive.
+
+## Quick start
 
 ```bash
 git clone https://github.com/kzndotsh/fish-audio-suite
@@ -33,133 +67,156 @@ uv sync --all-packages --extra cli
 export FISH_API_KEY=...
 ```
 
-## How it works
+<details>
+<summary><strong>Talk to a model</strong> (<code>voice</code>)</summary>
 
+```bash
+cp .env.example .env          # add FISH_API_KEY, FISH_VOICE_ID, and an LLM key
+./packages/voice/dev.sh --smoke   # writes a WAV, no speakers or mic needed
+./packages/voice/dev.sh           # the live loop
+./packages/voice/dev.sh --debug   # same, with VAD, barge-in and LLM events
 ```
-your app ──► kit ──► text you send to Fish
-OpenAI client ──► proxy :8849 ──► Fish HTTP
-your app ──► voice ──► Fish websocket ──► speakers
-mic ──► fish-voice ──► ASR ──► LLM ──► one websocket turn
+
+From Python, when your app already owns the mic and the LLM:
+
+```python
+from pathlib import Path
+from fish_audio_suite_voice import FileSink, IsolatedFishTts
+
+tts = IsolatedFishTts(api_key=key, voice_id=voice_id)
+result = tts.speak_isolated("Hello there.", FileSink(Path("turn.wav")))
 ```
 
-## Proxy
+`speak_isolated` runs the websocket on a private thread, so it is safe under `asyncio.run`. There is no default voice id: you bring your own. Speakers and the microphone need PortAudio, which `uv` does not install ([how](packages/voice/README.md#portaudio)).
 
-Binds `127.0.0.1:8849` by default (`FISH_PROXY_HOST` changes it). `/health` works with no API key. Speech and transcription return 503 until `FISH_API_KEY` is set.
+</details>
+
+<details>
+<summary><strong>Serve it to OpenAI clients</strong> (<code>proxy</code>)</summary>
 
 ```bash
 uv run --package fish-audio-suite-proxy fish-audio-suite-proxy
 curl -s http://127.0.0.1:8849/health
 ```
 
-Point the client at `http://127.0.0.1:8849/v1`. The Fish key stays on the proxy. Set `FISH_PROXY_API_KEYS` to require a bearer key from clients; without it any client key is accepted, so keep the proxy on loopback. The Docker image listens on every interface inside the container, so publish it on loopback (`-p 127.0.0.1:8849:8849`) or set `FISH_PROXY_API_KEYS` before you publish it elsewhere. On stop the proxy lets in-flight replies finish for up to `FISH_PROXY_GRACEFUL_SHUTDOWN` seconds (default 120), but Docker kills a container after 10 seconds, so run it with `--stop-timeout 130` (compose: `stop_grace_period: 130s`). `tts-1` and `whisper-1` are mapped onto Fish models.
+Point any client at `http://127.0.0.1:8849/v1`. The Fish key stays on the proxy.
 
-Docker, Open WebUI, and the field map: [packages/proxy/README.md](packages/proxy/README.md).
+| Method | Path | Returns |
+| --- | --- | --- |
+| `POST` | `/v1/audio/speech` | audio bytes |
+| `POST` | `/v1/audio/transcriptions` | JSON, or an `srt` / `vtt` file |
+| `GET` | `/v1/models` | the OpenAI model list |
+| `GET` | `/health` | process up, works with no key |
 
-## Voice
+`tts-1` and `whisper-1` map onto Fish models. Open WebUI settings and the full field map are in the [proxy README](packages/proxy/README.md).
 
-```python
-from pathlib import Path
-from fish_audio_suite_voice import IsolatedFishTts, FileSink
+</details>
 
-tts = IsolatedFishTts(api_key=key, voice_id=voice_id)
-result = tts.speak_isolated("Hello there.", FileSink(Path("turn.wav")))
-```
-
-`speak_isolated` runs the websocket on a private thread, so it is safe under `asyncio.run`. Speakers and the microphone need PortAudio. `uv` does not install it. `--smoke` writes a WAV and skips the device.
-
-```bash
-cp .env.example .env
-./packages/voice/dev.sh --smoke
-```
-
-Sinks, duplex, and listen settings: [packages/voice/README.md](packages/voice/README.md).
-
-## Kit
+<details>
+<summary><strong>Use the text helpers</strong> (<code>kit</code>)</summary>
 
 ```python
-from fish_audio_suite_kit import normalize_cues, scrub_tts, next_tts_cut
+from fish_audio_suite_kit import next_tts_cut, normalize_cues, scrub_tts
 
 spoken = normalize_cues(scrub_tts(llm_text))
-cut = next_tts_cut(spoken)  # sentence end, or about 40 characters; -1 keeps buffering
+cut = next_tts_cut(spoken)  # end of the next piece, or -1 to keep buffering
 ```
 
-Exports: [packages/kit/README.md](packages/kit/README.md).
+</details>
 
-## Versioning and the public API
+> [!WARNING]
+> **Proxy:** with no `FISH_PROXY_API_KEYS` any client is accepted, so anyone who can reach the port spends your Fish credits. Keep the default loopback bind, or set the keys before you listen elsewhere. A set-but-empty value refuses to start instead of silently turning auth off.
 
-The public API is the set of names in each package's root `__all__`, plus the proxy's HTTP API and
-its documented settings. Everything else is internal. While the version is 0.x, a minor release
-(0.1 to 0.2) may break the public API and a patch release never does. A name is deprecated, with a
-`DeprecationWarning` that names its replacement, for at least one minor release before it is
-removed. The GitHub release notes list every change, breaking ones marked with `!` in the pull
-request title; there is no `CHANGELOG.md`. Details: [CONTRIBUTING.md](CONTRIBUTING.md).
+## Pick your LLM
 
-## Tech stack
+`fish-voice` works with any OpenAI-compatible chat server. Two providers are built in, and each reads only its own key, so a key can never be sent to another host.
 
-| Component | Technology |
-| --- | --- |
-| **Packages** | `uv` workspace, three wheels |
-| **Kit** | Pure text. No dependencies |
-| **Proxy** | FastAPI, uvicorn, httpx |
-| **Voice** | `fish-audio-sdk`, loguru, optional PortAudio / OpenRouter |
-| **Types** | basedpyright, strict |
-| **Lint** | Ruff, NumPy docstrings via pydoclint |
-| **Tests** | pytest, branch coverage in CI |
+| `FISH_LLM_PROVIDER` | Key variable | Model variable |
+| --- | --- | --- |
+| `openrouter` (default) | `OPENROUTER_API_KEY` | `FISH_LLM_MODEL_OPENROUTER` |
+| `experiential` | `EXPLABS_API_KEY` | `FISH_LLM_MODEL_EXPERIENTIAL` |
+| anything else, with `FISH_LLM_BASE` | `OPENAI_API_KEY` | `FISH_LLM_MODEL` |
 
-## Project structure
+Keep both in one `.env` and switch with a single line. Provider notes, reasoning effort and privacy are in the [voice README](packages/voice/README.md#llm-providers).
 
+> [!TIP]
+> Some providers keep prompts and replies. Your spoken conversation is the prompt, so read a provider's data policy before you use a free tier for anything private.
+
+## Settings
+
+The ones you touch first. Every package lists its full table.
+
+| Variable | Used by | Default |
+| --- | --- | --- |
+| `FISH_API_KEY` | proxy, voice | none |
+| `FISH_VOICE_ID` | voice | none, bring your own |
+| `FISH_TTS_MODEL` | proxy, voice | `s2.1-pro` |
+| `FISH_ASR_MODEL` | proxy, voice | `transcribe-1` |
+| `FISH_LATENCY` | proxy, voice | `normal` |
+| `FISH_BASE` | proxy, voice | `https://api.fish.audio` |
+| `FISH_PROXY_HOST` / `FISH_PROXY_PORT` | proxy | `127.0.0.1` / `8849` |
+| `FISH_PROXY_API_KEYS` | proxy | none, any client key accepted |
+| `FISH_STREAM_TTS` | voice | off (`1` speaks while the model writes) |
+
+Self-hosted [fish-speech](https://github.com/fishaudio/fish-speech) is `FISH_BASE=http://127.0.0.1:8080`. Full tables: [proxy](packages/proxy/README.md#settings), [voice](packages/voice/README.md#settings).
+
+## Run it as a service
+
+**Docker** (the proxy, non-root):
+
+```bash
+docker build -t fish-audio-suite-proxy:latest .
+docker run --rm -p 127.0.0.1:8849:8849 -e FISH_PROXY_HOST=0.0.0.0 \
+  --env-file /path/to/env --stop-timeout 130 fish-audio-suite-proxy:latest
 ```
-├── packages/
-│   ├── kit/          # cues, scrubbers, cuts, Fish error shape
-│   ├── proxy/        # OpenAI audio HTTP on :8849
-│   └── voice/        # live websocket, sinks, fish-voice CLI
-├── nix/              # NixOS module
-├── Dockerfile        # proxy image (non-root)
-├── flake.nix
-├── pyproject.toml    # workspace root, not a fourth package
-└── .env.example      # duplex CLI
+
+**NixOS:**
+
+```nix
+inputs.fish-audio-suite.url = "github:kzndotsh/fish-audio-suite";
+# ...
+services.fish-audio-suite-proxy = {
+  enable = true;
+  environmentFiles = [ "/path/to/fish.env" ];  # FISH_API_KEY lives here, never in the store
+};
 ```
 
-## Commands
+The module runs a hardened systemd service on `127.0.0.1:8849`. Options for `host`, `port`, `autoStart`, `openFirewall`, `gracefulShutdownSeconds` and an `oci` backend are in [`nix/module.nix`](nix/module.nix). `nix run .#fish-audio-suite-voice` runs the voice CLI with PortAudio on the library path.
+
+## Built to be depended on
+
+- **Typed end to end.** basedpyright in strict mode, and every package's public API scores 100% on `--verifytypes`. Errors are classes (`FishAuthError`, `FishRateLimitError`, ...), so you catch by type instead of comparing status numbers.
+- **Secrets stay put.** Keys are left out of `repr()` and out of `/health`, are not read at import, and an LLM key is only sent to the provider that owns it.
+- **Fails closed.** A blank client-key list or a plain-`http` remote base is a refusal or a warning, not a silent downgrade.
+- **Tested hard.** Over a thousand tests run in random order with warnings as errors and sockets disabled, plus Hypothesis property tests on the stream scrubber, with branch-coverage floors in CI.
+- **A stable surface.** The public API is the names in each package's root `__all__`, plus the proxy's HTTP API. On 0.x a minor release may break it and a patch never does, and a name is deprecated with a warning for a full minor release before it goes. See [CONTRIBUTING](CONTRIBUTING.md#the-public-api).
+
+## Development
 
 ```bash
 uv sync --all-packages --extra cli --group dev --group test
-uv run ruff format packages && uv run ruff check packages
+just check        # lint, docstrings, types and tests with the CI coverage floors
+```
+
+Without `just`, the same gates by hand:
+
+```bash
+uv run ruff check packages && uv run ruff format --check packages
 uv run pydoclint --config=pyproject.toml packages
 uv run basedpyright
 uv run pytest
 ```
 
-## Settings
-
-| Variable | Used by | Default |
-| --- | --- | --- |
-| `FISH_API_KEY` | proxy, voice | none |
-| `FISH_VOICE_ID` | voice | none |
-| `FISH_BASE` | proxy, voice | `https://api.fish.audio` |
-| `FISH_TTS_MODEL` | proxy, voice | `s2.1-pro` |
-| `FISH_ASR_MODEL` | proxy, voice | `transcribe-1` |
-| `FISH_LATENCY` | proxy, voice | `normal` |
-| `FISH_PROXY_HOST` / `FISH_PROXY_PORT` | proxy | `127.0.0.1` / `8849` |
-| `FISH_PROXY_API_KEYS` | proxy | none (any client key accepted) |
-| `FISH_LLM_BASE` / `FISH_LLM_KEY` / `FISH_LLM_MODEL` | voice | OpenRouter / none / none |
-
-Self-hosted [fish-speech](https://github.com/fishaudio/fish-speech) is `FISH_BASE=http://127.0.0.1:8080`. Cloud `chunk_length` stays in 100–300. A self-hosted base allows up to 1000.
-
-Full tables: [proxy](packages/proxy/README.md#settings), [voice](packages/voice/README.md#settings).
-
-## Nix
-
-```nix
-inputs.fish-audio-suite.url = "github:kzndotsh/fish-audio-suite";
+```text
+packages/
+├── kit/      cues, scrubbers, cuts, captions, error types
+├── proxy/    OpenAI audio over HTTP
+└── voice/    websocket turn, sinks, barge-in, the fish-voice CLI
+nix/          NixOS module        Dockerfile    proxy image
 ```
 
-`nixosModules.default` runs the proxy as a hardened systemd service on `127.0.0.1:8849` (`services.fish-audio-suite-proxy.enable = true`). Put `FISH_API_KEY` in `environmentFiles`. Options for `host`, `port`, `openFirewall`, `autoStart`, `gracefulShutdownSeconds` (the service waits that plus 10 seconds to stop), and an `oci` backend are in [nix/module.nix](nix/module.nix).
-
-`nix run .#fish-audio-suite-voice` puts PortAudio on the library path. On NixOS, `./packages/voice/dev.sh` does the same. A bare `uv run` of the duplex CLI does not.
+Before you change code, read [AGENTS.md](AGENTS.md) for the boundaries between the packages, and [CONTRIBUTING.md](CONTRIBUTING.md) for commits and pull requests. Report vulnerabilities privately, as described in [SECURITY.md](SECURITY.md).
 
 ## License
 
-[MIT](LICENSE)
-
-Created by [@kzndotsh](https://github.com/kzndotsh)
+[MIT](LICENSE) · Created by [@kzndotsh](https://github.com/kzndotsh)
