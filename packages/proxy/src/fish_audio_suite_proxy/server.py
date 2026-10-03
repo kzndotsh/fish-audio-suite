@@ -207,17 +207,19 @@ def _asr_text(
     lang: str,
     asr_model: str,
     traceparent: str,
+    request_id: str,
     settings: ProxySettings,
 ) -> tuple[str, list[CaptionCue]]:
     strip_speakers = settings.asr_strip_speakers
     strip_cues = settings.asr_strip_cues
     text = scrub_asr(transcript, strip_speakers=strip_speakers, strip_cues=strip_cues)
     log.info(
-        "asr model=%s lang=%s chars=%d trace=%s",
+        "asr model=%s lang=%s chars=%d trace=%s request_id=%s",
         asr_model,
         data.get("language") or lang,
         len(text),
         trace_id_of(traceparent),
+        request_id or "-",
     )
     detected_lang = data.get("language") or data.get("language_code") or lang
     if is_asr_hallucination(text):
@@ -249,6 +251,18 @@ def _asr_text(
             data, trimmed, strip_speakers=strip_speakers, strip_cues=strip_cues
         )
     return text, cues
+
+
+_REQUEST_ID_MAX = 128
+
+
+def _request_id(*candidates: object) -> str:
+    # transcribe-1-pro sends request_id in the body and the x-request-id header.
+    # Only a short single-line value reaches the log.
+    for value in candidates:
+        if isinstance(value, str) and (line := value.strip()):
+            return line.splitlines()[0][:_REQUEST_ID_MAX]
+    return ""
 
 
 async def _iter_upstream(upstream: httpx.Response) -> AsyncIterator[bytes]:
@@ -418,6 +432,7 @@ async def transcriptions(request: Request) -> Response | dict[str, Any]:
         lang=lang,
         asr_model=asr_model,
         traceparent=asr_headers["traceparent"],
+        request_id=_request_id(dict(data).get("request_id"), r.headers.get("x-request-id")),
         settings=settings,
     )
     return transcription_body(

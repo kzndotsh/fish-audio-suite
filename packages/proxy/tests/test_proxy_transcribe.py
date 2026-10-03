@@ -8,7 +8,14 @@ from typing import Any
 import httpx
 import pytest
 from fastapi.testclient import TestClient
-from proxy_helpers import WAV_UPLOAD, AsrJson, capture_upstream, post_speech
+from proxy_helpers import (
+    WAV_UPLOAD,
+    AsrJson,
+    FakeUpstream,
+    capture_upstream,
+    post_speech,
+    run_fish_send,
+)
 from starlette.datastructures import UploadFile
 from starlette.responses import JSONResponse
 
@@ -82,7 +89,7 @@ def test_verbose_language_surrogate_still_encodes() -> None:
 
 
 def test_blank_transcript_keeps_segment_text(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _SegmentsOnly:
+    class _SegmentsOnly(AsrJson):
         def json(self) -> dict[str, Any]:
             return {
                 "text": "",
@@ -101,7 +108,7 @@ def test_blank_transcript_keeps_segment_text(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_watermark_transcript_keeps_real_segments(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _Watermark:
+    class _Watermark(AsrJson):
         def json(self) -> dict[str, Any]:
             return {
                 "text": "Thanks for watching.",
@@ -120,7 +127,7 @@ def test_watermark_transcript_keeps_real_segments(monkeypatch: pytest.MonkeyPatc
 
 
 def test_watermark_segment_is_left_out_of_the_transcript(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _Mixed:
+    class _Mixed(AsrJson):
         def json(self) -> dict[str, Any]:
             return {
                 "text": "Thanks for watching.",
@@ -142,7 +149,7 @@ def test_watermark_segment_is_left_out_of_the_transcript(monkeypatch: pytest.Mon
 def test_real_transcript_drops_a_trailing_watermark(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class _MixedText:
+    class _MixedText(AsrJson):
         def json(self) -> dict[str, Any]:
             return {
                 "text": "hello there friend. Thanks for watching.",
@@ -164,7 +171,7 @@ def test_real_transcript_drops_a_trailing_watermark(
 def test_srt_drops_a_watermark_when_it_is_the_only_segment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class _OnlyWatermarkSegment:
+    class _OnlyWatermarkSegment(AsrJson):
         def json(self) -> dict[str, Any]:
             return {
                 "text": "hello there friend. Thanks for watching.",
@@ -189,7 +196,7 @@ def test_srt_drops_a_watermark_when_it_is_the_only_segment(
 
 
 def test_transcription_non_string_text_is_502(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _BadText:
+    class _BadText(AsrJson):
         def json(self) -> dict[str, Any]:
             return {"text": ["hello"]}
 
@@ -201,7 +208,7 @@ def test_transcription_non_string_text_is_502(monkeypatch: pytest.MonkeyPatch) -
 
 
 def test_transcription_non_object_upstream_is_502(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _ListBody:
+    class _ListBody(AsrJson):
         def json(self) -> list[str]:
             return ["hello"]
 
@@ -214,7 +221,7 @@ def test_transcription_non_object_upstream_is_502(monkeypatch: pytest.MonkeyPatc
 
 
 def test_verbose_language_nan_falls_through(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _NanLang:
+    class _NanLang(AsrJson):
         def json(self) -> dict[str, Any]:
             return {
                 "text": "hello there",
@@ -234,7 +241,7 @@ def test_verbose_language_nan_falls_through(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 def test_verbose_duration_infinity_is_null(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _Infinite:
+    class _Infinite(AsrJson):
         def json(self) -> dict[str, Any]:
             return {"text": "hello there", "duration": float("inf")}
 
@@ -250,7 +257,7 @@ def test_verbose_duration_infinity_is_null(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_transcription_non_json_upstream_is_502(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _Broken:
+    class _Broken(AsrJson):
         def json(self) -> dict[str, Any]:
             raise json.JSONDecodeError("Expecting value", "", 0)
 
@@ -261,7 +268,7 @@ def test_transcription_non_json_upstream_is_502(monkeypatch: pytest.MonkeyPatch)
     assert response.json()["error"]["message"] == "Fish returned a non-JSON body"
     assert response.json()["error"]["type"] == "api_error"
 
-    class _NotUtf8:
+    class _NotUtf8(AsrJson):
         def json(self) -> dict[str, Any]:
             raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte")
 
@@ -369,7 +376,7 @@ def test_bad_json_input_audio_names_input_audio_not_a_reference(
 
 
 def test_speaker_labels_are_stripped_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _Labelled:
+    class _Labelled(AsrJson):
         def json(self) -> dict[str, Any]:
             return {"text": "<|speaker:0|> Speaker 1: hello there"}
 
@@ -587,3 +594,68 @@ def test_blank_pro_fields_are_not_sent(monkeypatch: pytest.MonkeyPatch) -> None:
     reply, captured = _post_pro(monkeypatch, {"diarize": " ", "num_speakers": ""})
     assert reply.status_code == 200
     assert not {"diarize", "num_speakers"} & set(captured["data"])
+
+
+def test_a_pro_error_keeps_fish_code_and_request_id(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    body = json.dumps(
+        {
+            "status": 400,
+            "message": "audio is longer than 60 minutes",
+            "code": "audio_too_long",
+            "request_id": "req-123",
+        }
+    ).encode()
+    with caplog.at_level("WARNING", logger="fish-audio-suite-proxy"):
+        out, _client, _sleeps = run_fish_send(
+            monkeypatch, [FakeUpstream(400, body, {"x-request-id": "req-header"})]
+        )
+    assert isinstance(out, JSONResponse)
+    assert out.status_code == 400
+    error = json.loads(bytes(out.body))["error"]
+    # error.code stays the HTTP status, as on every other proxy error.
+    assert error["code"] == 400
+    assert error["type"] == "provider_error"
+    assert error["message"] == "audio is longer than 60 minutes"
+    assert error["metadata"] == {
+        "provider_name": "fish-audio",
+        "provider_code": "audio_too_long",
+        "request_id": "req-123",
+    }
+    assert "code=audio_too_long request_id=req-123" in caplog.text
+
+
+def test_a_fish_error_takes_the_request_id_from_the_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    out, _client, _sleeps = run_fish_send(
+        monkeypatch,
+        [FakeUpstream(401, b'{"message": "bad key"}', {"x-request-id": " rid-9\r\nX: y "})],
+    )
+    assert isinstance(out, JSONResponse)
+    metadata = json.loads(bytes(out.body))["error"]["metadata"]
+    assert metadata == {"provider_name": "fish-audio", "request_id": "rid-9"}
+
+
+def test_a_fish_error_without_ids_has_only_the_provider_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    out, _client, _sleeps = run_fish_send(
+        monkeypatch, [FakeUpstream(402, b"not json", {}), FakeUpstream(402, b"", {})]
+    )
+    assert isinstance(out, JSONResponse)
+    assert json.loads(bytes(out.body))["error"]["metadata"] == {"provider_name": "fish-audio"}
+
+
+def test_a_transcription_log_names_the_fish_request_id(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    class _WithId(AsrJson):
+        def json(self) -> dict[str, Any]:
+            return {"text": "hello there", "request_id": "0b6f4c1e"}
+
+    capture_upstream(monkeypatch, _WithId())
+    with caplog.at_level("INFO", logger="fish-audio-suite-proxy"), TestClient(app) as client:
+        assert client.post("/v1/audio/transcriptions", files=WAV_UPLOAD).status_code == 200
+    assert "request_id=0b6f4c1e" in caplog.text

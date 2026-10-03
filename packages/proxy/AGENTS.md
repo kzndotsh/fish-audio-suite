@@ -35,4 +35,4 @@ Invariants:
 - Return the format the client asked for, or a 400. Do not swap it. This holds for speech and transcription.
 - Fish ASR `segments` are word-level (`text`, `start`, `end` per word) and `duration` is seconds. Fish sends no `words` field. OpenAI `words` are those word segments; OpenAI `segments` and SRT/VTT cues are phrases grouped from them (`caption_cues`), with punctuation taken from the transcript. A `words` array in a body still wins.
 - Forward valid `traceparent` and `tracestate`. Mint a sampled one when absent.
-- Fish errors become `{error:{code,message,type}}` with the upstream status. Fish bodies are `provider_error`.
+- Fish errors become `{error:{code,message,type}}` with the upstream status. Fish bodies are `provider_error`. `error.code` is always the HTTP status; Fish's own `code` and `request_id` go in `error.metadata` as `provider_code` and `request_id`.

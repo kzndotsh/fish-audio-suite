@@ -80,7 +80,7 @@ The same fields are under Admin, Settings, Audio.
 
 Text that is only cues or junk returns one frame of silence in the requested format. ASR `language` is omitted unless the request or `FISH_ASR_LANGUAGE` sets it.
 
-Errors use `{error: {code, message, type}}`. A Fish body is `type: provider_error` with `metadata.provider_name: fish-audio`. A missing `FISH_API_KEY` is 503. A wrong client key is 401. A body over the cap is 413.
+Errors use `{error: {code, message, type}}`. A Fish body is `type: provider_error` with `metadata.provider_name: fish-audio`. `code` is always the HTTP status; when Fish sends its own error code (`transcribe-1-pro` does, such as `audio_too_long`) it is `metadata.provider_code`, and its request id (from the body or `x-request-id`) is `metadata.request_id`. The proxy logs both; quote the request id to Fish support. A missing `FISH_API_KEY` is 503. A wrong client key is 401. A body over the cap is 413.
 
 `FISH_BASE=http://127.0.0.1:8080` targets self-hosted [fish-speech](https://github.com/fishaudio/fish-speech) (`POST /v1/tts`). Cloud stays `https://api.fish.audio`. Cloud `chunk_length` is clamped to 100–300. Self-host allows up to 1000.
 

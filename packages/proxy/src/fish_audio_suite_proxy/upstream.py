@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json as jsonlib
 import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping
@@ -19,6 +20,7 @@ from fish_audio_suite_kit import (
     fish_backoff_s,
     parse_fish_error,
     retry_after_s,
+    utf8_text,
 )
 from fish_audio_suite_proxy.errors import json_error, json_from_call_failure, provider_json_error
 
@@ -101,6 +103,46 @@ def _transport_error(exc: httpx.RequestError) -> FishHttpError:
     return FishHttpError.for_unreachable()
 
 
+# Fish ids are short. A long or multi-line value is cut so it cannot fill a log line.
+_ID_MAX_CHARS: Final = 128
+
+
+def _short_id(value: object) -> str:
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        return ""
+    text = str(value).strip()
+    cut = next((i for i, ch in enumerate(text) if ord(ch) < 32), len(text))
+    return utf8_text(text[:cut][:_ID_MAX_CHARS].strip())
+
+
+def _fish_error_ids(body: bytes, headers: Mapping[str, str]) -> dict[str, str]:
+    """Return Fish's error ``code`` and ``request_id``, from the body or the header.
+
+    ``transcribe-1-pro`` errors are ``{status, message, code, request_id}``, and
+    the request id is also in ``x-request-id``. Fish support asks for it.
+    """
+    try:
+        data: object = jsonlib.loads(body) if body else None
+    except (ValueError, UnicodeDecodeError):
+        data = None
+    found = data if isinstance(data, dict) else {}
+    ids: dict[str, str] = {}
+    if code := _short_id(found.get("code")):
+        ids["provider_code"] = code
+    if request_id := _short_id(found.get("request_id")) or _short_id(headers.get("x-request-id")):
+        ids["request_id"] = request_id
+    return ids
+
+
+def _log_fish_error(status: int, ids: Mapping[str, str]) -> None:
+    log.warning(
+        "fish error status=%s code=%s request_id=%s",
+        status,
+        ids.get("provider_code", "-"),
+        ids.get("request_id", "-"),
+    )
+
+
 async def _closed_error(upstream: httpx.Response) -> tuple[JSONResponse, FishHttpError]:
     """Read and close a failed Fish response.
 
@@ -126,22 +168,26 @@ async def _closed_error(upstream: httpx.Response) -> tuple[JSONResponse, FishHtt
         # lost, so the message says that and the exception text stays in the log.
         code = upstream.status_code
         log.warning("fish error body unreadable status=%s: %s", code, exc)
+        ids = _fish_error_ids(b"", upstream.headers)
+        _log_fish_error(code, ids)
         failure = FishHttpError.from_status(
             code,
             _BODY_UNREADABLE.format(code=code),
             retry_after=retry_after_s(upstream.headers),
         )
-        return provider_json_error(FishErrorBody(code, failure.message)), failure
+        return provider_json_error(FishErrorBody(code, failure.message), metadata=ids), failure
     finally:
         await upstream.aclose()
     detail = parse_fish_error(upstream.status_code, body)
+    ids = _fish_error_ids(body, upstream.headers)
+    _log_fish_error(upstream.status_code, ids)
     # The HTTP status decides whether to retry, even when the body names another.
     failure = FishHttpError.from_status(
         upstream.status_code,
         detail.message,
         retry_after=retry_after_s(upstream.headers),
     )
-    return provider_json_error(detail), failure
+    return provider_json_error(detail, metadata=ids), failure
 
 
 def _set_read_timeout(request: httpx.Request, seconds: float) -> None:

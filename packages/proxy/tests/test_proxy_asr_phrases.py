@@ -7,7 +7,7 @@ from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
-from proxy_helpers import WAV_UPLOAD, capture_upstream
+from proxy_helpers import WAV_UPLOAD, AsrJson, capture_upstream
 
 from fish_audio_suite_kit import AsrBody, CaptionCue
 from fish_audio_suite_proxy.server import app
@@ -263,7 +263,7 @@ def test_alignment_stays_linear_on_hostile_input() -> None:
 
 
 def test_the_documented_example_through_the_route(monkeypatch: pytest.MonkeyPatch) -> None:
-    class _Pro:
+    class _Pro(AsrJson):
         def json(self) -> dict[str, Any]:
             return _DOC_BODY
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any
 
 from fastapi import Request
@@ -71,7 +72,13 @@ def _openai_error_type(status: int) -> str:
     return "invalid_request_error"
 
 
-def openai_error_body(status: int, message: str, *, provider: bool = False) -> OpenAIErrorBody:
+def openai_error_body(
+    status: int,
+    message: str,
+    *,
+    provider: bool = False,
+    metadata: Mapping[str, str] | None = None,
+) -> OpenAIErrorBody:
     """OpenAI ``{error: {code, message, type}}`` object.
 
     Parameters
@@ -83,6 +90,10 @@ def openai_error_body(status: int, message: str, *, provider: bool = False) -> O
     provider : bool, optional
         When True, ``type`` is ``provider_error`` and metadata names Fish.
         Local validation keeps the OpenAI type for that status.
+    metadata : Mapping or None, optional
+        More provider details, such as Fish's ``provider_code`` and
+        ``request_id``, added to ``metadata`` beside ``provider_name``. Used
+        only when ``provider`` is True.
 
     Returns
     -------
@@ -95,7 +106,7 @@ def openai_error_body(status: int, message: str, *, provider: bool = False) -> O
         "type": "provider_error" if provider else _openai_error_type(status),
     }
     if provider:
-        err["metadata"] = {"provider_name": "fish-audio"}
+        err["metadata"] = {**(metadata or {}), "provider_name": "fish-audio"}
     return {"error": err}
 
 
@@ -201,13 +212,18 @@ def provider_json_from_raw(status: int, raw: Any) -> JSONResponse:
     return provider_json_error(parse_fish_error(status, raw))
 
 
-def provider_json_error(detail: FishErrorBody) -> JSONResponse:
+def provider_json_error(
+    detail: FishErrorBody, *, metadata: Mapping[str, str] | None = None
+) -> JSONResponse:
     """Turn an already parsed Fish error into an OpenAI provider error.
 
     Parameters
     ----------
     detail : FishErrorBody
         The status and message from ``parse_fish_error``.
+    metadata : Mapping or None, optional
+        Fish's own error ``code`` (as ``provider_code``) and ``request_id``,
+        when it sent them. ``error.code`` stays the HTTP status.
 
     Returns
     -------
@@ -216,6 +232,6 @@ def provider_json_error(detail: FishErrorBody) -> JSONResponse:
         ``fish-audio``. The response status is ``detail.status``.
     """
     return JSONResponse(
-        openai_error_body(detail.status, detail.message, provider=True),
+        openai_error_body(detail.status, detail.message, provider=True, metadata=metadata),
         status_code=detail.status,
     )

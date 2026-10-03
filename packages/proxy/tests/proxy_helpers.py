@@ -102,7 +102,13 @@ WAV_UPLOAD = {"file": ("a.wav", b"xx", "audio/wav")}
 
 
 class AsrJson:
-    def json(self) -> dict[str, Any]:
+    """A Fish ASR reply. Subclasses override ``json`` with another body."""
+
+    @property
+    def headers(self) -> httpx.Headers:
+        return httpx.Headers()
+
+    def json(self) -> Any:
         return {
             "text": "hello there",
             "duration": 1.5,
