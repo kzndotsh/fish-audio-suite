@@ -98,6 +98,8 @@ Beyond the OpenAI fields, a speech request may set `latency`, `chunk_length`, `m
 
 Fish 429 and 5xx are retried until `FISH_PROXY_RETRY_ATTEMPTS` tries have been made in total, counting the first request (the default of 5 allows 4 retries), waiting longer each time with jitter and honoring `Retry-After`. A connection that never opened is retried. A read timeout is not, because Fish may already have made, and billed, the audio. The loop stops at `FISH_PROXY_RETRY_DEADLINE` seconds, or when the client disconnects. The deadline also cuts off a request that is still waiting on Fish, which then returns 504.
 
+Transcription uses `FISH_PROXY_ASR_TIMEOUT` (900 seconds) as both its read timeout and its deadline, because Fish can work on a long recording for minutes. Speech keeps `FISH_PROXY_READ_TIMEOUT` and `FISH_PROXY_RETRY_DEADLINE`. A long recording also has to fit under `FISH_PROXY_MAX_BODY_BYTES`: an hour of 128 kbps MP3 is about 55 MiB and the default cap is 25 MiB, so raise it (for example to `67108864`, 64 MiB) to accept one.
+
 ## Settings
 
 Read once at startup. `GET /health` shows the values in effect under `defaults`, never a key. The TTS defaults are `tts_model`, `tts_format` and `tts_speed`. The older keys `model`, `format` and `speed_scale` carry the same values and stay for one minor release; read the new ones.
@@ -136,7 +138,7 @@ Renamed variables: the old name still works when the new one is unset or blank, 
 | `FISH_TTS_MOOD_LEAD` | off | |
 | `FISH_TTS_DROP_NARRATION` | off | |
 | `FISH_PROXY_API_KEYS` | none | Comma list. Clients send one as a Bearer token. Set but without a key: the proxy will not start |
-| `FISH_PROXY_MAX_BODY_BYTES` | `26214400` | 25 MiB. 0 turns the cap off |
+| `FISH_PROXY_MAX_BODY_BYTES` | `26214400` | 25 MiB. 0 turns the cap off. Raise it to transcribe long recordings: an hour of 128 kbps MP3 is about 55 MiB |
 | `FISH_PROXY_MAX_INPUT_CHARS` | `4096` | 0 turns the cap off |
 | `FISH_PROXY_LOG_TEXT` | off | Log a preview of spoken text |
 | `FISH_PROXY_CONNECT_TIMEOUT` | `10` | Seconds |
@@ -144,6 +146,7 @@ Renamed variables: the old name still works when the new one is unset or blank, 
 | `FISH_PROXY_POOL_TIMEOUT` | `5` | Seconds |
 | `FISH_PROXY_RETRY_ATTEMPTS` | `5` | 1–10 |
 | `FISH_PROXY_RETRY_DEADLINE` | `90` | Seconds. 0 means no deadline |
+| `FISH_PROXY_ASR_TIMEOUT` | `900` | Seconds. Transcription only: its read and write timeout and its retry deadline, in place of the two above. `transcribe-1-pro` takes recordings up to 60 minutes and can take minutes to answer |
 | `FISH_PROXY_HOST` | `127.0.0.1` | |
 | `FISH_PROXY_PORT` | `8849` | |
 | `FISH_PROXY_WORKERS` or `WEB_CONCURRENCY` | `1` | |

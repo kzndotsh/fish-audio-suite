@@ -90,6 +90,11 @@ DEFAULTS = {
         "DEFAULT_RETRY_DEADLINE_S",
         "proxy",
     ),
+    "FISH_PROXY_ASR_TIMEOUT": (
+        "fish_audio_suite_proxy.settings",
+        "DEFAULT_ASR_TIMEOUT_S",
+        "proxy",
+    ),
     "FISH_PROXY_KEEP_ALIVE": ("fish_audio_suite_proxy.settings", "DEFAULT_KEEP_ALIVE_S", "proxy"),
     "FISH_PROXY_GRACEFUL_SHUTDOWN": (
         "fish_audio_suite_proxy.settings",

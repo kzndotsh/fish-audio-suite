@@ -266,8 +266,9 @@ def _fish_client(request: Request) -> httpx.AsyncClient | JSONResponse:
     return request.app.state.http
 
 
-def _policy(settings: ProxySettings) -> RetryPolicy:
-    return RetryPolicy(attempts=settings.retry_attempts, deadline_s=settings.retry_deadline_s)
+def _policy(settings: ProxySettings, *, deadline_s: float | None = None) -> RetryPolicy:
+    deadline = settings.retry_deadline_s if deadline_s is None else deadline_s
+    return RetryPolicy(attempts=settings.retry_attempts, deadline_s=deadline)
 
 
 @app.post("/v1/audio/speech")
@@ -387,7 +388,9 @@ async def transcriptions(request: Request) -> Response | dict[str, Any]:
     r = await fish_send(
         client,
         stream=False,
-        policy=_policy(settings),
+        # A long recording can take Fish minutes, past the speech budgets.
+        policy=_policy(settings, deadline_s=settings.asr_timeout_s),
+        read_timeout_s=settings.asr_timeout_s,
         is_disconnected=request.is_disconnected,
         method="POST",
         url=FISH_ASR_PATH,

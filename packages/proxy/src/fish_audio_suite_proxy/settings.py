@@ -33,6 +33,7 @@ from fish_audio_suite_proxy.fields import ClientFormat, fish_audio_format, known
 from fish_audio_suite_proxy.models import default_tts_aliases, parse_aliases, resolve_asr_model
 
 __all__ = [
+    "DEFAULT_ASR_TIMEOUT_S",
     "DEFAULT_CONNECT_S",
     "DEFAULT_GRACEFUL_S",
     "DEFAULT_HOST",
@@ -59,6 +60,9 @@ DEFAULT_CONNECT_S: Final = 10.0
 DEFAULT_READ_S: Final = 120.0
 DEFAULT_POOL_S: Final = 5.0
 DEFAULT_RETRY_DEADLINE_S: Final = 90.0
+# transcribe-1-pro takes recordings up to an hour and can work on one for
+# minutes. Fish's own examples wait 900 seconds.
+DEFAULT_ASR_TIMEOUT_S: Final = 900.0
 DEFAULT_KEEP_ALIVE_S: Final = 5
 DEFAULT_GRACEFUL_S: Final = 120
 _PORT_MAX = 65535
@@ -149,6 +153,7 @@ class ProxySettings:
     pool_timeout_s: float = DEFAULT_POOL_S
     retry_attempts: int = FISH_RETRY_ATTEMPTS
     retry_deadline_s: float = DEFAULT_RETRY_DEADLINE_S
+    asr_timeout_s: float = DEFAULT_ASR_TIMEOUT_S
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
     workers: int = 1
@@ -225,6 +230,7 @@ class ProxySettings:
             "max_input_chars": self.max_input_chars,
             "retry_attempts": self.retry_attempts,
             "retry_deadline_s": self.retry_deadline_s,
+            "asr_timeout_s": self.asr_timeout_s,
         }
 
 
@@ -356,6 +362,7 @@ def load_settings() -> ProxySettings:
             int,
         ),
         retry_deadline_s=max(env_float("FISH_PROXY_RETRY_DEADLINE", DEFAULT_RETRY_DEADLINE_S), 0.0),
+        asr_timeout_s=_positive_float("FISH_PROXY_ASR_TIMEOUT", DEFAULT_ASR_TIMEOUT_S),
         host=env_token("FISH_PROXY_HOST", DEFAULT_HOST),
         port=port if 1 <= port <= _PORT_MAX else DEFAULT_PORT,
         workers=max(env_int("FISH_PROXY_WORKERS", env_int("WEB_CONCURRENCY", 1)), 1),

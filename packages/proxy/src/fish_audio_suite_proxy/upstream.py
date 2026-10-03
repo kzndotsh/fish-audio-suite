@@ -144,6 +144,14 @@ async def _closed_error(upstream: httpx.Response) -> tuple[JSONResponse, FishHtt
     return provider_json_error(detail), failure
 
 
+def _set_read_timeout(request: httpx.Request, seconds: float) -> None:
+    """Give one request its own read and write timeout, keeping connect and pool."""
+    # httpx reads the per-request timeout from this extension when it sends.
+    timeout = dict(request.extensions.get("timeout") or {})
+    timeout.update(read=seconds, write=seconds)
+    request.extensions["timeout"] = timeout
+
+
 def _remaining(policy: RetryPolicy, started: float) -> float | None:
     """Return the seconds left in the deadline, or None when there is none."""
     if not policy.deadline_s:
@@ -164,6 +172,7 @@ async def fish_send(
     files: FishFiles | None = None,
     policy: RetryPolicy | None = None,
     is_disconnected: Callable[[], Awaitable[bool]] | None = None,
+    read_timeout_s: float | None = None,
 ) -> httpx.Response | JSONResponse:
     """Send a request to Fish, retrying only what is safe to repeat.
 
@@ -192,6 +201,10 @@ async def fish_send(
     is_disconnected : Callable or None, optional
         Awaited before each pause. When it returns True the loop stops, so a
         caller that hung up does not keep spending Fish requests.
+    read_timeout_s : float or None, optional
+        Read and write timeout for this request, in seconds, in place of the
+        client's. None keeps the client's. A long transcription needs more than
+        a speech request does.
 
     Returns
     -------
@@ -217,6 +230,8 @@ async def fish_send(
                 request = client.build_request(
                     method, url, content=content, data=data, files=files, json=json, headers=headers
                 )
+                if read_timeout_s is not None:
+                    _set_read_timeout(request, read_timeout_s)
                 upstream = await client.send(request, stream=stream)
         except TimeoutError:
             # Fish may already be working on it, so it is not sent again.

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 from typing import Any
 
+import httpx
 import pytest
 from fastapi.testclient import TestClient
-from proxy_helpers import WAV_UPLOAD, AsrJson, capture_upstream
+from proxy_helpers import WAV_UPLOAD, AsrJson, capture_upstream, post_speech
 from starlette.datastructures import UploadFile
 from starlette.responses import JSONResponse
 
@@ -15,9 +17,11 @@ from fish_audio_suite_kit import (
 )
 from fish_audio_suite_proxy.errors import provider_json_from_raw
 from fish_audio_suite_proxy.server import app
+from fish_audio_suite_proxy.settings import load_settings
 from fish_audio_suite_proxy.transcribe import (
     transcription_body,
 )
+from fish_audio_suite_proxy.upstream import fish_send
 
 
 def test_transcriptions_srt_and_granularities_bracket(
@@ -379,3 +383,66 @@ def test_speaker_labels_are_stripped_by_default(monkeypatch: pytest.MonkeyPatch)
     with TestClient(app) as client:
         kept = client.post("/v1/audio/transcriptions", files=WAV_UPLOAD).json()
     assert kept == {"text": "Speaker 1: hello there"}
+
+
+def test_transcription_gets_the_asr_timeout_and_speech_does_not(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("FISH_PROXY_ASR_TIMEOUT", raising=False)
+    monkeypatch.delenv("FISH_PROXY_RETRY_DEADLINE", raising=False)
+    captured = capture_upstream(monkeypatch, AsrJson())
+    with TestClient(app) as client:
+        assert client.post("/v1/audio/transcriptions", files=WAV_UPLOAD).status_code == 200
+    assert captured["read_timeout_s"] == 900.0
+    assert captured["policy"].deadline_s == 900.0
+
+    monkeypatch.setenv("FISH_PROXY_ASR_TIMEOUT", "1800")
+    captured = capture_upstream(monkeypatch, AsrJson())
+    with TestClient(app) as client:
+        assert client.post("/v1/audio/transcriptions", files=WAV_UPLOAD).status_code == 200
+        assert client.get("/health").json()["defaults"]["asr_timeout_s"] == 1800.0
+    assert captured["read_timeout_s"] == 1800.0
+    assert captured["policy"].deadline_s == 1800.0
+
+    reply, spoken = post_speech(monkeypatch, {"input": "hello there", "voice": "v"})
+    assert reply.status_code == 200
+    assert spoken.get("read_timeout_s") is None
+    assert spoken["policy"].deadline_s == 90.0
+
+
+def test_a_bad_asr_timeout_keeps_the_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    for raw in ("0", "-5", "soon"):
+        monkeypatch.setenv("FISH_PROXY_ASR_TIMEOUT", raw)
+        assert load_settings().asr_timeout_s == 900.0
+
+
+def test_fish_send_sets_the_read_timeout_on_that_request_only() -> None:
+    seen: list[dict[str, Any]] = []
+
+    class _Client:
+        def __init__(self) -> None:
+            self.http = httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0, pool=5.0))
+
+        def build_request(self, method: str, url: str, **kwargs: Any) -> httpx.Request:
+            return self.http.build_request(method, url, **kwargs)
+
+        async def send(self, request: httpx.Request, *, stream: bool = False) -> httpx.Response:
+            del stream
+            seen.append(dict(request.extensions["timeout"]))
+            return httpx.Response(200, request=request)
+
+    async def run() -> None:
+        client = _Client()
+        await fish_send(client, stream=False, method="POST", url="https://fish.test/v1/asr")
+        await fish_send(
+            client,
+            stream=False,
+            method="POST",
+            url="https://fish.test/v1/asr",
+            read_timeout_s=900.0,
+        )
+        await client.http.aclose()
+
+    asyncio.run(run())
+    assert seen[0] == {"connect": 10.0, "read": 120.0, "write": 120.0, "pool": 5.0}
+    assert seen[1] == {"connect": 10.0, "read": 900.0, "write": 900.0, "pool": 5.0}
