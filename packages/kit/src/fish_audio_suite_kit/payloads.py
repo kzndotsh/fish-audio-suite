@@ -8,7 +8,11 @@ __all__ = ["AsrBody", "AsrSegment", "AsrWord", "OpenAIErrorBody", "OpenAIErrorDe
 
 
 class AsrWord(TypedDict, total=False):
-    """One word with its timing, when Fish returns word timings."""
+    """One word with its timing, in seconds.
+
+    Fish ``/v1/asr`` does not send a ``words`` field; its ``segments`` carry
+    the word timings. This shape is for a body that does hold one.
+    """
 
     text: str
     start: float
@@ -16,7 +20,11 @@ class AsrWord(TypedDict, total=False):
 
 
 class AsrSegment(TypedDict, total=False):
-    """One transcribed phrase with its timing, in seconds."""
+    """One segment of a Fish transcript: a single word with its timing, in seconds.
+
+    Fish segments are word-level, not phrases. Fish does not send ``words``
+    inside a segment; the key is typed only so a body that holds one still fits.
+    """
 
     text: str
     start: float
@@ -25,7 +33,12 @@ class AsrSegment(TypedDict, total=False):
 
 
 class AsrBody(TypedDict, total=False):
-    """A Fish ``/v1/asr`` response. Only ``text`` is checked, and Fish may omit any key."""
+    """A Fish ``/v1/asr`` response. Only ``text`` is checked, and Fish may omit any key.
+
+    ``segments`` hold one word each and ``duration`` is in seconds.
+    ``transcribe-1-pro`` also sends ``speaker_turns`` and ``request_id``, which
+    are not typed here.
+    """
 
     text: str
     segments: list[AsrSegment]

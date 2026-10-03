@@ -17,7 +17,7 @@ __all__ = [
 ]
 
 # OpenAI names clients send by default. Each maps to the configured TTS model,
-# and FISH_TTS_ALIASES adds or replaces entries.
+# and FISH_PROXY_TTS_ALIASES adds or replaces entries.
 OPENAI_TTS_NAMES: Final = ("tts-1", "tts-1-hd", "gpt-4o-mini-tts")
 
 _ASR_NATIVE = ("transcribe-1", "transcribe-1-pro")
@@ -43,7 +43,7 @@ def default_tts_aliases(default_model: str) -> dict[str, str]:
 
 
 def parse_aliases(raw: str) -> dict[str, str]:
-    """Parse ``a=b,c=d`` pairs from ``FISH_TTS_ALIASES``.
+    """Parse ``a=b,c=d`` pairs from ``FISH_PROXY_TTS_ALIASES``.
 
     Parameters
     ----------

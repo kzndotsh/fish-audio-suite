@@ -30,11 +30,11 @@ from fish_audio_suite_kit import (
 )
 from fish_audio_suite_proxy.errors import ProxyError
 from fish_audio_suite_proxy.fields import (
-    explicit_bool,
     pcm_sample_rate,
-    pick_format,
-    pick_reference_id,
     prepare_tts_text,
+    read_flag,
+    read_format,
+    read_reference_id,
 )
 from fish_audio_suite_proxy.models import catalog_ids, resolve_asr_model, resolve_tts_model
 from fish_audio_suite_proxy.server import _uvicorn_run_kwargs, app
@@ -71,27 +71,27 @@ def test_dialogue_only_drops_the_stage_note() -> None:
     assert "smiles" in prepare_tts_text(raw, dialogue_only=False)
 
 
-def test_explicit_bool_keeps_false_and_uses_the_default_when_absent() -> None:
-    assert explicit_bool({}, "dialogue_only", default=True) is True
-    assert explicit_bool({"dialogue_only": False}, "dialogue_only", default=True) is False
-    assert explicit_bool({"dialogue_only": None}, "dialogue_only", default=True) is True
-    assert explicit_bool({"dialogue_only": "false"}, "dialogue_only", default=True) is False
-    assert explicit_bool({"dialogue_only": "no"}, "dialogue_only", default=True) is False
-    assert explicit_bool({"dialogue_only": "true"}, "dialogue_only", default=False) is True
-    assert explicit_bool({"dialogue_only": "maybe"}, "dialogue_only", default=True) is True
+def test_read_flag_keeps_false_and_uses_the_default_when_absent() -> None:
+    assert read_flag({}, "dialogue_only", default=True) is True
+    assert read_flag({"dialogue_only": False}, "dialogue_only", default=True) is False
+    assert read_flag({"dialogue_only": None}, "dialogue_only", default=True) is True
+    assert read_flag({"dialogue_only": "false"}, "dialogue_only", default=True) is False
+    assert read_flag({"dialogue_only": "no"}, "dialogue_only", default=True) is False
+    assert read_flag({"dialogue_only": "true"}, "dialogue_only", default=False) is True
+    assert read_flag({"dialogue_only": "maybe"}, "dialogue_only", default=True) is True
 
 
 def test_no_format_uses_the_default_and_an_unknown_format_name_is_a_400() -> None:
-    assert pick_format({}, "opus") == "opus"
-    assert pick_format({"format": "WAV "}, "mp3") == "wav"
+    assert read_format({}, "opus") == "opus"
+    assert read_format({"format": "WAV "}, "mp3") == "wav"
     with pytest.raises(ProxyError, match="unsupported response_format"):
-        pick_format({"format": "not-a-format"}, "mp3")
+        read_format({"format": "not-a-format"}, "mp3")
 
 
 @pytest.mark.parametrize("name", ["nope", "aac", "flac"])
 def test_an_unsupported_format_is_a_400_not_other_bytes(name: str) -> None:
     with pytest.raises(ProxyError) as caught:
-        pick_format({"response_format": name}, "mp3")
+        read_format({"response_format": name}, "mp3")
     assert caught.value.status == 400
     assert name in caught.value.message
 
@@ -169,15 +169,16 @@ def test_mp3_bitrate_env_snaps(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_format_env_uses_the_request_alias(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("FISH_FORMAT", " AAC ")
+    monkeypatch.delenv("FISH_FORMAT", raising=False)
+    monkeypatch.setenv("FISH_TTS_FORMAT", " AAC ")
     assert runtime_defaults().audio_format == "mp3"
-    assert load_settings().response_format == "mp3"
-    monkeypatch.setenv("FISH_FORMAT", "PCM16")
+    assert load_settings().tts_format == "mp3"
+    monkeypatch.setenv("FISH_TTS_FORMAT", "PCM16")
     # Fish only knows "pcm". The client-facing default stays "pcm16" (24 kHz).
     assert runtime_defaults().audio_format == "pcm"
     settings = load_settings()
-    assert settings.response_format == "pcm16"
-    controls = speech_controls({}, settings.defaults, default_format=settings.response_format)
+    assert settings.tts_format == "pcm16"
+    controls = speech_controls({}, settings.defaults, default_format=settings.tts_format)
     assert controls.fmt == "pcm16"
     monkeypatch.setenv("FISH_ASR_MODEL", " fish-audio/Transcribe-1 ")
     assert runtime_defaults().asr_model == "transcribe-1"
@@ -204,7 +205,7 @@ def test_tts_and_asr_model_aliases() -> None:
 
 
 def test_pcm16_format_and_rate() -> None:
-    assert pick_format({"response_format": "pcm16"}, "mp3") == "pcm16"
+    assert read_format({"response_format": "pcm16"}, "mp3") == "pcm16"
     assert pcm_sample_rate("pcm16", {}, 44100) == 24000
     assert pcm_sample_rate("pcm16", {"sample_rate": 16000}, 44100) == 16000
     assert pcm_sample_rate("pcm16", {"sample_rate": "16000.0"}, 44100) == 16000
@@ -269,17 +270,17 @@ def test_omitted_chunk_length_clamps_the_default() -> None:
     assert speech_controls({}, local).chunk_length == 800
 
 
-def test_pick_reference_id_list() -> None:
-    assert pick_reference_id({"reference_id": ["a", "b"]}) == ["a", "b"]
-    assert pick_reference_id({"voice": "solo"}) == "solo"
-    assert pick_reference_id({"reference_id": ["  a  ", None, ""]}) == ["a"]
-    assert pick_reference_id({"voice": "  solo  "}) == "solo"
-    assert pick_reference_id({"reference_id": [None]}) is None
-    assert pick_reference_id({"reference_id": [{"id": "x"}, " a ", 1]}) == ["a"]
-    assert pick_reference_id({"reference_id": [1]}) is None
-    assert pick_reference_id({"reference_id": [None, ""], "voice": "kept"}) == "kept"
-    assert pick_reference_id({"reference_id": "", "voice": "kept"}) == "kept"
-    assert pick_reference_id({"reference_id": ["a"], "voice": "ignored"}) == ["a"]
+def test_read_reference_id_list() -> None:
+    assert read_reference_id({"reference_id": ["a", "b"]}) == ["a", "b"]
+    assert read_reference_id({"voice": "solo"}) == "solo"
+    assert read_reference_id({"reference_id": ["  a  ", None, ""]}) == ["a"]
+    assert read_reference_id({"voice": "  solo  "}) == "solo"
+    assert read_reference_id({"reference_id": [None]}) is None
+    assert read_reference_id({"reference_id": [{"id": "x"}, " a ", 1]}) == ["a"]
+    assert read_reference_id({"reference_id": [1]}) is None
+    assert read_reference_id({"reference_id": [None, ""], "voice": "kept"}) == "kept"
+    assert read_reference_id({"reference_id": "", "voice": "kept"}) == "kept"
+    assert read_reference_id({"reference_id": ["a"], "voice": "ignored"}) == ["a"]
 
 
 def test_empty_transcription_is_fish_error_shape() -> None:

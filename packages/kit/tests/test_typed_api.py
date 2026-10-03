@@ -174,8 +174,8 @@ def test_the_literal_types_list_the_closed_value_sets() -> None:
     assert set(get_args(FishLatency)) == FISH_LATENCIES == {"low", "balanced", "normal"}
     assert set(get_args(AudioFormat)) == {"wav", "pcm", "mp3", "opus"}
     assert set(get_args(AsrFormat)) == {"json", "text", "verbose_json", "srt", "vtt"}
-    # Every catalog model but the passthrough preview ids is a TtsModel.
-    assert set(get_args(TtsModel)) == set(FISH_TTS_MODEL_IDS) - {"drama-3-preview"}
+    # Every catalog model is a TtsModel, the preview ones included.
+    assert set(get_args(TtsModel)) == set(FISH_TTS_MODEL_IDS)
     assert get_type_hints(ChatMessage) == {
         "role": get_type_hints(ChatMessage)["role"],
         "content": str,
@@ -203,7 +203,7 @@ def test_known_latency_returns_a_literal() -> None:
 def test_catalog_tts_model_narrows_only_the_catalog() -> None:
     assert catalog_tts_model(" S2.1-Pro ") == "s2.1-pro"
     assert catalog_tts_model("s1") == "s1"
-    assert catalog_tts_model("drama-3-preview") is None
+    assert catalog_tts_model(" Drama-3-Preview ") == "drama-3-preview"
     assert catalog_tts_model("mystery") is None
 
 

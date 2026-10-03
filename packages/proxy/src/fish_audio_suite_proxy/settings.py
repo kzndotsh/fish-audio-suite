@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import logging
-import os
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, Final
 
@@ -22,13 +21,14 @@ from fish_audio_suite_kit import (
     env_bool,
     env_float,
     env_int,
+    env_renamed,
     env_text,
     env_token,
     known_latency,
     known_mp3_bitrate,
     normalize_tts_model,
 )
-from fish_audio_suite_proxy.fields import ClientFormat, fish_audio_format, format_or_default
+from fish_audio_suite_proxy.fields import ClientFormat, fish_audio_format, known_client_format
 from fish_audio_suite_proxy.models import default_tts_aliases, parse_aliases, resolve_asr_model
 
 __all__ = [
@@ -65,19 +65,9 @@ _MAX_RETRY_ATTEMPTS = 10
 _LOOPBACK = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
-def _env_name(*names: str) -> str:
-    """Return the first name that is set, preferring the earlier one."""
-    for name in names:
-        if name in os.environ:
-            return name
-    return names[0]
-
-
-def _deprecated(read: Callable[[str, Any], Any], new: str, old: str, default: Any) -> Any:
-    name = _env_name(new, old)
-    if name == old:
-        log.warning("%s is deprecated; use %s", old, new)
-    return read(name, default)
+def _warn(message: str) -> None:
+    """Log a renamed variable's deprecation message from ``env_renamed``."""
+    log.warning("%s", message)
 
 
 def _non_negative(name: str, default: int) -> int:
@@ -143,7 +133,7 @@ class ProxySettings:
     tts_dialogue_only: bool = False
     tts_mood_lead: bool = False
     tts_drop_narration: bool = False
-    response_format: ClientFormat = "mp3"
+    tts_format: ClientFormat = "mp3"
     api_keys: tuple[str, ...] = field(default=(), repr=False)
     max_body_bytes: int = DEFAULT_MAX_BODY_BYTES
     max_input_chars: int = DEFAULT_MAX_INPUT_CHARS
@@ -200,16 +190,23 @@ class ProxySettings:
         Returns
         -------
         dict
-            Defaults, flags, limits, and retry knobs.
+            Defaults, flags, limits, and retry knobs. ``tts_model``,
+            ``tts_format`` and ``tts_speed`` are also sent under their old
+            keys ``model``, ``format`` and ``speed_scale``, with the same
+            values, for one minor release.
         """
         d = self.defaults
         return {
-            "model": d.tts_model,
+            "tts_model": d.tts_model,
             "asr_model": d.asr_model,
             "asr_language": d.asr_language,
             "latency": d.latency,
             "chunk_length": d.chunk_length,
-            "format": self.response_format,
+            "tts_format": self.tts_format,
+            "tts_speed": d.speed,
+            # Deprecated keys, kept for one minor release (0.2.0).
+            "model": d.tts_model,
+            "format": self.tts_format,
             "speed_scale": d.speed,
             "quality_guard": self.quality_guard,
             "asr_strip_speakers": self.asr_strip_speakers,
@@ -225,16 +222,19 @@ class ProxySettings:
         }
 
 
-def _response_format() -> ClientFormat:
-    """Read ``FISH_FORMAT``, the format used when a request names none.
+def _tts_format() -> ClientFormat:
+    """Read ``FISH_TTS_FORMAT``, the format used when a request names none.
 
     Returns
     -------
     ClientFormat
         A supported format, or ``mp3`` for a missing or unknown value. ``pcm16``
-        is allowed here, though Fish itself only knows ``pcm``.
+        is allowed here, though Fish itself only knows ``pcm``. The old name
+        ``FISH_FORMAT`` still works and logs a deprecation warning.
     """
-    return format_or_default(env_token("FISH_FORMAT", "mp3"), "mp3")
+    return known_client_format(
+        env_token(env_renamed("FISH_TTS_FORMAT", "FISH_FORMAT", warn=_warn), "mp3"), "mp3"
+    )
 
 
 def _suite_defaults() -> SuiteDefaults:
@@ -242,7 +242,7 @@ def _suite_defaults() -> SuiteDefaults:
     fish_base = env_base("FISH_BASE", stock.fish_base)
     return SuiteDefaults(
         tts_model=normalize_tts_model(
-            _deprecated(env_token, "FISH_TTS_MODEL", "FISH_MODEL", stock.tts_model)
+            env_token(env_renamed("FISH_TTS_MODEL", "FISH_MODEL", warn=_warn), stock.tts_model)
         ),
         asr_model=resolve_asr_model(None, env_token("FISH_ASR_MODEL", stock.asr_model)),
         asr_language=env_text("FISH_ASR_LANGUAGE", stock.asr_language),
@@ -261,10 +261,10 @@ def _suite_defaults() -> SuiteDefaults:
             stock.min_chunk_length,
             int,
         ),
-        audio_format=fish_audio_format(_response_format()),
+        audio_format=fish_audio_format(_tts_format()),
         mp3_bitrate=known_mp3_bitrate(env_int("FISH_MP3_BITRATE", stock.mp3_bitrate)),
         speed=clamp_number(
-            _deprecated(env_float, "FISH_SPEED", "FISH_SPEED_SCALE", stock.speed),
+            env_float(env_renamed("FISH_SPEED", "FISH_SPEED_SCALE", warn=_warn), stock.speed),
             TTS_SPEED_LO,
             TTS_SPEED_HI,
             stock.speed,
@@ -297,8 +297,11 @@ def load_settings() -> ProxySettings:
     Returns
     -------
     ProxySettings
-        A bad value keeps its default. ``FISH_MODEL`` and ``FISH_SPEED_SCALE``
-        still work and log a deprecation warning.
+        A bad value keeps its default. A renamed variable's old name
+        (``FISH_MODEL``, ``FISH_SPEED_SCALE``, ``FISH_FORMAT``,
+        ``FISH_TTS_ALIASES``, ``FISH_ASR_STRIP_SPEAKERS``,
+        ``FISH_ASR_STRIP_CUES``, ``FISH_MOOD_LEAD``, ``FISH_DROP_NARRATION``)
+        still works when the new name is unset, and logs a deprecation warning.
 
     Raises
     ------
@@ -309,19 +312,27 @@ def load_settings() -> ProxySettings:
     defaults = _suite_defaults()
     aliases = {
         **default_tts_aliases(defaults.tts_model),
-        **parse_aliases(env_text("FISH_TTS_ALIASES")),
+        **parse_aliases(
+            env_text(env_renamed("FISH_PROXY_TTS_ALIASES", "FISH_TTS_ALIASES", warn=_warn))
+        ),
     }
     port = env_int("FISH_PROXY_PORT", DEFAULT_PORT)
     return ProxySettings(
         defaults=defaults,
         tts_aliases=aliases,
         quality_guard=env_bool("FISH_QUALITY_GUARD"),
-        asr_strip_speakers=env_bool("FISH_ASR_STRIP_SPEAKERS"),
-        asr_strip_cues=env_bool("FISH_ASR_STRIP_CUES"),
+        asr_strip_speakers=env_bool(
+            env_renamed("FISH_PROXY_ASR_STRIP_SPEAKERS", "FISH_ASR_STRIP_SPEAKERS", warn=_warn)
+        ),
+        asr_strip_cues=env_bool(
+            env_renamed("FISH_PROXY_ASR_STRIP_CUES", "FISH_ASR_STRIP_CUES", warn=_warn)
+        ),
         tts_dialogue_only=env_bool("FISH_TTS_DIALOGUE_ONLY"),
-        tts_mood_lead=env_bool("FISH_MOOD_LEAD"),
-        tts_drop_narration=env_bool("FISH_DROP_NARRATION"),
-        response_format=_response_format(),
+        tts_mood_lead=env_bool(env_renamed("FISH_TTS_MOOD_LEAD", "FISH_MOOD_LEAD", warn=_warn)),
+        tts_drop_narration=env_bool(
+            env_renamed("FISH_TTS_DROP_NARRATION", "FISH_DROP_NARRATION", warn=_warn)
+        ),
+        tts_format=_tts_format(),
         api_keys=_api_keys(env_text("FISH_PROXY_API_KEYS")),
         max_body_bytes=_non_negative("FISH_PROXY_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES),
         max_input_chars=_non_negative("FISH_PROXY_MAX_INPUT_CHARS", DEFAULT_MAX_INPUT_CHARS),

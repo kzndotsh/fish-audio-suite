@@ -20,10 +20,10 @@ from fish_audio_suite_kit import (
 __all__ = [
     "ProxyError",
     "json_error",
-    "json_from_error_body",
-    "json_from_fish_error",
-    "json_from_upstream",
+    "json_from_call_failure",
     "openai_error_body",
+    "provider_json_error",
+    "provider_json_from_raw",
     "proxy_error_response",
     "read_json_object",
 ]
@@ -117,13 +117,14 @@ def json_error(status: int, message: str) -> JSONResponse:
     return JSONResponse(openai_error_body(status, message), status_code=status)
 
 
-def json_from_fish_error(err: FishHttpError) -> JSONResponse:
-    """Turn a kit error into the local error envelope.
+def json_from_call_failure(err: FishHttpError) -> JSONResponse:
+    """Turn a Fish call that gave no usable answer into the proxy's own error.
 
     Parameters
     ----------
     err : FishHttpError
-        An error built by the kit: unreachable, timed out or an unusable body.
+        An error built by the kit: unreachable, timed out, or a reply body
+        that is not JSON or not an object.
 
     Returns
     -------
@@ -181,7 +182,7 @@ async def read_json_object(request: Request) -> dict[str, Any] | JSONResponse:
     return parsed
 
 
-def json_from_upstream(status: int, raw: Any) -> JSONResponse:
+def provider_json_from_raw(status: int, raw: Any) -> JSONResponse:
     """Turn a Fish error body into an OpenAI provider error.
 
     Parameters
@@ -197,10 +198,10 @@ def json_from_upstream(status: int, raw: Any) -> JSONResponse:
         ``type`` is ``provider_error`` and ``metadata.provider_name`` is
         ``fish-audio``. The response status is the parsed Fish status.
     """
-    return json_from_error_body(parse_fish_error(status, raw))
+    return provider_json_error(parse_fish_error(status, raw))
 
 
-def json_from_error_body(detail: FishErrorBody) -> JSONResponse:
+def provider_json_error(detail: FishErrorBody) -> JSONResponse:
     """Turn an already parsed Fish error into an OpenAI provider error.
 
     Parameters

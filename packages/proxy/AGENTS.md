@@ -15,13 +15,13 @@ CLI: `fish-audio-suite-proxy`. Import: `fish_audio_suite_proxy`. Start uvicorn w
 | Module | Owns |
 | --- | --- |
 | `server.py` | App, lifespan, routes, client-key check |
-| `settings.py` | `ProxySettings`, built once in lifespan on `app.state.settings`. No other module reads the env |
+| `settings.py` | `ProxySettings`, built once in lifespan on `app.state.settings`. No other module reads the env. A renamed variable is read with kit `env_renamed`, which logs the old name; list the pair in the README's rename table |
 | `upstream.py` | `fish_send`: bounded retry, `Retry-After` (kit `retry_after_s`), deadline, stops on disconnect. `FishHttp` is the client Protocol |
 | `limits.py` | Request body cap middleware |
 | `models.py` | TTS aliases, ASR id rules, `/v1/models` ids |
-| `fields.py` | Format, silence, request-field readers, trace headers |
+| `fields.py` | Format, silence, the `read_*` request-field readers (`read_format`, `read_flag`, `read_choice`, `read_present`, `read_reference_id`), base64 audio (`decode_audio_b64`, `AudioDecodeError`), trace headers |
 | `speech.py`, `transcribe.py` | Fish TTS body and ASR upload/response |
-| `errors.py` | OpenAI error envelope (`OpenAIErrorBody`), `ProxyError`. `ClipError` is a `ProxyError` with status 400 |
+| `errors.py` | OpenAI error envelope (`OpenAIErrorBody`), `ProxyError`. `provider_json_error` / `provider_json_from_raw` for a Fish error body, `json_from_call_failure` for a Fish call with no usable answer. `AudioDecodeError` (`fields.py`) is a `ProxyError` with status 400, and `ClipError` (`speech.py`) is the reference-clip kind of it. A transcription error names `input_audio`, never "reference audio" |
 
 Invariants:
 - `FISH_API_KEY` is read in lifespan. Importing the app and `GET /health` must work with it unset. A missing key is 503 on any request that would call Fish, and a wrong client key is 401. Text that is only junk returns local silence first, so it never reaches the key check.
@@ -30,8 +30,9 @@ Invariants:
 - Scrub and cue logic lives in kit. Do not copy it here.
 - Every module lists its public names in `__all__`, and a public signature uses only public types (`SpeechControls`, `PackedTts`, `InboundAsr`, `FishHttp`). Formats and models use the kit literals (`AudioFormat`, `AsrFormat`, `FishLatency`); `ClientFormat` adds `pcm16`, which is a request format only. Fish ASR JSON is `AsrBody`, but parse defensively: Fish may send any JSON.
 - Never log request text above DEBUG unless `FISH_PROXY_LOG_TEXT` is set. Never put a key in `/health`.
+- `/health` is public API. `tts_model`, `tts_format` and `tts_speed` replace `model`, `format` and `speed_scale`; the old keys stay, with the same values, for one minor release. Rename a key the same way.
 - Retry only 429, 5xx, and connections that never opened. A read timeout is not repeated.
 - Return the format the client asked for, or a 400. Do not swap it. This holds for speech and transcription.
-- A word array comes from Fish word timings only. Segments are not words.
+- Fish ASR `segments` are word-level (`text`, `start`, `end` per word) and `duration` is seconds. Fish sends no `words` field. Today `words` is only passed through when a body holds one; building it from segments is a separate change.
 - Forward valid `traceparent` and `tracestate`. Mint a sampled one when absent.
 - Fish errors become `{error:{code,message,type}}` with the upstream status. Fish bodies are `provider_error`.
