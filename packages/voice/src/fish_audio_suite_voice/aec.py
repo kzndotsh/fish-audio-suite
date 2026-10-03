@@ -260,12 +260,12 @@ class EchoCanceller:
         Returns
         -------
         float
-            ``AecTune.bleed_s`` when AEC3 is loaded, otherwise ``fallback_s``.
+            ``AecTune.bleed_delay_s`` when AEC3 is loaded, otherwise ``fallback_s``.
             Negative values become 0 or the AEC default.
         """
         if not self.available():
             return fallback_s if fallback_s >= 0 else 0.0
-        bleed = self.tune.bleed_s
+        bleed = self.tune.bleed_delay_s
         return bleed if bleed >= 0 else DEFAULT_AEC_BLEED_S
 
     def clean(self, near: bytes) -> bytes:

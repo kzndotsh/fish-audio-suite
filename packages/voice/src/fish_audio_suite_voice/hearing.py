@@ -99,11 +99,11 @@ async def recognize(
             language=c.fish_asr_language,
             model=c.asr_model,
             extra_headers={"traceparent": asr_parent},
-            cancel=ctx.session.stop,
+            cancel=ctx.session.quit_requested,
             client=ctx.asr_http,
         )
     except FishHttpError as e:
-        if ctx.session.stop.is_set():
+        if ctx.session.quit_requested.is_set():
             return HeardLine("bye")
         warn(f"[asr] {e.status} {e.message}")
         if isinstance(e, FishAuthError):
@@ -112,11 +112,11 @@ async def recognize(
     except (httpx.HTTPError, OSError) as e:
         # A network failure is worth another try on the next utterance. Any
         # other error is a bug and propagates instead of looping silently.
-        if ctx.session.stop.is_set():
+        if ctx.session.quit_requested.is_set():
             return HeardLine("bye")
         warn(f"[asr] {e}")
         return HeardLine("again")
-    if ctx.session.stop.is_set():
+    if ctx.session.quit_requested.is_set():
         return HeardLine("bye")
     asr_ms = elapsed_ms(started)
     decision = classify_transcript(text, last_user, stale=stale)
@@ -149,7 +149,7 @@ async def hear_line(ctx: DuplexContext, last_user: str) -> HeardLine:
         wav = await asyncio.to_thread(
             record_utterance,
             ctx.device,
-            ctx.session.stop,
+            ctx.session.quit_requested,
             prefix=prefix,
             tune=ctx.config.listen,
             aec=ctx.session.aec,
@@ -157,7 +157,7 @@ async def hear_line(ctx: DuplexContext, last_user: str) -> HeardLine:
     except PortAudioMissingError as e:
         warn(str(e))
         return HeardLine("fatal", code=EXIT_FATAL)
-    if ctx.session.stop.is_set():
+    if ctx.session.quit_requested.is_set():
         return HeardLine("bye")
     if not wav:
         debug("listen.dropped (too short or none)")
@@ -169,6 +169,6 @@ async def hear_line(ctx: DuplexContext, last_user: str) -> HeardLine:
     heard = await recognize(ctx, wav, last_user, stale=stale)
     # Quit during the Fish request used to come back as a normal line, so
     # the LLM still answered after Ctrl+C.
-    if ctx.session.stop.is_set():
+    if ctx.session.quit_requested.is_set():
         return HeardLine("bye")
     return heard

@@ -179,14 +179,14 @@ def test_llm_env_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPENROUTER_MODEL", "vendor/fallback")
     c = load_config()
     assert c.llm.base == "https://example.test/v1"
-    assert c.llm.key == "openai-key"
+    assert c.llm.api_key == "openai-key"
     assert c.llm.model == "vendor/fallback"
     monkeypatch.setenv("FISH_LLM_BASE", "")
     monkeypatch.setenv("FISH_LLM_KEY", "  fish-key  ")
     monkeypatch.setenv("FISH_LLM_MODEL", "   ")
     c = load_config()
     assert c.llm.base == "https://example.test/v1"
-    assert c.llm.key == "fish-key"
+    assert c.llm.api_key == "fish-key"
     assert c.llm.model == "vendor/fallback"
     monkeypatch.setenv("FISH_LLM_BASE", "  ")
     assert load_config().llm.base == "https://example.test/v1"
@@ -338,7 +338,7 @@ def test_request_quit_sets_mic_and_turn_cancel() -> None:
     llm = asyncio.Event()
     session.turn.bind(turn, llm)
     session.request_quit()
-    assert session.stop.is_set()
+    assert session.quit_requested.is_set()
     assert turn.is_set()
     assert llm.is_set()
 
@@ -352,7 +352,7 @@ def test_request_quit_from_a_thread_sets_the_llm_event_on_its_loop() -> None:
         worker.start()
         await asyncio.wait_for(llm.wait(), timeout=1)
         worker.join()
-        return session.stop.is_set()
+        return session.quit_requested.is_set()
 
     assert asyncio.run(scenario())
 
@@ -361,8 +361,8 @@ def test_sessions_do_not_share_quit_state() -> None:
     first = DuplexSession()
     second = DuplexSession()
     first.request_quit()
-    assert first.stop.is_set()
-    assert not second.stop.is_set()
+    assert first.quit_requested.is_set()
+    assert not second.quit_requested.is_set()
 
 
 def test_llm_keys_never_cross_providers(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -376,15 +376,15 @@ def test_llm_keys_never_cross_providers(monkeypatch: pytest.MonkeyPatch) -> None
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "openai-only")
-    assert load_config().llm.openrouter
-    assert load_config().llm.key == ""
+    assert load_config().llm.uses_openrouter_sdk
+    assert load_config().llm.api_key == ""
     monkeypatch.setenv("OPENROUTER_API_KEY", "router-only")
-    assert load_config().llm.key == "router-only"
+    assert load_config().llm.api_key == "router-only"
     monkeypatch.setenv("FISH_LLM_BASE", "http://localhost:11434/v1")
     local = load_config().llm
-    assert not local.openrouter
+    assert not local.uses_openrouter_sdk
     assert local.backend == "openai"
-    assert local.key == "openai-only"
+    assert local.api_key == "openai-only"
 
 
 def test_llm_backend_env_picks_the_backend(
@@ -392,7 +392,7 @@ def test_llm_backend_env_picks_the_backend(
 ) -> None:
     monkeypatch.setenv("FISH_LLM_BASE", "http://localhost:11434/v1")
     monkeypatch.setenv("FISH_LLM_BACKEND", "openrouter")
-    assert load_config().llm.openrouter
+    assert load_config().llm.uses_openrouter_sdk
     monkeypatch.setenv("FISH_LLM_BACKEND", "bogus")
     assert load_config().llm.backend == "openai"
     assert "FISH_LLM_BACKEND" in capsys.readouterr().err
@@ -495,26 +495,26 @@ def test_stream_tts_is_off_unless_asked(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_a_blank_llm_key_does_not_hide_the_provider_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    from fish_audio_suite_voice.tune import LlmTune
+    from fish_audio_suite_voice.tune import LlmSettings
 
     for name in ("FISH_LLM_BASE", "OPENROUTER_BASE_URL", "FISH_LLM_BACKEND", "OPENAI_API_KEY"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("FISH_LLM_KEY", "")
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
-    assert LlmTune.from_env().key == "or-key"
+    assert LlmSettings.from_env().api_key == "or-key"
     monkeypatch.setenv("FISH_LLM_KEY", "own-key")
-    assert LlmTune.from_env().key == "own-key"
+    assert LlmSettings.from_env().api_key == "own-key"
 
 
 def test_a_malformed_llm_base_warns_and_falls_back(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from fish_audio_suite_voice.tune import LlmTune, is_openrouter_host
+    from fish_audio_suite_voice.tune import LlmSettings, is_openrouter_host
 
     monkeypatch.delenv("FISH_LLM_BACKEND", raising=False)
     monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
     monkeypatch.setenv("FISH_LLM_BASE", "http://[::1")
-    tune = LlmTune.from_env()
+    tune = LlmSettings.from_env()
     assert tune.base == OPENROUTER_API_BASE
     assert "not a valid URL" in capsys.readouterr().err
     assert is_openrouter_host("http://[::1") is False

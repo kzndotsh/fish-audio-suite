@@ -83,7 +83,7 @@ def listen_reject_reason(
     clip_frames: int,
     speech_hits: int,
     peak_rms: float,
-    min_voiced: int,
+    min_voiced_frames: int,
     min_speech_rms: float,
     credited_hits: int = 0,
 ) -> str | None:
@@ -92,7 +92,7 @@ def listen_reject_reason(
         return "too_short"
     # Barge trips at 10 frames. The listen minimum is 12, so the same
     # interrupt was discarded when the user stopped talking.
-    need_voice = min(min_voiced, credited_hits) if credited_hits > 0 else min_voiced
+    need_voice = min(min_voiced_frames, credited_hits) if credited_hits > 0 else min_voiced_frames
     if speech_hits < need_voice:
         return "too_little_voice"
     # A barge run is already several loud frames. The impulse gate is for a
@@ -100,17 +100,17 @@ def listen_reject_reason(
     if (
         credited_hits <= 0
         and _impulse(peak_rms, min_speech_rms)
-        and speech_hits <= min_voiced + IMPULSE_EXTRA_VOICED
+        and speech_hits <= min_voiced_frames + IMPULSE_EXTRA_VOICED
     ):
         return "impulse"
     return None
 
 
-def start_frames_needed(peak_rms: float, min_rms: float, speech_frames_start: int) -> int:
+def start_frames_needed(peak_rms: float, min_rms: float, start_speech_frames: int) -> int:
     """Require extra VAD hits before an 8x RMS spike counts as speech."""
     if _impulse(peak_rms, min_rms):
-        return speech_frames_start + IMPULSE_START_EXTRA
-    return speech_frames_start
+        return start_speech_frames + IMPULSE_START_EXTRA
+    return start_speech_frames
 
 
 def trailing_start_hits(ring: collections.deque[tuple[bytes, bool]]) -> int:
@@ -199,7 +199,7 @@ class _Listen:
             self.silence = 0
             return False
         self.silence += 1
-        if self.silence >= self.tune.silence_frames_end:
+        if self.silence >= self.tune.end_silence_frames:
             return True
         return len(self.clip_frames) >= MAX_UTTERANCE_FRAMES and self.silence >= _CAP_QUIET_FRAMES
 
@@ -227,7 +227,7 @@ class _Listen:
         self.ring.append((frame, start_hit(rms, self.min_speech_now, vad_speech=vad_speech)))
         peak_ring = max((pcm_rms(pcm) for pcm, _ in self.ring), default=0.0)
         need_start = start_frames_needed(
-            peak_ring, self.min_speech_now, self.tune.speech_frames_start
+            peak_ring, self.min_speech_now, self.tune.start_speech_frames
         )
         hits_now = trailing_start_hits(self.ring)
         if hits_now < need_start or not spike_start_allowed(peak_ring, rms, self.min_speech_now):
@@ -258,7 +258,7 @@ def _clip_wav(heard: _Listen, tune: ListenTune) -> bytes | None:
         clip_frames=len(heard.clip_frames),
         speech_hits=heard.speech_hits,
         peak_rms=heard.clip_peak,
-        min_voiced=tune.min_voiced,
+        min_voiced_frames=tune.min_voiced_frames,
         min_speech_rms=heard.min_speech_now if heard.triggered else tune.min_speech_rms,
         credited_hits=heard.primed_hits,
     )
@@ -269,7 +269,7 @@ def _clip_wav(heard: _Listen, tune: ListenTune) -> bytes | None:
             len(heard.clip_frames),
             heard.speech_hits,
             heard.clip_peak,
-            tune.min_voiced,
+            tune.min_voiced_frames,
         )
         return None
     pcm = b"".join(heard.clip_frames)
@@ -300,7 +300,7 @@ def _prime_listen(heard: _Listen, pcm: bytes) -> None:
 
 def record_utterance(
     device: str | int | None = None,
-    stop: threading.Event | None = None,
+    quit_requested: threading.Event | None = None,
     *,
     prefix: bytes = b"",
     tune: ListenTune | None = None,
@@ -312,8 +312,8 @@ def record_utterance(
     ----------
     device : str or int or None, optional
         PortAudio input. None uses the host default.
-    stop : threading.Event or None, optional
-        Ctrl+C. When set, return None.
+    quit_requested : threading.Event or None, optional
+        The session's quit flag (Ctrl+C). When set, return None.
     prefix : bytes, optional
         PCM kept from the barge-in that interrupted the previous reply.
         The next listen starts from this clip instead of a cooldown.
@@ -326,7 +326,7 @@ def record_utterance(
     -------
     bytes or None
         16 kHz mono WAV, or None when the clip is too short, an impulse, or
-        ``stop`` is set.
+        ``quit_requested`` is set.
 
     Notes
     -----
@@ -345,19 +345,19 @@ def record_utterance(
     trace(
         "listen.open vad={} start_frames={} min_rms={} min_voiced={} pre_pad={} silence_end={} prefix_frames={}",
         tune.vad_aggressiveness,
-        tune.speech_frames_start,
+        tune.start_speech_frames,
         tune.min_speech_rms,
-        tune.min_voiced,
+        tune.min_voiced_frames,
         tune.pre_pad_frames,
-        tune.silence_frames_end,
+        tune.end_silence_frames,
         len(heard.clip_frames),
     )
 
     for idle_frames, frame in enumerate(
-        mic_frames(device, stop, timeout=_MIC_POLL_S, aec=aec), start=1
+        mic_frames(device, quit_requested, timeout=_MIC_POLL_S, aec=aec), start=1
     ):
         if heard.take(frame, idle_frames):
             break
-    if stop is not None and stop.is_set():
+    if quit_requested is not None and quit_requested.is_set():
         return None
     return _clip_wav(heard, tune)

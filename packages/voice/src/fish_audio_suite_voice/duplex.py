@@ -58,7 +58,7 @@ async def _answer_line(ctx: DuplexContext, heard: HeardLine) -> int | None:
         snapshot = LatencySnapshot(
             asr_ms=heard.asr_ms, llm_first_token_ms=ttft_ms, trace_id=heard.trace_id
         )
-        if ctx.session.stop.is_set():
+        if ctx.session.quit_requested.is_set():
             return bye()
         if reply:
             snapshot, fatal = await speak_reply(
@@ -77,12 +77,12 @@ async def _answer_line(ctx: DuplexContext, heard: HeardLine) -> int | None:
         trace("turn.timing {}", snapshot.log_line())
     else:
         console_print(summary, flush=True)
-    stop = ctx.session.stop
+    quit_requested = ctx.session.quit_requested
     ctx.session.turn.fire()
     ctx.session.turn.clear()
     barged = bool(ctx.barge_prefix)
-    if stop.is_set() or (
-        not barged and await asyncio.to_thread(stop.wait, ctx.config.barge.cooldown_s)
+    if quit_requested.is_set() or (
+        not barged and await asyncio.to_thread(quit_requested.wait, ctx.config.barge.cooldown_s)
     ):
         return bye()
     return None

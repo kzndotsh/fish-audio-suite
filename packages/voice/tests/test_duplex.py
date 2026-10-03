@@ -16,7 +16,7 @@ from fish_audio_suite_voice.duplex import duplex_turns
 from fish_audio_suite_voice.duplex_state import DuplexContext
 from fish_audio_suite_voice.hearing import HeardLine, classify_transcript, recognize
 from fish_audio_suite_voice.history import opening_history, remember_user, trim_history
-from fish_audio_suite_voice.live import IsolatedFishTts, IsolatedResult
+from fish_audio_suite_voice.live import IsolatedFishTts, TtsResult
 from fish_audio_suite_voice.playback import PortAudioMissingError
 from fish_audio_suite_voice.reply import (
     _TokenPipe,
@@ -26,7 +26,7 @@ from fish_audio_suite_voice.reply import (
     stream_turn,
 )
 from fish_audio_suite_voice.signals import DuplexSession
-from fish_audio_suite_voice.tune import DEFAULT_HISTORY_TURNS, LlmTune
+from fish_audio_suite_voice.tune import DEFAULT_HISTORY_TURNS, LlmSettings
 
 HISTORY_TURNS = DEFAULT_HISTORY_TURNS
 
@@ -50,7 +50,7 @@ def _config() -> VoiceCliConfig:
         playback="stdout",
         system_prompt="be brief",
         device=None,
-        llm=LlmTune(backend="openai", base="https://example.test/v1", key="lk", model="m"),
+        llm=LlmSettings(backend="openai", base="https://example.test/v1", api_key="lk", model="m"),
     )
 
 
@@ -155,7 +155,12 @@ def test_after_speech_records_only_audio_that_was_played() -> None:
         ctx,
         snapshot,
         make_result(
-            "hello", bytes_played=8, got_audio=True, cancelled=True, ttfa_ms=12.0, llm_ttfs_ms=4.0
+            "hello",
+            bytes_played=8,
+            got_audio=True,
+            cancelled=True,
+            tts_first_audio_ms=12.0,
+            tts_first_text_ms=4.0,
         ),
         started=0.0,
     )
@@ -169,7 +174,11 @@ def test_after_speech_records_only_audio_that_was_played() -> None:
         ctx,
         snapshot,
         make_result(
-            "Hey! Can you hear me?", bytes_played=8, got_audio=True, ttfa_ms=12.0, llm_ttfs_ms=4.0
+            "Hey! Can you hear me?",
+            bytes_played=8,
+            got_audio=True,
+            tts_first_audio_ms=12.0,
+            tts_first_text_ms=4.0,
         ),
         started=0.0,
     )
@@ -178,7 +187,11 @@ def test_after_speech_records_only_audio_that_was_played() -> None:
         ctx,
         snapshot,
         make_result(
-            "Yeah. What's up?", bytes_played=8, got_audio=True, ttfa_ms=12.0, llm_ttfs_ms=4.0
+            "Yeah. What's up?",
+            bytes_played=8,
+            got_audio=True,
+            tts_first_audio_ms=12.0,
+            tts_first_text_ms=4.0,
         ),
         started=0.0,
     )
@@ -220,7 +233,7 @@ def test_quit_during_asr_does_not_ask_the_llm(
         return b"RIFFwav"
 
     async def asr(*_args: object, **_kwargs: object) -> str:
-        session.stop.set()
+        session.quit_requested.set()
         return "hello there friend"
 
     async def tokens(*_args: object, **_kwargs: object) -> AsyncIterator[str]:
@@ -330,7 +343,7 @@ def test_speak_reply_exits_when_playback_cannot_open(
     ctx = _ctx()
     install_audio(monkeypatch)
 
-    def speak(*_args: object, **_kwargs: object) -> IsolatedResult:
+    def speak(*_args: object, **_kwargs: object) -> TtsResult:
         raise PortAudioMissingError("missing")
 
     set_tts(monkeypatch, ctx.tts, speak=speak)
@@ -360,10 +373,15 @@ def test_cancelled_speak_keeps_the_audio_that_tripped_barge(
         sink: FakeSink,
         cancel: threading.Event | None = None,
         on_first_audio: object = None,
-    ) -> IsolatedResult:
+    ) -> TtsResult:
         assert text == "Hello there friend"
         return make_result(
-            "hello", bytes_played=4, got_audio=True, cancelled=True, ttfa_ms=3.0, llm_ttfs_ms=2.0
+            "hello",
+            bytes_played=4,
+            got_audio=True,
+            cancelled=True,
+            tts_first_audio_ms=3.0,
+            tts_first_text_ms=2.0,
         )
 
     set_tts(monkeypatch, ctx.tts, speak=speak)
@@ -388,9 +406,13 @@ def test_speak_reply_releases_the_mic_before_returning(
     ctx = _ctx()
     gate, _sink = install_audio(monkeypatch, gate=FakeGate(hold=True), sink=FakeSink(played=8))
 
-    def speak(*_args: object, **_kwargs: object) -> IsolatedResult:
+    def speak(*_args: object, **_kwargs: object) -> TtsResult:
         return make_result(
-            "hello there", bytes_played=8, got_audio=True, ttfa_ms=3.0, llm_ttfs_ms=2.0
+            "hello there",
+            bytes_played=8,
+            got_audio=True,
+            tts_first_audio_ms=3.0,
+            tts_first_text_ms=2.0,
         )
 
     set_tts(monkeypatch, ctx.tts, speak=speak)
@@ -461,7 +483,7 @@ def test_stream_turn_feeds_tokens_to_tts_and_arms_barge_at_first_audio(
         sink: FakeSink,
         cancel: threading.Event,
         on_first_audio: Callable[[], None] | None = None,
-    ) -> IsolatedResult:
+    ) -> TtsResult:
         async def drain() -> None:
             heard_tokens.extend([token async for token in deltas])
 
@@ -470,7 +492,11 @@ def test_stream_turn_feeds_tokens_to_tts_and_arms_barge_at_first_audio(
         assert on_first_audio is not None
         on_first_audio()
         return make_result(
-            "Hello there friend.", bytes_played=4, got_audio=True, ttfa_ms=3.0, llm_ttfs_ms=2.0
+            "Hello there friend.",
+            bytes_played=4,
+            got_audio=True,
+            tts_first_audio_ms=3.0,
+            tts_first_text_ms=2.0,
         )
 
     set_tts(monkeypatch, ctx.tts, speak_stream=speak_stream)
@@ -503,7 +529,7 @@ def test_stream_turn_speaks_the_finished_reply_when_fish_fails_before_audio(
         sink: FakeSink,
         cancel: threading.Event,
         on_first_audio: Callable[[], None] | None = None,
-    ) -> IsolatedResult:
+    ) -> TtsResult:
         async def drain() -> None:
             async for _token in deltas:
                 pass
@@ -516,10 +542,14 @@ def test_stream_turn_speaks_the_finished_reply_when_fish_fails_before_audio(
         sink: FakeSink,
         cancel: threading.Event | None = None,
         on_first_audio: Callable[[], None] | None = None,
-    ) -> IsolatedResult:
+    ) -> TtsResult:
         spoken.append(text)
         return make_result(
-            "Hello there friend.", bytes_played=4, got_audio=True, ttfa_ms=3.0, llm_ttfs_ms=2.0
+            "Hello there friend.",
+            bytes_played=4,
+            got_audio=True,
+            tts_first_audio_ms=3.0,
+            tts_first_text_ms=2.0,
         )
 
     set_tts(monkeypatch, ctx.tts, speak=speak_whole, speak_stream=speak_stream)
@@ -578,7 +608,7 @@ def test_a_fatal_fish_status_stops_the_llm_but_a_transient_one_does_not() -> Non
 
     async def scenario(status: int) -> bool:
         loop = asyncio.get_running_loop()
-        done: asyncio.Future[IsolatedResult] = loop.create_future()
+        done: asyncio.Future[TtsResult] = loop.create_future()
         done.set_result(make_result(error_status=status))
         llm_cancel = asyncio.Event()
         _end_llm_when_tts_stops(done, llm_cancel)
@@ -604,7 +634,7 @@ def test_stream_turn_with_an_empty_reply_speaks_nothing_and_reports_nothing(
         sink: FakeSink,
         cancel: threading.Event,
         on_first_audio: Callable[[], None] | None = None,
-    ) -> IsolatedResult:
+    ) -> TtsResult:
         async def drain() -> None:
             async for _token in deltas:
                 pass
@@ -613,7 +643,7 @@ def test_stream_turn_with_an_empty_reply_speaks_nothing_and_reports_nothing(
         seen_cancel.append(cancel.is_set())
         return make_result(cancelled=True)
 
-    def never(*_args: object, **_kwargs: object) -> IsolatedResult:
+    def never(*_args: object, **_kwargs: object) -> TtsResult:
         raise AssertionError("an empty reply must not be spoken")
 
     set_tts(monkeypatch, ctx.tts, speak=never, speak_stream=speak_stream)
@@ -643,7 +673,7 @@ def test_quit_during_the_stream_fallback_rebind_does_not_speak(
         sink: FakeSink,
         cancel: threading.Event,
         on_first_audio: Callable[[], None] | None = None,
-    ) -> IsolatedResult:
+    ) -> TtsResult:
         async def drain() -> None:
             async for _token in deltas:
                 pass
@@ -651,7 +681,7 @@ def test_quit_during_the_stream_fallback_rebind_does_not_speak(
         asyncio.run(drain())
         return make_result(error_status=503)
 
-    def never(*_args: object, **_kwargs: object) -> IsolatedResult:
+    def never(*_args: object, **_kwargs: object) -> TtsResult:
         raise AssertionError("nothing may be spoken after quit")
 
     bind = ctx.session.turn.bind
@@ -659,7 +689,7 @@ def test_quit_during_the_stream_fallback_rebind_does_not_speak(
     def bind_then_quit(cancel: threading.Event, llm_cancel: asyncio.Event, *a: object) -> None:
         bind(cancel, llm_cancel)
         # Ctrl+C lands right after the old flag was replaced.
-        ctx.session.stop.set()
+        ctx.session.quit_requested.set()
 
     monkeypatch.setattr(ctx.session.turn, "bind", bind_then_quit)
     set_tts(monkeypatch, ctx.tts, speak=never, speak_stream=speak_stream)

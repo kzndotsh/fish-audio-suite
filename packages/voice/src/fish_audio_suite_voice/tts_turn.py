@@ -24,8 +24,8 @@ from fish_audio_suite_voice.pause import sleep_unless
 from fish_audio_suite_voice.playback import PlaybackSink
 from fish_audio_suite_voice.wire import (
     AudioArrival,
-    IsolatedResult,
     SentText,
+    TtsResult,
     TurnRun,
     TurnSpec,
     as_async,
@@ -40,7 +40,7 @@ from fish_audio_suite_voice.wire import (
 _WS_TIMEOUT_S: Final = 240.0
 
 __all__ = [
-    "IsolatedResult",
+    "TtsResult",
     "TurnSpec",
     "as_async",
     "is_cancel_noise",
@@ -153,7 +153,7 @@ async def run_turn(
     *,
     sent_text: str,
     on_first_audio: Callable[[], None] | None = None,
-) -> IsolatedResult:
+) -> TtsResult:
     """Play one Fish turn, retrying 429 and 5xx only before the first audio byte.
 
     Parameters
@@ -176,7 +176,7 @@ async def run_turn(
 
     Returns
     -------
-    IsolatedResult
+    TtsResult
         Spoken prefix derived from bytes actually played.
 
     Notes
@@ -214,7 +214,7 @@ async def run_turn(
     return tts_result(run)
 
 
-def run_isolated(coro: Coroutine[Any, Any, IsolatedResult]) -> IsolatedResult:
+def run_isolated(coro: Coroutine[Any, Any, TtsResult]) -> TtsResult:
     """Run ``coro`` on a new event loop and close that loop.
 
     Parameters
@@ -224,7 +224,7 @@ def run_isolated(coro: Coroutine[Any, Any, IsolatedResult]) -> IsolatedResult:
 
     Returns
     -------
-    IsolatedResult
+    TtsResult
         Whatever ``coro`` returns.
 
     Notes

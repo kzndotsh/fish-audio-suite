@@ -23,6 +23,7 @@ from fish_audio_suite_kit import (
     FishLatency,
     SuiteDefaults,
     clamp_number,
+    deprecated,
     known_mp3_bitrate,
     normalize_cues,
     normalize_tts_model,
@@ -30,11 +31,12 @@ from fish_audio_suite_kit import (
     strip_base,
     utf8_text,
 )
+from fish_audio_suite_voice._aliases import resolve_alias
 from fish_audio_suite_voice.debug import warn
 from fish_audio_suite_voice.playback import PlaybackSink
 from fish_audio_suite_voice.stream_scrub import delta_events
 from fish_audio_suite_voice.tts_turn import (
-    IsolatedResult,
+    TtsResult,
     TurnSpec,
     is_cancel_noise,
     run_isolated,
@@ -79,8 +81,14 @@ def _sdk_format(fmt: str) -> AudioFormat:
 
 
 def _sdk_latency(latency: str) -> LatencyMode:
-    # low is a Fish HTTP mode. This SDK only accepts normal and balanced, and
-    # building the config with low raises before any audio is sent.
+    """Map a Fish latency mode onto one the installed SDK accepts.
+
+    ``low`` becomes ``balanced`` with a one-time warning only because
+    fish-audio-sdk 1.3.0's ``LatencyMode`` lacks ``"low"``, and building the
+    config with it raises before any audio is sent. The Fish docs list ``low``
+    as a valid mode, so keep it in the kit's ``FishLatency`` and drop this
+    coercion once the SDK accepts it. Any other unknown value becomes ``normal``.
+    """
     key = latency.strip().lower()
     if key == "low":
         _warn_coerced("latency", key, "balanced")
@@ -117,14 +125,14 @@ def _spoken(text: str, *, lead: bool = True) -> str:
     return normalize_cues(scrub_tts(text), lead=lead)
 
 
-def _quiet_result(cancelled: bool) -> IsolatedResult:
-    return IsolatedResult(
+def _quiet_result(cancelled: bool) -> TtsResult:
+    return TtsResult(
         spoken_so_far="",
         bytes_played=0,
         got_audio=False,
         cancelled=cancelled,
-        ttfa_ms=None,
-        llm_ttfs_ms=None,
+        tts_first_audio_ms=None,
+        tts_first_text_ms=None,
     )
 
 
@@ -162,7 +170,7 @@ class IsolatedFishTts:
         *,
         cancel: threading.Event | None = None,
         on_first_audio: Callable[[], None] | None = None,
-    ) -> IsolatedResult:
+    ) -> TtsResult:
         """Run one Fish websocket on a private thread and event loop.
 
         Parameters
@@ -178,7 +186,7 @@ class IsolatedFishTts:
 
         Returns
         -------
-        IsolatedResult
+        TtsResult
             How much was spoken. ``spoken_so_far`` is the played prefix, not
             the full unplayed reply.
 
@@ -194,7 +202,7 @@ class IsolatedFishTts:
         -----
         Any other error the sink raises is re-raised too, so a sink that fails
         to open never looks like a silent turn. A Fish failure is not raised: it
-        comes back in ``IsolatedResult``. Safe to call from ``asyncio.run`` or
+        comes back in ``TtsResult``. Safe to call from ``asyncio.run`` or
         ``to_thread``. The Fish websocket
         must not share the LLM's event loop. On cancel, close the httpx client.
         Do not ``aclose()`` the websocket iterator.
@@ -204,14 +212,14 @@ class IsolatedFishTts:
             lambda: self.speak(text, sink, stop, on_first_audio=on_first_audio), stop
         )
 
-    def speak_stream_isolated(
+    def speak_deltas_isolated(
         self,
         deltas: Iterable[str] | AsyncIterable[str],
         sink: PlaybackSink,
         *,
         cancel: threading.Event | None = None,
         on_first_audio: Callable[[], None] | None = None,
-    ) -> IsolatedResult:
+    ) -> TtsResult:
         """Speak a token stream on a private thread while the model is still writing.
 
         Parameters
@@ -228,7 +236,7 @@ class IsolatedFishTts:
 
         Returns
         -------
-        IsolatedResult
+        TtsResult
             How much was spoken. Tokens arrive as a stream, so there is no
             full text to replay: a failed turn is not retried here, and the
             caller can speak the finished reply instead.
@@ -254,12 +262,26 @@ class IsolatedFishTts:
             stop,
         )
 
+    @deprecated("IsolatedFishTts.speak_deltas_isolated", "0.2.0")
+    def speak_stream_isolated(
+        self,
+        deltas: Iterable[str] | AsyncIterable[str],
+        sink: PlaybackSink,
+        *,
+        cancel: threading.Event | None = None,
+        on_first_audio: Callable[[], None] | None = None,
+    ) -> TtsResult:
+        """Run ``speak_deltas_isolated``. Deprecated since 0.2.0 under this name."""
+        return self.speak_deltas_isolated(
+            deltas, sink, cancel=cancel, on_first_audio=on_first_audio
+        )
+
     def _run_on_thread(
         self,
-        make: Callable[[], Coroutine[Any, Any, IsolatedResult]],
+        make: Callable[[], Coroutine[Any, Any, TtsResult]],
         cancel: threading.Event,
-    ) -> IsolatedResult:
-        result: IsolatedResult | None = None
+    ) -> TtsResult:
+        result: TtsResult | None = None
         # thread.join does not re-raise. A sink that fails to open would
         # otherwise look like a silent turn.
         error: Exception | None = None
@@ -290,7 +312,7 @@ class IsolatedFishTts:
         sink: PlaybackSink,
         cancel: threading.Event,
         on_first_audio: Callable[[], None] | None = None,
-    ) -> IsolatedResult:
+    ) -> TtsResult:
         """Speak one full string on the caller's loop.
 
         Parameters
@@ -307,7 +329,7 @@ class IsolatedFishTts:
 
         Returns
         -------
-        IsolatedResult
+        TtsResult
             Played audio and the spoken prefix.
 
         Notes
@@ -333,7 +355,7 @@ class IsolatedFishTts:
         *,
         early_flush: bool = False,
         on_first_audio: Callable[[], None] | None = None,
-    ) -> IsolatedResult:
+    ) -> TtsResult:
         """Stream model deltas, cutting them into Fish text events.
 
         Parameters
@@ -352,13 +374,13 @@ class IsolatedFishTts:
 
         Returns
         -------
-        IsolatedResult
+        TtsResult
             Played audio. The text arrived as deltas, so there is no full text
             to replay and a failed turn is not retried.
 
         Notes
         -----
-        Duplex reaches this through ``speak_stream_isolated`` when streaming is
+        Duplex reaches this through ``speak_deltas_isolated`` when streaming is
         on. Otherwise it waits for the full reply and uses ``speak_isolated``,
         which can replay on 429 or 5xx. A thought,
         parenthesis, bracket, or URL stays buffered until it closes, so a
@@ -419,6 +441,17 @@ class IsolatedFishTts:
 
 __all__ = [
     "IsolatedFishTts",
-    "IsolatedResult",
+    "TtsResult",
     "is_cancel_noise",
 ]
+
+# Renamed in 0.2.0. The old name still resolves through ``__getattr__`` with a
+# DeprecationWarning and is kept out of ``__all__``.
+_DEPRECATED_ALIASES: Final[dict[str, tuple[str, str]]] = {
+    "IsolatedResult": ("TtsResult", "0.2.0"),
+}
+
+
+def __getattr__(name: str) -> object:
+    """Resolve a renamed class by its old name, with a ``DeprecationWarning``."""
+    return resolve_alias(__name__, name, _DEPRECATED_ALIASES, globals())

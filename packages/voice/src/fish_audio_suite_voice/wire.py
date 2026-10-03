@@ -24,6 +24,7 @@ from fish_audio_suite_kit import (
     FISH_RETRY_ATTEMPTS,
     AudioFormat,
     FishHttpError,
+    deprecated_fields,
     describe_request_error,
     elapsed_ms,
     fish_attempt_exhausted,
@@ -31,15 +32,16 @@ from fish_audio_suite_kit import (
     should_retry_fish_status,
     split_tts_piece,
 )
+from fish_audio_suite_voice._aliases import resolve_alias
 from fish_audio_suite_voice.debug import debug, warn, with_detail
 from fish_audio_suite_voice.playback import PlaybackSink
 from fish_audio_suite_voice.spoken import spoken_prefix
 
 __all__ = [
     "AudioArrival",
-    "IsolatedResult",
     "SentText",
     "TtsFailure",
+    "TtsResult",
     "TurnRun",
     "TurnSpec",
     "as_async",
@@ -56,9 +58,16 @@ __all__ = [
 
 QUEUE_POLL_S: Final = 0.25
 
+# Renamed in 0.2.0. Each old name still resolves through ``__getattr__`` with a
+# DeprecationWarning and is kept out of ``__all__``.
+_DEPRECATED_ALIASES: Final[dict[str, tuple[str, str]]] = {
+    "IsolatedResult": ("TtsResult", "0.2.0"),
+}
 
+
+@deprecated_fields("0.2.0", ttfa_ms="tts_first_audio_ms", llm_ttfs_ms="tts_first_text_ms")
 @dataclass(frozen=True, slots=True)
-class IsolatedResult:
+class TtsResult:
     """What one TTS turn actually played.
 
     Attributes
@@ -72,12 +81,14 @@ class IsolatedResult:
         True after the first Fish audio chunk.
     cancelled : bool
         True when barge-in or Ctrl+C stopped the turn.
-    ttfa_ms : float or None
-        Milliseconds from the start of the turn to the first audio chunk.
-        None when no audio arrived.
-    llm_ttfs_ms : float or None
-        Milliseconds from the start of the turn to the first text event sent to
-        Fish. None when no text was sent.
+    tts_first_audio_ms : float or None
+        Milliseconds from the start of the TTS turn to the first audio chunk from
+        Fish (Fish's time-to-first-audio). None when no audio arrived. Was
+        ``ttfa_ms``, which still reads with a ``DeprecationWarning``.
+    tts_first_text_ms : float or None
+        Milliseconds from the start of the TTS turn to the first text event sent
+        to Fish. None when no text was sent. Was ``llm_ttfs_ms``, which still
+        reads with a ``DeprecationWarning``.
     error_status : int or None
         Fish HTTP status when the turn failed. A socket drop has no status.
     error_message : str or None
@@ -91,8 +102,8 @@ class IsolatedResult:
     bytes_played: int
     got_audio: bool
     cancelled: bool
-    ttfa_ms: float | None
-    llm_ttfs_ms: float | None
+    tts_first_audio_ms: float | None
+    tts_first_text_ms: float | None
     error_status: int | None = None
     error_message: str | None = None
     error: FishHttpError | None = None
@@ -132,7 +143,7 @@ class AudioArrival:
     """Audio that actually arrived on this Fish websocket."""
 
     got_audio: bool = False
-    ttfa_ms: float | None = None
+    tts_first_audio_ms: float | None = None
 
 
 @dataclass(slots=True)
@@ -140,7 +151,7 @@ class SentText:
     """Every text piece sent to Fish during one turn, and when the first one went out."""
 
     pieces: list[str] = field(default_factory=list)
-    ttfs_ms: float | None = None
+    tts_first_text_ms: float | None = None
 
 
 @dataclass(slots=True)
@@ -344,7 +355,7 @@ async def send_turn(
     """
     spec = run.spec
     run.acc.pieces.clear()
-    run.acc.ttfs_ms = None
+    run.acc.tts_first_text_ms = None
     replay = text_events(run.sent_text, run.cancel, spec.partial_chars) if run.sent_text else events
     stream = client.tts.stream_websocket(
         _tee_text_events(replay, run.t0, run.acc),
@@ -367,10 +378,10 @@ def _note_first_audio(
     if audio.got_audio:
         return
     audio.got_audio = True
-    audio.ttfa_ms = elapsed_ms(t0)
+    audio.tts_first_audio_ms = elapsed_ms(t0)
     debug(
         "tts.first_audio {:.0f}ms after tts.start ({} bytes)",
-        audio.ttfa_ms,
+        audio.tts_first_audio_ms,
         len(chunk),
     )
     if on_first_audio is not None:
@@ -446,13 +457,13 @@ def _remember_event(ev: Any, acc: SentText, t0: float) -> None:
     if isinstance(ev, TextEvent) and ev.text:
         text = ev.text
         acc.pieces.append(text)
-        if acc.ttfs_ms is None:
-            acc.ttfs_ms = elapsed_ms(t0)
+        if acc.tts_first_text_ms is None:
+            acc.tts_first_text_ms = elapsed_ms(t0)
             debug(
                 "tts.say {!r} ({} chars, first sentence at +{:.0f}ms)",
                 text,
                 len(text),
-                acc.ttfs_ms,
+                acc.tts_first_text_ms,
             )
             return
         debug("tts.say {!r} ({} chars)", text, len(text))
@@ -471,7 +482,7 @@ async def _tee_text_events(
         yield ev
 
 
-def tts_result(run: TurnRun) -> IsolatedResult:
+def tts_result(run: TurnRun) -> TtsResult:
     """Build the result returned after an isolated speak finishes."""
     spec = run.spec
     audio = run.audio
@@ -498,13 +509,13 @@ def tts_result(run: TurnRun) -> IsolatedResult:
         # and a turn that already played must not fail on it.
         output_latency_s=float(getattr(run.sink, "output_latency_s", 0.0) or 0.0),
     )
-    return IsolatedResult(
+    return TtsResult(
         spoken_so_far=spoken,
         bytes_played=played,
         got_audio=audio.got_audio,
         cancelled=run.cancel.is_set(),
-        ttfa_ms=audio.ttfa_ms,
-        llm_ttfs_ms=run.acc.ttfs_ms,
+        tts_first_audio_ms=audio.tts_first_audio_ms,
+        tts_first_text_ms=run.acc.tts_first_text_ms,
         error_status=run.error_status,
         error_message=run.error_message,
         error=(
@@ -626,3 +637,8 @@ def _classify_fish_exc(exc: BaseException) -> tuple[bool, int | None, str]:
         status, message = describe_request_error(exc, httpx.TimeoutException)
         return True, status, with_detail(message, exc)
     return False, None, str(exc)
+
+
+def __getattr__(name: str) -> object:
+    """Resolve a renamed class by its old name, with a ``DeprecationWarning``."""
+    return resolve_alias(__name__, name, _DEPRECATED_ALIASES, globals())

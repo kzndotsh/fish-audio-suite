@@ -33,7 +33,7 @@ from fish_audio_suite_voice.debug import (
 )
 from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexContext
 from fish_audio_suite_voice.hearing import HeardLine
-from fish_audio_suite_voice.live import IsolatedResult, is_cancel_noise
+from fish_audio_suite_voice.live import TtsResult, is_cancel_noise
 from fish_audio_suite_voice.playback import PortAudioMissingError, make_sink
 from fish_audio_suite_voice.wire import is_own_cancel
 
@@ -131,7 +131,7 @@ async def collect_reply(
 def after_speech(
     ctx: DuplexContext,
     snapshot: LatencySnapshot,
-    result: IsolatedResult,
+    result: TtsResult,
     *,
     started: float,
     first_audio_at: float | None = None,
@@ -170,8 +170,8 @@ def after_speech(
     return (
         replace(
             snapshot,
-            tts_first_text_ms=result.llm_ttfs_ms,
-            tts_first_audio_ms=result.ttfa_ms,
+            tts_first_text_ms=result.tts_first_text_ms,
+            tts_first_audio_ms=result.tts_first_audio_ms,
             # From the start of ASR, so it covers the whole wait after you stop talking.
             first_audio_ms=None if first_audio_at is None else (first_audio_at - started) * 1000,
             voice_to_voice_ms=elapsed_ms(started),
@@ -235,9 +235,7 @@ async def speak_reply(
         thread.join(timeout=_BARGE_JOIN_S)
 
 
-def _end_llm_when_tts_stops(
-    task: asyncio.Future[IsolatedResult], llm_cancel: asyncio.Event
-) -> None:
+def _end_llm_when_tts_stops(task: asyncio.Future[TtsResult], llm_cancel: asyncio.Event) -> None:
     # A barge-in or a dead sink ends the reply, so the model should stop too.
     # A Fish failure before any audio leaves the model running. The finished
     # reply is spoken afterwards on the whole-string path.
@@ -303,7 +301,7 @@ async def stream_turn(
     snapshot = LatencySnapshot(asr_ms=heard.asr_ms, trace_id=heard.trace_id)
     tts_task = asyncio.create_task(
         asyncio.to_thread(
-            ctx.tts.speak_stream_isolated,
+            ctx.tts.speak_deltas_isolated,
             pipe,
             sink,
             cancel=cancel,
@@ -349,11 +347,11 @@ async def stream_turn(
         and (result.error_status is not None or bool(result.error_message))
         and not isinstance(result.error, FishAuthError)
     )
-    if failed_early and reply and not ctx.session.stop.is_set():
+    if failed_early and reply and not ctx.session.quit_requested.is_set():
         debug("tts.stream failed before audio, speaking the finished reply")
         retry_cancel = threading.Event()
         ctx.session.turn.bind(retry_cancel, llm_cancel)
-        if ctx.session.stop.is_set():
+        if ctx.session.quit_requested.is_set():
             # Quit landed between the check above and the rebind, so the old
             # cancel flag no longer reaches this turn. Stop is sticky.
             retry_cancel.set()

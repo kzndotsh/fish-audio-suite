@@ -36,7 +36,7 @@ from fish_audio_suite_voice.tune import (
     AecTune,
     BargeTune,
     ListenTune,
-    LlmTune,
+    LlmSettings,
     read_flag,
     read_float,
     read_int,
@@ -66,7 +66,7 @@ class VoiceCliConfig:
 
     Attributes
     ----------
-    llm : LlmTune
+    llm : LlmSettings
         Chat backend and request settings.
     listen : ListenTune
         Microphone capture limits.
@@ -105,7 +105,7 @@ class VoiceCliConfig:
     system_prompt: str
     device: str | None
     asr_model: str = "transcribe-1"
-    llm: LlmTune = field(default_factory=LlmTune)
+    llm: LlmSettings = field(default_factory=LlmSettings)
     listen: ListenTune = field(default_factory=ListenTune)
     barge: BargeTune = field(default_factory=BargeTune)
     aec: AecTune = field(default_factory=AecTune)
@@ -152,7 +152,7 @@ def warn_if_insecure_base(c: VoiceCliConfig) -> bool:
             "unencrypted. Use https unless this host is on a network you trust."
         )
         warned = True
-    if c.llm.key and is_insecure_fish_base(c.llm.base):
+    if c.llm.api_key and is_insecure_fish_base(c.llm.base):
         warn(
             f"[llm] FISH_LLM_BASE host {_base_host(c.llm.base)} is plain http, so the LLM key is sent "
             "unencrypted. Use https unless this host is on a network you trust."
@@ -223,7 +223,7 @@ def load_config() -> VoiceCliConfig:
         system_prompt=os.environ.get("FISH_SYSTEM_PROMPT", d.system_prompt),
         device=os.environ.get("FISH_VOICE_DEVICE"),
         asr_model=_asr_model(d.asr_model),
-        llm=LlmTune.from_env(),
+        llm=LlmSettings.from_env(),
         listen=ListenTune.from_env(),
         barge=BargeTune.from_env(),
         aec=AecTune.from_env(),

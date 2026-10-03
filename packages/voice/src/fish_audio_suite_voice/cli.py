@@ -37,7 +37,7 @@ from fish_audio_suite_voice.playback import (
     playback_key,
 )
 from fish_audio_suite_voice.signals import DuplexSession
-from fish_audio_suite_voice.tune import LlmTune, provider_for_base
+from fish_audio_suite_voice.tune import LlmSettings, provider_for_base
 
 __all__ = [
     "apply_cli_env_files",
@@ -77,11 +77,13 @@ def _parse_device(raw: str | None) -> str | int | None:
         return text
 
 
-def llm_setting_names(llm: LlmTune) -> tuple[str, str]:
+def llm_setting_names(llm: LlmSettings) -> tuple[str, str]:
     """Name the key and model variables the selected provider reads."""
     provider = provider_for_base(llm.base)
     if provider is None:
-        return ("OPENROUTER_API_KEY" if llm.openrouter else "OPENAI_API_KEY"), "OPENROUTER_MODEL"
+        return (
+            "OPENROUTER_API_KEY" if llm.uses_openrouter_sdk else "OPENAI_API_KEY"
+        ), "OPENROUTER_MODEL"
     models = [provider.model_env]
     if provider.name == "openrouter":
         models.append("OPENROUTER_MODEL")
@@ -183,7 +185,7 @@ async def run_loop(c: VoiceCliConfig) -> int:
     if missing is not None:
         return missing
     key_name, model_names = llm_setting_names(c.llm)
-    if not c.llm.key:
+    if not c.llm.api_key:
         return _blocker(f"FISH_LLM_KEY / {key_name}")
     if not c.llm.model:
         return _blocker(f"FISH_LLM_MODEL / {model_names}")

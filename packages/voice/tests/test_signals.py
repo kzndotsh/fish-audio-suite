@@ -34,7 +34,7 @@ def test_install_sigint_uses_the_loop_handler_and_runs_before_first() -> None:
         assert registered["sig"] == signal.SIGINT
         registered["callback"]()
         assert order == ["before"]
-        assert session.stop.is_set()
+        assert session.quit_requested.is_set()
         assert signal.getsignal(signal.SIGINT) == signal.SIG_DFL
     finally:
         signal.signal(signal.SIGINT, previous)
@@ -63,7 +63,7 @@ def test_install_sigint_falls_back_to_signal_signal_without_loop_support(
 
     asyncio.run(scenario())
     assert installed["sig"] == signal.SIGINT
-    assert session.stop.is_set()
+    assert session.quit_requested.is_set()
 
 
 def test_fire_on_a_closed_loop_sets_the_flag_without_raising() -> None:

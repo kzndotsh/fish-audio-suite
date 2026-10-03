@@ -30,9 +30,9 @@ from fish_audio_suite_voice.tts_turn import _HeldClient, run_turn
 from fish_audio_suite_voice.wire import (
     AudioArrival,
     FlushEvent,
-    IsolatedResult,
     SentText,
     TextEvent,
+    TtsResult,
     TurnRun,
     TurnSpec,
     _pump_ws_audio,
@@ -859,7 +859,7 @@ def test_pump_does_not_play_audio_that_arrives_after_cancel(
     asyncio.run(pump())
     assert sink.chunks == [b"\x01\x02"]
     assert run.audio.got_audio is True
-    assert run.audio.ttfa_ms is not None
+    assert run.audio.tts_first_audio_ms is not None
     assert closed == 1
     assert "[tts first audio ttfa]" not in capsys.readouterr().out
 
@@ -1515,7 +1515,7 @@ def test_speak_isolated_takes_cancel_by_keyword_only() -> None:
     with pytest.raises(TypeError):
         cast(Any, tts.speak_isolated)("hi", _Sink(), threading.Event())
     with pytest.raises(TypeError):
-        cast(Any, tts.speak_stream_isolated)(["hi"], _Sink(), threading.Event())
+        cast(Any, tts.speak_deltas_isolated)(["hi"], _Sink(), threading.Event())
 
 
 def test_a_sink_without_output_latency_still_finishes_the_turn() -> None:
@@ -1544,7 +1544,7 @@ def test_a_sink_without_output_latency_still_finishes_the_turn() -> None:
 def test_an_isolated_result_built_from_a_status_gets_the_matching_error() -> None:
     from fish_audio_suite_kit import FishAuthError
 
-    fatal = IsolatedResult("", 0, False, False, None, None, error_status=401, error_message="no")
+    fatal = TtsResult("", 0, False, False, None, None, error_status=401, error_message="no")
     assert isinstance(fatal.error, FishAuthError)
-    plain = IsolatedResult("hi", 4, True, False, 1.0, 1.0)
+    plain = TtsResult("hi", 4, True, False, 1.0, 1.0)
     assert plain.error is None
