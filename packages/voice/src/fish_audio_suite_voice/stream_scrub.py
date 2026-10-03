@@ -1,7 +1,7 @@
 """Incremental scrub for a streamed reply: hold unclosed spans, cut, then send.
 
 It backs ``IsolatedFishTts.speak_deltas``, and through it the duplex loop when
-``FISH_STREAM_TTS`` is on: tokens are cleaned and cut as they arrive, so Fish
+``FISH_VOICE_STREAM_TTS`` is on: tokens are cleaned and cut as they arrive, so Fish
 speaks the first sentence while the model is still writing. With streaming off,
 the loop scrubs the whole reply at once instead.
 """

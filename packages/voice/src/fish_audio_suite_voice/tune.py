@@ -13,7 +13,14 @@ from dataclasses import dataclass, field
 from typing import Final, Literal, Self
 from urllib.parse import urlsplit
 
-from fish_audio_suite_kit import env_token, strip_base
+from fish_audio_suite_kit import (
+    deprecated,
+    deprecated_fields,
+    env_renamed,
+    env_token,
+    strip_base,
+)
+from fish_audio_suite_voice._aliases import resolve_alias
 from fish_audio_suite_voice.debug import warn
 
 __all__ = [
@@ -40,12 +47,13 @@ __all__ = [
     "LlmBackendName",
     "LlmProvider",
     "LlmProviderName",
-    "LlmTune",
-    "openrouter_host",
+    "LlmSettings",
+    "is_openrouter_host",
     "provider_for_base",
     "read_flag",
     "read_float",
     "read_int",
+    "warn_renamed",
 ]
 
 DEFAULT_VAD_AGGRESSIVENESS: Final = 1
@@ -223,6 +231,19 @@ def read_text(name: str, default: str = "") -> str:
     return default if value is None else value.strip()
 
 
+def warn_renamed(message: str) -> None:
+    """Print the kit ``env_renamed`` notice for a renamed key, as a voice warning.
+
+    Parameters
+    ----------
+    message : str
+        ``"<old> is deprecated; use <new>"`` from ``env_renamed``. Every key
+        renamed in 0.2.0 is read as ``env_renamed(new, old, warn=warn_renamed)``,
+        so the old name keeps working for one minor release.
+    """
+    warn(f"fish-voice: {message}")
+
+
 LlmBackendName = Literal["openrouter", "openai"]
 LlmProviderName = Literal["openrouter", "experiential", "custom"]
 
@@ -241,7 +262,7 @@ class LlmProvider:
         The domain the base lives on. Its subdomains count too. A base on this
         host is this provider, which is what decides whose key it may receive.
     key_env : str
-        The only environment variable, besides ``FISH_LLM_KEY``, that may supply
+        The only environment variable, besides ``FISH_LLM_API_KEY``, that may supply
         this provider's key.
     model_env : str
         Optional model for this provider, so two providers can share one ``.env``.
@@ -303,6 +324,12 @@ def provider_for_base(base: str) -> LlmProvider | None:
     return None
 
 
+@deprecated_fields(
+    "0.2.0",
+    silence_frames_end="end_silence_frames",
+    speech_frames_start="start_speech_frames",
+    min_voiced="min_voiced_frames",
+)
 @dataclass(frozen=True, slots=True)
 class ListenTune:
     """Voice-activity and utterance limits for one microphone capture.
@@ -311,25 +338,31 @@ class ListenTune:
     ----------
     vad_aggressiveness : int
         WebRTC VAD mode, 0 to 3.
-    silence_frames_end : int
-        Quiet 30 ms frames that end an utterance.
-    speech_frames_start : int
-        Voiced frames needed to start one.
+    end_silence_frames : int
+        Quiet 30 ms frames that end an utterance. Was ``silence_frames_end``.
+    start_speech_frames : int
+        Voiced frames needed to start one. Was ``speech_frames_start``.
     min_speech_rms : float
         Seed for the adaptive RMS floor, in int16 units.
     pre_pad_frames : int
         Frames kept before the start. Always at least the start run plus the
         impulse extra, or the mic would never trigger.
-    min_voiced : int
-        Voiced frames an utterance needs before it is sent to ASR.
+    min_voiced_frames : int
+        Voiced frames an utterance needs before it is sent to ASR. Was
+        ``min_voiced``.
+
+    Notes
+    -----
+    The old field names still work as keywords and read-only attributes until
+    the next minor release, each with a ``DeprecationWarning``.
     """
 
     vad_aggressiveness: int = DEFAULT_VAD_AGGRESSIVENESS
-    silence_frames_end: int = DEFAULT_SILENCE_FRAMES_END
-    speech_frames_start: int = DEFAULT_SPEECH_FRAMES_START
+    end_silence_frames: int = DEFAULT_SILENCE_FRAMES_END
+    start_speech_frames: int = DEFAULT_SPEECH_FRAMES_START
     min_speech_rms: float = DEFAULT_MIN_SPEECH_RMS
     pre_pad_frames: int = DEFAULT_PRE_PAD_FRAMES
-    min_voiced: int = DEFAULT_MIN_VOICED_FRAMES
+    min_voiced_frames: int = DEFAULT_MIN_VOICED_FRAMES
 
     @classmethod
     def from_env(cls) -> Self:
@@ -341,19 +374,25 @@ class ListenTune:
             Validated tune. A bad value is replaced by its default with a warning.
         """
         start = read_int("FISH_VOICE_SPEECH_FRAMES", DEFAULT_SPEECH_FRAMES_START, lo=1)
-        pad = read_int("FISH_VOICE_PRE_PAD", DEFAULT_PRE_PAD_FRAMES, lo=0)
+        pad = read_int(
+            env_renamed("FISH_VOICE_PRE_PAD_FRAMES", "FISH_VOICE_PRE_PAD", warn=warn_renamed),
+            DEFAULT_PRE_PAD_FRAMES,
+            lo=0,
+        )
         return cls(
             vad_aggressiveness=read_int(
                 "FISH_VOICE_VAD", DEFAULT_VAD_AGGRESSIVENESS, lo=0, hi=VAD_MODE_HI
             ),
-            silence_frames_end=read_int(
+            end_silence_frames=read_int(
                 "FISH_VOICE_SILENCE_FRAMES", DEFAULT_SILENCE_FRAMES_END, lo=1
             ),
-            speech_frames_start=start,
+            start_speech_frames=start,
             min_speech_rms=read_float("FISH_VOICE_MIN_RMS", DEFAULT_MIN_SPEECH_RMS, positive=True),
             pre_pad_frames=max(pad, start + IMPULSE_START_EXTRA),
-            min_voiced=read_int(
-                "FISH_VOICE_MIN_VOICED",
+            min_voiced_frames=read_int(
+                env_renamed(
+                    "FISH_VOICE_MIN_VOICED_FRAMES", "FISH_VOICE_MIN_VOICED", warn=warn_renamed
+                ),
                 DEFAULT_MIN_VOICED_FRAMES,
                 lo=1,
                 hi=MAX_UTTERANCE_FRAMES,
@@ -361,6 +400,7 @@ class ListenTune:
         )
 
 
+@deprecated_fields("0.2.0", over="playing_gain")
 @dataclass(frozen=True, slots=True)
 class BargeTune:
     """Barge-in gate and the pauses around a spoken reply.
@@ -371,8 +411,9 @@ class BargeTune:
         Loud voiced 30 ms frames in a row that interrupt a reply.
     min_rms : float
         Seed for the adaptive barge floor, in int16 units.
-    over : float
+    playing_gain : float
         Floor multiplier while the speaker plays and AEC is off. At least 1.
+        Was ``over``, which still works with a ``DeprecationWarning``.
     bleed_delay_s : float
         Seconds to ignore the mic after TTS starts when AEC is off.
     cooldown_s : float
@@ -381,7 +422,7 @@ class BargeTune:
 
     hit_frames: int = DEFAULT_BARGE_HIT_FRAMES
     min_rms: float = DEFAULT_BARGE_RMS
-    over: float = DEFAULT_BARGE_OVER
+    playing_gain: float = DEFAULT_BARGE_OVER
     bleed_delay_s: float = DEFAULT_BLEED_DELAY_S
     cooldown_s: float = DEFAULT_POST_SPEAK_COOLDOWN_S
 
@@ -397,12 +438,19 @@ class BargeTune:
         return cls(
             hit_frames=read_int("FISH_VOICE_BARGE_FRAMES", DEFAULT_BARGE_HIT_FRAMES, lo=1),
             min_rms=read_float("FISH_VOICE_BARGE_RMS", DEFAULT_BARGE_RMS, positive=True),
-            over=read_float("FISH_VOICE_BARGE_OVER", DEFAULT_BARGE_OVER, lo=1.0),
+            playing_gain=read_float(
+                env_renamed(
+                    "FISH_VOICE_BARGE_PLAYING_GAIN", "FISH_VOICE_BARGE_OVER", warn=warn_renamed
+                ),
+                DEFAULT_BARGE_OVER,
+                lo=1.0,
+            ),
             bleed_delay_s=read_float("FISH_VOICE_BLEED_DELAY", DEFAULT_BLEED_DELAY_S, lo=0.0),
             cooldown_s=read_float("FISH_VOICE_COOLDOWN", DEFAULT_POST_SPEAK_COOLDOWN_S, lo=0.0),
         )
 
 
+@deprecated_fields("0.2.0", bleed_s="bleed_delay_s")
 @dataclass(frozen=True, slots=True)
 class AecTune:
     """In-process echo cancellation.
@@ -413,17 +461,19 @@ class AecTune:
         False passes the mic through untouched.
     wet : float
         Mix of cleaned audio, 0 to 1.
-    bleed_s : float
-        Seconds to ignore the mic after TTS starts when AEC3 is loaded.
+    bleed_delay_s : float
+        Seconds to ignore the mic after TTS starts when AEC3 is loaded. Named
+        like ``BargeTune.bleed_delay_s``. Was ``bleed_s``, which still works
+        with a ``DeprecationWarning``.
     """
 
     enabled: bool = True
     wet: float = DEFAULT_AEC_WET
-    bleed_s: float = DEFAULT_AEC_BLEED_S
+    bleed_delay_s: float = DEFAULT_AEC_BLEED_S
 
     @classmethod
     def from_env(cls) -> Self:
-        """Build from ``FISH_VOICE_AEC``, ``FISH_VOICE_AEC_WET``, ``FISH_VOICE_AEC_BLEED``.
+        """Build from ``FISH_VOICE_AEC``, ``FISH_VOICE_AEC_WET``, ``FISH_VOICE_AEC_BLEED_DELAY``.
 
         Returns
         -------
@@ -433,11 +483,17 @@ class AecTune:
         return cls(
             enabled=read_flag("FISH_VOICE_AEC", default=True),
             wet=read_float("FISH_VOICE_AEC_WET", DEFAULT_AEC_WET, lo=0.0, hi=1.0),
-            bleed_s=read_float("FISH_VOICE_AEC_BLEED", DEFAULT_AEC_BLEED_S, lo=0.0),
+            bleed_delay_s=read_float(
+                env_renamed(
+                    "FISH_VOICE_AEC_BLEED_DELAY", "FISH_VOICE_AEC_BLEED", warn=warn_renamed
+                ),
+                DEFAULT_AEC_BLEED_S,
+                lo=0.0,
+            ),
         )
 
 
-def openrouter_host(base: str) -> bool:
+def is_openrouter_host(base: str) -> bool:
     """Return whether ``base`` is hosted on ``openrouter.ai``.
 
     Parameters
@@ -458,9 +514,10 @@ def openrouter_host(base: str) -> bool:
     return host == "openrouter.ai" or host.endswith(".openrouter.ai")
 
 
+@deprecated_fields("0.2.0", key="api_key")
 @dataclass(frozen=True, slots=True)
-class LlmTune:
-    """Chat backend choice and request settings.
+class LlmSettings:
+    """Chat backend choice and request settings. Was ``LlmTune`` before 0.2.0.
 
     Attributes
     ----------
@@ -469,8 +526,9 @@ class LlmTune:
         (the OpenRouter SDK). Experiential and any other server use ``openai``.
     base : str
         API origin without a trailing slash.
-    key : str
-        Bearer token. Empty until the environment sets one.
+    api_key : str
+        Bearer token. Empty until the environment sets one. Was ``key``, which
+        still works with a ``DeprecationWarning``.
     model : str
         Model id. Empty until the environment sets one.
     temperature : float
@@ -495,7 +553,7 @@ class LlmTune:
 
     backend: LlmBackendName = "openrouter"
     base: str = OPENROUTER_API_BASE
-    key: str = field(default="", repr=False)
+    api_key: str = field(default="", repr=False)
     model: str = ""
     temperature: float = DEFAULT_LLM_TEMPERATURE
     timeout_s: float = DEFAULT_LLM_TIMEOUT_S
@@ -515,9 +573,15 @@ class LlmTune:
         return found.name if found is not None else "custom"
 
     @property
-    def openrouter(self) -> bool:
-        """Whether this tune selects the OpenRouter SDK."""
+    def uses_openrouter_sdk(self) -> bool:
+        """Whether these settings select the OpenRouter SDK backend."""
         return self.backend == "openrouter"
+
+    @property
+    @deprecated("LlmSettings.uses_openrouter_sdk", "0.2.0")
+    def openrouter(self) -> bool:
+        """Deprecated since 0.2.0. Read ``uses_openrouter_sdk`` instead."""
+        return self.uses_openrouter_sdk
 
     @classmethod
     def from_env(cls) -> Self:
@@ -525,7 +589,7 @@ class LlmTune:
 
         Returns
         -------
-        LlmTune
+        LlmSettings
             ``FISH_LLM_PROVIDER`` names a provider and supplies its default base,
             and ``FISH_LLM_BASE`` overrides the base. The provider is then read
             from the final base's host, so a key can only come from the variable
@@ -546,13 +610,13 @@ class LlmTune:
             key_env = provider.key_env
         else:
             key_env = "OPENROUTER_API_KEY" if backend == "openrouter" else "OPENAI_API_KEY"
-        key_names = ["FISH_LLM_KEY"]
+        key_names = [env_renamed("FISH_LLM_API_KEY", "FISH_LLM_KEY", warn=warn_renamed)]
         if provider is None or _is_https(base):
             key_names.append(key_env)
         elif _raw(key_env) is not None:
             warn(
                 f"fish-voice: {key_env} is not used because the base is not https, which would "
-                f"send it unencrypted. Use an https base, or set FISH_LLM_KEY to send a key anyway."
+                f"send it unencrypted. Use an https base, or set FISH_LLM_API_KEY to send a key anyway."
             )
         model_names = [provider.model_env] if provider is not None else []
         model_names.append("FISH_LLM_MODEL")
@@ -561,7 +625,7 @@ class LlmTune:
         return cls(
             backend=backend,
             base=base,
-            key=_first_text(*key_names),
+            api_key=_first_text(*key_names),
             model=_first_token(*model_names),
             temperature=read_float(
                 "FISH_LLM_TEMPERATURE", DEFAULT_LLM_TEMPERATURE, lo=0.0, hi=_LLM_TEMPERATURE_HI
@@ -629,7 +693,7 @@ def _first_base(*names: str) -> str:
 
 
 def _first_text(*names: str) -> str:
-    # A blank value is skipped, so an empty FISH_LLM_KEY from the copied
+    # A blank value is skipped, so an empty FISH_LLM_API_KEY from the copied
     # .env.example does not hide a real provider key.
     for name in names:
         value = os.environ.get(name, "").strip()
@@ -664,4 +728,16 @@ def _backend(base: str) -> LlmBackendName:
                 return "openai"
             return "openrouter"
         warn(f"fish-voice: unknown FISH_LLM_BACKEND={raw!r}, choosing from the base URL")
-    return "openrouter" if openrouter_host(base) else "openai"
+    return "openrouter" if is_openrouter_host(base) else "openai"
+
+
+# Renamed in 0.2.0. The old name still resolves through ``__getattr__`` with a
+# DeprecationWarning and is kept out of ``__all__``.
+_DEPRECATED_ALIASES: Final[dict[str, tuple[str, str]]] = {
+    "LlmTune": ("LlmSettings", "0.2.0"),
+}
+
+
+def __getattr__(name: str) -> object:
+    """Resolve a renamed class by its old name, with a ``DeprecationWarning``."""
+    return resolve_alias(__name__, name, _DEPRECATED_ALIASES, globals())

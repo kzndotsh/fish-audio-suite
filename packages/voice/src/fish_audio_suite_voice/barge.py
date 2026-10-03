@@ -93,7 +93,7 @@ def barge_rms_need(
     min_rms: float,
     *,
     far_playing: bool,
-    over: float,
+    playing_gain: float,
     aec_on: bool = False,
 ) -> float:
     """Raise the barge floor only when speaker bleed is still in the mic.
@@ -102,7 +102,7 @@ def barge_rms_need(
     """
     if far_playing and not aec_on:
         # Below 1 the floor drops while the speaker is on, so bleed trips barge-in.
-        gain = over if over >= 1 else DEFAULT_BARGE_OVER
+        gain = playing_gain if playing_gain >= 1 else DEFAULT_BARGE_OVER
         return min_rms * gain
     return min_rms
 
@@ -148,7 +148,7 @@ class BargeGate:
     The bleed delay is short when AEC3 is loaded and ``BargeTune.bleed_delay_s``
     otherwise, so the speaker's own voice is not treated as the user. The floor
     follows the room: it is the quiet-percentile of recent frames, never below
-    ``min_rms``. It is multiplied by ``over`` while audio is playing only when
+    ``min_rms``. It is multiplied by ``playing_gain`` while audio is playing only when
     AEC is off. A trip keeps the last 20 frames; the next listen starts from
     that clip and skips the post-speak cooldown. Speech is scored with the same
     VAD mode as listen. Hits decay after 3 missed frames so a short gap does
@@ -230,7 +230,7 @@ class BargeGate:
                 far = self.aec.far_end_playing()
                 base_need = floor.value()
                 need = barge_rms_need(
-                    base_need, far_playing=far, over=self.tune.over, aec_on=aec_on
+                    base_need, far_playing=far, playing_gain=self.tune.playing_gain, aec_on=aec_on
                 )
                 _barge_heartbeat(
                     idle_frames=idle_frames,

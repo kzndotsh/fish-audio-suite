@@ -18,8 +18,8 @@ from fish_audio_suite_kit import (
     strip_base,
     utf8_text,
 )
-from fish_audio_suite_voice.debug import debug, env_debug, warn
-from fish_audio_suite_voice.tune import LlmTune
+from fish_audio_suite_voice.debug import debug, debug_enabled, warn
+from fish_audio_suite_voice.tune import LlmSettings
 
 __all__ = [
     "ChatCall",
@@ -45,14 +45,14 @@ class ChatCall:
 
     Notes
     -----
-    ``route_model`` may already include ``:nitro``. ``tune.openrouter`` picks the
+    ``route_model`` may already include ``:nitro``. ``tune.uses_openrouter_sdk`` picks the
     SDK path. ``stats`` is filled while events are consumed and is how a HTTP
     error aborts the stream. ``http`` is the session's pooled client for the
     OpenAI-compatible path.
     """
 
     messages: list[ChatMessage]
-    tune: LlmTune
+    tune: LlmSettings
     route_model: str
     client: Any | None
     http: httpx.AsyncClient | None
@@ -61,12 +61,12 @@ class ChatCall:
     stats: _AbortStats
 
 
-def http_client(tune: LlmTune) -> httpx.AsyncClient:
+def http_client(tune: LlmSettings) -> httpx.AsyncClient:
     """Build the pooled client for the OpenAI-compatible backend.
 
     Parameters
     ----------
-    tune : LlmTune
+    tune : LlmSettings
         Supplies the request timeout.
 
     Returns
@@ -78,12 +78,12 @@ def http_client(tune: LlmTune) -> httpx.AsyncClient:
 
 
 @asynccontextmanager
-async def openrouter_client(tune: LlmTune) -> AsyncGenerator[Any, None]:
+async def openrouter_client(tune: LlmSettings) -> AsyncGenerator[Any, None]:
     """Open an OpenRouter client for the duplex loop.
 
     Parameters
     ----------
-    tune : LlmTune
+    tune : LlmSettings
         Supplies the key, server URL, and attribution fields. An empty
         referer, title, or category is not sent.
 
@@ -102,7 +102,7 @@ async def openrouter_client(tune: LlmTune) -> AsyncGenerator[Any, None]:
     # The SDK writes the key into Authorization and adds Bearer itself.
     # A newline raises before the request is sent, so the reply is empty.
     async with OpenRouter(
-        api_key=bearer(tune.key).removeprefix("Bearer "),
+        api_key=bearer(tune.api_key).removeprefix("Bearer "),
         http_referer=tune.referer or None,
         x_open_router_title=tune.title or None,
         x_open_router_categories=tune.categories or None,
@@ -112,7 +112,7 @@ async def openrouter_client(tune: LlmTune) -> AsyncGenerator[Any, None]:
 
 
 @asynccontextmanager
-async def _or_client_ctx(tune: LlmTune, client: Any | None) -> AsyncGenerator[Any, None]:
+async def _or_client_ctx(tune: LlmSettings, client: Any | None) -> AsyncGenerator[Any, None]:
     if client is not None:
         yield client
         return
@@ -159,7 +159,7 @@ def _send_kwargs(call: ChatCall) -> dict[str, Any]:
         send_kw["session_id"] = call.session_id
     if call.trace_id:
         send_kw["trace"] = {"trace_id": call.trace_id, "trace_name": tune.title or "fish-voice"}
-    if env_debug():
+    if debug_enabled():
         _note_usage(send_kw)
         send_kw["x_open_router_metadata"] = "enabled"
     return _json_ready(send_kw)
@@ -319,7 +319,7 @@ async def _iter_httpx_sse_events(call: ChatCall) -> AsyncIterator[object]:
     # No Referer or X-Title: those attribute an app to OpenRouter and should
     # not leak to an arbitrary chat-completions server.
     headers = {
-        "Authorization": bearer(call.tune.key),
+        "Authorization": bearer(call.tune.api_key),
         "Content-Type": "application/json",
     }
     payload = _chat_body(call, "max_tokens")
@@ -327,7 +327,7 @@ async def _iter_httpx_sse_events(call: ChatCall) -> AsyncIterator[object]:
         # Only the OpenAI-compatible path. The OpenRouter SDK has its own
         # reasoning object, and a provider rejects fields it does not know.
         payload["reasoning_effort"] = call.tune.reasoning_effort
-    if env_debug():
+    if debug_enabled():
         _note_usage(payload)
     async with (
         _pooled(call) as http,
@@ -353,7 +353,7 @@ def chat_events(call: ChatCall) -> AsyncIterator[object]:
     Parameters
     ----------
     call : ChatCall
-        Request. ``tune.openrouter`` selects the SDK.
+        Request. ``tune.uses_openrouter_sdk`` selects the SDK.
 
     Returns
     -------
@@ -361,6 +361,6 @@ def chat_events(call: ChatCall) -> AsyncIterator[object]:
         Raw chat events. ``llm_token_stream`` is the only consumer and applies
         the same field reads to both transports.
     """
-    if call.tune.openrouter:
+    if call.tune.uses_openrouter_sdk:
         return _iter_openrouter_events(call)
     return _iter_httpx_sse_events(call)

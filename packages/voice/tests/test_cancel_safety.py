@@ -9,32 +9,32 @@ from typing import Any
 import pytest
 
 from fish_audio_suite_voice.llm import llm_token_stream
-from fish_audio_suite_voice.wire import own_cancel, reap
+from fish_audio_suite_voice.wire import is_own_cancel, reap
 
 
-def test_own_cancel_needs_a_set_flag() -> None:
+def test_is_own_cancel_needs_a_set_flag() -> None:
     async def check() -> tuple[bool, bool, bool]:
         return (
-            own_cancel(None),
-            own_cancel(asyncio.Event()),
-            own_cancel(threading.Event()),
+            is_own_cancel(None),
+            is_own_cancel(asyncio.Event()),
+            is_own_cancel(threading.Event()),
         )
 
     assert asyncio.run(check()) == (False, False, False)
 
 
-def test_own_cancel_accepts_either_kind_of_event() -> None:
+def test_is_own_cancel_accepts_either_kind_of_event() -> None:
     async def check() -> tuple[bool, bool]:
         aio = asyncio.Event()
         aio.set()
         thread = threading.Event()
         thread.set()
-        return own_cancel(aio), own_cancel(thread)
+        return is_own_cancel(aio), is_own_cancel(thread)
 
     assert asyncio.run(check()) == (True, True)
 
 
-def test_own_cancel_is_false_while_the_task_has_a_pending_cancellation() -> None:
+def test_is_own_cancel_is_false_while_the_task_has_a_pending_cancellation() -> None:
     async def run() -> None:
         flag = asyncio.Event()
         flag.set()
@@ -44,7 +44,7 @@ def test_own_cancel_is_false_while_the_task_has_a_pending_cancellation() -> None
             try:
                 await asyncio.sleep(30)
             except asyncio.CancelledError:
-                seen.append(own_cancel(flag))
+                seen.append(is_own_cancel(flag))
                 raise
 
         task = asyncio.create_task(child())

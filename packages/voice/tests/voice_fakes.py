@@ -1,6 +1,6 @@
 """Typed stand-ins shared by the voice tests.
 
-One barge gate, one sink, one ``IsolatedResult`` factory and the helpers that
+One barge gate, one sink, one ``TtsResult`` factory and the helpers that
 install them, so a test patches objects instead of repeating small fake classes.
 """
 
@@ -16,7 +16,7 @@ import pytest
 
 from fish_audio_suite_kit import FishHttpError
 from fish_audio_suite_voice import reply
-from fish_audio_suite_voice.live import IsolatedFishTts, IsolatedResult
+from fish_audio_suite_voice.live import IsolatedFishTts, TtsResult
 
 
 class FakeGate:
@@ -104,8 +104,8 @@ def set_tts(
     monkeypatch: pytest.MonkeyPatch,
     tts: IsolatedFishTts,
     *,
-    speak: Callable[..., IsolatedResult] | None = None,
-    speak_stream: Callable[..., IsolatedResult] | None = None,
+    speak: Callable[..., TtsResult] | None = None,
+    speak_stream: Callable[..., TtsResult] | None = None,
 ) -> None:
     """Replace the speak methods of an ``IsolatedFishTts`` for one test.
 
@@ -118,12 +118,12 @@ def set_tts(
     speak : Callable or None, optional
         Replaces ``speak_isolated``.
     speak_stream : Callable or None, optional
-        Replaces ``speak_stream_isolated``.
+        Replaces ``speak_deltas_isolated``.
     """
     if speak is not None:
         monkeypatch.setattr(tts, "speak_isolated", speak)
     if speak_stream is not None:
-        monkeypatch.setattr(tts, "speak_stream_isolated", speak_stream)
+        monkeypatch.setattr(tts, "speak_deltas_isolated", speak_stream)
 
 
 def make_result(
@@ -132,19 +132,19 @@ def make_result(
     bytes_played: int = 0,
     got_audio: bool = False,
     cancelled: bool = False,
-    ttfa_ms: float | None = None,
-    llm_ttfs_ms: float | None = None,
+    tts_first_audio_ms: float | None = None,
+    tts_first_text_ms: float | None = None,
     error_status: int | None = None,
     error_message: str | None = None,
-) -> IsolatedResult:
-    """Build an ``IsolatedResult`` by keyword, so reordering its fields cannot change a test."""
-    return IsolatedResult(
+) -> TtsResult:
+    """Build an ``TtsResult`` by keyword, so reordering its fields cannot change a test."""
+    return TtsResult(
         spoken_so_far=spoken,
         bytes_played=bytes_played,
         got_audio=got_audio,
         cancelled=cancelled,
-        ttfa_ms=ttfa_ms,
-        llm_ttfs_ms=llm_ttfs_ms,
+        tts_first_audio_ms=tts_first_audio_ms,
+        tts_first_text_ms=tts_first_text_ms,
         error_status=error_status,
         error_message=error_message,
         error=(

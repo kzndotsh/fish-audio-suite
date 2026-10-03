@@ -37,10 +37,10 @@ def test_effective_bleed_without_processor(monkeypatch: pytest.MonkeyPatch) -> N
     off = EchoCanceller(AecTune(enabled=False))
     assert off.effective_bleed_s(0.9) == 0.9
     assert off.effective_bleed_s(-1) == 0.0
-    on = EchoCanceller(AecTune(bleed_s=DEFAULT_AEC_BLEED_S))
+    on = EchoCanceller(AecTune(bleed_delay_s=DEFAULT_AEC_BLEED_S))
     monkeypatch.setattr(on, "load", object)
     assert on.effective_bleed_s(0.9) == DEFAULT_AEC_BLEED_S
-    negative = EchoCanceller(AecTune(bleed_s=-1.0))
+    negative = EchoCanceller(AecTune(bleed_delay_s=-1.0))
     monkeypatch.setattr(negative, "load", object)
     assert negative.effective_bleed_s(0.9) == DEFAULT_AEC_BLEED_S
 

@@ -26,16 +26,16 @@ from fish_audio_suite_voice.debug import (
     console_print,
     conversation,
     debug,
+    debug_enabled,
     end_reply_line,
-    env_debug,
     warn,
     write_reply_token,
 )
-from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexState
+from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexContext
 from fish_audio_suite_voice.hearing import HeardLine
-from fish_audio_suite_voice.live import IsolatedResult, is_cancel_noise
+from fish_audio_suite_voice.live import TtsResult, is_cancel_noise
 from fish_audio_suite_voice.playback import PortAudioMissingError, make_sink
-from fish_audio_suite_voice.wire import own_cancel
+from fish_audio_suite_voice.wire import is_own_cancel
 
 __all__ = [
     "after_speech",
@@ -87,7 +87,7 @@ class _TokenPipe:
 
 
 async def collect_reply(
-    loop: DuplexState,
+    ctx: DuplexContext,
     *,
     llm_cancel: asyncio.Event,
     trace_id: str | None,
@@ -99,9 +99,9 @@ async def collect_reply(
     ttft_ms: float | None = None
     # Debug lines print while the reply streams. Buffering the reply keeps it
     # on one line instead of split around them.
-    live = not env_debug()
+    live = not debug_enabled()
     try:
-        async for tok in loop.backend.stream(loop.history, cancel=llm_cancel, trace_id=trace_id):
+        async for tok in ctx.backend.stream(ctx.history, cancel=llm_cancel, trace_id=trace_id):
             if ttft_ms is None:
                 ttft_ms = elapsed_ms(started)
                 debug("llm.first_token {:.0f}ms", ttft_ms)
@@ -115,7 +115,7 @@ async def collect_reply(
     except asyncio.CancelledError:
         # Our own cancel flag ends the reply early. Any other cancellation
         # (asyncio.timeout, a task group, an outer cancel) must propagate.
-        if not own_cancel(llm_cancel):
+        if not is_own_cancel(llm_cancel):
             raise
     except (BaseExceptionGroup, RuntimeError) as e:
         if not is_cancel_noise(e, cancelled=llm_cancel.is_set()):
@@ -129,16 +129,16 @@ async def collect_reply(
 
 
 def after_speech(
-    loop: DuplexState,
+    ctx: DuplexContext,
     snapshot: LatencySnapshot,
-    result: IsolatedResult,
+    result: TtsResult,
     *,
     started: float,
     first_audio_at: float | None = None,
 ) -> tuple[LatencySnapshot, int | None]:
     """Record what was heard in history and fold the TTS result into the timings."""
-    c = loop.config
-    history = loop.history
+    c = ctx.config
+    history = ctx.history
     notes = ["cancelled" if result.cancelled else "", "no audio" if not result.got_audio else ""]
     if result.error_status is not None or result.error_message:
         notes.append(f"error={result.error_status} {result.error_message or ''}".strip())
@@ -170,8 +170,8 @@ def after_speech(
     return (
         replace(
             snapshot,
-            tts_first_text_ms=result.llm_ttfs_ms,
-            tts_first_audio_ms=result.ttfa_ms,
+            tts_first_text_ms=result.tts_first_text_ms,
+            tts_first_audio_ms=result.tts_first_audio_ms,
             # From the start of ASR, so it covers the whole wait after you stop talking.
             first_audio_ms=None if first_audio_at is None else (first_audio_at - started) * 1000,
             voice_to_voice_ms=elapsed_ms(started),
@@ -181,7 +181,7 @@ def after_speech(
 
 
 async def speak_reply(
-    loop: DuplexState,
+    ctx: DuplexContext,
     reply: str,
     cancel: threading.Event,
     snapshot: LatencySnapshot,
@@ -190,27 +190,27 @@ async def speak_reply(
     trace_id: str | None,
 ) -> tuple[LatencySnapshot, int | None]:
     """Speak a finished reply through one isolated TTS turn."""
-    c = loop.config
+    c = ctx.config
     scrubbed = ensure_lead_cue(normalize_cues(scrub_tts(reply), lead=c.mood_lead))
     if is_tts_junk(scrubbed, drop_narration=c.drop_narration):
         console_print("  (skip junk TTS)", flush=True)
         return snapshot, None
-    barge = BargeGate(device=loop.device, tune=c.barge, aec=loop.session.aec)
+    barge = BargeGate(device=ctx.device, tune=c.barge, aec=ctx.session.aec)
     thread = barge.start_after_bleed(cancel)
     sink = make_sink(
         c.playback,
         path=None,
         sample_rate=c.sample_rate,
-        device=loop.device,
+        device=ctx.device,
         cancel=cancel,
-        aec=loop.session.aec,
+        aec=ctx.session.aec,
     )
-    loop.tts.trace_headers = {"traceparent": make_traceparent(trace_id=trace_id)}
+    ctx.tts.trace_headers = {"traceparent": make_traceparent(trace_id=trace_id)}
     try:
         try:
             first_audio: list[float] = []
             result = await asyncio.to_thread(
-                loop.tts.speak_isolated,
+                ctx.tts.speak_isolated,
                 scrubbed,
                 sink,
                 cancel=cancel,
@@ -220,9 +220,9 @@ async def speak_reply(
             warn(str(exc))
             return snapshot, EXIT_FATAL
         if result.cancelled and barge.captured:
-            loop.barge_prefix = barge.captured
+            ctx.barge_prefix = barge.captured
         return after_speech(
-            loop,
+            ctx,
             snapshot,
             result,
             started=started,
@@ -235,9 +235,7 @@ async def speak_reply(
         thread.join(timeout=_BARGE_JOIN_S)
 
 
-def _end_llm_when_tts_stops(
-    task: asyncio.Future[IsolatedResult], llm_cancel: asyncio.Event
-) -> None:
+def _end_llm_when_tts_stops(task: asyncio.Future[TtsResult], llm_cancel: asyncio.Event) -> None:
     # A barge-in or a dead sink ends the reply, so the model should stop too.
     # A Fish failure before any audio leaves the model running. The finished
     # reply is spoken afterwards on the whole-string path.
@@ -251,7 +249,7 @@ def _end_llm_when_tts_stops(
 
 
 async def stream_turn(
-    loop: DuplexState,
+    ctx: DuplexContext,
     heard: HeardLine,
     cancel: threading.Event,
     llm_cancel: asyncio.Event,
@@ -260,7 +258,7 @@ async def stream_turn(
 
     Parameters
     ----------
-    loop : DuplexState
+    ctx : DuplexContext
         Session state.
     heard : HeardLine
         The accepted user line.
@@ -281,9 +279,9 @@ async def stream_turn(
     speaker. A Fish failure before any audio falls back to speaking the
     finished reply.
     """
-    c = loop.config
+    c = ctx.config
     pipe = _TokenPipe()
-    barge = BargeGate(device=loop.device, tune=c.barge, aec=loop.session.aec)
+    barge = BargeGate(device=ctx.device, tune=c.barge, aec=ctx.session.aec)
     barge_threads: list[threading.Thread] = []
     first_audio: list[float] = []
 
@@ -295,15 +293,15 @@ async def stream_turn(
         c.playback,
         path=None,
         sample_rate=c.sample_rate,
-        device=loop.device,
+        device=ctx.device,
         cancel=cancel,
-        aec=loop.session.aec,
+        aec=ctx.session.aec,
     )
-    loop.tts.trace_headers = {"traceparent": make_traceparent(trace_id=heard.trace_id)}
+    ctx.tts.trace_headers = {"traceparent": make_traceparent(trace_id=heard.trace_id)}
     snapshot = LatencySnapshot(asr_ms=heard.asr_ms, trace_id=heard.trace_id)
     tts_task = asyncio.create_task(
         asyncio.to_thread(
-            loop.tts.speak_stream_isolated,
+            ctx.tts.speak_deltas_isolated,
             pipe,
             sink,
             cancel=cancel,
@@ -315,7 +313,7 @@ async def stream_turn(
     try:
         try:
             reply, ttft_ms = await collect_reply(
-                loop,
+                ctx,
                 llm_cancel=llm_cancel,
                 trace_id=heard.trace_id,
                 started=time.perf_counter(),
@@ -333,7 +331,7 @@ async def stream_turn(
             warn(str(exc))
             return snapshot, EXIT_FATAL
         if result.cancelled and barge.captured:
-            loop.barge_prefix = barge.captured
+            ctx.barge_prefix = barge.captured
     finally:
         cancel.set()
         for thread in barge_threads:
@@ -349,20 +347,20 @@ async def stream_turn(
         and (result.error_status is not None or bool(result.error_message))
         and not isinstance(result.error, FishAuthError)
     )
-    if failed_early and reply and not loop.session.stop.is_set():
+    if failed_early and reply and not ctx.session.quit_requested.is_set():
         debug("tts.stream failed before audio, speaking the finished reply")
         retry_cancel = threading.Event()
-        loop.session.turn.bind(retry_cancel, llm_cancel)
-        if loop.session.stop.is_set():
+        ctx.session.turn.bind(retry_cancel, llm_cancel)
+        if ctx.session.quit_requested.is_set():
             # Quit landed between the check above and the rebind, so the old
             # cancel flag no longer reaches this turn. Stop is sticky.
             retry_cancel.set()
             return snapshot, None
         return await speak_reply(
-            loop, reply, retry_cancel, snapshot, started=heard.started, trace_id=heard.trace_id
+            ctx, reply, retry_cancel, snapshot, started=heard.started, trace_id=heard.trace_id
         )
     return after_speech(
-        loop,
+        ctx,
         snapshot,
         result,
         started=heard.started,

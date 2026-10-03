@@ -6,10 +6,17 @@ set -euo pipefail
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$root"
 example="$root/.env.example"
-local_env="${FISH_VOICE_ENV:-$root/.env}"
+# FISH_VOICE_ENV_FILE names the env file. FISH_VOICE_ENV is its pre-0.2.0 name,
+# still honored with a warning when the new one is unset.
+env_file="${FISH_VOICE_ENV_FILE:-}"
+if [[ -z "$env_file" && -n "${FISH_VOICE_ENV:-}" ]]; then
+  echo "dev.sh: FISH_VOICE_ENV is deprecated; use FISH_VOICE_ENV_FILE" >&2
+  env_file="$FISH_VOICE_ENV"
+fi
+local_env="${env_file:-$root/.env}"
 if [[ ! -f "$local_env" ]]; then
   cp "$example" "$local_env"
-  echo "wrote $local_env — set FISH_API_KEY, FISH_VOICE_ID, and for duplex FISH_LLM_KEY + FISH_LLM_MODEL" >&2
+  echo "wrote $local_env — set FISH_API_KEY, FISH_VOICE_ID, and for duplex FISH_LLM_API_KEY + FISH_LLM_MODEL" >&2
   exit 2
 fi
 

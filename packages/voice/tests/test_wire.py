@@ -25,21 +25,21 @@ from fish_audio_suite_kit import (
 )
 from fish_audio_suite_voice.live import IsolatedFishTts
 from fish_audio_suite_voice.playback import PlaybackSink
-from fish_audio_suite_voice.session import _HeldClient, run_turn
 from fish_audio_suite_voice.stream_scrub import delta_events
+from fish_audio_suite_voice.tts_turn import _HeldClient, run_turn
 from fish_audio_suite_voice.wire import (
-    EventAcc,
+    AudioArrival,
     FlushEvent,
-    Heard,
-    IsolatedResult,
+    SentText,
     TextEvent,
+    TtsResult,
     TurnRun,
     TurnSpec,
     _pump_ws_audio,
     is_cancel_noise,
-    isolated_result,
     quiet_shutdown,
     text_events,
+    tts_result,
     turn_failure,
 )
 
@@ -83,9 +83,9 @@ def _run() -> tuple[TurnRun, _Sink]:
         sink=sink,
         cancel=threading.Event(),
         sent_text="",
-        acc=EventAcc(),
+        acc=SentText(),
         t0=time.perf_counter(),
-        audio=Heard(),
+        audio=AudioArrival(),
     )
     return run, sink
 
@@ -759,7 +759,7 @@ def test_turn_failure_retries_only_before_audio(capsys: pytest.CaptureFixture[st
     assert retryable.retry is True
     heard = turn_failure(slow, attempt=0, sent_text="hello", got_audio=True, cancel=cancel)
     assert heard.retry is False
-    assert heard.err_status == 429
+    assert heard.error_status == 429
     empty = turn_failure(slow, attempt=0, sent_text="", got_audio=False, cancel=cancel)
     assert empty.retry is False
     last = turn_failure(
@@ -773,7 +773,7 @@ def test_turn_failure_retries_only_before_audio(capsys: pytest.CaptureFixture[st
     cancel.set()
     barged = turn_failure(slow, attempt=0, sent_text="hello", got_audio=False, cancel=cancel)
     assert barged.retry is False
-    assert barged.err_status is None
+    assert barged.error_status is None
     assert "no audio" not in capsys.readouterr().err
 
 
@@ -797,7 +797,7 @@ def test_turn_failure_classifies_socket_validation_and_groups(
         cancel=cancel,
     )
     assert invalid.retry is False
-    assert invalid.err_status == 400
+    assert invalid.error_status == 400
     grouped = turn_failure(
         BaseExceptionGroup("turn", [RateLimitError(503, "down", None)]),
         attempt=0,
@@ -859,7 +859,7 @@ def test_pump_does_not_play_audio_that_arrives_after_cancel(
     asyncio.run(pump())
     assert sink.chunks == [b"\x01\x02"]
     assert run.audio.got_audio is True
-    assert run.audio.ttfa_ms is not None
+    assert run.audio.tts_first_audio_ms is not None
     assert closed == 1
     assert "[tts first audio ttfa]" not in capsys.readouterr().out
 
@@ -886,7 +886,7 @@ def test_run_turn_closes_the_sink_when_start_fails(
             del kill
             self.finished = True
 
-    monkeypatch.setattr("fish_audio_suite_voice.session.send_turn", send_turn)
+    monkeypatch.setattr("fish_audio_suite_voice.tts_turn.send_turn", send_turn)
     run, _sink = _run()
     sink = _Boom()
 
@@ -919,8 +919,8 @@ def test_run_turn_closes_the_client_when_finish_fails(
             del kill
             raise RuntimeError("disk")
 
-    monkeypatch.setattr("fish_audio_suite_voice.session.send_turn", send_turn)
-    monkeypatch.setattr("fish_audio_suite_voice.session._HeldClient.close", spy_close)
+    monkeypatch.setattr("fish_audio_suite_voice.tts_turn.send_turn", send_turn)
+    monkeypatch.setattr("fish_audio_suite_voice.tts_turn._HeldClient.close", spy_close)
     run, _sink = _run()
 
     async def no_events():
@@ -960,8 +960,8 @@ def test_client_close_after_audio_does_not_forget_the_line(
         await original(self)
         raise BaseExceptionGroup("close", [asyncio.CancelledError()])
 
-    monkeypatch.setattr("fish_audio_suite_voice.session.send_turn", send_turn)
-    monkeypatch.setattr("fish_audio_suite_voice.session.AsyncFishAudio.close", boom_close)
+    monkeypatch.setattr("fish_audio_suite_voice.tts_turn.send_turn", send_turn)
+    monkeypatch.setattr("fish_audio_suite_voice.tts_turn.AsyncFishAudio.close", boom_close)
     tts = IsolatedFishTts(api_key="k", voice_id="v", sample_rate=16_000, audio_format="pcm")
 
     class Sink:
@@ -996,7 +996,7 @@ def test_run_turn_stops_when_the_api_key_cannot_be_a_header(
     async def send_turn(*_args: object, **_kwargs: object) -> None:
         called["n"] += 1
 
-    monkeypatch.setattr("fish_audio_suite_voice.session.send_turn", send_turn)
+    monkeypatch.setattr("fish_audio_suite_voice.tts_turn.send_turn", send_turn)
     run, sink = _run()
     spec = replace(run.spec, api_key="sk-\nbad")
 
@@ -1038,7 +1038,7 @@ def test_run_turn_retries_before_audio_and_stops_after(
         run.sink.write(b"abcd")
 
     monkeypatch.setattr("fish_audio_suite_voice.pause.asyncio.sleep", fake_sleep)
-    monkeypatch.setattr("fish_audio_suite_voice.session.send_turn", send_turn)
+    monkeypatch.setattr("fish_audio_suite_voice.tts_turn.send_turn", send_turn)
     run, sink = _run()
 
     async def no_events():
@@ -1069,7 +1069,7 @@ def test_run_turn_retries_before_audio_and_stops_after(
         run.audio.got_audio = True
         raise RateLimitError(429, "slow", None)
 
-    monkeypatch.setattr("fish_audio_suite_voice.session.send_turn", fail_after_audio)
+    monkeypatch.setattr("fish_audio_suite_voice.tts_turn.send_turn", fail_after_audio)
     run, sink = _run()
     failed = asyncio.run(
         run_turn(run.spec, no_events(), sink, threading.Event(), sent_text="hello")
@@ -1097,7 +1097,7 @@ def test_run_turn_retries_before_audio_and_stops_after(
         run.sink.write(b"\x00" * 33_075)
         raise WebSocketError("dropped")
 
-    monkeypatch.setattr("fish_audio_suite_voice.session.send_turn", drop_after_audio)
+    monkeypatch.setattr("fish_audio_suite_voice.tts_turn.send_turn", drop_after_audio)
     run, sink = _run()
     dropped = asyncio.run(
         run_turn(
@@ -1135,7 +1135,7 @@ def test_cancel_scope_after_audio_keeps_only_the_played_words(
             "Attempted to exit cancel scope in a different task than it was entered in"
         )
 
-    monkeypatch.setattr("fish_audio_suite_voice.session.send_turn", send_turn)
+    monkeypatch.setattr("fish_audio_suite_voice.tts_turn.send_turn", send_turn)
     run, sink = _run()
 
     async def no_events():
@@ -1178,7 +1178,7 @@ def test_retry_backoff_does_not_replay_after_cancel(
         cancel.set()
 
     monkeypatch.setattr("fish_audio_suite_voice.pause.asyncio.sleep", fake_sleep)
-    monkeypatch.setattr("fish_audio_suite_voice.session.send_turn", send_turn)
+    monkeypatch.setattr("fish_audio_suite_voice.tts_turn.send_turn", send_turn)
     run, sink = _run()
 
     async def no_events():
@@ -1227,7 +1227,7 @@ def test_cancelled_encoded_turn_leaves_history_empty() -> None:
     run.audio.got_audio = True
     run.cancel.set()
     sink.chunks.append(b"x" * 100)
-    result = isolated_result(run)
+    result = tts_result(run)
     assert result.cancelled
     assert result.spoken_so_far == ""
 
@@ -1238,12 +1238,12 @@ def test_spoken_estimate_uses_speed_and_the_sinks_output_latency() -> None:
     run.audio.got_audio = True
     run.cancel.set()
     sink.chunks.append(b"\x00" * 44100 * 2)  # one second at 44.1 kHz int16
-    base = isolated_result(run).spoken_so_far
+    base = tts_result(run).spoken_so_far
     sink.output_latency_s = 0.5
-    buffered = isolated_result(run).spoken_so_far
+    buffered = tts_result(run).spoken_so_far
     assert 0 < len(buffered) < len(base)
     sink.output_latency_s = 2.0
-    assert isolated_result(run).spoken_so_far == ""
+    assert tts_result(run).spoken_so_far == ""
 
 
 def test_cancel_noise_checks_types_and_the_cancel_flag_before_message_text(
@@ -1464,7 +1464,7 @@ def test_pump_waits_for_the_cancelled_reader_to_unwind() -> None:
 def test_a_keyboard_interrupt_in_a_turn_is_not_treated_as_a_fish_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from fish_audio_suite_voice.session import _HeldClient, _one_attempt, _Turn
+    from fish_audio_suite_voice.tts_turn import _HeldClient, _one_attempt, _Turn
 
     run, _sink = _run()
     held = _HeldClient()
@@ -1473,7 +1473,7 @@ def test_a_keyboard_interrupt_in_a_turn_is_not_treated_as_a_fish_failure(
     async def interrupted(*_args: Any, **_kwargs: Any) -> None:
         raise KeyboardInterrupt
 
-    monkeypatch.setattr("fish_audio_suite_voice.session.send_turn", interrupted)
+    monkeypatch.setattr("fish_audio_suite_voice.tts_turn.send_turn", interrupted)
     turn = _Turn(run=run, held=held, headers={})
     with pytest.raises(KeyboardInterrupt):
         asyncio.run(_one_attempt(turn, text_events("hi", run.cancel, 40), 0))
@@ -1482,7 +1482,7 @@ def test_a_keyboard_interrupt_in_a_turn_is_not_treated_as_a_fish_failure(
 def test_run_isolated_does_not_swallow_a_keyboard_interrupt_but_still_closes_the_loop(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from fish_audio_suite_voice.session import run_isolated
+    from fish_audio_suite_voice.tts_turn import run_isolated
 
     seen: list[asyncio.AbstractEventLoop] = []
 
@@ -1490,7 +1490,7 @@ def test_run_isolated_does_not_swallow_a_keyboard_interrupt_but_still_closes_the
         seen.append(loop)
         raise KeyboardInterrupt
 
-    monkeypatch.setattr("fish_audio_suite_voice.session.quiet_shutdown", interrupted_shutdown)
+    monkeypatch.setattr("fish_audio_suite_voice.tts_turn.quiet_shutdown", interrupted_shutdown)
 
     async def work() -> Any:
         return None
@@ -1515,7 +1515,7 @@ def test_speak_isolated_takes_cancel_by_keyword_only() -> None:
     with pytest.raises(TypeError):
         cast(Any, tts.speak_isolated)("hi", _Sink(), threading.Event())
     with pytest.raises(TypeError):
-        cast(Any, tts.speak_stream_isolated)(["hi"], _Sink(), threading.Event())
+        cast(Any, tts.speak_deltas_isolated)(["hi"], _Sink(), threading.Event())
 
 
 def test_a_sink_without_output_latency_still_finishes_the_turn() -> None:
@@ -1537,14 +1537,14 @@ def test_a_sink_without_output_latency_still_finishes_the_turn() -> None:
     run, _sink = _run()
     # The cast is the point: this sink deliberately lacks a member of the protocol.
     run.sink = cast("PlaybackSink", OldSink())
-    result = isolated_result(run)
+    result = tts_result(run)
     assert result.bytes_played == 0
 
 
 def test_an_isolated_result_built_from_a_status_gets_the_matching_error() -> None:
     from fish_audio_suite_kit import FishAuthError
 
-    fatal = IsolatedResult("", 0, False, False, None, None, error_status=401, error_message="no")
+    fatal = TtsResult("", 0, False, False, None, None, error_status=401, error_message="no")
     assert isinstance(fatal.error, FishAuthError)
-    plain = IsolatedResult("hi", 4, True, False, 1.0, 1.0)
+    plain = TtsResult("hi", 4, True, False, 1.0, 1.0)
     assert plain.error is None

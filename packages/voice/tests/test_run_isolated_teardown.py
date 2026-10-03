@@ -10,8 +10,8 @@ import anyio
 import pytest
 from voice_fakes import make_result
 
-from fish_audio_suite_voice.live import IsolatedResult
-from fish_audio_suite_voice.session import run_isolated
+from fish_audio_suite_voice.live import TtsResult
+from fish_audio_suite_voice.tts_turn import run_isolated
 
 
 async def _ws_like() -> AsyncIterator[int]:
@@ -33,7 +33,7 @@ def test_an_abandoned_task_group_iterator_is_not_closed_at_teardown(
 ) -> None:
     result = make_result()
 
-    async def turn() -> IsolatedResult:
+    async def turn() -> TtsResult:
         events = _ws_like()
         await anext(events)  # a cancelled turn stops iterating mid-stream
         return result
