@@ -107,7 +107,7 @@ def _word_prefix(text: str, n: int) -> str:
         # speaker had already played, so the next turn said it again.
         stripped = cut.strip()
         if any(_cjk_char(ch) for ch in stripped):
-            if _cjk_char(stripped[-1]) or not _extends_tail(stripped, text[n]):
+            if _cjk_char(stripped[-1]) or _boundary_finished(stripped, text[n]):
                 return stripped
             # The cut is inside a Latin word that follows CJK text. Keep the
             # CJK and drop the half word, or history records "你好H".
@@ -118,7 +118,7 @@ def _word_prefix(text: str, n: int) -> str:
         # "Hello there" cut on the last letter of "Hello" has no space yet.
         # The next character is the space, so that word was played. Dropping
         # it made the next turn say "Hello" again.
-        if stripped and not _extends_tail(stripped, text[n]):
+        if _boundary_finished(stripped, text[n]):
             return stripped
         # "Hello.Friend" has no space yet. The cut is inside "Friend",
         # so the finished "Hello." was dropped and the next turn said it again.
@@ -130,12 +130,12 @@ def _word_prefix(text: str, n: int) -> str:
     # "Hello there" has finished "there" when the next character is a space
     # or a period. Stopping at the space before it made the next turn say
     # "there" again. "Hello 你" has finished "你" even when "好" is still coming.
-    if not _extends_tail(tail, text[n]):
+    if _boundary_finished(tail, text[n]):
         return f"{head} {tail}".strip()
     # "there.Frien" still extends into "d", but "there." was already played.
     # Returning only "Hello" made the next turn say "there" again.
     for index in range(len(tail) - 1, 0, -1):
-        if not _extends_tail(tail[:index], tail[index]):
+        if _boundary_finished(tail[:index], tail[index]):
             return f"{head} {tail[:index]}".strip()
     extra = []
     for ch in tail:

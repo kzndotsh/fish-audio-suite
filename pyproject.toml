@@ -19,6 +19,7 @@ dev = [
     "pydoclint>=0.7.3",
 ]
 test = [
+    "hypothesis>=6.140",
     "pytest-cov>=7",
     "pytest-randomly>=3.16",
     "pytest-socket>=0.7",
@@ -218,7 +219,7 @@ max-branches = 15
 "packages/kit/src/fish_audio_suite_kit/{asr_text,_charsets,cues,cuts,dialogue,_linear,scrub_markdown,stream_holds}.py" = ["RUF001"]
 "packages/voice/src/fish_audio_suite_voice/{spoken,stream_scrub}.py" = ["RUF001"]
 "packages/kit/tests/{test_asr_text,test_cues,test_dialogue,test_scrub_tts}.py" = ["RUF001"]
-"packages/voice/tests/test_wire.py" = ["RUF001"]
+"packages/voice/tests/{test_wire,test_spoken_properties}.py" = ["RUF001"]
 # These modules import the optional extras (sounddevice, webrtcvad, pywebrtc_audio,
 # openrouter) inside functions, so the base install imports without them.
 "packages/voice/src/fish_audio_suite_voice/{aec,barge,listen,llm,playback,transports}.py" = ["PLC0415"]

@@ -16,3 +16,6 @@ result-*
 *.mp3
 .vscode/settings.json
 .env
+
+# Hypothesis example database
+.hypothesis/
