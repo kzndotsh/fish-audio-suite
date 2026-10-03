@@ -5,6 +5,7 @@ self:
   config,
   lib,
   pkgs,
+  utils,
   ...
 }:
 let
@@ -109,9 +110,11 @@ in
       type = lib.types.listOf lib.types.path;
       default = [ ];
       description = ''
-        Files providing `FISH_API_KEY` (and optional `FISH_*` knobs). A file
-        that sets `FISH_PROXY_PORT` overrides `port` for the service but not
-        for the firewall or the published container port.
+        Files providing `FISH_API_KEY` (and optional `FISH_*` knobs). With the
+        `native` backend a file cannot change `FISH_PROXY_HOST`, `FISH_PROXY_PORT`
+        or `FISH_PROXY_GRACEFUL_SHUTDOWN`: the module sets them on the command
+        line. With `oci`, the container runtime decides which source wins, so
+        keep those three out of the files.
       '';
     };
   };
@@ -145,7 +148,16 @@ in
             FISH_PROXY_HOST = cfg.host;
           };
           serviceConfig = {
-            ExecStart = lib.getExe' cfg.package "fish-audio-suite-proxy";
+            # systemd lets an EnvironmentFile override Environment=, so the three
+            # values the firewall and the stop timeout depend on are set through
+            # `env`, which runs after the files are loaded and always wins.
+            ExecStart = utils.escapeSystemdExecArgs [
+              (lib.getExe' pkgs.coreutils "env")
+              "FISH_PROXY_HOST=${cfg.host}"
+              "FISH_PROXY_PORT=${portStr}"
+              "FISH_PROXY_GRACEFUL_SHUTDOWN=${toString cfg.gracefulShutdownSeconds}"
+              (lib.getExe' cfg.package "fish-audio-suite-proxy")
+            ];
             EnvironmentFile = cfg.environmentFiles;
             DynamicUser = true;
             Restart = "on-failure";

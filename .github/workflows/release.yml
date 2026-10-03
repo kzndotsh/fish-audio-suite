@@ -27,7 +27,9 @@ jobs:
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           python-version: "3.12"
-          enable-cache: true
+          # A cache restored in a tag-triggered release could put poisoned
+          # files into the published wheels, so release jobs never use one.
+          enable-cache: false
       - name: Sync
         run: uv sync --frozen --all-packages --extra cli --group dev --group test
       - name: Ruff check
@@ -42,9 +44,6 @@ jobs:
         env:
           PYTHONDONTWRITEBYTECODE: "1"
         run: uv run pytest
-      - name: Prune uv cache for CI
-        if: always()
-        run: uv cache prune --ci
   build:
     name: Build
     runs-on: ubuntu-latest
@@ -60,6 +59,7 @@ jobs:
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           python-version: "3.12"
+          enable-cache: false
       - name: Check the tag matches the package versions
         env:
           TAG: ${{ github.ref_name }}
