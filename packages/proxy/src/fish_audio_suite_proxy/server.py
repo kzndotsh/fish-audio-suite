@@ -45,14 +45,14 @@ from fish_audio_suite_kit import (
 from fish_audio_suite_proxy.errors import (
     ProxyError,
     json_error,
-    json_from_fish_error,
+    json_from_call_failure,
     proxy_error_response,
     read_json_object,
 )
 from fish_audio_suite_proxy.fields import (
-    explicit_bool,
     pcm_sample_rate,
     prepare_tts_text,
+    read_flag,
     silent_speech,
     traced_model_headers,
 )
@@ -61,10 +61,10 @@ from fish_audio_suite_proxy.models import catalog_ids, resolve_asr_model
 from fish_audio_suite_proxy.settings import ProxySettings, load_settings
 from fish_audio_suite_proxy.speech import pack_tts, speech_controls
 from fish_audio_suite_proxy.transcribe import (
-    asr_response_format,
     asr_upload,
     caption_cues,
-    read_asr,
+    read_asr_format,
+    read_asr_request,
     transcription_body,
 )
 from fish_audio_suite_proxy.upstream import RetryPolicy, fish_send
@@ -180,7 +180,7 @@ def _unauthorized(request: Request) -> JSONResponse | None:
 
 def _spoken_line(body: dict[str, Any], settings: ProxySettings) -> tuple[str, str]:
     raw_input = body.get("input", "") or ""
-    dialogue_only = explicit_bool(body, "dialogue_only", default=settings.tts_dialogue_only)
+    dialogue_only = read_flag(body, "dialogue_only", default=settings.tts_dialogue_only)
     spoken = prepare_tts_text(
         raw_input,
         dialogue_only=dialogue_only,
@@ -371,7 +371,7 @@ async def transcriptions(request: Request) -> Response | dict[str, Any]:
         return refused
     settings = _settings(request)
     defaults = settings.defaults
-    inbound = await read_asr(request)
+    inbound = await read_asr_request(request)
     if isinstance(inbound, JSONResponse):
         return inbound
     asr_model = resolve_asr_model(inbound.model, defaults.asr_model)
@@ -380,7 +380,7 @@ async def transcriptions(request: Request) -> Response | dict[str, Any]:
         return client
 
     granularities = inbound.granularities
-    fmt = asr_response_format(inbound.response_format or "json")
+    fmt = read_asr_format(inbound.response_format or "json")
     files, form, lang = asr_upload(inbound, defaults, fmt, granularities)
 
     asr_headers = traced_model_headers(asr_model, request.headers)
@@ -401,11 +401,11 @@ async def transcriptions(request: Request) -> Response | dict[str, Any]:
     try:
         raw = r.json()
     except (json.JSONDecodeError, UnicodeDecodeError):
-        return json_from_fish_error(FishHttpError.for_non_json())
+        return json_from_call_failure(FishHttpError.for_non_json())
     try:
         data, transcript = parse_asr_body(raw)
     except FishHttpError as exc:
-        return json_from_fish_error(exc)
+        return json_from_call_failure(exc)
     text, cues = _asr_text(
         data,
         transcript,

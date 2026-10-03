@@ -25,16 +25,16 @@ __all__ = [
     "AudioDecodeError",
     "ClientFormat",
     "decode_audio_b64",
-    "explicit_bool",
-    "first_choice",
     "fish_audio_format",
-    "format_or_default",
+    "known_client_format",
     "media_type",
     "pcm_sample_rate",
-    "pick_format",
-    "pick_reference_id",
     "prepare_tts_text",
-    "present_value",
+    "read_choice",
+    "read_flag",
+    "read_format",
+    "read_present",
+    "read_reference_id",
     "silent_speech",
     "traced_model_headers",
 ]
@@ -65,7 +65,7 @@ def fish_audio_format(fmt: ClientFormat) -> AudioFormat:
     Parameters
     ----------
     fmt : ClientFormat
-        A format from ``pick_format``.
+        A format from ``read_format``.
 
     Returns
     -------
@@ -185,7 +185,7 @@ def decode_audio_b64(value: Any, *, field: str = "audio") -> bytes:
     return audio
 
 
-def pick_reference_id(body: dict[str, Any]) -> str | list[str] | None:
+def read_reference_id(body: dict[str, Any]) -> str | list[str] | None:
     """Read a Fish voice id from ``reference_id`` or OpenAI ``voice``.
 
     Parameters
@@ -213,7 +213,7 @@ def pick_reference_id(body: dict[str, Any]) -> str | list[str] | None:
     return None
 
 
-def present_value(body: dict[str, Any], *keys: str) -> Any:
+def read_present(body: dict[str, Any], *keys: str) -> Any:
     """Return the first key that exists, even when the value is false or empty.
 
     Parameters
@@ -240,9 +240,9 @@ _TRUE_WORDS = frozenset({"1", "true", "yes", "on"})
 _FALSE_WORDS = frozenset({"0", "false", "no", "off"})
 
 
-def explicit_bool(body: dict[str, Any], *keys: str, default: bool) -> bool:
+def read_flag(body: dict[str, Any], *keys: str, default: bool) -> bool:
     """Prefer a present request flag, including false, over the default."""
-    flag = present_value(body, *keys)
+    flag = read_present(body, *keys)
     if flag is None:
         return default
     if isinstance(flag, str):
@@ -256,7 +256,7 @@ def explicit_bool(body: dict[str, Any], *keys: str, default: bool) -> bool:
     return bool(flag)
 
 
-def first_choice(body: dict[str, Any], *keys: str, default: str) -> str:
+def read_choice(body: dict[str, Any], *keys: str, default: str) -> str:
     """Return the first non-empty string field, lowercased.
 
     Parameters
@@ -275,8 +275,8 @@ def first_choice(body: dict[str, Any], *keys: str, default: str) -> str:
 
     Notes
     -----
-    Unlike ``present_value``, a present-but-empty string falls through.
-    Use ``present_value`` when false is a real answer.
+    Unlike ``read_present``, a present-but-empty string falls through.
+    Use ``read_present`` when false is a real answer.
     """
     chosen: Any = default
     for key in keys:
@@ -287,7 +287,7 @@ def first_choice(body: dict[str, Any], *keys: str, default: str) -> str:
     return str(chosen).lower().strip()
 
 
-def pick_format(body: dict[str, Any], default: ClientFormat) -> ClientFormat:
+def read_format(body: dict[str, Any], default: ClientFormat) -> ClientFormat:
     """Read the audio format a request asks for.
 
     Parameters
@@ -309,7 +309,7 @@ def pick_format(body: dict[str, Any], default: ClientFormat) -> ClientFormat:
         such as ``aac`` or ``flac``. Returning other bytes than the client
         asked for would break its decoder.
     """
-    raw = first_choice(body, "format", "response_format", "fish_format", default="")
+    raw = read_choice(body, "format", "response_format", "fish_format", default="")
     if not raw:
         return default
     known = _CLIENT_FORMATS.get(raw)
@@ -319,7 +319,7 @@ def pick_format(body: dict[str, Any], default: ClientFormat) -> ClientFormat:
     raise ProxyError(400, f"unsupported response_format {raw[:32]!r}; use one of: {supported}")
 
 
-def format_or_default(name: str, default: ClientFormat) -> ClientFormat:
+def known_client_format(name: str, default: ClientFormat) -> ClientFormat:
     """Read a format from config, keeping ``default`` when the name is unsupported.
 
     Parameters
@@ -343,7 +343,7 @@ def pcm_sample_rate(fmt: ClientFormat, body: dict[str, Any], default: int) -> in
     Parameters
     ----------
     fmt : ClientFormat
-        Format from ``pick_format``.
+        Format from ``read_format``.
     body : dict
         May contain ``sample_rate``.
     default : int

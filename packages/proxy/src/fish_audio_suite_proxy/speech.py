@@ -34,13 +34,13 @@ from fish_audio_suite_proxy.fields import (
     AudioDecodeError,
     ClientFormat,
     decode_audio_b64,
-    explicit_bool,
-    first_choice,
     fish_audio_format,
     media_type,
     pcm_sample_rate,
-    pick_format,
-    pick_reference_id,
+    read_choice,
+    read_flag,
+    read_format,
+    read_reference_id,
     traced_model_headers,
 )
 from fish_audio_suite_proxy.models import resolve_tts_model
@@ -108,18 +108,18 @@ _REQUEST_SPEED = 1.0
 _CACHE_MODES = frozenset({"on", "off"})
 
 
-def _pick_latency(body: dict[str, Any], default: FishLatency) -> FishLatency:
-    raw = first_choice(body, "latency", "fish_latency", default=default)
+def _read_latency(body: dict[str, Any], default: FishLatency) -> FishLatency:
+    raw = read_choice(body, "latency", "fish_latency", default=default)
     return known_latency(raw, default)
 
 
 def _want_quality_guard(body: dict[str, Any], default: bool) -> bool:
     for key in ("quality_guard", "fish_quality_guard"):
         if key in body and body[key] is not None:
-            # explicit_bool stops at the first present value. A null
+            # read_flag stops at the first present value. A null
             # quality_guard is present, so passing both keys ignored
             # fish_quality_guard and used the configured default instead.
-            return explicit_bool(body, key, default=default)
+            return read_flag(body, key, default=default)
     features = body.get("features")
     if isinstance(features, list) and "quality-guard" in features:
         return True
@@ -354,17 +354,17 @@ def _fish_tts_payload(
         ),
         "chunk_length": controls.chunk_length,
         "min_chunk_length": controls.min_chunk_length,
-        "normalize": explicit_bool(body, "normalize", default=defaults.normalize),
+        "normalize": read_flag(body, "normalize", default=defaults.normalize),
         "prosody": {
             "speed": controls.speed,
             "volume": _body_float(body, "volume", defaults.volume),
-            "normalize_loudness": explicit_bool(
+            "normalize_loudness": read_flag(
                 body, "normalize_loudness", default=defaults.normalize_loudness
             ),
         },
         "repetition_penalty": _body_float(body, "repetition_penalty", defaults.repetition_penalty),
         "max_new_tokens": _body_int(body, "max_new_tokens", defaults.max_new_tokens),
-        "condition_on_previous_chunks": explicit_bool(
+        "condition_on_previous_chunks": read_flag(
             body,
             "condition_on_previous_chunks",
             default=defaults.condition_on_previous_chunks,
@@ -396,7 +396,7 @@ def _seed(value: Any) -> int | None:
 
 
 def _optional_tts(payload: dict[str, Any], body: dict[str, Any], *, quality_guard: bool) -> None:
-    voice = pick_reference_id(body)
+    voice = read_reference_id(body)
     if voice:
         payload["reference_id"] = voice
     seed = _seed(body.get("seed"))
@@ -456,8 +456,8 @@ def speech_controls(
     return SpeechControls(
         model=resolve_tts_model(body.get("model"), defaults.tts_model, aliases),
         speed=clamp_number(raw_speed, TTS_SPEED_LO, TTS_SPEED_HI, defaults.speed, float),
-        fmt=pick_format(body, default_format or defaults.audio_format),
-        latency=_pick_latency(body, defaults.latency),
+        fmt=read_format(body, default_format or defaults.audio_format),
+        latency=_read_latency(body, defaults.latency),
         chunk_length=_clamped_int(
             body,
             "chunk_length",

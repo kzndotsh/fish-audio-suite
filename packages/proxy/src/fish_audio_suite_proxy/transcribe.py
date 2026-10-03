@@ -30,11 +30,11 @@ from fish_audio_suite_proxy.fields import AudioDecodeError, decode_audio_b64
 __all__ = [
     "ASR_FORMATS",
     "InboundAsr",
-    "asr_response_format",
     "asr_upload",
     "caption_cues",
     "form_strings",
-    "read_asr",
+    "read_asr_format",
+    "read_asr_request",
     "transcription_body",
 ]
 
@@ -118,7 +118,7 @@ ASR_FORMATS: tuple[AsrFormat, ...] = get_args(AsrFormat)
 _ASR_FORMAT_BY_NAME: dict[str, AsrFormat] = {name: name for name in ASR_FORMATS}
 
 
-def asr_response_format(raw: str) -> AsrFormat:
+def read_asr_format(raw: str) -> AsrFormat:
     """Return one response-format token. A newline is not part of the name.
 
     Parameters
@@ -193,7 +193,7 @@ def _form_error_message(status: int) -> str:
     return _FORM_ERRORS.get(status, "invalid form body")
 
 
-async def read_asr(request: Request) -> InboundAsr | JSONResponse:
+async def read_asr_request(request: Request) -> InboundAsr | JSONResponse:
     """Read multipart ``file`` or JSON ``input_audio`` into one upload.
 
     Parameters

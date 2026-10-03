@@ -28,7 +28,7 @@ from fish_audio_suite_kit import (
     known_mp3_bitrate,
     normalize_tts_model,
 )
-from fish_audio_suite_proxy.fields import ClientFormat, fish_audio_format, format_or_default
+from fish_audio_suite_proxy.fields import ClientFormat, fish_audio_format, known_client_format
 from fish_audio_suite_proxy.models import default_tts_aliases, parse_aliases, resolve_asr_model
 
 __all__ = [
@@ -234,7 +234,7 @@ def _response_format() -> ClientFormat:
         A supported format, or ``mp3`` for a missing or unknown value. ``pcm16``
         is allowed here, though Fish itself only knows ``pcm``.
     """
-    return format_or_default(env_token("FISH_FORMAT", "mp3"), "mp3")
+    return known_client_format(env_token("FISH_FORMAT", "mp3"), "mp3")
 
 
 def _suite_defaults() -> SuiteDefaults:

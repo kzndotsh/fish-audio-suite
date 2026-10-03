@@ -13,7 +13,7 @@ from starlette.responses import JSONResponse
 from fish_audio_suite_kit import (
     CaptionCue,
 )
-from fish_audio_suite_proxy.errors import json_from_upstream
+from fish_audio_suite_proxy.errors import provider_json_from_raw
 from fish_audio_suite_proxy.server import app
 from fish_audio_suite_proxy.transcribe import (
     transcription_body,
@@ -265,7 +265,7 @@ def test_transcription_non_json_upstream_is_502(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_upstream_errors_use_openai_envelope() -> None:
-    resp = json_from_upstream(402, {"message": "no credits", "status": 402})
+    resp = provider_json_from_raw(402, {"message": "no credits", "status": 402})
     assert resp.status_code == 402
     body = json.loads(bytes(resp.body))
     assert body == {
@@ -276,7 +276,7 @@ def test_upstream_errors_use_openai_envelope() -> None:
             "metadata": {"provider_name": "fish-audio"},
         }
     }
-    bad = json_from_upstream(502, {"message": "bad \ud800 byte", "status": 502})
+    bad = provider_json_from_raw(502, {"message": "bad \ud800 byte", "status": 502})
     assert bad.status_code == 502
     encoded = bytes(bad.body)
     encoded.decode("utf-8")
