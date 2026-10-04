@@ -25,6 +25,7 @@ __all__ = [
     "DEFAULT_MIN_VOICED_FRAMES",
     "DEFAULT_POST_SPEAK_COOLDOWN_S",
     "DEFAULT_VAD_AGGRESSIVENESS",
+    "HTTP_KEEPALIVE_S",
     "IMPULSE_START_EXTRA",
     "MAX_UTTERANCE_FRAMES",
     "AecTune",
@@ -54,6 +55,10 @@ DEFAULT_POST_SPEAK_COOLDOWN_S: Final = 0.8
 
 DEFAULT_AEC_BLEED_DELAY_S: Final = 0.3
 DEFAULT_AEC_WET: Final = 0.85
+# Idle seconds an ASR or LLM connection stays open. httpx drops it after 5 s,
+# which is shorter than the gap between two turns, so every turn paid a new
+# TLS handshake.
+HTTP_KEEPALIVE_S: Final = 120.0
 
 _TRUE: Final = frozenset({"1", "true", "yes", "on"})
 _FALSE: Final = frozenset({"0", "false", "no", "off"})

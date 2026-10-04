@@ -20,6 +20,7 @@ from fish_audio_suite_kit import (
 )
 from fish_audio_suite_voice.debug import debug, debug_enabled, warn
 from fish_audio_suite_voice.llm_tune import LlmTune
+from fish_audio_suite_voice.tune import HTTP_KEEPALIVE_S
 
 __all__ = [
     "ChatCall",
@@ -78,7 +79,9 @@ def http_client(tune: LlmTune) -> httpx.AsyncClient:
     httpx.AsyncClient
         Reused for every reply in a session. The caller closes it.
     """
-    return httpx.AsyncClient(timeout=tune.timeout_s)
+    return httpx.AsyncClient(
+        timeout=tune.timeout_s, limits=httpx.Limits(keepalive_expiry=HTTP_KEEPALIVE_S)
+    )
 
 
 @asynccontextmanager
@@ -103,15 +106,23 @@ async def openrouter_client(tune: LlmTune) -> AsyncGenerator[Any, None]:
     """
     from openrouter import OpenRouter
 
-    # The SDK writes the key into Authorization and adds Bearer itself.
-    # A newline raises before the request is sent, so the reply is empty.
-    async with OpenRouter(
-        api_key=bearer(tune.api_key).removeprefix("Bearer "),
-        http_referer=tune.referer or None,
-        x_open_router_title=tune.title or None,
-        x_open_router_categories=tune.categories or None,
-        server_url=strip_base(tune.base),
-    ) as owned:
+    # The SDK's own client keeps idle connections for 5 s, so pass one that
+    # lives across turns. The SDK does not close a client it was given. It
+    # writes the key into Authorization and adds Bearer itself, and a newline
+    # raises before the request is sent, so the reply is empty.
+    async with (
+        httpx.AsyncClient(
+            follow_redirects=True, limits=httpx.Limits(keepalive_expiry=HTTP_KEEPALIVE_S)
+        ) as http,
+        OpenRouter(
+            api_key=bearer(tune.api_key).removeprefix("Bearer "),
+            http_referer=tune.referer or None,
+            x_open_router_title=tune.title or None,
+            x_open_router_categories=tune.categories or None,
+            server_url=strip_base(tune.base),
+            async_client=http,
+        ) as owned,
+    ):
         yield owned
 
 
