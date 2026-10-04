@@ -23,7 +23,6 @@ _ENV = (
     "FISH_LLM_PROVIDER",
     "FISH_LLM_BASE",
     "OPENROUTER_BASE_URL",
-    "FISH_LLM_BACKEND",
     "FISH_LLM_API_KEY",
     "OPENROUTER_API_KEY",
     "OPENAI_API_KEY",
@@ -297,25 +296,14 @@ def test_the_gateway_headers_reach_the_debug_log(
     assert "zdr=true" in err
 
 
-def test_an_old_openrouter_backend_setting_does_not_follow_a_named_provider(
-    env: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+def test_a_named_provider_or_custom_host_never_gets_the_openrouter_sdk(
+    env: pytest.MonkeyPatch,
 ) -> None:
-    env.setenv("FISH_LLM_BACKEND", "openrouter")
     env.setenv("FISH_LLM_PROVIDER", "experiential")
-    tune = LlmTune.from_env()
-    assert tune.backend == "openai"
-    assert tune.provider == "experiential"
-    assert "does not fit experiential" in capsys.readouterr().err
-
-
-def test_the_openrouter_backend_setting_still_holds_for_openrouter_and_custom_hosts(
-    env: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
-    env.setenv("FISH_LLM_BACKEND", "openrouter")
-    assert LlmTune.from_env().backend == "openrouter"
+    assert LlmTune.from_env().backend == "openai"
+    env.delenv("FISH_LLM_PROVIDER")
     env.setenv("FISH_LLM_BASE", "https://proxy.example.test/v1")
-    assert LlmTune.from_env().backend == "openrouter"
-    assert capsys.readouterr().err == ""
+    assert LlmTune.from_env().backend == "openai"
 
 
 def test_a_named_providers_key_is_not_picked_up_for_a_plain_http_base(

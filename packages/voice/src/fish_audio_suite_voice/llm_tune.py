@@ -203,8 +203,9 @@ class LlmTune:
     continuation : bool
         Send one more request when a reply stops before a sentence end.
     reasoning_effort : str
-        Sent as ``reasoning_effort`` on the ``openai`` backend. Empty omits it, and
-        the provider's default applies. A reasoning model that defaults to a high
+        Sent as ``reasoning_effort`` on the ``openai`` backend and as
+        ``reasoning.effort`` to OpenRouter. Empty omits it, and the provider's
+        default applies. A reasoning model that defaults to a high
         effort can take seconds to the first word, so voice use wants ``low``.
     """
 
@@ -245,8 +246,9 @@ class LlmTune:
             and ``FISH_LLM_BASE`` overrides the base. The provider is then read
             from the final base's host, so a key can only come from the variable
             that belongs to that host (``OPENROUTER_API_KEY``, ``EXPLABS_API_KEY``),
-            or ``OPENAI_API_KEY`` for any other server. ``FISH_LLM_BACKEND`` picks
-            the backend. Unset, it follows the base URL host.
+            or ``OPENAI_API_KEY`` for any other server. The backend follows the
+            host: the OpenRouter SDK for OpenRouter, the OpenAI-compatible client
+            for everything else.
         """
         named = _named_provider()
         if named is not None:
@@ -379,21 +381,6 @@ def _first_token(*names: str) -> str:
 
 
 def _backend(base: str) -> LlmBackendName:
-    raw = read_raw("FISH_LLM_BACKEND")
-    if raw is not None:
-        low = raw.lower()
-        if low == "openai":
-            return "openai"
-        if low == "openrouter":
-            host = provider_for_base(base)
-            if host is not None and host.name != "openrouter":
-                # The SDK backend only fits OpenRouter. A setting left over from
-                # before another provider existed must not point it elsewhere.
-                warn(
-                    f"fish-voice: FISH_LLM_BACKEND=openrouter does not fit {host.name}, "
-                    "using the openai backend"
-                )
-                return "openai"
-            return "openrouter"
-        warn(f"fish-voice: unknown FISH_LLM_BACKEND={raw!r}, choosing from the base URL")
+    # The OpenRouter SDK only talks to OpenRouter. Every other server gets the
+    # OpenAI-compatible httpx client, so the backend always follows the host.
     return "openrouter" if is_openrouter_host(base) else "openai"

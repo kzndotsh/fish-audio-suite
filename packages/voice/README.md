@@ -117,14 +117,14 @@ to the wrong host.
 the chosen provider's own model variable comes before `FISH_LLM_MODEL`. Keep both providers in one
 `.env` and switch with `FISH_LLM_PROVIDER`.
 
-Experiential speaks the OpenAI chat-completions API, so it runs on the `openai` backend (one pooled
-httpx client). `FISH_LLM_BACKEND` picks `openai` or `openrouter` (the SDK) explicitly; unset, it
-follows the host. What to know about Experiential, from its published contract:
+The backend follows the base URL's host: OpenRouter uses its SDK, and every other server (Experiential,
+Ollama, any OpenAI-compatible host) uses one pooled httpx client that speaks the OpenAI
+chat-completions API. What to know about Experiential, from its published contract:
 
 - **Reasoning.** `FISH_LLM_REASONING_EFFORT` (`none`, `minimal`, `low`, `medium`, `high` or `max`) is
-  sent as `reasoning_effort` on the `openai` backend. Reasoning models can be slow to a first word,
-  so a low effort suits voice. Which values a model accepts depends on its route, and the value is
-  passed through unchanged. Empty omits the field. The OpenRouter SDK backend never sends it.
+  sent as `reasoning_effort` to OpenAI-compatible servers and as `reasoning.effort` to OpenRouter.
+  Reasoning models can be slow to a first word, so a low effort suits voice. Which values a model
+  accepts depends on its route, and the value is passed through unchanged. Empty omits the field.
 - **Fields.** Experiential answers 400 to a request field it does not know, so the request carries
   only `model`, `messages`, `stream`, `temperature` and `max_tokens`, plus `reasoning_effort` when set.
 - **No `:nitro`.** That suffix is OpenRouter-only (`FISH_LLM_NITRO` never applies to Experiential).
@@ -142,7 +142,7 @@ OpenRouter-only options: `FISH_LLM_PROVIDER_SORT` picks the provider by `latency
 the first word comes sooner), `throughput` or `price`, and `off` leaves it to OpenRouter. It only
 changes anything for a model that more than one provider serves. `FISH_LLM_NITRO=1` adds `:nitro`
 to the model, and `FISH_LLM_REFERER`, `FISH_LLM_TITLE`, `FISH_LLM_CATEGORIES` set the attribution
-(empty disables one). The `openai` backend sends none of these.
+(empty disables one). Other servers get none of these.
 
 ### Streaming the reply
 
@@ -164,7 +164,6 @@ Any OpenAI-compatible local server works. For Ollama:
 ```bash
 FISH_LLM_PROVIDER=custom
 FISH_LLM_BASE=http://127.0.0.1:11434/v1
-FISH_LLM_BACKEND=openai          # the OpenRouter SDK would call the wrong server
 FISH_LLM_API_KEY=ollama          # any value, Ollama has no key
 FISH_LLM_MODEL=qwen3.5:9b        # the exact name from `ollama list`
 FISH_LLM_REASONING_EFFORT=none
@@ -233,9 +232,8 @@ LLM:
 | Variable | Default | Effect |
 | --- | --- | --- |
 | `FISH_LLM_PROVIDER` | `openrouter` | `openrouter` or `experiential`. Sets the default base, key variable and model variable. See above |
-| `FISH_LLM_BACKEND` | from the base URL | `openai` or `openrouter` |
 | `FISH_LLM_BASE` (fallback `OPENROUTER_BASE_URL`) | `https://openrouter.ai/api/v1` | API origin |
-| `FISH_LLM_REASONING_EFFORT` | unset | `none`, `minimal`, `low`, `medium`, `high` or `max`. Sent on the `openai` backend only |
+| `FISH_LLM_REASONING_EFFORT` | unset | `none`, `minimal`, `low`, `medium`, `high` or `max`. Which values work depends on the model's route |
 | `FISH_LLM_TEMPERATURE` | `0.8` | 0 to 2 |
 | `FISH_LLM_TIMEOUT` | `120` | Seconds per request |
 | `FISH_LLM_MAX_TOKENS` | `1200` | Completion cap |

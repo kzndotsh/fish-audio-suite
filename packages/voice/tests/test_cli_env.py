@@ -374,7 +374,6 @@ def test_llm_keys_never_cross_providers(monkeypatch: pytest.MonkeyPatch) -> None
         "FISH_LLM_API_KEY",
         "OPENROUTER_API_KEY",
         "OPENAI_API_KEY",
-        "FISH_LLM_BACKEND",
     ):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("OPENAI_API_KEY", "openai-only")
@@ -389,15 +388,12 @@ def test_llm_keys_never_cross_providers(monkeypatch: pytest.MonkeyPatch) -> None
     assert local.api_key == "openai-only"
 
 
-def test_llm_backend_env_picks_the_backend(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_the_llm_backend_follows_the_base_host(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
     monkeypatch.setenv("FISH_LLM_BASE", "http://localhost:11434/v1")
-    monkeypatch.setenv("FISH_LLM_BACKEND", "openrouter")
-    assert load_config().llm.uses_openrouter_sdk
-    monkeypatch.setenv("FISH_LLM_BACKEND", "bogus")
     assert load_config().llm.backend == "openai"
-    assert "FISH_LLM_BACKEND" in capsys.readouterr().err
+    monkeypatch.setenv("FISH_LLM_BASE", "https://openrouter.ai/api/v1")
+    assert load_config().llm.backend == "openrouter"
 
 
 def test_llm_nitro_and_continuation_are_off_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -499,7 +495,7 @@ def test_stream_tts_is_off_unless_asked(monkeypatch: pytest.MonkeyPatch) -> None
 def test_a_blank_llm_key_does_not_hide_the_provider_key(monkeypatch: pytest.MonkeyPatch) -> None:
     from fish_audio_suite_voice.llm_tune import LlmTune
 
-    for name in ("FISH_LLM_BASE", "OPENROUTER_BASE_URL", "FISH_LLM_BACKEND", "OPENAI_API_KEY"):
+    for name in ("FISH_LLM_BASE", "OPENROUTER_BASE_URL", "OPENAI_API_KEY"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("FISH_LLM_API_KEY", "")
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
@@ -513,7 +509,6 @@ def test_a_malformed_llm_base_warns_and_falls_back(
 ) -> None:
     from fish_audio_suite_voice.llm_tune import LlmTune, is_openrouter_host
 
-    monkeypatch.delenv("FISH_LLM_BACKEND", raising=False)
     monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
     monkeypatch.setenv("FISH_LLM_BASE", "http://[::1")
     tune = LlmTune.from_env()

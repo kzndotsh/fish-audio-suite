@@ -170,6 +170,10 @@ def _send_kwargs(call: ChatCall) -> dict[str, Any]:
     send_kw["timeout_ms"] = int(tune.timeout_s * MS_PER_S)
     if tune.provider_sort:
         send_kw["provider"] = {"sort": tune.provider_sort}
+    if tune.reasoning_effort:
+        # OpenRouter's unified reasoning control; the openai path sends the
+        # flat reasoning_effort field instead.
+        send_kw["reasoning"] = {"effort": tune.reasoning_effort}
     if call.session_id:
         send_kw["session_id"] = call.session_id
     if call.trace_id:
@@ -412,8 +416,8 @@ async def _iter_httpx_sse_events(call: ChatCall) -> AsyncIterator[object]:
     }
     payload = _chat_body(call, "max_tokens")
     if call.tune.reasoning_effort:
-        # Only the OpenAI-compatible path. The OpenRouter SDK has its own
-        # reasoning object, and a provider rejects fields it does not know.
+        # The flat OpenAI field. The OpenRouter SDK path sends its reasoning
+        # object instead, and a provider rejects fields it does not know.
         payload["reasoning_effort"] = call.tune.reasoning_effort
     if debug_enabled():
         _note_usage(payload)

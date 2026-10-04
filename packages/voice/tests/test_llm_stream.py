@@ -335,6 +335,9 @@ def test_request_settings_come_from_the_tune(
     assert _FakeChat.last_kw["model"] == "org/model"
     asyncio.run(run(_tune(provider_sort="")))
     assert "provider" not in _FakeChat.last_kw
+    assert "reasoning" not in _FakeChat.last_kw
+    asyncio.run(run(_tune(reasoning_effort="low")))
+    assert _FakeChat.last_kw["reasoning"] == {"effort": "low"}
     assert fake_openrouter.last_init is not None
 
 
