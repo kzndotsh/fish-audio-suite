@@ -51,6 +51,8 @@ DEFAULT_SYSTEM_PROMPT: Final = (
     "[excited]. The voice holds a cue until the next one, so change the cue whenever the "
     "feeling shifts: a joke landing, a sad turn, a surprise, a pause. A reply of two or more "
     "sentences usually has at least two cues, one for each shift in feeling. "
+    "A cue always comes before the words it colors, never after them: do not end a reply "
+    "with a cue. "
 )
 
 # One opening exchange that shows several cues in a reply. In a test on two
