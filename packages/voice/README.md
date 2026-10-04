@@ -74,6 +74,8 @@ The barge floor follows the room: it is the quiet-percentile of recent mic frame
 
 The chat history gets only what you probably heard. For PCM that is a word-aligned estimate from the bytes played, the speed, and the device buffer. Encoded playback (`mpv`) cannot be cut by length, so an interrupted or failed reply is left out of history.
 
+If the interrupt turns out not to be speech (Fish hears no words, a backchannel such as "mm-hmm", or a clip too short to keep), the rest of the reply is spoken again from where it was cut, and joins the same history message. A real line drops the rest. Only text the model had already written is resumed.
+
 ### Cues in replies
 
 With the default system prompt the session starts with one pinned exchange that shows several cues

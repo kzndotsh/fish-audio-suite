@@ -72,7 +72,7 @@ def classify_transcript(
 class HeardLine:
     """What one listen step produced, and what the loop should do next."""
 
-    kind: Literal["bye", "again", "fatal", "line"]
+    kind: Literal["bye", "again", "noise", "fatal", "line"]
     text: str = ""
     asr_ms: float = 0.0
     started: float = 0.0
@@ -123,7 +123,7 @@ async def recognize(
     if decision == "quit":
         return HeardLine("bye")
     if decision == "skip":
-        return HeardLine("again")
+        return HeardLine("noise")
     conversation("you", text)
     return HeardLine(
         "line",
@@ -161,7 +161,7 @@ async def hear_line(ctx: DuplexContext, last_user: str) -> HeardLine:
         return HeardLine("bye")
     if not wav:
         debug("listen.dropped (too short or none)")
-        return HeardLine("again")
+        return HeardLine("noise")
     mark_turn()
     # A barge-in clip carries fresh speech, so it is never a stale copy.
     window = ctx.config.repeat_window_s

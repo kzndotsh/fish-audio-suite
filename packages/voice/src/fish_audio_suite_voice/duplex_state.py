@@ -36,4 +36,7 @@ class DuplexContext:
     asr_http: httpx.AsyncClient
     history: list[ChatMessage]
     barge_prefix: bytes = b""
+    # What a barge-in cut off, kept until the next line shows the interrupt was
+    # real speech. If it was only noise, this is spoken again.
+    resume_text: str = ""
     pinned: int = KEEP_SYSTEM

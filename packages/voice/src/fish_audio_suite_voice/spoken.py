@@ -15,6 +15,7 @@ from fish_audio_suite_voice.aec import SAMPLE_BYTES
 
 __all__ = [
     "spoken_prefix",
+    "unspoken_text",
 ]
 
 # Conversational English at speed 1.0. Other languages and voices drift, so
@@ -204,3 +205,76 @@ def spoken_prefix(
     if chars <= 0:
         return ""
     return _word_prefix(_audible_text(sent_text), chars)
+
+
+# A cue is a short bracketed stage direction. Brackets are never speech here.
+_CUE_SPAN_RE: Final = re.compile(r"\[[^\[\]\n]{1,80}\]")
+# Punctuation and closers that stay with the word they follow.
+_CLOSERS: Final = frozenset(".,!?;:…‥。！？，、；：\"'”’»›)]}」』）】〉》〕〗")
+# Fewer letters than this are not worth speaking again: "right?" after a barge-in.
+_MIN_RESUME_CHARS: Final = 8
+
+
+def _folded(text: str) -> tuple[str, list[int]]:
+    """Return ``text`` as case-folded letters and digits, with where each came from."""
+    cues = [(m.start(), m.end()) for m in _CUE_SPAN_RE.finditer(text)]
+    keys: list[str] = []
+    origin: list[int] = []
+    cue = 0
+    for index, ch in enumerate(text):
+        while cue < len(cues) and index >= cues[cue][1]:
+            cue += 1
+        if cue < len(cues) and cues[cue][0] <= index < cues[cue][1]:
+            continue
+        for folded in ch.casefold():
+            if folded.isalnum():
+                keys.append(folded)
+                origin.append(index)
+    return "".join(keys), origin
+
+
+def unspoken_text(sent: str, heard: str) -> str:
+    """Return the part of a reply that was cut off, ready to be spoken again.
+
+    Parameters
+    ----------
+    sent : str
+        The reply as sent to Fish, cues included.
+    heard : str
+        What the listener probably heard of it, from ``spoken_prefix``: a
+        word-aligned prefix with the cues removed.
+
+    Returns
+    -------
+    str
+        The text after ``heard``, led by the last cue before the cut so the
+        mood carries on. Empty when ``heard`` is not a prefix of ``sent``
+        (the estimate cannot be trusted), or when too little is left to be
+        worth speaking.
+
+    Examples
+    --------
+    >>> unspoken_text("[calm] Hello there. [warm] How was your day?", "Hello there.")
+    '[warm] How was your day?'
+    >>> unspoken_text("[calm] Hello there. [warm] How was your day?", "Hello")
+    '[calm] there. [warm] How was your day?'
+    """
+    keys, origin = _folded(sent)
+    heard_key, _ = _folded(strip_cue_tags(heard))
+    count = len(heard_key)
+    if not keys.startswith(heard_key) or len(keys) - count < _MIN_RESUME_CHARS:
+        return ""
+    cut = 0
+    if count:
+        last = origin[count - 1]
+        if origin[count] == last:
+            return ""  # the cut falls inside one character's folding, such as "ß"
+        cut = last + 1
+        while cut < len(sent) and sent[cut] in _CLOSERS:
+            cut += 1
+    rest = sent[cut:].lstrip()
+    if not rest.startswith("["):
+        before = [m for m in _CUE_SPAN_RE.finditer(sent) if m.end() <= cut]
+        if before:
+            rest = f"{before[-1].group()} {rest}"
+    return rest

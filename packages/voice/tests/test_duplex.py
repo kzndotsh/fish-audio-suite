@@ -760,3 +760,71 @@ def test_a_long_run_of_unanswered_lines_keeps_only_the_latest() -> None:
         remember_user(history, f"line {i}", HISTORY_TURNS)
     assert len(history) == 2
     assert history[-1]["content"] == "line 6\nline 7\nline 8\nline 9"
+
+
+def _cut_off_ctx(monkeypatch: pytest.MonkeyPatch, spoken: str) -> tuple[DuplexContext, list[str]]:
+    ctx = _ctx()
+    install_audio(monkeypatch, gate=FakeGate(captured=b"clip"))
+    said: list[str] = []
+
+    def speak(
+        text: str,
+        sink: FakeSink,
+        cancel: threading.Event | None = None,
+        on_first_audio: object = None,
+    ) -> TtsResult:
+        said.append(text)
+        return make_result(
+            spoken,
+            bytes_played=4,
+            got_audio=True,
+            cancelled=len(said) == 1,
+            tts_first_audio_ms=3.0,
+            tts_first_text_ms=2.0,
+        )
+
+    set_tts(monkeypatch, ctx.tts, speak=speak)
+    return ctx, said
+
+
+def test_a_cut_off_reply_is_remembered_for_resuming(monkeypatch: pytest.MonkeyPatch) -> None:
+    ctx, _said = _cut_off_ctx(monkeypatch, "Hello there.")
+    asyncio.run(
+        speak_reply(
+            ctx,
+            "Hello there. How was your day today?",
+            threading.Event(),
+            LatencySnapshot(),
+            started=0.0,
+            trace_id=None,
+        )
+    )
+    assert ctx.resume_text == "How was your day today?"
+
+
+def test_noise_after_a_barge_in_speaks_the_rest_and_joins_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx, said = _cut_off_ctx(monkeypatch, "Hello there.")
+    ctx.history.append({"role": "user", "content": "hi"})
+    asyncio.run(
+        speak_reply(
+            ctx,
+            "Hello there. How was your day today?",
+            threading.Event(),
+            LatencySnapshot(),
+            started=0.0,
+            trace_id=None,
+        )
+    )
+    reads = iter([HeardLine("noise"), HeardLine("bye")])
+
+    async def hear(_ctx: DuplexContext, _last: str) -> HeardLine:
+        return next(reads)
+
+    monkeypatch.setattr("fish_audio_suite_voice.duplex.hear_line", hear)
+    monkeypatch.setattr("fish_audio_suite_voice.duplex.DuplexContext", lambda **_kw: ctx)
+    asyncio.run(duplex_turns(ctx.config, ctx.tts, None, ctx.backend, session=DuplexSession()))
+    assert said[1] == "How was your day today?"
+    assert ctx.resume_text == ""
+    assert ctx.history[-1] == {"role": "assistant", "content": "Hello there. Hello there."}

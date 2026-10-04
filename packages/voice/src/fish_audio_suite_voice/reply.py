@@ -35,6 +35,7 @@ from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexContext
 from fish_audio_suite_voice.hearing import HeardLine
 from fish_audio_suite_voice.live import TtsResult, is_cancel_noise
 from fish_audio_suite_voice.playback import PortAudioMissingError, make_sink
+from fish_audio_suite_voice.spoken import unspoken_text
 from fish_audio_suite_voice.wire import is_own_cancel
 
 __all__ = [
@@ -135,8 +136,13 @@ def after_speech(
     *,
     started: float,
     first_audio_at: float | None = None,
+    resumes: bool = False,
 ) -> tuple[LatencySnapshot, int | None]:
-    """Record what was heard in history and fold the TTS result into the timings."""
+    """Record what was heard in history and fold the TTS result into the timings.
+
+    With ``resumes``, the spoken text continues the last assistant message
+    instead of starting a new one.
+    """
     c = ctx.config
     history = ctx.history
     notes = ["cancelled" if result.cancelled else "", "no audio" if not result.got_audio else ""]
@@ -166,7 +172,10 @@ def after_speech(
         and (result.got_audio or not result.cancelled)
         and not is_same_utterance(spoken, last_user)
     ):
-        history.append({"role": "assistant", "content": spoken})
+        if resumes and history and history[-1]["role"] == "assistant":
+            history[-1]["content"] = f"{history[-1]['content']} {spoken}"
+        else:
+            history.append({"role": "assistant", "content": spoken})
     return (
         replace(
             snapshot,
@@ -180,6 +189,14 @@ def after_speech(
     )
 
 
+def _keep_for_resume(ctx: DuplexContext, sent: str, result: TtsResult, captured: bytes) -> None:
+    # A barge-in keeps the clip that tripped it. If that clip turns out to be
+    # noise, the rest of the reply is spoken again.
+    if result.cancelled and captured:
+        ctx.barge_prefix = captured
+        ctx.resume_text = unspoken_text(sent, result.spoken_so_far) if result.got_audio else ""
+
+
 async def speak_reply(
     ctx: DuplexContext,
     reply: str,
@@ -188,8 +205,13 @@ async def speak_reply(
     *,
     started: float,
     trace_id: str | None,
+    resumes: bool = False,
 ) -> tuple[LatencySnapshot, int | None]:
-    """Speak a finished reply through one isolated TTS turn."""
+    """Speak a finished reply through one isolated TTS turn.
+
+    With ``resumes``, ``reply`` is the rest of a reply a false barge-in cut
+    off, and it joins the last assistant message in history.
+    """
     c = ctx.config
     scrubbed = ensure_lead_cue(normalize_cues(scrub_tts(reply), lead=c.mood_lead))
     if is_tts_junk(scrubbed, drop_narration=c.drop_narration):
@@ -219,14 +241,14 @@ async def speak_reply(
         except PortAudioMissingError as exc:
             warn(str(exc))
             return snapshot, EXIT_FATAL
-        if result.cancelled and barge.captured:
-            ctx.barge_prefix = barge.captured
+        _keep_for_resume(ctx, scrubbed, result, barge.captured)
         return after_speech(
             ctx,
             snapshot,
             result,
             started=started,
             first_audio_at=first_audio[0] if first_audio else None,
+            resumes=resumes,
         )
     finally:
         # watch() holds the mic until this event is set. The next listen
@@ -330,8 +352,12 @@ async def stream_turn(
         except PortAudioMissingError as exc:
             warn(str(exc))
             return snapshot, EXIT_FATAL
-        if result.cancelled and barge.captured:
-            ctx.barge_prefix = barge.captured
+        _keep_for_resume(
+            ctx,
+            ensure_lead_cue(normalize_cues(scrub_tts(reply), lead=c.mood_lead)),
+            result,
+            barge.captured,
+        )
     finally:
         cancel.set()
         for thread in barge_threads:
