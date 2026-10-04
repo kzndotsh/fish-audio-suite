@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import itertools
 import threading
 import time
 from collections.abc import AsyncIterator
@@ -533,5 +532,7 @@ def test_a_slow_device_write_does_not_stall_the_turn_loop(monkeypatch: pytest.Mo
 
     asyncio.run(main())
     assert len(sink.chunks) == 2
-    # The loop kept running while each chunk played.
-    assert max(b - a for a, b in itertools.pairwise(ticks)) < 0.1
+    # The loop kept running while the two 0.2 s writes played: a 10 ms ticker
+    # gets about 40 turns. A blocked loop gets two or three. The bound is loose
+    # so a slow runner cannot fail it.
+    assert len(ticks) >= 12

@@ -155,6 +155,7 @@ def test_an_unclosed_trailing_quote_is_kept_after_narration_or_a_closed_quote() 
     )
 
 
+@pytest.mark.perf
 @pytest.mark.parametrize("unit", ["“a", "「a", "«a", "“a「", '"a“'])
 def test_unclosed_quotes_are_extracted_in_linear_time(unit: str) -> None:
     assert_linear_time(extract_quoted_speech, unit * 20_000)

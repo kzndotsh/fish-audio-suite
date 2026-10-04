@@ -636,6 +636,7 @@ def test_a_mood_word_inside_a_long_sentence_is_not_rewritten_as_a_cue() -> None:
     assert "Excited" in spoken
 
 
+@pytest.mark.perf
 @pytest.mark.parametrize("opener", ["<think>", "(", "```\n"])
 def test_a_long_held_span_streams_without_rechecking_everything_per_token(opener: str) -> None:
     # 20k characters in 4-character tokens. Rerunning every hold check on the
