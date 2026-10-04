@@ -37,7 +37,7 @@ from fish_audio_suite_voice.tune import (
     AecTune,
     BargeTune,
     ListenTune,
-    LlmSettings,
+    LlmTune,
     read_flag,
     read_float,
     read_int,
@@ -68,7 +68,7 @@ class VoiceCliConfig:
 
     Attributes
     ----------
-    llm : LlmSettings
+    llm : LlmTune
         Chat backend and request settings.
     listen : ListenTune
         Microphone capture limits.
@@ -108,7 +108,7 @@ class VoiceCliConfig:
     device: str | None
     asr_model: str = "transcribe-1-pro"
     pin_seed: bool = True
-    llm: LlmSettings = field(default_factory=LlmSettings)
+    llm: LlmTune = field(default_factory=LlmTune)
     listen: ListenTune = field(default_factory=ListenTune)
     barge: BargeTune = field(default_factory=BargeTune)
     aec: AecTune = field(default_factory=AecTune)
@@ -233,7 +233,7 @@ def load_config() -> VoiceCliConfig:
         pin_seed=prompt.pin_seed,
         device=os.environ.get("FISH_VOICE_DEVICE"),
         asr_model=_asr_model(d.asr_model),
-        llm=LlmSettings.from_env(),
+        llm=LlmTune.from_env(),
         listen=ListenTune.from_env(),
         barge=BargeTune.from_env(),
         aec=AecTune.from_env(),

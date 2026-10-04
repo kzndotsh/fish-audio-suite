@@ -1,6 +1,6 @@
-"""Duplex CLI recipe: mic → Fish ASR → LLM → IsolatedFishTts → sink.
+"""Duplex CLI recipe: mic → Fish ASR → LLM → FishSpeaker → sink.
 
-Not the only way to use the voice library. Apps should import IsolatedFishTts.
+Not the only way to use the voice library. Apps should import FishSpeaker.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ from fish_audio_suite_voice.debug import (
 )
 from fish_audio_suite_voice.duplex import EXIT_FATAL, EXIT_OK, bye, duplex_turns
 from fish_audio_suite_voice.envfile import apply_cli_env_files
-from fish_audio_suite_voice.live import IsolatedFishTts
+from fish_audio_suite_voice.live import FishSpeaker
 from fish_audio_suite_voice.llm import open_chat_backend
 from fish_audio_suite_voice.playback import (
     FileSink,
@@ -43,7 +43,7 @@ from fish_audio_suite_voice.playback import (
     playback_key,
 )
 from fish_audio_suite_voice.signals import DuplexSession
-from fish_audio_suite_voice.tune import LlmSettings, provider_for_base
+from fish_audio_suite_voice.tune import LlmTune, provider_for_base
 
 __all__ = [
     "apply_cli_env_files",
@@ -83,7 +83,7 @@ def _parse_device(raw: str | None) -> str | int | None:
         return text
 
 
-def llm_setting_names(llm: LlmSettings) -> tuple[str, str]:
+def llm_setting_names(llm: LlmTune) -> tuple[str, str]:
     """Name the key and model variables the selected provider reads."""
     provider = provider_for_base(llm.base)
     if provider is None:
@@ -109,8 +109,8 @@ def _require_fish(c: VoiceCliConfig) -> int | None:
     return None
 
 
-def _fish_tts(c: VoiceCliConfig, audio_format: str) -> IsolatedFishTts:
-    return IsolatedFishTts(
+def _fish_tts(c: VoiceCliConfig, audio_format: str) -> FishSpeaker:
+    return FishSpeaker(
         api_key=c.fish_api_key,
         voice_id=c.fish_voice_id,
         model=c.tts_model,
@@ -156,7 +156,7 @@ async def smoke_test(c: VoiceCliConfig, out: Path | None = None) -> int:
             out = Path(handle.name)
     tts = _fish_tts(c, "pcm")
     sink = FileSink(out, sample_rate=c.sample_rate, wav=True)
-    result = tts.speak_isolated("Hello there.", sink)
+    result = tts.speak("Hello there.", sink)
     if result.error_status is not None:
         warn(f"smoke: FAIL {result.error_status} {result.error_message}")
         return _SMOKE_FAIL

@@ -15,7 +15,7 @@ from fish_audio_suite_voice.llm import open_chat_backend
 from fish_audio_suite_voice.tune import (
     EXPERIENTIAL_API_BASE,
     OPENROUTER_API_BASE,
-    LlmSettings,
+    LlmTune,
     provider_for_base,
 )
 
@@ -48,7 +48,7 @@ def test_the_default_is_openrouter_and_never_reads_the_experiential_key(
 ) -> None:
     env.setenv("OPENROUTER_API_KEY", "or-key")
     env.setenv("EXPLABS_API_KEY", "xpl-key")
-    tune = LlmSettings.from_env()
+    tune = LlmTune.from_env()
     assert tune.provider == "openrouter"
     assert tune.backend == "openrouter"
     assert tune.base == OPENROUTER_API_BASE
@@ -63,7 +63,7 @@ def test_naming_experiential_picks_its_base_key_and_model(env: pytest.MonkeyPatc
     env.setenv("FISH_LLM_MODEL", "shared-model")
     env.setenv("FISH_LLM_MODEL_EXPERIENTIAL", "glm-5.3-flash-abliterated")
     env.setenv("OPENROUTER_MODEL", "vendor/openrouter-only")
-    tune = LlmSettings.from_env()
+    tune = LlmTune.from_env()
     assert tune.provider == "experiential"
     assert tune.backend == "openai"
     assert tune.base == EXPERIENTIAL_API_BASE
@@ -77,11 +77,11 @@ def test_each_providers_model_variable_lets_both_live_in_one_env(
     env.setenv("FISH_LLM_MODEL_OPENROUTER", "vendor/or-model")
     env.setenv("FISH_LLM_MODEL_EXPERIENTIAL", "xp-model")
     env.setenv("FISH_LLM_MODEL", "fallback")
-    assert LlmSettings.from_env().model == "vendor/or-model"
+    assert LlmTune.from_env().model == "vendor/or-model"
     env.setenv("FISH_LLM_PROVIDER", "experiential")
-    assert LlmSettings.from_env().model == "xp-model"
+    assert LlmTune.from_env().model == "xp-model"
     env.delenv("FISH_LLM_MODEL_EXPERIENTIAL")
-    assert LlmSettings.from_env().model == "fallback"
+    assert LlmTune.from_env().model == "fallback"
 
 
 def test_the_experiential_model_ignores_the_openrouter_model_variable(
@@ -89,7 +89,7 @@ def test_the_experiential_model_ignores_the_openrouter_model_variable(
 ) -> None:
     env.setenv("FISH_LLM_PROVIDER", "experiential")
     env.setenv("OPENROUTER_MODEL", "vendor/openrouter-only")
-    assert LlmSettings.from_env().model == ""
+    assert LlmTune.from_env().model == ""
 
 
 def test_a_base_on_the_experiential_host_is_experiential_without_naming_it(
@@ -98,7 +98,7 @@ def test_a_base_on_the_experiential_host_is_experiential_without_naming_it(
     env.setenv("FISH_LLM_BASE", "https://api.experientiallabs.ai/api/v1")
     env.setenv("EXPLABS_API_KEY", "xpl-key")
     env.setenv("OPENAI_API_KEY", "oa-key")
-    tune = LlmSettings.from_env()
+    tune = LlmTune.from_env()
     assert tune.provider == "experiential"
     assert tune.api_key == "xpl-key"
 
@@ -107,7 +107,7 @@ def test_a_key_never_goes_to_the_wrong_provider(env: pytest.MonkeyPatch) -> None
     env.setenv("FISH_LLM_PROVIDER", "openrouter")
     env.setenv("FISH_LLM_BASE", "https://api.experientiallabs.ai/v1")
     env.setenv("OPENROUTER_API_KEY", "or-key")
-    tune = LlmSettings.from_env()
+    tune = LlmTune.from_env()
     assert tune.provider == "experiential"
     assert tune.api_key == ""
 
@@ -118,7 +118,7 @@ def test_the_old_openrouter_base_alias_cannot_redirect_a_named_provider(
     env.setenv("FISH_LLM_PROVIDER", "experiential")
     env.setenv("OPENROUTER_BASE_URL", "https://proxy.example.test/v1")
     env.setenv("EXPLABS_API_KEY", "xpl-key")
-    tune = LlmSettings.from_env()
+    tune = LlmTune.from_env()
     assert tune.base == EXPERIENTIAL_API_BASE
     assert tune.api_key == "xpl-key"
 
@@ -127,16 +127,16 @@ def test_an_explicit_key_wins_and_a_blank_one_falls_back(env: pytest.MonkeyPatch
     env.setenv("FISH_LLM_PROVIDER", "experiential")
     env.setenv("EXPLABS_API_KEY", "xpl-key")
     env.setenv("FISH_LLM_API_KEY", "")
-    assert LlmSettings.from_env().api_key == "xpl-key"
+    assert LlmTune.from_env().api_key == "xpl-key"
     env.setenv("FISH_LLM_API_KEY", "explicit")
-    assert LlmSettings.from_env().api_key == "explicit"
+    assert LlmTune.from_env().api_key == "explicit"
 
 
 def test_any_other_server_uses_the_openai_key_and_is_custom(env: pytest.MonkeyPatch) -> None:
     env.setenv("FISH_LLM_BASE", "https://llm.example.test/v1")
     env.setenv("OPENAI_API_KEY", "oa-key")
     env.setenv("EXPLABS_API_KEY", "xpl-key")
-    tune = LlmSettings.from_env()
+    tune = LlmTune.from_env()
     assert tune.provider == "custom"
     assert tune.backend == "openai"
     assert tune.api_key == "oa-key"
@@ -146,11 +146,11 @@ def test_an_unknown_provider_warns_and_falls_back_while_custom_is_quiet(
     env: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     env.setenv("FISH_LLM_PROVIDER", "nope")
-    assert LlmSettings.from_env().provider == "openrouter"
+    assert LlmTune.from_env().provider == "openrouter"
     assert "unknown FISH_LLM_PROVIDER" in capsys.readouterr().err
     env.setenv("FISH_LLM_PROVIDER", "custom")
     env.setenv("FISH_LLM_BASE", "https://llm.example.test/v1")
-    assert LlmSettings.from_env().provider == "custom"
+    assert LlmTune.from_env().provider == "custom"
     assert capsys.readouterr().err == ""
 
 
@@ -174,15 +174,15 @@ def test_the_provider_comes_from_the_host_only(base: str, expected: str | None) 
 def test_reasoning_effort_is_validated(
     env: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    assert LlmSettings.from_env().reasoning_effort == ""
+    assert LlmTune.from_env().reasoning_effort == ""
     env.setenv("FISH_LLM_REASONING_EFFORT", " LOW ")
-    assert LlmSettings.from_env().reasoning_effort == "low"
+    assert LlmTune.from_env().reasoning_effort == "low"
     env.setenv("FISH_LLM_REASONING_EFFORT", "turbo")
-    assert LlmSettings.from_env().reasoning_effort == ""
+    assert LlmTune.from_env().reasoning_effort == ""
     assert "FISH_LLM_REASONING_EFFORT" in capsys.readouterr().err
 
 
-def _experiential_tune(**kw: Any) -> LlmSettings:
+def _experiential_tune(**kw: Any) -> LlmTune:
     fields: dict[str, Any] = {
         "backend": "openai",
         "base": EXPERIENTIAL_API_BASE,
@@ -190,7 +190,7 @@ def _experiential_tune(**kw: Any) -> LlmSettings:
         "model": "glm-5.3-flash-abliterated",
     }
     fields.update(kw)
-    return LlmSettings(**fields)
+    return LlmTune(**fields)
 
 
 def _install(monkeypatch: pytest.MonkeyPatch, handler: Any) -> None:
@@ -202,7 +202,7 @@ def _install(monkeypatch: pytest.MonkeyPatch, handler: Any) -> None:
     monkeypatch.setattr("fish_audio_suite_voice.transports.httpx.AsyncClient", factory)
 
 
-async def _collect(tune: LlmSettings) -> str:
+async def _collect(tune: LlmTune) -> str:
     async with open_chat_backend(tune) as backend:
         return "".join([tok async for tok in backend.stream([{"role": "user", "content": "hi"}])])
 
@@ -302,7 +302,7 @@ def test_an_old_openrouter_backend_setting_does_not_follow_a_named_provider(
 ) -> None:
     env.setenv("FISH_LLM_BACKEND", "openrouter")
     env.setenv("FISH_LLM_PROVIDER", "experiential")
-    tune = LlmSettings.from_env()
+    tune = LlmTune.from_env()
     assert tune.backend == "openai"
     assert tune.provider == "experiential"
     assert "does not fit experiential" in capsys.readouterr().err
@@ -312,9 +312,9 @@ def test_the_openrouter_backend_setting_still_holds_for_openrouter_and_custom_ho
     env: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     env.setenv("FISH_LLM_BACKEND", "openrouter")
-    assert LlmSettings.from_env().backend == "openrouter"
+    assert LlmTune.from_env().backend == "openrouter"
     env.setenv("FISH_LLM_BASE", "https://proxy.example.test/v1")
-    assert LlmSettings.from_env().backend == "openrouter"
+    assert LlmTune.from_env().backend == "openrouter"
     assert capsys.readouterr().err == ""
 
 
@@ -323,7 +323,7 @@ def test_a_named_providers_key_is_not_picked_up_for_a_plain_http_base(
 ) -> None:
     env.setenv("EXPLABS_API_KEY", "xpl_from_env")
     env.setenv("FISH_LLM_BASE", "http://api.experientiallabs.ai/v1")
-    tune = LlmSettings.from_env()
+    tune = LlmTune.from_env()
     assert tune.provider == "experiential"
     assert tune.api_key == ""
     assert "not https" in capsys.readouterr().err
@@ -333,28 +333,28 @@ def test_an_explicit_key_still_goes_to_a_plain_http_named_base(env: pytest.Monke
     env.setenv("EXPLABS_API_KEY", "xpl_from_env")
     env.setenv("FISH_LLM_API_KEY", "explicit")
     env.setenv("FISH_LLM_BASE", "http://api.experientiallabs.ai/v1")
-    assert LlmSettings.from_env().api_key == "explicit"
+    assert LlmTune.from_env().api_key == "explicit"
 
 
 def test_a_custom_http_base_keeps_its_key(env: pytest.MonkeyPatch) -> None:
     env.setenv("OPENAI_API_KEY", "local-key")
     env.setenv("FISH_LLM_BASE", "http://127.0.0.1:11434/v1")
-    assert LlmSettings.from_env().api_key == "local-key"
+    assert LlmTune.from_env().api_key == "local-key"
 
 
 def test_the_startup_blockers_name_the_selected_providers_variables(
     env: pytest.MonkeyPatch,
 ) -> None:
     env.setenv("FISH_LLM_PROVIDER", "experiential")
-    assert llm_setting_names(LlmSettings.from_env()) == (
+    assert llm_setting_names(LlmTune.from_env()) == (
         "EXPLABS_API_KEY",
         "FISH_LLM_MODEL_EXPERIENTIAL",
     )
     env.setenv("FISH_LLM_PROVIDER", "openrouter")
-    assert llm_setting_names(LlmSettings.from_env()) == (
+    assert llm_setting_names(LlmTune.from_env()) == (
         "OPENROUTER_API_KEY",
         "FISH_LLM_MODEL_OPENROUTER / OPENROUTER_MODEL",
     )
     env.setenv("FISH_LLM_PROVIDER", "custom")
     env.setenv("FISH_LLM_BASE", "http://127.0.0.1:11434/v1")
-    assert llm_setting_names(LlmSettings.from_env()) == ("OPENAI_API_KEY", "OPENROUTER_MODEL")
+    assert llm_setting_names(LlmTune.from_env()) == ("OPENAI_API_KEY", "OPENROUTER_MODEL")

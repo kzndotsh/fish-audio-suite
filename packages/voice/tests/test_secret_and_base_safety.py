@@ -5,8 +5,8 @@ import pytest
 
 from fish_audio_suite_voice.config import VoiceCliConfig, warn_if_insecure_base
 from fish_audio_suite_voice.debug import with_detail
-from fish_audio_suite_voice.live import IsolatedFishTts
-from fish_audio_suite_voice.tune import LlmSettings
+from fish_audio_suite_voice.live import FishSpeaker
+from fish_audio_suite_voice.tune import LlmTune
 from fish_audio_suite_voice.wire import _classify_fish_exc
 
 SECRET = "sk-very-secret-value"
@@ -16,7 +16,7 @@ def _config(
     *,
     fish_api_key: str = SECRET,
     fish_base: str = "https://api.fish.audio",
-    llm: LlmSettings | None = None,
+    llm: LlmTune | None = None,
 ) -> VoiceCliConfig:
     return VoiceCliConfig(
         fish_api_key=fish_api_key,
@@ -37,7 +37,7 @@ def _config(
         system_prompt="be brief",
         device=None,
         llm=llm
-        or LlmSettings(backend="openai", base="https://llm.example/v1", api_key=SECRET, model="m"),
+        or LlmTune(backend="openai", base="https://llm.example/v1", api_key=SECRET, model="m"),
     )
 
 
@@ -50,7 +50,7 @@ def test_no_secret_appears_in_a_config_repr() -> None:
 
 
 def test_no_secret_appears_in_the_tts_client_or_turn_spec_repr() -> None:
-    tts = IsolatedFishTts(api_key=SECRET, voice_id="voice")
+    tts = FishSpeaker(api_key=SECRET, voice_id="voice")
     assert SECRET not in repr(tts)
     assert SECRET not in str(tts)
     assert "voice_id" in repr(tts)
@@ -80,7 +80,7 @@ def test_plain_http_to_a_remote_host_warns_for_both_keys(
     monkeypatch.setattr("fish_audio_suite_voice.config.warn", notes.append)
     config = _config(
         fish_base="http://10.0.0.5:8080",
-        llm=LlmSettings(backend="openai", base="http://10.0.0.6/v1", api_key=SECRET, model="m"),
+        llm=LlmTune(backend="openai", base="http://10.0.0.6/v1", api_key=SECRET, model="m"),
     )
     assert warn_if_insecure_base(config) is True
     assert len(notes) == 2
@@ -95,9 +95,7 @@ def test_https_and_loopback_do_not_warn(monkeypatch: pytest.MonkeyPatch) -> None
     assert warn_if_insecure_base(_config()) is False
     local = _config(
         fish_base="http://127.0.0.1:8080",
-        llm=LlmSettings(
-            backend="openai", base="http://localhost:1234/v1", api_key=SECRET, model="m"
-        ),
+        llm=LlmTune(backend="openai", base="http://localhost:1234/v1", api_key=SECRET, model="m"),
     )
     assert warn_if_insecure_base(local) is False
     assert notes == []
@@ -109,7 +107,7 @@ def test_no_key_means_no_warning(monkeypatch: pytest.MonkeyPatch) -> None:
     keyless = _config(
         fish_api_key="",
         fish_base="http://10.0.0.5:8080",
-        llm=LlmSettings(backend="openai", base="http://10.0.0.6/v1", api_key="", model="m"),
+        llm=LlmTune(backend="openai", base="http://10.0.0.6/v1", api_key="", model="m"),
     )
     assert warn_if_insecure_base(keyless) is False
     assert notes == []
@@ -122,7 +120,7 @@ def test_the_warning_prints_only_the_host_never_credentials_in_the_url(
     monkeypatch.setattr("fish_audio_suite_voice.config.warn", notes.append)
     config = _config(
         fish_base="http://alice:hunter2@10.0.0.5:8080/v1?token=abc123",
-        llm=LlmSettings(
+        llm=LlmTune(
             backend="openai",
             base="http://bob:s3cret@10.0.0.6/v1?key=zzz",
             api_key=SECRET,

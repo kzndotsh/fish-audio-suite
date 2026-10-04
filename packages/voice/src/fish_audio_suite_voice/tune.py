@@ -43,7 +43,7 @@ __all__ = [
     "LlmBackendName",
     "LlmProvider",
     "LlmProviderName",
-    "LlmSettings",
+    "LlmTune",
     "is_openrouter_host",
     "provider_for_base",
     "read_flag",
@@ -475,7 +475,7 @@ def is_openrouter_host(base: str) -> bool:
 
 
 @dataclass(frozen=True, slots=True)
-class LlmSettings:
+class LlmTune:
     """Chat backend choice and request settings.
 
     Attributes
@@ -541,7 +541,7 @@ class LlmSettings:
 
         Returns
         -------
-        LlmSettings
+        LlmTune
             ``FISH_LLM_PROVIDER`` names a provider and supplies its default base,
             and ``FISH_LLM_BASE`` overrides the base. The provider is then read
             from the final base's host, so a key can only come from the variable

@@ -106,7 +106,7 @@ class TtsResult:
 
 @dataclass(frozen=True, slots=True)
 class TurnSpec:
-    """Inputs for one Fish websocket. Built by ``IsolatedFishTts``, not by apps.
+    """Inputs for one Fish websocket. Built by ``FishSpeaker``, not by apps.
 
     Notes
     -----

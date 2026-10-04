@@ -232,7 +232,7 @@ async def speak_reply(
         try:
             first_audio: list[float] = []
             result = await asyncio.to_thread(
-                ctx.tts.speak_isolated,
+                ctx.tts.speak,
                 scrubbed,
                 sink,
                 cancel=cancel,
@@ -323,7 +323,7 @@ async def stream_turn(
     snapshot = LatencySnapshot(asr_ms=heard.asr_ms, trace_id=heard.trace_id)
     tts_task = asyncio.create_task(
         asyncio.to_thread(
-            ctx.tts.speak_deltas_isolated,
+            ctx.tts.speak_stream,
             pipe,
             sink,
             cancel=cancel,

@@ -135,7 +135,7 @@ def _quiet_result(cancelled: bool) -> TtsResult:
 
 
 @dataclass(kw_only=True, eq=False)
-class IsolatedFishTts:
+class FishSpeaker:
     """Fish `stream_websocket` on a fresh loop. Do not merge the LLM socket onto this WS."""
 
     api_key: str = field(repr=False)
@@ -161,7 +161,7 @@ class IsolatedFishTts:
         self.base_url = strip_base(self.base_url)
         self.trace_headers = dict(self.trace_headers)
 
-    def speak_isolated(
+    def speak(
         self,
         text: str,
         sink: PlaybackSink,
@@ -207,10 +207,10 @@ class IsolatedFishTts:
         """
         stop = cancel or threading.Event()
         return self._run_on_thread(
-            lambda: self.speak(text, sink, stop, on_first_audio=on_first_audio), stop
+            lambda: self._speak_here(text, sink, stop, on_first_audio=on_first_audio), stop
         )
 
-    def speak_deltas_isolated(
+    def speak_stream(
         self,
         deltas: Iterable[str] | AsyncIterable[str],
         sink: PlaybackSink,
@@ -244,7 +244,7 @@ class IsolatedFishTts:
         PortAudioMissingError
             ``sounddevice`` could not load libportaudio when the sink opened.
         OSError
-            The sink could not open or write, as for ``speak_isolated``.
+            The sink could not open or write, as for ``speak``.
 
         Notes
         -----
@@ -254,7 +254,7 @@ class IsolatedFishTts:
         """
         stop = cancel or threading.Event()
         return self._run_on_thread(
-            lambda: self.speak_deltas(
+            lambda: self._speak_stream_here(
                 deltas, sink, stop, early_flush=True, on_first_audio=on_first_audio
             ),
             stop,
@@ -290,7 +290,7 @@ class IsolatedFishTts:
             return _quiet_result(cancel.is_set())
         return result
 
-    async def speak(
+    async def _speak_here(
         self,
         text: str,
         sink: PlaybackSink,
@@ -318,8 +318,8 @@ class IsolatedFishTts:
 
         Notes
         -----
-        Prefer ``speak_isolated`` when the caller is already inside an event
-        loop that must stay free for the LLM. Duplex does that.
+        ``speak`` calls this on a private loop, which keeps the caller's loop
+        free for the LLM.
         """
         prepared = _spoken(text, lead=self.mood_lead)
         return await run_turn(
@@ -331,7 +331,7 @@ class IsolatedFishTts:
             on_first_audio=on_first_audio,
         )
 
-    async def speak_deltas(
+    async def _speak_stream_here(
         self,
         deltas: Iterable[str] | AsyncIterable[str],
         sink: PlaybackSink,
@@ -364,9 +364,9 @@ class IsolatedFishTts:
 
         Notes
         -----
-        Duplex reaches this through ``speak_deltas_isolated`` when streaming is
-        on. Otherwise it waits for the full reply and uses ``speak_isolated``,
-        which can replay on 429 or 5xx. A thought,
+        ``speak_stream`` calls this on a private loop. Duplex uses it when
+        streaming is on. Otherwise it waits for the full reply and uses
+        ``speak``, which can replay on 429 or 5xx. A thought,
         parenthesis, bracket, or URL stays buffered until it closes, so a
         cut cannot speak the inside of a span the closer would remove.
         """
@@ -424,7 +424,7 @@ class IsolatedFishTts:
 
 
 __all__ = [
-    "IsolatedFishTts",
+    "FishSpeaker",
     "TtsResult",
     "is_cancel_noise",
 ]

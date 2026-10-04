@@ -10,7 +10,7 @@ import httpx
 from fish_audio_suite_kit import ChatMessage
 from fish_audio_suite_voice.config import VoiceCliConfig
 from fish_audio_suite_voice.history import KEEP_SYSTEM
-from fish_audio_suite_voice.live import IsolatedFishTts
+from fish_audio_suite_voice.live import FishSpeaker
 from fish_audio_suite_voice.llm import ChatBackend
 from fish_audio_suite_voice.signals import DuplexSession
 
@@ -29,7 +29,7 @@ class DuplexContext:
     """Everything one duplex session shares between the listen, reply and history steps."""
 
     config: VoiceCliConfig
-    tts: IsolatedFishTts
+    tts: FishSpeaker
     device: str | int | None
     backend: ChatBackend
     session: DuplexSession

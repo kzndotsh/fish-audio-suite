@@ -1,7 +1,7 @@
 """Duplex LLM token stream behind a swappable ``ChatBackend``.
 
 Two backends ship: an OpenAI-compatible httpx client for any chat-completions
-server, and the OpenRouter SDK as an opt-in adapter. ``LlmSettings.backend`` picks
+server, and the OpenRouter SDK as an opt-in adapter. ``LlmTune.backend`` picks
 one. Both share the event consumer, the 429 retry, and the cut-off continuation.
 """
 
@@ -28,7 +28,7 @@ from fish_audio_suite_voice.transports import (
     http_client,
     openrouter_client,
 )
-from fish_audio_suite_voice.tune import LlmSettings, is_openrouter_host
+from fish_audio_suite_voice.tune import LlmTune, is_openrouter_host
 from fish_audio_suite_voice.wire import is_own_cancel, reap
 
 __all__ = [
@@ -57,7 +57,7 @@ def _route_suffix(model: str) -> str:
     return model.rsplit("/", maxsplit=1)[-1]
 
 
-def _want_nitro(model: str, tune: LlmSettings) -> bool:
+def _want_nitro(model: str, tune: LlmTune) -> bool:
     if not tune.uses_openrouter_sdk or not tune.nitro:
         return False
     return ":" not in _route_suffix(model)
@@ -78,14 +78,14 @@ def _model_author_slug(model: str) -> tuple[str, str] | None:
     return author, slug
 
 
-async def check_openrouter_model(client: Any, tune: LlmSettings) -> None:
+async def check_openrouter_model(client: Any, tune: LlmTune) -> None:
     """Resolve the configured model via ``models.get``. Warn on 404; never abort duplex.
 
     Parameters
     ----------
     client : Any
         An open OpenRouter SDK client.
-    tune : LlmSettings
+    tune : LlmTune
         Supplies the model id and whether ``:nitro`` is added.
     """
     route = _nitro_route(tune.model, nitro=_want_nitro(tune.model, tune))
@@ -446,7 +446,7 @@ class _Backend:
 
     def __init__(
         self,
-        tune: LlmSettings,
+        tune: LlmTune,
         *,
         session_id: str | None = None,
         client: Any | None = None,
@@ -485,7 +485,7 @@ class _Backend:
 
 @asynccontextmanager
 async def open_chat_backend(
-    tune: LlmSettings,
+    tune: LlmTune,
     *,
     session_id: str | None = None,
 ) -> AsyncGenerator[ChatBackend, None]:
@@ -493,7 +493,7 @@ async def open_chat_backend(
 
     Parameters
     ----------
-    tune : LlmSettings
+    tune : LlmTune
         Backend, base URL, key, model, and request settings.
     session_id : str or None, optional
         Sent with every OpenRouter request so its logs group by session.
@@ -519,7 +519,7 @@ async def open_chat_backend(
 async def llm_token_stream(
     messages: list[ChatMessage],
     *,
-    tune: LlmSettings | None = None,
+    tune: LlmTune | None = None,
     base: str = "",
     key: str = "",
     model: str = "",
@@ -535,7 +535,7 @@ async def llm_token_stream(
     ----------
     messages : list of dict
         OpenAI-style chat messages, including the system prompt.
-    tune : LlmSettings or None, optional
+    tune : LlmTune or None, optional
         Backend and request settings. When omitted one is built from ``base``,
         ``key`` and ``model``, choosing OpenRouter only for an ``openrouter.ai``
         host.
@@ -568,7 +568,7 @@ async def llm_token_stream(
     continues the sentence is yielded. A ``reasoning`` field on a stream event
     is not spoken.
     """
-    tune = tune or LlmSettings(
+    tune = tune or LlmTune(
         backend="openrouter" if is_openrouter_host(base) else "openai",
         base=base,
         api_key=key,
@@ -647,7 +647,7 @@ def _first_sentence(text: str) -> str:
 async def _stream_generation(
     messages: list[ChatMessage],
     *,
-    tune: LlmSettings,
+    tune: LlmTune,
     route_model: str,
     cancel: asyncio.Event | None,
     client: Any | None,

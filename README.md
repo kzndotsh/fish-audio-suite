@@ -82,13 +82,13 @@ From Python, when your app already owns the mic and the LLM:
 
 ```python
 from pathlib import Path
-from fish_audio_suite_voice import FileSink, IsolatedFishTts
+from fish_audio_suite_voice import FileSink, FishSpeaker
 
-tts = IsolatedFishTts(api_key=key, voice_id=voice_id)
-result = tts.speak_isolated("Hello there.", FileSink(Path("turn.wav")))
+tts = FishSpeaker(api_key=key, voice_id=voice_id)
+result = tts.speak("Hello there.", FileSink(Path("turn.wav")))
 ```
 
-`speak_isolated` runs the websocket on a private thread, so it is safe under `asyncio.run`. There is no default voice id: you bring your own. Speakers and the microphone need PortAudio, which `uv` does not install ([how](packages/voice/README.md#portaudio)).
+`speak` runs the websocket on a private thread, so it is safe under `asyncio.run`. There is no default voice id: you bring your own. Speakers and the microphone need PortAudio, which `uv` does not install ([how](packages/voice/README.md#portaudio)).
 
 </details>
 

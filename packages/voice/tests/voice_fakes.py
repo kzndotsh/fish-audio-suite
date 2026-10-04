@@ -16,7 +16,7 @@ import pytest
 
 from fish_audio_suite_kit import FishHttpError
 from fish_audio_suite_voice import reply
-from fish_audio_suite_voice.live import IsolatedFishTts, TtsResult
+from fish_audio_suite_voice.live import FishSpeaker, TtsResult
 
 
 class FakeGate:
@@ -102,28 +102,28 @@ def install_audio(
 
 def set_tts(
     monkeypatch: pytest.MonkeyPatch,
-    tts: IsolatedFishTts,
+    tts: FishSpeaker,
     *,
     speak: Callable[..., TtsResult] | None = None,
     speak_stream: Callable[..., TtsResult] | None = None,
 ) -> None:
-    """Replace the speak methods of an ``IsolatedFishTts`` for one test.
+    """Replace the speak methods of an ``FishSpeaker`` for one test.
 
     Parameters
     ----------
     monkeypatch : pytest.MonkeyPatch
         The test's patcher.
-    tts : IsolatedFishTts
+    tts : FishSpeaker
         The object to patch.
     speak : Callable or None, optional
-        Replaces ``speak_isolated``.
+        Replaces ``speak``.
     speak_stream : Callable or None, optional
-        Replaces ``speak_deltas_isolated``.
+        Replaces ``speak_stream``.
     """
     if speak is not None:
-        monkeypatch.setattr(tts, "speak_isolated", speak)
+        monkeypatch.setattr(tts, "speak", speak)
     if speak_stream is not None:
-        monkeypatch.setattr(tts, "speak_deltas_isolated", speak_stream)
+        monkeypatch.setattr(tts, "speak_stream", speak_stream)
 
 
 def make_result(

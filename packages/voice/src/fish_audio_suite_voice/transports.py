@@ -19,7 +19,7 @@ from fish_audio_suite_kit import (
     utf8_text,
 )
 from fish_audio_suite_voice.debug import debug, debug_enabled, warn
-from fish_audio_suite_voice.tune import LlmSettings
+from fish_audio_suite_voice.tune import LlmTune
 
 __all__ = [
     "ChatCall",
@@ -56,7 +56,7 @@ class ChatCall:
     """
 
     messages: list[ChatMessage]
-    tune: LlmSettings
+    tune: LlmTune
     route_model: str
     client: Any | None
     http: httpx.AsyncClient | None
@@ -65,12 +65,12 @@ class ChatCall:
     stats: _AbortStats
 
 
-def http_client(tune: LlmSettings) -> httpx.AsyncClient:
+def http_client(tune: LlmTune) -> httpx.AsyncClient:
     """Build the pooled client for the OpenAI-compatible backend.
 
     Parameters
     ----------
-    tune : LlmSettings
+    tune : LlmTune
         Supplies the request timeout.
 
     Returns
@@ -82,12 +82,12 @@ def http_client(tune: LlmSettings) -> httpx.AsyncClient:
 
 
 @asynccontextmanager
-async def openrouter_client(tune: LlmSettings) -> AsyncGenerator[Any, None]:
+async def openrouter_client(tune: LlmTune) -> AsyncGenerator[Any, None]:
     """Open an OpenRouter client for the duplex loop.
 
     Parameters
     ----------
-    tune : LlmSettings
+    tune : LlmTune
         Supplies the key, server URL, and attribution fields. An empty
         referer, title, or category is not sent.
 
@@ -116,7 +116,7 @@ async def openrouter_client(tune: LlmSettings) -> AsyncGenerator[Any, None]:
 
 
 @asynccontextmanager
-async def _or_client_ctx(tune: LlmSettings, client: Any | None) -> AsyncGenerator[Any, None]:
+async def _or_client_ctx(tune: LlmTune, client: Any | None) -> AsyncGenerator[Any, None]:
     if client is not None:
         yield client
         return

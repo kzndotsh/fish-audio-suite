@@ -27,12 +27,12 @@ from fish_audio_suite_voice.transports import (
     describe_http_error,
     openrouter_client,
 )
-from fish_audio_suite_voice.tune import LlmSettings, is_openrouter_host
+from fish_audio_suite_voice.tune import LlmTune, is_openrouter_host
 
 OR_BASE = "https://openrouter.ai/api/v1"
 
 
-def _tune(**kw: Any) -> LlmSettings:
+def _tune(**kw: Any) -> LlmTune:
     fields: dict[str, Any] = {
         "backend": "openrouter",
         "base": OR_BASE,
@@ -42,7 +42,7 @@ def _tune(**kw: Any) -> LlmSettings:
         "continuation": True,
     }
     fields.update(kw)
-    return LlmSettings(**fields)
+    return LlmTune(**fields)
 
 
 def test_openrouter_client_drops_a_key_that_breaks_the_header(
@@ -202,7 +202,7 @@ def test_want_nitro_false_when_suffix_present() -> None:
 
 def test_want_nitro_is_off_unless_asked() -> None:
     assert not _want_nitro("org/model", _tune(nitro=False))
-    assert not LlmSettings().nitro
+    assert not LlmTune().nitro
 
 
 def test_want_nitro_false_for_non_openrouter_backend() -> None:
@@ -319,7 +319,7 @@ def test_openrouter_stream_joins_tokens(fake_openrouter: type[_FakeOpenRouter]) 
 def test_request_settings_come_from_the_tune(
     fake_openrouter: type[_FakeOpenRouter],
 ) -> None:
-    async def run(tune: LlmSettings) -> None:
+    async def run(tune: LlmTune) -> None:
         async for _tok in _tokens(tune=tune):
             pass
 
@@ -338,7 +338,7 @@ def test_request_settings_come_from_the_tune(
 def test_openrouter_attribution_is_configurable(
     fake_openrouter: type[_FakeOpenRouter],
 ) -> None:
-    async def run(tune: LlmSettings) -> None:
+    async def run(tune: LlmTune) -> None:
         async for _tok in _tokens(tune=tune):
             pass
 
@@ -354,13 +354,13 @@ def test_llm_env_numbers_must_be_usable(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("FISH_LLM_MAX_TOKENS", "0")
-    assert LlmSettings.from_env().max_tokens == 1200
+    assert LlmTune.from_env().max_tokens == 1200
     monkeypatch.setenv("FISH_LLM_MAX_TOKENS", "-5")
-    assert LlmSettings.from_env().max_tokens == 1200
+    assert LlmTune.from_env().max_tokens == 1200
     monkeypatch.setenv("FISH_LLM_MAX_TOKENS", "128")
-    assert LlmSettings.from_env().max_tokens == 128
+    assert LlmTune.from_env().max_tokens == 128
     monkeypatch.setenv("FISH_LLM_TIMEOUT", "0")
-    assert LlmSettings.from_env().timeout_s == 120.0
+    assert LlmTune.from_env().timeout_s == 120.0
     assert "FISH_LLM_MAX_TOKENS" in capsys.readouterr().err
 
 

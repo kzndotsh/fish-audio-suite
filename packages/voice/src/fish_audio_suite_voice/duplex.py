@@ -15,7 +15,7 @@ from fish_audio_suite_voice.debug import console_print, debug, debug_enabled, tr
 from fish_audio_suite_voice.duplex_state import EXIT_FATAL, EXIT_OK, DuplexContext
 from fish_audio_suite_voice.hearing import HeardLine, hear_line
 from fish_audio_suite_voice.history import opening_history, remember_user
-from fish_audio_suite_voice.live import IsolatedFishTts
+from fish_audio_suite_voice.live import FishSpeaker
 from fish_audio_suite_voice.llm import ChatBackend
 from fish_audio_suite_voice.reply import collect_reply, speak_reply, stream_turn, turn_summary
 from fish_audio_suite_voice.signals import DuplexSession
@@ -114,7 +114,7 @@ async def _resume_reply(ctx: DuplexContext) -> int | None:
 
 async def duplex_turns(
     c: VoiceCliConfig,
-    tts: IsolatedFishTts,
+    tts: FishSpeaker,
     device: str | int | None,
     backend: ChatBackend,
     session: DuplexSession | None = None,
@@ -125,8 +125,8 @@ async def duplex_turns(
     ----------
     c : VoiceCliConfig
         Env-backed duplex settings.
-    tts : IsolatedFishTts
-        Live TTS client. Each reply uses ``speak_isolated``.
+    tts : FishSpeaker
+        Live TTS client. Each reply uses ``speak``.
     device : str or int or None
         Mic and speaker device, or None for the host default.
     backend : ChatBackend

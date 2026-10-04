@@ -11,7 +11,7 @@ import pytest
 import fish_audio_suite_voice as voice
 from fish_audio_suite_voice.debug import DebugLevel, configure_voice_logging, debug_level
 from fish_audio_suite_voice.listen import start_hit
-from fish_audio_suite_voice.tune import LlmSettings, read_flag
+from fish_audio_suite_voice.tune import LlmTune, read_flag
 
 
 def _modules() -> list[str]:
@@ -35,7 +35,7 @@ def test_the_root_exports_the_types_public_signatures_use() -> None:
         "AecTune",
         "BargeTune",
         "ListenTune",
-        "LlmSettings",
+        "LlmTune",
         "PortAudioMissingError",
         "TtsResult",
         "DuplexSession",
@@ -55,7 +55,7 @@ def test_the_debug_level_is_a_named_ordered_value() -> None:
 
 
 def test_the_llm_backend_is_one_of_the_two_names() -> None:
-    assert LlmSettings().backend in {"openrouter", "openai"}
+    assert LlmTune().backend in {"openrouter", "openai"}
 
 
 def test_boolean_flags_are_keyword_only() -> None:

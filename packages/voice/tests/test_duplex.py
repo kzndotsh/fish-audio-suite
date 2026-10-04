@@ -16,7 +16,7 @@ from fish_audio_suite_voice.duplex import duplex_turns
 from fish_audio_suite_voice.duplex_state import DuplexContext
 from fish_audio_suite_voice.hearing import HeardLine, classify_transcript, recognize
 from fish_audio_suite_voice.history import opening_history, remember_user, trim_history
-from fish_audio_suite_voice.live import IsolatedFishTts, TtsResult
+from fish_audio_suite_voice.live import FishSpeaker, TtsResult
 from fish_audio_suite_voice.playback import PortAudioMissingError
 from fish_audio_suite_voice.reply import (
     _TokenPipe,
@@ -26,7 +26,7 @@ from fish_audio_suite_voice.reply import (
     stream_turn,
 )
 from fish_audio_suite_voice.signals import DuplexSession
-from fish_audio_suite_voice.tune import DEFAULT_HISTORY_TURNS, LlmSettings
+from fish_audio_suite_voice.tune import DEFAULT_HISTORY_TURNS, LlmTune
 
 HISTORY_TURNS = DEFAULT_HISTORY_TURNS
 
@@ -50,7 +50,7 @@ def _config() -> VoiceCliConfig:
         playback="stdout",
         system_prompt="be brief",
         device=None,
-        llm=LlmSettings(backend="openai", base="https://example.test/v1", api_key="lk", model="m"),
+        llm=LlmTune(backend="openai", base="https://example.test/v1", api_key="lk", model="m"),
     )
 
 
@@ -83,7 +83,7 @@ def _ctx(
 ) -> DuplexContext:
     return DuplexContext(
         config=_config(),
-        tts=IsolatedFishTts(api_key="k", voice_id="voice"),
+        tts=FishSpeaker(api_key="k", voice_id="voice"),
         device=None,
         backend=_FakeBackend(tokens),
         session=session or DuplexSession(),
@@ -248,7 +248,7 @@ def test_quit_during_asr_does_not_ask_the_llm(
         asyncio.wait_for(
             duplex_turns(
                 _config(),
-                IsolatedFishTts(api_key="k", voice_id="voice"),
+                FishSpeaker(api_key="k", voice_id="voice"),
                 None,
                 _FakeBackend(tokens),
                 session,

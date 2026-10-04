@@ -23,7 +23,7 @@ from fish_audio_suite_kit import (
     normalize_cues,
     scrub_tts,
 )
-from fish_audio_suite_voice.live import IsolatedFishTts
+from fish_audio_suite_voice.live import FishSpeaker
 from fish_audio_suite_voice.playback import PlaybackSink
 from fish_audio_suite_voice.stream_scrub import delta_events
 from fish_audio_suite_voice.tts_turn import _HeldClient, run_turn
@@ -97,7 +97,7 @@ def _events(prepared: str, cancel: threading.Event, partial: int) -> list[TextEv
     return asyncio.run(collect())
 
 
-def _delta_events(tts: IsolatedFishTts, deltas: Iterable[str], cancel: threading.Event):
+def _delta_events(tts: FishSpeaker, deltas: Iterable[str], cancel: threading.Event):
     return delta_events(deltas, cancel, partial_chars=tts.partial_chars, mood_lead=True)
 
 
@@ -128,7 +128,7 @@ def test_text_events_cancel_drops_the_flush() -> None:
 
 
 def _delta_text(deltas: list[str], partial_chars: int) -> str:
-    tts = IsolatedFishTts(api_key="k", voice_id="v", partial_chars=partial_chars)
+    tts = FishSpeaker(api_key="k", voice_id="v", partial_chars=partial_chars)
 
     async def collect() -> str:
         events = [event async for event in _delta_events(tts, deltas, threading.Event())]
@@ -327,7 +327,7 @@ def test_streaming_deltas_keep_a_split_span_intact() -> None:
 def test_partial_cut_does_not_split_a_cue() -> None:
     # A 40-character hard cut used to send "[whi" and then "spering]".
     # A period inside the cue used to send "[hello." and then "there]".
-    tts = IsolatedFishTts(api_key="k", voice_id="v", partial_chars=40)
+    tts = FishSpeaker(api_key="k", voice_id="v", partial_chars=40)
 
     async def pieces_of(sample: str) -> list[str]:
         events = [event async for event in _delta_events(tts, [sample], threading.Event())]
@@ -648,7 +648,7 @@ def test_three_character_chunks_match_a_one_shot_scrub() -> None:
 
 
 def test_sdk_limits_are_applied_before_the_socket() -> None:
-    tts = IsolatedFishTts(
+    tts = FishSpeaker(
         api_key="k",
         voice_id="v",
         latency="low",
@@ -661,11 +661,9 @@ def test_sdk_limits_are_applied_before_the_socket() -> None:
     spec = tts._spec()
     assert spec.latency == "balanced"
     # Out-of-contract spellings that a caller reading an env var could pass.
-    loud = IsolatedFishTts(api_key="k", voice_id="v", latency=cast(FishLatency, " LOW "))._spec()
+    loud = FishSpeaker(api_key="k", voice_id="v", latency=cast(FishLatency, " LOW "))._spec()
     assert loud.latency == "balanced"
-    spaced = IsolatedFishTts(
-        api_key="k", voice_id="v", latency=cast(FishLatency, " balanced ")
-    )._spec()
+    spaced = FishSpeaker(api_key="k", voice_id="v", latency=cast(FishLatency, " balanced "))._spec()
     assert spaced.latency == "balanced"
     assert spec.speed == 2.0
     assert spec.config.temperature == 1.0
@@ -673,14 +671,14 @@ def test_sdk_limits_are_applied_before_the_socket() -> None:
     assert spec.config.chunk_length == 300
     assert spec.config.prosody is not None
     assert spec.config.prosody.volume == 20.0
-    quiet = IsolatedFishTts(api_key="k", voice_id="v", volume=-40)
+    quiet = FishSpeaker(api_key="k", voice_id="v", volume=-40)
     prosody = quiet._tts_config().prosody
     assert prosody is not None
     assert prosody.volume == -20.0
 
 
 def test_voice_id_and_model_survive_the_socket_start() -> None:
-    spec = IsolatedFishTts(
+    spec = FishSpeaker(
         api_key="k",
         voice_id="voice-\ud800",
         model="s2.1-pro\nbad",
@@ -690,28 +688,28 @@ def test_voice_id_and_model_survive_the_socket_start() -> None:
     assert spec.model == SuiteDefaults().tts_model
     assert "\n" not in spec.model
     ormsgpack.packb({"reference_id": spec.voice_id})
-    kept = IsolatedFishTts(api_key="k", voice_id="v", model="MyModel")._spec()
+    kept = FishSpeaker(api_key="k", voice_id="v", model="MyModel")._spec()
     assert kept.model == "MyModel"
 
 
 def test_zero_sample_rate_is_replaced_before_the_socket() -> None:
     for rate in (0, 2**32):
-        spec = IsolatedFishTts(api_key="k", voice_id="v", sample_rate=rate)._spec()
+        spec = FishSpeaker(api_key="k", voice_id="v", sample_rate=rate)._spec()
         assert spec.sample_rate == SuiteDefaults().sample_rate
         assert spec.config.sample_rate == SuiteDefaults().sample_rate
 
 
 def test_pcm16_is_a_format_the_socket_accepts() -> None:
-    spec = IsolatedFishTts(api_key="k", voice_id="v", audio_format="pcm16")._spec()
+    spec = FishSpeaker(api_key="k", voice_id="v", audio_format="pcm16")._spec()
     assert spec.audio_format == "pcm"
     assert spec.config.format == "pcm"
-    mp3 = IsolatedFishTts(api_key="k", voice_id="v", audio_format="AAC")._spec()
+    mp3 = FishSpeaker(api_key="k", voice_id="v", audio_format="AAC")._spec()
     assert mp3.audio_format == "mp3"
     assert mp3.config.format == "mp3"
 
 
 def test_streaming_space_token_stays_between_words() -> None:
-    tts = IsolatedFishTts(api_key="k", voice_id="v", partial_chars=20)
+    tts = FishSpeaker(api_key="k", voice_id="v", partial_chars=20)
     sentence = "The quick brown fox jumps today."
     deltas: list[str] = []
     for word in sentence.split(" "):
@@ -727,7 +725,7 @@ def test_streaming_space_token_stays_between_words() -> None:
 
 
 def test_streaming_deltas_cut_inside_the_window() -> None:
-    tts = IsolatedFishTts(api_key="k", voice_id="v", partial_chars=20)
+    tts = FishSpeaker(api_key="k", voice_id="v", partial_chars=20)
     cancel = threading.Event()
 
     async def collect() -> list[TextEvent | FlushEvent]:
@@ -962,7 +960,7 @@ def test_client_close_after_audio_does_not_forget_the_line(
 
     monkeypatch.setattr("fish_audio_suite_voice.tts_turn.send_turn", send_turn)
     monkeypatch.setattr("fish_audio_suite_voice.tts_turn.AsyncFishAudio.close", boom_close)
-    tts = IsolatedFishTts(api_key="k", voice_id="v", sample_rate=16_000, audio_format="pcm")
+    tts = FishSpeaker(api_key="k", voice_id="v", sample_rate=16_000, audio_format="pcm")
 
     class Sink:
         output_latency_s = 0.0
@@ -982,7 +980,7 @@ def test_client_close_after_audio_does_not_forget_the_line(
         def bytes_played(self) -> int:
             return self.n
 
-    result = tts.speak_isolated("Hello there friend.", Sink())
+    result = tts.speak("Hello there friend.", Sink())
     assert "Hello" in result.spoken_so_far
     assert result.bytes_played == 32_000
     assert result.got_audio is True
@@ -1270,7 +1268,7 @@ def test_cancel_noise_falls_back_to_the_message_and_logs_it(
 
 
 def test_stream_scrub_leaves_a_mood_word_alone_by_default() -> None:
-    tts = IsolatedFishTts(api_key="k", voice_id="v", partial_chars=40)
+    tts = FishSpeaker(api_key="k", voice_id="v", partial_chars=40)
 
     async def collect(mood_lead: bool) -> str:
         events = delta_events(
@@ -1288,10 +1286,10 @@ def test_stream_scrub_leaves_a_mood_word_alone_by_default() -> None:
 def test_tts_spec_warns_once_when_it_swaps_a_format_or_latency(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    IsolatedFishTts(api_key="k", voice_id="v", audio_format="flac")._spec()
-    IsolatedFishTts(api_key="k", voice_id="v", audio_format="flac")._spec()
-    IsolatedFishTts(api_key="k", voice_id="v", audio_format="ogg")._spec()
-    IsolatedFishTts(api_key="k", voice_id="v", latency="low")._spec()
+    FishSpeaker(api_key="k", voice_id="v", audio_format="flac")._spec()
+    FishSpeaker(api_key="k", voice_id="v", audio_format="flac")._spec()
+    FishSpeaker(api_key="k", voice_id="v", audio_format="ogg")._spec()
+    FishSpeaker(api_key="k", voice_id="v", latency="low")._spec()
     err = capsys.readouterr().err
     assert err.count("'flac'") == 1
     assert "'ogg'" in err
@@ -1304,7 +1302,7 @@ def _kinds(events: list[object]) -> list[str]:
 
 def test_early_flush_speaks_the_first_piece_then_flushes_again_at_the_end() -> None:
     async def run() -> list[object]:
-        tts = IsolatedFishTts(api_key="k", voice_id="v")
+        tts = FishSpeaker(api_key="k", voice_id="v")
         deltas = ["Hello there my friend. ", "How are you doing today? ", "I hope it is well."]
         return [
             event
@@ -1327,7 +1325,7 @@ def test_early_flush_with_one_piece_does_not_flush_twice() -> None:
             async for event in delta_events(
                 ["Hello there my friend."],
                 threading.Event(),
-                partial_chars=IsolatedFishTts(api_key="k", voice_id="v").partial_chars,
+                partial_chars=FishSpeaker(api_key="k", voice_id="v").partial_chars,
                 early_flush=True,
             )
         ]
@@ -1502,7 +1500,7 @@ def test_run_isolated_does_not_swallow_a_keyboard_interrupt_but_still_closes_the
 
 
 def test_a_turn_spec_copies_and_freezes_its_trace_headers() -> None:
-    tts = IsolatedFishTts(api_key="k", voice_id="v", trace_headers={"traceparent": "00-a"})
+    tts = FishSpeaker(api_key="k", voice_id="v", trace_headers={"traceparent": "00-a"})
     spec = tts._spec()
     tts.trace_headers["traceparent"] = "00-changed"
     assert spec.trace_headers["traceparent"] == "00-a"
@@ -1510,12 +1508,12 @@ def test_a_turn_spec_copies_and_freezes_its_trace_headers() -> None:
         cast(Any, spec.trace_headers)["x"] = "y"
 
 
-def test_speak_isolated_takes_cancel_by_keyword_only() -> None:
-    tts = IsolatedFishTts(api_key="k", voice_id="v")
+def test_speak_takes_cancel_by_keyword_only() -> None:
+    tts = FishSpeaker(api_key="k", voice_id="v")
     with pytest.raises(TypeError):
-        cast(Any, tts.speak_isolated)("hi", _Sink(), threading.Event())
+        cast(Any, tts.speak)("hi", _Sink(), threading.Event())
     with pytest.raises(TypeError):
-        cast(Any, tts.speak_deltas_isolated)(["hi"], _Sink(), threading.Event())
+        cast(Any, tts.speak_stream)(["hi"], _Sink(), threading.Event())
 
 
 def test_a_sink_without_output_latency_still_finishes_the_turn() -> None:

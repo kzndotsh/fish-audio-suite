@@ -11,7 +11,7 @@ from fishaudio.exceptions import AuthenticationError, RateLimitError
 from voice_fakes import make_result
 
 from fish_audio_suite_kit import SuiteDefaults
-from fish_audio_suite_voice.live import IsolatedFishTts, TtsResult, is_cancel_noise
+from fish_audio_suite_voice.live import FishSpeaker, TtsResult, is_cancel_noise
 from fish_audio_suite_voice.playback import (
     FileSink,
     MpvSink,
@@ -217,8 +217,8 @@ def test_cancel_scope_runtime_error_is_noise() -> None:
     assert is_cancel_noise(err)
 
 
-def test_speak_isolated_reraises_a_sink_that_fails_to_open() -> None:
-    tts = IsolatedFishTts(api_key="k", voice_id="v")
+def test_speak_reraises_a_sink_that_fails_to_open() -> None:
+    tts = FishSpeaker(api_key="k", voice_id="v")
 
     class Sink:
         output_latency_s = 0.0
@@ -236,7 +236,7 @@ def test_speak_isolated_reraises_a_sink_that_fails_to_open() -> None:
             return 0
 
     with pytest.raises(PortAudioMissingError, match="missing"):
-        tts.speak_isolated("Hello there.", Sink())
+        tts.speak("Hello there.", Sink())
 
 
 def test_missing_portaudio_hint() -> None:
@@ -278,11 +278,9 @@ def test_sounddevice_sink_skips_write_when_cancelled() -> None:
     assert sink.bytes_played() == 0
 
 
-def test_speak_isolated_works_inside_asyncio_run(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
+def test_speak_works_inside_asyncio_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     async def fake_speak(
-        self: IsolatedFishTts,
+        self: FishSpeaker,
         text: str,
         sink: FileSink,
         cancel: threading.Event,
@@ -295,12 +293,12 @@ def test_speak_isolated_works_inside_asyncio_run(
             "ok", bytes_played=128, got_audio=True, tts_first_audio_ms=1.0, tts_first_text_ms=1.0
         )
 
-    monkeypatch.setattr(IsolatedFishTts, "speak", fake_speak)
-    tts = IsolatedFishTts(api_key="k", voice_id="v")
+    monkeypatch.setattr(FishSpeaker, "_speak_here", fake_speak)
+    tts = FishSpeaker(api_key="k", voice_id="v")
     sink = FileSink(tmp_path / "t.wav", sample_rate=44100, wav=True)
 
     async def outer() -> TtsResult:
-        return tts.speak_isolated("[clear] hi", sink)
+        return tts.speak("[clear] hi", sink)
 
     result = asyncio.run(outer())
     assert result.got_audio

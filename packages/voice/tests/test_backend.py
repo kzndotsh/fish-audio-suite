@@ -9,7 +9,7 @@ import pytest
 
 from fish_audio_suite_voice.llm import ChatBackend, open_chat_backend
 from fish_audio_suite_voice.transports import chat_completions_url
-from fish_audio_suite_voice.tune import LlmSettings
+from fish_audio_suite_voice.tune import LlmTune
 
 SSE = (
     'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n'
@@ -18,7 +18,7 @@ SSE = (
 )
 
 
-def _http_tune(**kw: Any) -> LlmSettings:
+def _http_tune(**kw: Any) -> LlmTune:
     fields: dict[str, Any] = {
         "backend": "openai",
         "base": "https://llm.example.test/v1",
@@ -26,7 +26,7 @@ def _http_tune(**kw: Any) -> LlmSettings:
         "model": "some/model",
     }
     fields.update(kw)
-    return LlmSettings(**fields)
+    return LlmTune(**fields)
 
 
 def _install_transport(
@@ -160,7 +160,7 @@ def test_openrouter_backend_checks_the_model_once_and_passes_the_session_id(
             return None
 
     monkeypatch.setattr("openrouter.OpenRouter", _Client)
-    tune = LlmSettings(backend="openrouter", api_key="sk", model="org/model")
+    tune = LlmTune(backend="openrouter", api_key="sk", model="org/model")
 
     async def run() -> str:
         async with open_chat_backend(tune, session_id="sess-1") as backend:

@@ -2,7 +2,7 @@
 
 One Fish Audio websocket per turn, playback sinks, and an optional duplex CLI.
 
-Import `IsolatedFishTts` when another app already owns the microphone and the LLM. Use `fish-voice` when you want mic, Fish ASR, an LLM reply, and speakers in one process. The LLM is any OpenAI-compatible chat-completions server, or OpenRouter.
+Import `FishSpeaker` when another app already owns the microphone and the LLM. Use `fish-voice` when you want mic, Fish ASR, an LLM reply, and speakers in one process. The LLM is any OpenAI-compatible chat-completions server, or OpenRouter.
 
 Part of [fish-audio-suite](../../README.md). Unofficial.
 
@@ -10,15 +10,15 @@ Part of [fish-audio-suite](../../README.md). Unofficial.
 
 ```python
 from pathlib import Path
-from fish_audio_suite_voice import IsolatedFishTts, FileSink
+from fish_audio_suite_voice import FishSpeaker, FileSink
 
-tts = IsolatedFishTts(api_key=key, voice_id=voice_id)
-result = tts.speak_isolated("Hello there.", FileSink(Path("turn.wav")))
+tts = FishSpeaker(api_key=key, voice_id=voice_id)
+result = tts.speak("Hello there.", FileSink(Path("turn.wav")))
 ```
 
-`speak_isolated` runs the websocket on a private thread and event loop, so it is safe under `asyncio.run` or `to_thread`. Retry of 429 and 5xx happens only before the first audio byte. There is no default `voice_id`.
+`speak` runs the websocket on a private thread and event loop, so it is safe under `asyncio.run` or `to_thread`. Retry of 429 and 5xx happens only before the first audio byte. There is no default `voice_id`.
 
-`speak_isolated(text, sink, *, cancel=None, on_first_audio=None)` takes `cancel` (a `threading.Event`) by keyword. The returned `TtsResult` carries `error`, a kit error such as `FishAuthError` (401, 402, 403), `FishRateLimitError` (429) or `FishUpstreamError` (5xx), when the turn failed with a status. Test it with `isinstance`; `error_status` and `error_message` stay for display. Its timings use the kit's `LatencySnapshot` names: `tts_first_text_ms` (TTS start to the first text sent to Fish) and `tts_first_audio_ms` (TTS start to the first audio from Fish, Fish's time-to-first-audio). `speak_deltas_isolated(deltas, sink, ...)` does the same for a token stream while the model is still writing. The package root exports the types its signatures use: `IsolatedFishTts`, `TtsResult`, `PlaybackSink`, `PlaybackKind`, `make_sink`, `BargeGate`, `EchoCanceller`, `DuplexSession`, `ChatBackend`, `ListenTune`, `BargeTune`, `AecTune`, `LlmSettings` and `PortAudioMissingError`. Each module lists its own exports in `__all__`.
+`speak(text, sink, *, cancel=None, on_first_audio=None)` takes `cancel` (a `threading.Event`) by keyword. The returned `TtsResult` carries `error`, a kit error such as `FishAuthError` (401, 402, 403), `FishRateLimitError` (429) or `FishUpstreamError` (5xx), when the turn failed with a status. Test it with `isinstance`; `error_status` and `error_message` stay for display. Its timings use the kit's `LatencySnapshot` names: `tts_first_text_ms` (TTS start to the first text sent to Fish) and `tts_first_audio_ms` (TTS start to the first audio from Fish, Fish's time-to-first-audio). `speak_stream(deltas, sink, ...)` does the same for a token stream while the model is still writing. The package root exports the types its signatures use: `FishSpeaker`, `TtsResult`, `PlaybackSink`, `PlaybackKind`, `make_sink`, `BargeGate`, `EchoCanceller`, `DuplexSession`, `ChatBackend`, `ListenTune`, `BargeTune`, `AecTune`, `LlmTune` and `PortAudioMissingError`. Each module lists its own exports in `__all__`.
 
 ```bash
 cp .env.example .env

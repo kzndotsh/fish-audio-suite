@@ -220,7 +220,7 @@ def run_isolated(coro: Coroutine[Any, Any, TtsResult]) -> TtsResult:
     Parameters
     ----------
     coro : Coroutine
-        Usually ``IsolatedFishTts.speak``. It must close its own httpx client.
+        Usually ``FishSpeaker.speak``. It must close its own httpx client.
 
     Returns
     -------
