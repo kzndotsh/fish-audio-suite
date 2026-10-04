@@ -498,3 +498,41 @@ def test_pump_stops_when_the_stream_itself_is_cancelled() -> None:
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(pump())
     assert sink.chunks == [b"\x01\x02"]
+
+
+def test_a_slow_device_write_does_not_stall_the_turn_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    run, sink = make_run()
+    ticks: list[float] = []
+
+    async def close_client() -> None:
+        return None
+
+    async def chunks():
+        yield b"\x01\x00" * 4
+        yield b"\x02\x00" * 4
+
+    original_write = sink.write
+
+    def slow_write(chunk: bytes) -> None:
+        time.sleep(0.2)
+        original_write(chunk)
+
+    monkeypatch.setattr(sink, "write", slow_write)
+
+    async def main() -> None:
+        async def ticker() -> None:
+            while True:
+                ticks.append(time.perf_counter())
+                await asyncio.sleep(0.01)
+
+        tick = asyncio.create_task(ticker())
+        await _pump_ws_audio(chunks(), run, close_client)
+        tick.cancel()
+        await asyncio.gather(tick, return_exceptions=True)
+
+    asyncio.run(main())
+    assert len(sink.chunks) == 2
+    # The loop kept running while the two 0.2 s writes played: a 10 ms ticker
+    # gets about 40 turns. A blocked loop gets two or three. The bound is loose
+    # so a slow runner cannot fail it.
+    assert len(ticks) >= 12

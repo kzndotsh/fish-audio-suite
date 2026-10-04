@@ -7,9 +7,11 @@ from typing import Any
 import httpx
 import pytest
 
+from fish_audio_suite_voice.asr import asr_client
 from fish_audio_suite_voice.llm import ChatBackend, open_chat_backend
 from fish_audio_suite_voice.llm_tune import LlmTune
-from fish_audio_suite_voice.transports import chat_completions_url
+from fish_audio_suite_voice.transports import chat_completions_url, http_client
+from fish_audio_suite_voice.tune import HTTP_KEEPALIVE_S
 
 SSE = (
     'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n'
@@ -174,3 +176,18 @@ def test_openrouter_backend_checks_the_model_once_and_passes_the_session_id(
     assert calls == ["org/model"]
     assert sent[0]["session_id"] == "sess-1"
     assert sent[1]["session_id"] == "sess-1"
+
+
+def _keepalive_s(client: httpx.AsyncClient) -> float | None:
+    pool = getattr(getattr(client, "_transport", None), "_pool", None)
+    return getattr(pool, "_keepalive_expiry", None)
+
+
+def test_session_clients_keep_idle_connections_between_turns() -> None:
+    async def check() -> None:
+        async with asr_client() as asr:
+            assert _keepalive_s(asr) == HTTP_KEEPALIVE_S
+        async with http_client(LlmTune()) as llm:
+            assert _keepalive_s(llm) == HTTP_KEEPALIVE_S
+
+    asyncio.run(check())

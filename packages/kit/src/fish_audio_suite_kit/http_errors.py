@@ -696,7 +696,8 @@ def parse_fish_error(status: int, raw: Any) -> FishErrorBody:
     if stripped:
         try:
             loaded = json.loads(stripped)
-        except json.JSONDecodeError:
+        # Deep nesting such as 20k "[" raises RecursionError, not a decode error.
+        except (json.JSONDecodeError, RecursionError):
             return FishErrorBody.of(status, stripped)
         if isinstance(loaded, list):
             summary = _validation_msgs(cast(list[Any], loaded))

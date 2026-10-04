@@ -1179,3 +1179,9 @@ def test_an_empty_raw_field_keeps_the_message_the_reply_did_have() -> None:
     assert (
         describe_http_error(502, "m", body) == "HTTP 502 from X, model=m: Provider returned error"
     )
+
+
+def test_a_deeply_nested_error_body_still_gives_one_line() -> None:
+    line = describe_http_error(502, "some/model", "[" * 20_000)
+    assert line.startswith("HTTP 502, model=some/model: [[[")
+    assert "\n" not in line

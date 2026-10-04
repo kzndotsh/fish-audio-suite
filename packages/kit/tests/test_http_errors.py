@@ -207,3 +207,10 @@ def test_fish_http_error_constructors_carry_the_documented_status_and_message() 
         assert (built.status, built.message) == (status, message)
     timed_out = FishHttpError.for_timeout()
     assert (timed_out.status, timed_out.message) == (504, "Fish request timed out")
+
+
+def test_a_deeply_nested_error_body_is_kept_as_text() -> None:
+    body = "[" * 20_000
+    parsed = parse_fish_error(502, body)
+    assert parsed["status"] == 502
+    assert str(parsed["message"]).startswith("[[[")

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable
-from functools import partial
+from functools import cache, partial
 
 from fish_audio_suite_kit._charsets import (
     ANGLE_TOKEN_RE,
@@ -456,18 +456,27 @@ def unclosed_span_start(text: str, open_ch: str, close_ch: str) -> int | None:
     int or None
         Index of the opener that never closed. None when every pair closes.
     """
+    # Streaming calls this on every token, so skip text without the opener and
+    # visit only the two bracket characters, not every character.
+    if open_ch not in text:
+        return None
     depth = 0
     start: int | None = None
-    for index, ch in enumerate(text):
-        if ch == open_ch:
+    for match in _pair_chars(open_ch, close_ch).finditer(text):
+        if match.group() == open_ch:
             if depth == 0:
-                start = index
+                start = match.start()
             depth += 1
-        elif ch == close_ch and depth:
+        elif depth:
             depth -= 1
             if depth == 0:
                 start = None
     return start
+
+
+@cache
+def _pair_chars(open_ch: str, close_ch: str) -> re.Pattern[str]:
+    return re.compile(f"[{re.escape(open_ch)}{re.escape(close_ch)}]")
 
 
 def _drop_unclosed(

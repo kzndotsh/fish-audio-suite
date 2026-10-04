@@ -347,11 +347,24 @@ async def _pump_ws_audio(
             if run.cancel.is_set():
                 await close_client()
                 return
-            run.sink.write(item)
+            await _play(run.sink, item)
     finally:
         if not reader.done():
             reader.cancel()
             await reap(reader, wait_s=_REAP_TIMEOUT_S)
+
+
+async def _play(sink: PlaybackSink, chunk: bytes) -> None:
+    # A device write blocks for as long as the chunk plays. On this loop that
+    # would also stall the text sender and the websocket reader, so the next
+    # chunk could not arrive before this one ran out.
+    write = asyncio.ensure_future(asyncio.to_thread(sink.write, chunk))
+    try:
+        await asyncio.shield(write)
+    except asyncio.CancelledError:
+        # Let the slice in flight finish before the caller closes the sink.
+        await reap(write, wait_s=_REAP_TIMEOUT_S)
+        raise
 
 
 def _remember_event(ev: Any, acc: SentText, t0: float) -> None:

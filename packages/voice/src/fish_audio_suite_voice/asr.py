@@ -32,6 +32,7 @@ from fish_audio_suite_kit import (
 )
 from fish_audio_suite_voice.debug import debug, with_detail
 from fish_audio_suite_voice.pause import sleep_unless
+from fish_audio_suite_voice.tune import HTTP_KEEPALIVE_S
 from fish_audio_suite_voice.ws_tap import public_meta
 
 __all__ = [
@@ -59,7 +60,7 @@ def _request_id(headers: Mapping[str, str], body: object) -> str:
 def _json_or_none(text: str) -> object:
     try:
         return json.loads(text)
-    except ValueError:
+    except (ValueError, RecursionError):
         return None
 
 
@@ -133,7 +134,10 @@ def asr_client() -> httpx.AsyncClient:
         handshake. Use it as an async context manager, or close it with
         ``aclose``.
     """
-    return httpx.AsyncClient(timeout=httpx.Timeout(_ASR_TIMEOUT_S, connect=_ASR_CONNECT_S))
+    return httpx.AsyncClient(
+        timeout=httpx.Timeout(_ASR_TIMEOUT_S, connect=_ASR_CONNECT_S),
+        limits=httpx.Limits(keepalive_expiry=HTTP_KEEPALIVE_S),
+    )
 
 
 async def fish_asr(
@@ -216,7 +220,7 @@ async def fish_asr(
             return ""
     try:
         body = response.json()
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError, RecursionError) as exc:
         raise FishHttpError.for_non_json() from exc
     if isinstance(body, dict):
         meta = public_meta(body)

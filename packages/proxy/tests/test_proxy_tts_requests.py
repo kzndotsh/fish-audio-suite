@@ -247,6 +247,13 @@ def test_speech_bad_json_is_400() -> None:
         )
         assert raw.status_code == 400
         assert raw.json()["error"]["message"] == "invalid JSON body"
+        deep = client.post(
+            "/v1/audio/speech",
+            content=b"[" * 20_000,
+            headers={"content-type": "application/json"},
+        )
+        assert deep.status_code == 400
+        assert deep.json()["error"]["message"] == "invalid JSON body"
         array = client.post("/v1/audio/speech", json=["nope"])
         assert array.status_code == 400
         assert array.json()["error"]["message"] == "JSON body must be an object"
