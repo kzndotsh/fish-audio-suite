@@ -1,6 +1,6 @@
 # Architecture
 
-How fish-audio-suite is put together: the three packages, how data moves through them, and where to look when you change something. For setup and usage, see the [README](../README.md). For the rules contributors follow, see [AGENTS.md](../AGENTS.md) and the `AGENTS.md` in each package. For latency, see [PERFORMANCE.md](PERFORMANCE.md).
+How fish-audio-suite is put together: the three packages, how data moves through them, and where to look when you change something. For setup and usage, see the [README](../README.md). For the rules contributors follow, see [CONTRIBUTING.md](../CONTRIBUTING.md) and the [invariants](#9-invariants) below. For latency, see [PERFORMANCE.md](PERFORMANCE.md).
 
 > [!NOTE]
 > Update this file when a module is added, renamed or split, or when a boundary between packages moves.
@@ -217,7 +217,7 @@ Keys stay with their own host. Each named LLM provider reads only its own key va
 - **CI/CD:** GitHub Actions.
   - `ci.yml` runs the shared gates on Python 3.12, 3.13 and 3.14: ruff, pydoclint, basedpyright, type-completeness floors, and pytest with coverage floors.
   - It also tests the lowest supported dependency versions, lints the workflows with zizmor, builds the wheels (`twine check`), runs `nix flake check`, and builds the Docker image and checks `/health`.
-  - Separately, CodeQL scans the code, `audit.yml` runs pip-audit, `dependency-submission.yml` feeds GitHub's dependency graph, and Dependabot updates actions, uv, Docker and Nix with a 7-day cooldown.
+  - Separately, CodeQL scans the code. `audit.yml` runs pip-audit on the exported lock for pull requests that touch it, and weekly. `dependency-submission.yml` feeds GitHub's dependency graph on a push to `main` when `uv.lock` changes. Dependabot updates actions, uv, Docker and Nix with a 7-day cooldown.
 - **Monitoring and logging:**
   - The proxy logs through Python logging (uvicorn access log plus two lines per speech request) and exposes `GET /health`. Request text is logged only with `FISH_PROXY_LOG_TEXT`.
   - `fish-voice` logs through loguru: `--debug` for events and `--trace` for mic heartbeats, websocket events and HTTP lines.
@@ -260,7 +260,46 @@ Keys stay with their own host. Each named LLM provider reads only its own key va
   - The golden file `packages/kit/tests/golden/kit_api.json` makes every kit API change visible in review.
 - **Without hardware:** tests fake the microphone, speakers, Fish and the LLM. `fish-voice --smoke` synthesizes one line with Fish into a WAV file, which checks the key, voice and network without a microphone or speakers.
 
-## 9. Future considerations
+## 9. Invariants
+
+The rules most easily broken, each with its reason. A test or a lint rule enforces a rule where one exists, and the rest depend on review.
+
+### Package boundaries
+
+- **Three distributions only: `fish-audio-suite-kit`, `-proxy` and `-voice`.** The CLI stays in voice. There is no fourth package, no OpenTelemetry SDK (kit parses W3C trace headers itself) and no VAD package of our own (voice uses `webrtcvad-wheels`).
+- **Shared logic lives in kit.** Scrubbing, cues, sentence cuts, W3C parsing, the Fish error shape and captions are written once there. Proxy and voice must not copy those regexes, and they import kit only through its root, never a private module.
+- **Kit is pure text.** No network, no audio, no HTTP client, no `fishaudio`, no OpenTelemetry. `dependencies = []` keeps that honest, and a test checks that its sources import only the standard library.
+
+### Speaking
+
+- **One Fish websocket per turn, on a private event loop in its own thread** (`FishSpeaker.speak`, `speak_stream`). The Fish SDK holds an anyio cancel scope inside its stream, so touching the stream from any other task raises "cancel scope in a different task". The LLM's loop must never wait on the websocket either. The pump therefore reads the SDK iterator from a single task.
+- **Never `aclose()` the websocket iterator.** Stop iterating and close the client instead. Closing the iterator from another task raises the same cancel-scope error.
+- **Flush after sent text, never per sentence.** An empty turn followed by a bare flush is invalid. Fish holds text until a flush or a full chunk, so one flush at the end would keep a streamed reply silent until the model finished. A streamed reply therefore flushes once at the end of the first sentence (judged on all text sent so far, so "Mr" then "." is not one) and once at the end. A flush mid-sentence makes Fish close the fragment as a finished utterance and pause.
+- **History records only what was heard** (`spoken_so_far`), or nothing when no audio played. Storing the full reply would teach the next turn about words the user never heard.
+- **Playback never blocks the TTS loop.** Each chunk is written on a worker thread, and cancel and tokens wake the loop instead of being polled. A blocked loop stalls text going to Fish and audio coming back.
+- **`CancelledError` ends a stream quietly only when `is_own_cancel(flag)` is true.** Anything else (`asyncio.timeout`, an outer `task.cancel()`) must propagate. Reap a cancelled child with `reap(task)`, never `suppress(BaseException)`, so Ctrl+C and `SystemExit` are not swallowed. Ctrl+C must cancel the TTS turn (`session.turn`), not only the mic.
+
+### Text rules
+
+- **Roleplay helpers are opt-in.** `normalize_cues(lead=True)`, `tts_hold_at(lead=True)` and `is_tts_junk(drop_narration=True)` rewrite or drop ordinary-looking English, so nothing in the default path may match it.
+- **Gates drop only noise.** The letter floor is `min_letters=2` with a `short_words` allowlist ("no", "ok"), and the quit and backchannel lists take caller phrases and default to explicit goodbyes and listener noise only.
+- **The default system prompt is voice formatting and cue use only.** No persona, scene or refusal wording: a character belongs in a character file.
+- **A regex over model text is bounded or anchored.** An unbounded scan from every opener is quadratic, and this text is untrusted. Timing tests run hostile 20,000-character inputs through the scrubbers and extractors.
+- **`Retry-After` is parsed in one place** (`retry_after_s`). Other packages must not write their own.
+
+### Settings and secrets
+
+- **Env vars are read at startup, never at import.** `FISH_API_KEY` is read in the proxy's lifespan, the CLI, or `FishSpeaker(...)`, so importing the app and `GET /health` work with no key. There is no default voice id.
+- **Voice reads settings only in `config.load_config()` and the `*.from_env()` tunes**, once, with validation (a bad value warns and uses the default). Library classes take their settings as arguments. Two exceptions are not settings: `debug.debug_level()` reads `FISH_VOICE_DEBUG`, and `envfile` writes `os.environ` when it loads a dotenv file.
+- **Key fields use `repr=False`.** Keys never reach a log or `/health`. A key goes only to its own host: each LLM provider reads only its own key variable, and the host of the final base URL decides which provider that is.
+
+### The proxy
+
+- **An error from the transport never reaches a client.** The client gets a fixed 502 or 504 message, and the detail goes to the log.
+- **Close every multipart form** (`async with request.form()`).
+- **An unset or empty `FISH_PROXY_API_KEYS` must not silently mean "no auth" after a typo.** Set but empty refuses to start.
+
+## 10. Future considerations
 
 Known architectural debt and likely changes, roughly in order of value:
 
@@ -270,9 +309,10 @@ Known architectural debt and likely changes, roughly in order of value:
 - **Linear held spans** in the stream scrubber, by remembering where a span opened across tokens.
 - **Memory across sessions**, which would mean the project's first persistent store.
 - **1.0.0:** PyPI trusted publishing, a container registry image, and the deprecation policy taking effect.
+- **A real `stream_delay_ms` for AEC3.** The echo canceller is not told the real stream latency; the reference ring is trimmed instead. It is unverified on hardware.
 - **Reusing one Fish websocket across turns** is possible in Fish's protocol, but it is deliberately not done: its setup cost is already hidden behind the LLM.
 
-## 10. Project identification
+## 11. Project identification
 
 - **Project:** fish-audio-suite (unofficial; not affiliated with Fish Audio)
 - **Repository:** https://github.com/kzndotsh/fish-audio-suite
@@ -280,6 +320,6 @@ Known architectural debt and likely changes, roughly in order of value:
 - **License:** MIT ([LICENSE](../LICENSE))
 - **Last updated:** 2026-10-04
 
-## 11. Glossary
+## 12. Glossary
 
 The project's terms are defined in [GLOSSARY.md](GLOSSARY.md).

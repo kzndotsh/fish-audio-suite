@@ -16,7 +16,7 @@ Include untracked files. Exclude secrets (`.env*`, credentials, keys,
 
 Each commit is one reviewable concern. Prefer splitting over a blob.
 
-Keep together: a behavior + its tests; README/`AGENTS.md` with the code
+Keep together: a behavior + its tests; README/docs with the code
 that changed the claim.
 
 Split: shared kit primitive vs proxy/voice consumer; `fix` vs `feat`;

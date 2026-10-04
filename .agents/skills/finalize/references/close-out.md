@@ -55,5 +55,5 @@ Do not require live Fish (`--smoke`) for close-out.
 
 If the diff changes a public API, CLI, env var, port, or Nix output,
 update the matching page: root `README.md`, `packages/<member>/README.md`,
-and nested `AGENTS.md` only when Commands / Boundaries / Gotchas changed.
+`docs/ARCHITECTURE.md` only when a module moved or an invariant changed, and `CONTRIBUTING.md` only when a workflow rule changed.
 Do not invent a docs site or crawl every markdown file.

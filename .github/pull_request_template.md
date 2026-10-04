@@ -13,6 +13,6 @@
 - [ ] `just check` passes (ruff, pydoclint, basedpyright, pytest with the coverage floors)
 - [ ] New behavior or a bug fix has a test
 - [ ] Public signatures have matching NumPy docstrings
-- [ ] README or AGENTS.md updated if a setting, command or boundary changed
+- [ ] README, docs or CONTRIBUTING updated if a setting, command or boundary changed
 - [ ] No keys, voice ids or `.env` files are in the diff
 - [ ] Anything that changes behavior for existing users is listed under "What and why"

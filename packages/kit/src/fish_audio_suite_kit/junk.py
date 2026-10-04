@@ -1,4 +1,9 @@
-"""The TTS junk gate: text with too little speech to send to Fish, or to answer."""
+"""The TTS junk gate: text with too little speech to send to Fish, or to answer.
+
+The gate drops only noise. The floor is ``min_letters=2``, and a ``short_words``
+allowlist (``no``, ``ok``, ``hi``) keeps real one-word answers, so those short
+replies are not judged junk. A single letter is judged junk.
+"""
 
 from __future__ import annotations
 

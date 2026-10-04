@@ -194,7 +194,7 @@ This runs the proxy as a hardened systemd service on `127.0.0.1:8849`.
 | `environment` | `{}` | Extra non-secret settings, such as `FISH_LATENCY` |
 | `environmentFiles` | `[]` | Files with secrets and other settings |
 
-Check it with `systemctl status fish-audio-suite-proxy` and `journalctl -u fish-audio-suite-proxy -f`. More details are in [nix/AGENTS.md](../nix/AGENTS.md).
+Check it with `systemctl status fish-audio-suite-proxy` and `journalctl -u fish-audio-suite-proxy -f`. Every option has its own description in [`nix/module.nix`](../nix/module.nix).
 
 ### Behind a reverse proxy
 

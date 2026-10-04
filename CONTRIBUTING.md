@@ -2,8 +2,9 @@
 
 Thanks for helping. This is a uv workspace of three packages under `packages/`:
 `kit` (shared text and error code), `proxy` (the OpenAI-compatible server) and
-`voice` (the live voice client). Read [AGENTS.md](AGENTS.md) first. It lists the
-boundaries between the packages, which are the rules most easily broken.
+`voice` (the live voice client). Read the [invariants in ARCHITECTURE.md](docs/ARCHITECTURE.md#9-invariants)
+first. They are the boundaries between the packages and the rules most easily broken,
+each with its reason.
 
 ## Set up
 
@@ -35,7 +36,10 @@ runs the fast checks on every commit.
 
 CI also checks that the wheels build, `nix flake check`, the Docker image, the
 lowest declared dependency versions, and the GitHub workflows with zizmor. Run
-`just workflows` and `just build` if you touch those.
+`just workflows` and `just build` if you touch those, and `nix flake check` (or
+`nix flake show` to list the outputs) if you touch `flake.nix` or `nix/`. Keep the
+coverage floors in the `justfile` and `.github/actions/gates/action.yml` equal; a
+test fails when they differ.
 
 ## Tests
 
@@ -44,6 +48,40 @@ warning turned into an error and with network sockets disabled, so a test must
 not depend on another test or on the real Fish API. Add a test with every
 behavior change, and put a regression test beside every bug fix. Do not call the
 live Fish API from a test.
+
+## Environment variable names
+
+A new setting takes its prefix from what it controls:
+
+| Prefix | Means | Examples |
+| --- | --- | --- |
+| `FISH_*` | A Fish request default: `FISH_` plus the uppercased Fish wire field | `FISH_LATENCY`, `FISH_CHUNK_LENGTH`, `FISH_SPEED` (`prosody.speed`) |
+| `FISH_TTS_*`, `FISH_ASR_*` | An endpoint default where the bare wire name (`model`, `format`) would be ambiguous, and text shaping before TTS | `FISH_TTS_MODEL`, `FISH_ASR_MODEL`, `FISH_TTS_MOOD_LEAD` |
+| `FISH_PROXY_*` | Proxy server behavior | `FISH_PROXY_PORT`, `FISH_PROXY_TTS_ALIASES` |
+| `FISH_VOICE_*` | Voice app behavior | `FISH_VOICE_PLAYBACK`, `FISH_VOICE_BARGE_FRAMES` |
+| `FISH_LLM_*` | The voice app's chat model | `FISH_LLM_API_KEY`, `FISH_LLM_MODEL` |
+
+`FISH_VOICE_ID` is the one exception: it is the Fish voice and maps to the wire field
+`reference_id`. Seconds are implied in env names (`FISH_VOICE_COOLDOWN`,
+`FISH_PROXY_READ_TIMEOUT`); other units are suffixed (`_FRAMES`, `_BYTES`, `_CHARS`).
+Python fields always carry the unit (`cooldown_s`). `FISH_SPEED` is the default speed,
+and the proxy multiplies a client-sent `speed` by it. `tests/test_docs_env.py` checks
+that every variable the code reads appears in the README tables and `.env.example`, and
+the reverse.
+
+## Adding an LLM provider
+
+Providers live in one table, `LLM_PROVIDERS` in `packages/voice/src/fish_audio_suite_voice/llm_tune.py`:
+a name, a default base, a host, a key variable and a model variable. To add one:
+
+1. Add a row to the table.
+2. Add a test in `packages/voice/tests/test_llm_providers.py`.
+3. Add its row to the provider table in the voice README.
+
+A provider that speaks the OpenAI chat-completions API needs no new backend. The
+provider is always read from the host of the final base URL, never from
+`FISH_LLM_PROVIDER` alone, and each provider reads only its own key variable, so a
+key cannot go to another host.
 
 ## Docstrings
 
@@ -91,7 +129,9 @@ release. A deprecated name keeps working and emits `DeprecationWarning`, with
 `stacklevel=2` so the warning points at the caller, and the message names the
 replacement and the version that deprecated it. A renamed environment variable
 keeps its old name the same way and logs a warning that names the new one.
-Proxy and voice pin kit to `>=0.1,<0.2` today; the pin follows the kit release.
+Proxy and voice pin kit to `>=0.1,<0.2` today; the pin follows the kit release. When
+a kit change breaks proxy or voice, bump that range in the same change, and release
+the three packages together.
 
 ## Releases and release notes
 

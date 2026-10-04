@@ -1,4 +1,10 @@
-"""Per-session duplex cancel state. No module-level flags."""
+"""Per-session duplex cancel state. No module-level flags.
+
+Ctrl+C has to stop the TTS turn (``session.turn``) as well as the mic
+(``quit_requested``). Cancelling only the mic leaves Fish speaking until the
+reply ends. ``TurnSignals.fire`` is safe to call from another thread while the
+turn's loop is running; see its notes.
+"""
 
 from __future__ import annotations
 

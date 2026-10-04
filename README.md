@@ -241,7 +241,7 @@ packages/
 nix/          NixOS module        Dockerfile    proxy image
 ```
 
-Before you change code, read [AGENTS.md](AGENTS.md) for the boundaries between the packages, and [CONTRIBUTING.md](CONTRIBUTING.md) for commits and pull requests. Report vulnerabilities privately, as described in [SECURITY.md](SECURITY.md).
+Before you change code, read the [invariants](docs/ARCHITECTURE.md#9-invariants) for the boundaries between the packages, and [CONTRIBUTING.md](CONTRIBUTING.md) for commits and pull requests. Report vulnerabilities privately, as described in [SECURITY.md](SECURITY.md).
 
 ## License
 
