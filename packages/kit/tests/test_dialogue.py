@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from kit_helpers import assert_linear_time
 
 from fish_audio_suite_kit import (
     extract_quoted_speech,
@@ -152,3 +153,12 @@ def test_an_unclosed_trailing_quote_is_kept_after_narration_or_a_closed_quote() 
     assert extract_quoted_speech('The pipe is 5" wide. She said "hold on a second') == (
         '"hold on a second"'
     )
+
+
+@pytest.mark.parametrize("unit", ["“a", "「a", "«a", "“a「", '"a“'])
+def test_unclosed_quotes_are_extracted_in_linear_time(unit: str) -> None:
+    assert_linear_time(extract_quoted_speech, unit * 20_000)
+
+
+def test_a_quote_nested_in_its_own_style_keeps_the_inner_pair() -> None:
+    assert extract_quoted_speech("“He said “hi” to me,” she says.") == "“hi”"

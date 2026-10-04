@@ -41,11 +41,15 @@ _QUOTE_PAIRS = (
     ("《", "》"),
 )
 # A closed quote, with an optional cue in front. It may wrap across lines. The
-# body may be empty so that narration around "" is not read as speech.
+# body may be empty so that narration around "" is not read as speech. The body
+# also stops at another opener of the same style: an unclosed opener then gives
+# up there instead of scanning to the end of the text, which made a run of
+# unclosed quotes quadratic. A quote nested in its own style is not dialogue
+# anyway; nesting uses another style (“…「…」…”).
 _DIALOGUE_RE = re.compile(
     rf"(?:{_LEAD_CUE})?(?<!\d)(?:"
     + "|".join(
-        f"{re.escape(op)}([^{re.escape(cl)}]*){'[' + re.escape(cl) + ']'}"
+        f"{re.escape(op)}([^{re.escape(cl + op)}]*){'[' + re.escape(cl) + ']'}"
         for op, cl in _QUOTE_PAIRS
     )
     + ")"
