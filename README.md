@@ -57,6 +57,8 @@ flowchart LR
 
 With `FISH_VOICE_STREAM_TTS=1` the first sentence goes to Fish as soon as it is complete, so you hear it while the model is still writing. The flush waits for the end of the sentence, because a flush earlier makes Fish speak half a sentence as if it were finished. Without that setting the reply is spoken after the model finishes.
 
+For where each second of a turn goes, and the settings that make replies come sooner, see [docs/PERFORMANCE.md](docs/PERFORMANCE.md). For how the packages fit together, see [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and when something goes wrong, [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md). To use it from other apps, SDKs or your own code, see [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md), and for every way to install and run it, [docs/INSTALL.md](docs/INSTALL.md).
+
 You can talk over it. Echo cancellation removes the speaker from the mic signal, and a barge-in stops the reply and keeps the audio that tripped it, so your interruption becomes the next turn. The chat history records a word-aligned estimate of the part that was played, not the full reply you cut off.
 
 ## Quick start
@@ -197,6 +199,8 @@ services.fish-audio-suite-proxy = {
 ```
 
 The module runs a hardened systemd service on `127.0.0.1:8849`. Options for `host`, `port`, `autoStart`, `openFirewall`, `gracefulShutdownSeconds` and an `oci` backend are in [`nix/module.nix`](nix/module.nix). `nix run .#fish-audio-suite-voice` runs the voice CLI with PortAudio on the library path.
+
+Compose, the full NixOS option list, reverse proxies and updating are in [docs/INSTALL.md](docs/INSTALL.md).
 
 ## Reliability
 
