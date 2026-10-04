@@ -11,14 +11,15 @@ from fish_audio_suite_kit import LatencySnapshot
 from fish_audio_suite_voice.aec import EchoCanceller
 from fish_audio_suite_voice.asr import asr_client
 from fish_audio_suite_voice.config import VoiceCliConfig
-from fish_audio_suite_voice.debug import console_print, debug, debug_enabled, trace
+from fish_audio_suite_voice.console import console_print
+from fish_audio_suite_voice.debug import debug, debug_enabled, trace
 from fish_audio_suite_voice.duplex_state import EXIT_FATAL, EXIT_OK, DuplexContext
 from fish_audio_suite_voice.hearing import HeardLine, hear_line
 from fish_audio_suite_voice.history import opening_history, remember_user
-from fish_audio_suite_voice.live import FishSpeaker
 from fish_audio_suite_voice.llm import ChatBackend
 from fish_audio_suite_voice.reply import collect_reply, speak_reply, stream_turn, turn_summary
 from fish_audio_suite_voice.signals import DuplexSession
+from fish_audio_suite_voice.speaker import FishSpeaker
 
 __all__ = [
     "EXIT_FATAL",

@@ -16,7 +16,6 @@ from fish_audio_suite_voice.duplex import duplex_turns
 from fish_audio_suite_voice.duplex_state import DuplexContext
 from fish_audio_suite_voice.hearing import HeardLine, classify_transcript, recognize
 from fish_audio_suite_voice.history import opening_history, remember_user, trim_history
-from fish_audio_suite_voice.live import FishSpeaker, TtsResult
 from fish_audio_suite_voice.playback import PortAudioMissingError
 from fish_audio_suite_voice.reply import (
     _TokenPipe,
@@ -26,7 +25,9 @@ from fish_audio_suite_voice.reply import (
     stream_turn,
 )
 from fish_audio_suite_voice.signals import DuplexSession
+from fish_audio_suite_voice.speaker import FishSpeaker
 from fish_audio_suite_voice.tune import DEFAULT_HISTORY_TURNS, LlmTune
+from fish_audio_suite_voice.wire import TtsResult
 
 HISTORY_TURNS = DEFAULT_HISTORY_TURNS
 

@@ -216,9 +216,9 @@ max-branches = 15
     "PLR2004", # expected values are literals
 ]
 # Cue and ASR text patterns use the real unicode quotes and dashes.
-"packages/kit/src/fish_audio_suite_kit/{asr_text,_charsets,cues,cuts,dialogue,_linear,scrub_markdown,stream_holds}.py" = ["RUF001"]
+"packages/kit/src/fish_audio_suite_kit/{asr_text,_charsets,cues,cuts,dialogue,_linear,scrub_tts,stream_holds}.py" = ["RUF001"]
 "packages/voice/src/fish_audio_suite_voice/{spoken,stream_scrub}.py" = ["RUF001"]
-"packages/proxy/src/fish_audio_suite_proxy/transcribe.py" = ["RUF001"]
+"packages/proxy/src/fish_audio_suite_proxy/phrases.py" = ["RUF001"]
 "packages/proxy/tests/test_proxy_asr_phrases.py" = ["RUF001"]
 "packages/kit/tests/{test_asr_text,test_cues,test_dialogue,test_scrub_tts}.py" = ["RUF001"]
 "packages/voice/tests/{test_wire,test_spoken_properties,test_stream_scrub_properties}.py" = ["RUF001"]
@@ -226,7 +226,7 @@ max-branches = 15
 # openrouter) inside functions, so the base install imports without them.
 "packages/voice/src/fish_audio_suite_voice/{aec,barge,listen,llm,playback,transports}.py" = ["PLC0415"]
 # Both print to the terminal on purpose.
-"packages/voice/src/fish_audio_suite_voice/{debug,cli}.py" = ["T20"]
+"packages/voice/src/fish_audio_suite_voice/{console,debug,cli}.py" = ["T20"]
 
 [tool.pydoclint]
 style = "numpy"

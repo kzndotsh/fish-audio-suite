@@ -22,21 +22,14 @@ from fish_audio_suite_kit import (
     scrub_tts,
 )
 from fish_audio_suite_voice.barge import BargeGate
-from fish_audio_suite_voice.debug import (
-    console_print,
-    conversation,
-    debug,
-    debug_enabled,
-    end_reply_line,
-    warn,
-    write_reply_token,
-)
+from fish_audio_suite_voice.cancel import is_cancel_noise, is_own_cancel
+from fish_audio_suite_voice.console import console_print, end_reply_line, write_reply_token
+from fish_audio_suite_voice.debug import conversation, debug, debug_enabled, warn
 from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexContext
 from fish_audio_suite_voice.hearing import HeardLine
-from fish_audio_suite_voice.live import TtsResult, is_cancel_noise
 from fish_audio_suite_voice.playback import PortAudioMissingError, make_sink
 from fish_audio_suite_voice.spoken import unspoken_text
-from fish_audio_suite_voice.wire import is_own_cancel
+from fish_audio_suite_voice.wire import TtsResult
 
 __all__ = [
     "after_speech",

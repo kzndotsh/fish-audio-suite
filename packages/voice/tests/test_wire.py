@@ -23,8 +23,9 @@ from fish_audio_suite_kit import (
     normalize_cues,
     scrub_tts,
 )
-from fish_audio_suite_voice.live import FishSpeaker
+from fish_audio_suite_voice.cancel import is_cancel_noise, quiet_shutdown
 from fish_audio_suite_voice.playback import PlaybackSink
+from fish_audio_suite_voice.speaker import FishSpeaker
 from fish_audio_suite_voice.stream_scrub import delta_events
 from fish_audio_suite_voice.tts_turn import _HeldClient, run_turn
 from fish_audio_suite_voice.wire import (
@@ -36,8 +37,6 @@ from fish_audio_suite_voice.wire import (
     TurnRun,
     TurnSpec,
     _pump_ws_audio,
-    is_cancel_noise,
-    quiet_shutdown,
     text_events,
     tts_result,
     turn_failure,
@@ -1261,7 +1260,7 @@ def test_cancel_noise_falls_back_to_the_message_and_logs_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     seen: list[str] = []
-    monkeypatch.setattr("fish_audio_suite_voice.wire.debug", lambda msg, *a: seen.append(msg))
+    monkeypatch.setattr("fish_audio_suite_voice.cancel.debug", lambda msg, *a: seen.append(msg))
     assert is_cancel_noise(RuntimeError("Attempted to exit cancel scope in a different task"))
     assert seen
     assert "message" in seen[0]

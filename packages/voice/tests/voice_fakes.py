@@ -16,7 +16,8 @@ import pytest
 
 from fish_audio_suite_kit import FishHttpError
 from fish_audio_suite_voice import reply
-from fish_audio_suite_voice.live import FishSpeaker, TtsResult
+from fish_audio_suite_voice.speaker import FishSpeaker
+from fish_audio_suite_voice.wire import TtsResult
 
 
 class FakeGate:

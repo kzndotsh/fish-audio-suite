@@ -4,28 +4,28 @@
 
 Pure text. No network, audio, or OpenTelemetry. Do not add `httpx` / FastAPI / `fishaudio` / sounddevice.
 
-Import: `fish_audio_suite_kit`. Tests: `uv run pytest packages/kit`. `tests/` has one file per area. `test_scrub_tts.py` covers `scrub_markdown`, and `_charsets` and `text_filters` are exercised through the other files.
+Import: `fish_audio_suite_kit`. Tests: `uv run pytest packages/kit`. `tests/` has one file per area. `test_scrub_tts.py` covers `scrub_tts`, and `_charsets` and `text_filters` are exercised through the other files.
 
 ## Layout
 
 | Module | Owns |
 | --- | --- |
 | `_charsets` | Sentence stops, closers, CJK ranges, thought-tag names, `plain_breaks`, `utf8_text`. Add a shared character set here, never a second copy |
-| `cues` | `[cue]` normalize, S1 parens, aliases, `strip_cue_tags`, mood leads |
-| `scrub_markdown` | `scrub_tts`: thoughts, markdown, HTML, URLs, asides |
-| `stream_holds` | `tts_hold_at`: one list of hold checks. A hold mirrors a `scrub_markdown` rule |
+| `cues` | `normalize_cues`, `ensure_lead_cue`, `strip_cue_tags`, S1 parens, aliases, mood leads |
+| `scrub_tts` | `scrub_tts`: strips thoughts, markdown, HTML, URLs and asides from text bound for TTS |
+| `stream_holds` | `tts_hold_at`: one list of hold checks. A hold mirrors a `scrub_tts` rule |
 | `dialogue` | `extract_quoted_speech`, `is_tts_junk`, narration, the letter floor |
-| `cues` | `normalize_cues`, `ensure_lead_cue`, `strip_cue_tags`, the S1 cue names |
 | `cuts` | `next_tts_cut`, `split_tts_piece`, `ends_sentence` |
 | `asr_text` | `scrub_asr`, `is_asr_hallucination`, `asr_language_hint`, backchannel and quit gates, watermarks |
-| `defaults` | `SuiteDefaults`, `LatencySnapshot`, clamps, env readers, `chunk_length_hi`, `is_insecure_fish_base` |
+| `defaults` | `SuiteDefaults`, the default system prompt, the Fish model, latency and format name tables, `chunk_length_hi`, `is_insecure_fish_base`, `strip_base` |
+| `env` | `env_int` / `env_float` / `env_bool` / `env_text` / `env_token` / `env_base`, `parse_number`, `clamp_number`. A bad value falls back to the default |
+| `timing` | `LatencySnapshot`, `elapsed_ms`, `MS_PER_S` |
 | `http_errors` | `FishHttpError` and its subclasses, `FishErrorBody`, retry and backoff helpers, `retry_after_s` |
 | `literals` | `FishLatency`, `AudioFormat`, `AsrFormat`, `TtsModel`, `ChatRole`, `ChatMessage`. Types only |
 | `payloads` | `AsrBody`, `AsrSegment`, `AsrWord`, `OpenAIErrorDetail`, `OpenAIErrorBody`. Types only |
 | `_version` | Private. `read_version` for `__version__` |
 | `captions` | `CaptionCue`, `format_as_srt`, `format_as_vtt`. No network |
 | `trace_context` | W3C `traceparent` parse and make, `ensure_trace_headers`. No OpenTelemetry |
-| `_charsets` | Private. Stops, closers, CJK ranges, thought-tag names, shared regexes |
 | `text_filters` | Re-export facade only |
 
 ## Invariants
@@ -46,5 +46,5 @@ Import: `fish_audio_suite_kit`. Tests: `uv run pytest packages/kit`. `tests/` ha
 - `describe_transport_error` never returns exception text; callers log `exc` themselves. `captions` compares integer milliseconds, not formatted clocks. `env_int` and `env_float` take ASCII decimals only.
 - `chunk_length_hi` decides cloud from the parsed hostname. `self_hosted=` overrides. Env is read by callers, never at import.
 - `scrub_asr` keeps `[cue]` annotations unless `strip_cues=True`. Digit-only brackets always stay.
-- A regex over model text is bounded or anchored: `_LABEL`, `_TAG` and `_ASIDE` in `scrub_markdown`, a run-start lookbehind for space runs, and `_erase_spans` for open-to-close blocks. An unbounded scan from every opener is quadratic. `test_scrub_tts.py` times hostile 20k-character inputs.
+- A regex over model text is bounded or anchored: `_LABEL`, `_TAG` and `_ASIDE` in `scrub_tts`, a run-start lookbehind for space runs, and `_erase_spans` for open-to-close blocks. An unbounded scan from every opener is quadratic. `test_scrub_tts.py` times hostile 20k-character inputs.
 - Public API is `__init__.py`. Another package must not import a private module.

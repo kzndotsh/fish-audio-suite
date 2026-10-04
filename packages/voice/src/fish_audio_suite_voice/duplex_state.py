@@ -10,9 +10,9 @@ import httpx
 from fish_audio_suite_kit import ChatMessage
 from fish_audio_suite_voice.config import VoiceCliConfig
 from fish_audio_suite_voice.history import KEEP_SYSTEM
-from fish_audio_suite_voice.live import FishSpeaker
 from fish_audio_suite_voice.llm import ChatBackend
 from fish_audio_suite_voice.signals import DuplexSession
+from fish_audio_suite_voice.speaker import FishSpeaker
 
 __all__ = [
     "EXIT_FATAL",

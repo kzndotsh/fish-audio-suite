@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Any, Final, Literal, Self, cast
 
 from fish_audio_suite_kit._charsets import utf8_text
-from fish_audio_suite_kit.defaults import parse_number
+from fish_audio_suite_kit.env import parse_number
 from fish_audio_suite_kit.payloads import AsrBody
 
 __all__ = [

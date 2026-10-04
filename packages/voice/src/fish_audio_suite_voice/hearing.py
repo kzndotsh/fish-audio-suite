@@ -21,9 +21,9 @@ from fish_audio_suite_kit import (
     trace_id_of,
 )
 from fish_audio_suite_voice.asr import fish_asr
+from fish_audio_suite_voice.console import console_print
 from fish_audio_suite_voice.debug import (
     clear_turn,
-    console_print,
     conversation,
     debug,
     debug_enabled,

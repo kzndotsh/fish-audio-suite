@@ -4,16 +4,16 @@ from collections.abc import Iterator
 
 import pytest
 
+from fish_audio_suite_voice import console, speaker
 from fish_audio_suite_voice import debug as voice_debug
-from fish_audio_suite_voice import live
 
 
 def _reset() -> None:
     voice_debug._DEBUG.level = voice_debug.DebugLevel.OFF
     voice_debug._DEBUG.frozen = None
     voice_debug._TURN.t0 = None
-    voice_debug._REPLY.open = False
-    live._warn_coerced.cache_clear()
+    console._REPLY.open = False
+    speaker._warn_coerced.cache_clear()
 
 
 @pytest.fixture(autouse=True)

@@ -58,12 +58,12 @@ from fish_audio_suite_proxy.fields import (
 )
 from fish_audio_suite_proxy.limits import BodyLimitMiddleware
 from fish_audio_suite_proxy.models import catalog_ids, resolve_asr_model
+from fish_audio_suite_proxy.phrases import caption_cues
 from fish_audio_suite_proxy.settings import ProxySettings, load_settings
 from fish_audio_suite_proxy.speech import pack_tts, speech_controls
 from fish_audio_suite_proxy.transcribe import (
     PRO_ASR_MODEL,
     asr_upload,
-    caption_cues,
     read_asr_format,
     read_asr_request,
     transcription_body,

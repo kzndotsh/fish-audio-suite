@@ -19,6 +19,7 @@ from fish_audio_suite_kit import (
     ensure_trace_headers,
     fish_backoff_s,
 )
+from fish_audio_suite_voice.cancel import is_cancel_noise, quiet_shutdown
 from fish_audio_suite_voice.debug import debug
 from fish_audio_suite_voice.pause import sleep_unless
 from fish_audio_suite_voice.playback import PlaybackSink
@@ -29,8 +30,6 @@ from fish_audio_suite_voice.wire import (
     TurnRun,
     TurnSpec,
     as_async,
-    is_cancel_noise,
-    quiet_shutdown,
     send_turn,
     text_events,
     tts_result,

@@ -37,6 +37,7 @@ from fish_audio_suite_proxy.fields import (
     read_reference_id,
 )
 from fish_audio_suite_proxy.models import catalog_ids, resolve_asr_model, resolve_tts_model
+from fish_audio_suite_proxy.phrases import caption_cues
 from fish_audio_suite_proxy.server import _uvicorn_run_kwargs, app
 from fish_audio_suite_proxy.settings import load_settings, runtime_defaults
 from fish_audio_suite_proxy.speech import (
@@ -45,12 +46,7 @@ from fish_audio_suite_proxy.speech import (
     pack_tts,
     speech_controls,
 )
-from fish_audio_suite_proxy.transcribe import (
-    _granularity_list,
-    caption_cues,
-    form_strings,
-    transcription_body,
-)
+from fish_audio_suite_proxy.transcribe import _granularity_list, form_strings, transcription_body
 
 
 def test_prepare_tts_normalizes_cues() -> None:

@@ -6,7 +6,7 @@ import math
 import re
 from typing import NamedTuple
 
-from fish_audio_suite_kit.defaults import MS_PER_S
+from fish_audio_suite_kit.timing import MS_PER_S
 
 __all__ = [
     "CaptionCue",

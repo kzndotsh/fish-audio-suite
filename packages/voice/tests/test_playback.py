@@ -11,7 +11,7 @@ from fishaudio.exceptions import AuthenticationError, RateLimitError
 from voice_fakes import make_result
 
 from fish_audio_suite_kit import SuiteDefaults
-from fish_audio_suite_voice.live import FishSpeaker, TtsResult, is_cancel_noise
+from fish_audio_suite_voice.cancel import is_cancel_noise
 from fish_audio_suite_voice.playback import (
     FileSink,
     MpvSink,
@@ -27,7 +27,9 @@ from fish_audio_suite_voice.playback import (
     parse_playback,
     write_mono_wav,
 )
+from fish_audio_suite_voice.speaker import FishSpeaker
 from fish_audio_suite_voice.wire import (
+    TtsResult,
     _classify_fish_exc,
 )
 

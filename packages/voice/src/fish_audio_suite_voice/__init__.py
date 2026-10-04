@@ -2,7 +2,6 @@
 
 from fish_audio_suite_voice.aec import EchoCanceller
 from fish_audio_suite_voice.barge import BargeGate
-from fish_audio_suite_voice.live import FishSpeaker, TtsResult
 from fish_audio_suite_voice.llm import ChatBackend
 from fish_audio_suite_voice.playback import (
     FileSink,
@@ -15,7 +14,9 @@ from fish_audio_suite_voice.playback import (
     make_sink,
 )
 from fish_audio_suite_voice.signals import DuplexSession
+from fish_audio_suite_voice.speaker import FishSpeaker
 from fish_audio_suite_voice.tune import AecTune, BargeTune, ListenTune, LlmTune
+from fish_audio_suite_voice.wire import TtsResult
 
 __all__ = [
     "AecTune",

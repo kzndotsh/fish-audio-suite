@@ -7,21 +7,19 @@ import sys
 
 import pytest
 
+from fish_audio_suite_voice.console import write_reply_token
 from fish_audio_suite_voice.debug import (
     configure_voice_logging,
     conversation,
     debug,
     debug_enabled,
     debug_level,
-    header_meta,
     heartbeat_due,
     mark_turn,
-    public_meta,
     short_model,
     trace,
-    write_reply_token,
-    ws_event_view,
 )
+from fish_audio_suite_voice.ws_tap import header_meta, public_meta, ws_event_view
 
 
 def test_configure_voice_logging_replaces_library_handlers() -> None:

@@ -23,18 +23,16 @@ from fish_audio_suite_voice.config import (
     system_prompt_from_file,
     warn_if_insecure_base,
 )
+from fish_audio_suite_voice.console import console_print, end_reply_line
 from fish_audio_suite_voice.debug import (
     DebugLevel,
     configure_voice_logging,
-    console_print,
     debug_level,
-    end_reply_line,
     short_model,
     warn,
 )
 from fish_audio_suite_voice.duplex import EXIT_FATAL, EXIT_OK, bye, duplex_turns
 from fish_audio_suite_voice.envfile import apply_cli_env_files
-from fish_audio_suite_voice.live import FishSpeaker
 from fish_audio_suite_voice.llm import open_chat_backend
 from fish_audio_suite_voice.playback import (
     FileSink,
@@ -43,7 +41,9 @@ from fish_audio_suite_voice.playback import (
     playback_key,
 )
 from fish_audio_suite_voice.signals import DuplexSession
+from fish_audio_suite_voice.speaker import FishSpeaker
 from fish_audio_suite_voice.tune import LlmTune, provider_for_base
+from fish_audio_suite_voice.ws_tap import install_fish_ws_tap
 
 __all__ = [
     "apply_cli_env_files",
@@ -298,6 +298,8 @@ def main(argv: list[str] | None = None) -> int:
     level = max(level, debug_level())
     debug = level >= DebugLevel.EVENTS
     configure_voice_logging(debug=level)
+    if debug:
+        install_fish_ws_tap()
     c = load_config()
     warn_if_insecure_base(c)
     if args.playback:

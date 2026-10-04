@@ -30,17 +30,16 @@ from fish_audio_suite_kit import (
     strip_base,
     utf8_text,
 )
+from fish_audio_suite_voice.cancel import is_cancel_noise
 from fish_audio_suite_voice.debug import warn
 from fish_audio_suite_voice.playback import PlaybackSink
 from fish_audio_suite_voice.stream_scrub import delta_events
-from fish_audio_suite_voice.tts_turn import (
-    TtsResult,
-    TurnSpec,
-    is_cancel_noise,
-    run_isolated,
-    run_turn,
-    text_events,
-)
+from fish_audio_suite_voice.tts_turn import TurnSpec, run_isolated, run_turn, text_events
+from fish_audio_suite_voice.wire import TtsResult
+
+__all__ = [
+    "FishSpeaker",
+]
 
 _STOCK: Final = SuiteDefaults()
 # The installed SDK Prosody model rejects anything outside this range.
@@ -425,10 +424,3 @@ class FishSpeaker:
             early_stop_threshold=_STOCK.early_stop_threshold,
             prosody=Prosody(speed=_sdk_speed(self.speed), volume=_sdk_volume(self.volume)),
         )
-
-
-__all__ = [
-    "FishSpeaker",
-    "TtsResult",
-    "is_cancel_noise",
-]

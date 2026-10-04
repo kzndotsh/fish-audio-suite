@@ -30,8 +30,9 @@ from fish_audio_suite_kit import (
     strip_base,
     without_watermark_segments,
 )
-from fish_audio_suite_voice.debug import debug, public_meta, with_detail
+from fish_audio_suite_voice.debug import debug, with_detail
 from fish_audio_suite_voice.pause import sleep_unless
+from fish_audio_suite_voice.ws_tap import public_meta
 
 __all__ = [
     "asr_client",

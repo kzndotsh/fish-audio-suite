@@ -2,7 +2,7 @@
 
 Each check returns the index where an unfinished span starts, or None when
 the buffer is stable. ``tts_hold_at`` takes the earliest. Every hold mirrors a
-scrub rule in ``scrub_markdown``: releasing the span early would speak markup
+scrub rule in ``scrub_tts``: releasing the span early would speak markup
 the scrubber removes only once it is complete.
 """
 
@@ -21,7 +21,7 @@ from fish_audio_suite_kit._charsets import (
 )
 from fish_audio_suite_kit.cues import mood_lead_hold_at, spoken_mood_span
 from fish_audio_suite_kit.cuts import next_tts_cut
-from fish_audio_suite_kit.scrub_markdown import (
+from fish_audio_suite_kit.scrub_tts import (
     HTML_BLOCK_CLOSE_RE,
     HTML_BLOCK_OPEN_RE,
     HTML_ENTITY_RE,

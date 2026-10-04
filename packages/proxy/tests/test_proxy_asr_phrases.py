@@ -10,8 +10,9 @@ from fastapi.testclient import TestClient
 from proxy_helpers import WAV_UPLOAD, AsrJson, capture_upstream
 
 from fish_audio_suite_kit import AsrBody, CaptionCue
+from fish_audio_suite_proxy.phrases import caption_cues
 from fish_audio_suite_proxy.server import app
-from fish_audio_suite_proxy.transcribe import caption_cues, transcription_body
+from fish_audio_suite_proxy.transcribe import transcription_body
 
 
 def _words(*timed: tuple[str, float, float]) -> list[dict[str, Any]]:

@@ -8,8 +8,8 @@ from typing import Any
 
 import pytest
 
+from fish_audio_suite_voice.cancel import is_own_cancel, reap
 from fish_audio_suite_voice.llm import llm_token_stream
-from fish_audio_suite_voice.wire import is_own_cancel, reap
 
 
 def test_is_own_cancel_needs_a_set_flag() -> None:
