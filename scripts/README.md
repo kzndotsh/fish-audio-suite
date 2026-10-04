@@ -69,7 +69,7 @@ Each file is named with the run's timestamp, the voice id and the model, so a ru
 clips sort together:
 
 ```text
-tmp/20261004-123456_98655a12fa944e26b274c535e5e03842_s2.1-pro.wav
+tmp/20261004-123456_0123456789abcdef0123456789abcdef_s2.1-pro.wav
 ```
 
 It calls the live Fish API and spends credits, a few hundredths of a cent for a short line.

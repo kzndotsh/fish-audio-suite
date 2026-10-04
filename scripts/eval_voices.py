@@ -136,7 +136,7 @@ def voice_ids(voices: Sequence[str]) -> list[str]:
     Parameters
     ----------
     voices : sequence of str
-        Entries such as ``"98655a12... # my voice"``.
+        Entries such as ``"0123456789ab... # my voice"``.
 
     Returns
     -------

@@ -47,8 +47,8 @@ def fake_speaker(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_the_file_name_holds_the_timestamp_voice_and_model() -> None:
-    path = eval_voices.clip_path(Path("tmp"), "98655a12fa944e26", "s2.1-pro", "20261004-123456")
-    assert path == Path("tmp/20261004-123456_98655a12fa944e26_s2.1-pro.wav")
+    path = eval_voices.clip_path(Path("tmp"), "0123456789abcdef", "s2.1-pro", "20261004-123456")
+    assert path == Path("tmp/20261004-123456_0123456789abcdef_s2.1-pro.wav")
     unsafe = eval_voices.clip_path(Path("tmp"), "a/b c", "x:y", "T")
     assert unsafe == Path("tmp/T_a-b-c_x-y.wav")
 
