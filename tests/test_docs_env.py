@@ -84,7 +84,11 @@ DEFAULTS = {
         "proxy",
     ),
     "FISH_PROXY_RETRY_ATTEMPTS": ("fish_audio_suite_kit", "FISH_RETRY_ATTEMPTS", "proxy"),
-    "FISH_VOICE_HISTORY_TURNS": ("fish_audio_suite_voice.llm_tune", "DEFAULT_HISTORY_TURNS", "voice"),
+    "FISH_VOICE_HISTORY_TURNS": (
+        "fish_audio_suite_voice.llm_tune",
+        "DEFAULT_HISTORY_TURNS",
+        "voice",
+    ),
     "FISH_VOICE_REPEAT_WINDOW": (
         "fish_audio_suite_voice.config",
         "DEFAULT_REPEAT_WINDOW_S",
@@ -93,6 +97,11 @@ DEFAULTS = {
     "FISH_LLM_TIMEOUT": ("fish_audio_suite_voice.llm_tune", "DEFAULT_LLM_TIMEOUT_S", "voice"),
     "FISH_LLM_MAX_TOKENS": ("fish_audio_suite_voice.llm_tune", "DEFAULT_LLM_MAX_TOKENS", "voice"),
     "FISH_LLM_TEMPERATURE": ("fish_audio_suite_voice.llm_tune", "DEFAULT_LLM_TEMPERATURE", "voice"),
+    "FISH_LLM_PROVIDER_SORT": (
+        "fish_audio_suite_voice.llm_tune",
+        "DEFAULT_LLM_PROVIDER_SORT",
+        "voice",
+    ),
     "FISH_VOICE_BARGE_FRAMES": ("fish_audio_suite_voice.tune", "DEFAULT_BARGE_HIT_FRAMES", "voice"),
     "FISH_VOICE_BARGE_RMS": ("fish_audio_suite_voice.tune", "DEFAULT_BARGE_RMS", "voice"),
     "FISH_VOICE_BARGE_PLAYING_GAIN": (

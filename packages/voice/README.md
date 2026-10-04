@@ -136,9 +136,11 @@ follows the host. What to know about Experiential, from its published contract:
 - **https only for the automatic key.** `EXPLABS_API_KEY` is picked up only when the base is
   `https`. A plain `http` base would send it unencrypted, so use `FISH_LLM_API_KEY` to override.
 
-OpenRouter-only options: `FISH_LLM_NITRO=1` adds `:nitro` to the model and sorts providers by
-`FISH_LLM_PROVIDER_SORT`, and `FISH_LLM_REFERER`, `FISH_LLM_TITLE`, `FISH_LLM_CATEGORIES` set the
-attribution (empty disables one). The `openai` backend sends none of those headers.
+OpenRouter-only options: `FISH_LLM_PROVIDER_SORT` picks the provider by `latency` (the default, so
+the first word comes sooner), `throughput` or `price`, and `off` leaves it to OpenRouter. It only
+changes anything for a model that more than one provider serves. `FISH_LLM_NITRO=1` adds `:nitro`
+to the model, and `FISH_LLM_REFERER`, `FISH_LLM_TITLE`, `FISH_LLM_CATEGORIES` set the attribution
+(empty disables one). The `openai` backend sends none of these.
 
 ### Streaming the reply
 
@@ -235,8 +237,8 @@ LLM:
 | `FISH_LLM_TEMPERATURE` | `0.8` | 0 to 2 |
 | `FISH_LLM_TIMEOUT` | `120` | Seconds per request |
 | `FISH_LLM_MAX_TOKENS` | `1200` | Completion cap |
-| `FISH_LLM_NITRO` | off | OpenRouter only. `:nitro` plus provider sort |
-| `FISH_LLM_PROVIDER_SORT` | `throughput` | Used with `FISH_LLM_NITRO` |
+| `FISH_LLM_NITRO` | off | OpenRouter only. Adds `:nitro` to the model |
+| `FISH_LLM_PROVIDER_SORT` | `latency` | OpenRouter only. `latency`, `throughput`, `price` or `off` |
 | `FISH_LLM_REFERER`, `FISH_LLM_TITLE`, `FISH_LLM_CATEGORIES` | this project's | OpenRouter attribution. Empty disables |
 | `FISH_LLM_CONTINUE` | off | Send one more request when a reply stops mid-sentence |
 | `FISH_VOICE_SYSTEM_PROMPT` | the kit default | System prompt text, used as written. Set but blank sends no system prompt |

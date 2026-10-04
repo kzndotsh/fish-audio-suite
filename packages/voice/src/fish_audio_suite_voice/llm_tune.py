@@ -13,9 +13,11 @@ from fish_audio_suite_voice.tune import read_flag, read_float, read_int, read_ra
 
 __all__ = [
     "DEFAULT_HISTORY_TURNS",
+    "DEFAULT_LLM_PROVIDER_SORT",
     "EXPERIENTIAL_API_BASE",
     "LLM_PROVIDERS",
     "OPENROUTER_API_BASE",
+    "PROVIDER_SORTS",
     "REASONING_EFFORTS",
     "LlmBackendName",
     "LlmProvider",
@@ -35,6 +37,10 @@ EXPERIENTIAL_API_BASE: Final = "https://api.experientiallabs.ai/v1"
 # The values Experiential documents for reasoning_effort. OpenAI's own names are a
 # subset, so they pass too. Which of them a route accepts is the provider's call.
 REASONING_EFFORTS: Final = frozenset({"none", "minimal", "low", "medium", "high", "max"})
+# OpenRouter's provider.sort values. Voice wants the first token soon, so the
+# default is latency; OpenRouter's own default weighs price.
+PROVIDER_SORTS: Final = frozenset({"latency", "throughput", "price"})
+DEFAULT_LLM_PROVIDER_SORT: Final = "latency"
 
 
 DEFAULT_LLM_MAX_TOKENS: Final = 1200
@@ -186,9 +192,12 @@ class LlmTune:
     max_tokens : int
         Completion cap.
     nitro : bool
-        OpenRouter only. Adds ``:nitro`` to the model and sorts providers.
+        OpenRouter only. Adds ``:nitro`` to the model.
     provider_sort : str
-        OpenRouter provider sort sent when ``nitro`` is on.
+        OpenRouter only. Sent as ``provider.sort``: ``latency`` (default),
+        ``throughput`` or ``price``. Empty sends no sort, so OpenRouter's own
+        price-weighted routing applies. It only matters for a model that more
+        than one provider serves.
     referer, title, categories : str
         OpenRouter attribution. Empty disables the field.
     continuation : bool
@@ -207,7 +216,7 @@ class LlmTune:
     timeout_s: float = DEFAULT_LLM_TIMEOUT_S
     max_tokens: int = DEFAULT_LLM_MAX_TOKENS
     nitro: bool = False
-    provider_sort: str = "throughput"
+    provider_sort: str = DEFAULT_LLM_PROVIDER_SORT
     referer: str = DEFAULT_LLM_REFERER
     title: str = DEFAULT_LLM_TITLE
     categories: str = DEFAULT_LLM_CATEGORIES
@@ -275,7 +284,7 @@ class LlmTune:
             timeout_s=read_float("FISH_LLM_TIMEOUT", DEFAULT_LLM_TIMEOUT_S, positive=True),
             max_tokens=read_int("FISH_LLM_MAX_TOKENS", DEFAULT_LLM_MAX_TOKENS, lo=1),
             nitro=read_flag("FISH_LLM_NITRO", default=False),
-            provider_sort=read_text("FISH_LLM_PROVIDER_SORT", "throughput"),
+            provider_sort=_provider_sort(),
             referer=read_text("FISH_LLM_REFERER", DEFAULT_LLM_REFERER),
             title=read_text("FISH_LLM_TITLE", DEFAULT_LLM_TITLE),
             categories=read_text("FISH_LLM_CATEGORIES", DEFAULT_LLM_CATEGORIES),
@@ -315,6 +324,23 @@ def _reasoning_effort() -> str:
     values = ", ".join(sorted(REASONING_EFFORTS))
     warn(f"fish-voice: FISH_LLM_REASONING_EFFORT={raw!r} is not one of {values}, leaving it unset")
     return ""
+
+
+def _provider_sort() -> str:
+    raw = read_raw("FISH_LLM_PROVIDER_SORT")
+    if raw is None:
+        return DEFAULT_LLM_PROVIDER_SORT
+    low = raw.lower()
+    if low in PROVIDER_SORTS:
+        return low
+    if low in {"off", "none"}:
+        return ""
+    values = ", ".join(sorted(PROVIDER_SORTS))
+    warn(
+        f"fish-voice: FISH_LLM_PROVIDER_SORT={raw!r} is not one of {values} or off, "
+        f"using {DEFAULT_LLM_PROVIDER_SORT}"
+    )
+    return DEFAULT_LLM_PROVIDER_SORT
 
 
 def _first_base(*names: str) -> str:
