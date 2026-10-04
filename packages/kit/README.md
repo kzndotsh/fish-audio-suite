@@ -13,13 +13,21 @@ uv sync --all-packages
 ```
 
 ```python
-from fish_audio_suite_kit import normalize_cues, scrub_tts, next_tts_cut
+from fish_audio_suite_kit import next_tts_cut, normalize_cues, scrub_tts
+
+llm_text = "**Oh** really? (happy) That's [laugh] great. <think>hmm</think> Dr. Smith agrees."
 
 spoken = normalize_cues(scrub_tts(llm_text))
-cut = next_tts_cut(spoken)
+# 'Oh really? [happy] That's [laughing] great. Dr. Smith agrees.'
+
+cut = next_tts_cut(spoken)  # 11, so the first piece is 'Oh really? '
 ```
 
+Run `scrub_tts` first: it removes markdown, `<think>` blocks and URLs and keeps Fish `[cue]` tags. `normalize_cues` then tidies the cues (`(happy)` becomes `[happy]`, `[laugh]` becomes `[laughing]`).
+
 `cut` is the end index of the next piece, or `-1` while the buffer should keep growing. A sentence end wins. `Dr.`, a one-letter initial, and `1.` do not. Otherwise the cut is the last space before about 40 characters.
+
+To split a whole reply into pieces, call `split_tts_piece(rest, 40, flush_rest=True)` in a loop. It returns `(piece, rest)`, and `flush_rest=True` sends the final fragment even with no sentence end. While a reply is still streaming, pass `flush_rest=False` so an unfinished tail waits for more text, and use `tts_hold_at` to keep half-finished spans (an open `**`, a URL) out of the send. The voice package's `FishSpeaker.speak_stream` does all of this for you.
 
 Python 3.12. The package has no runtime dependencies.
 

@@ -116,12 +116,24 @@ Point any client at `http://127.0.0.1:8849/v1`. The Fish key stays on the proxy.
 <details>
 <summary><strong>Use the text helpers</strong> (<code>kit</code>)</summary>
 
+Clean what an LLM wrote, then cut it into pieces Fish can speak one at a time:
+
 ```python
-from fish_audio_suite_kit import next_tts_cut, normalize_cues, scrub_tts
+from fish_audio_suite_kit import normalize_cues, scrub_tts, split_tts_piece
+
+llm_text = "**Oh** really? (happy) That's [laugh] great. <think>hmm</think> Dr. Smith agrees."
 
 spoken = normalize_cues(scrub_tts(llm_text))
-cut = next_tts_cut(spoken)  # end of the next piece, or -1 to keep buffering
+# 'Oh really? [happy] That's [laughing] great. Dr. Smith agrees.'
+
+pieces, rest = [], spoken
+while rest:
+    piece, rest = split_tts_piece(rest, 40, flush_rest=True)
+    pieces.append(piece)
+# ['Oh really? ', "[happy] That's [laughing] great. ", 'Dr. Smith agrees.']
 ```
+
+`scrub_tts` strips markdown, `<think>` blocks and URLs but keeps Fish `[cue]` tags, and `normalize_cues` rewrites `(happy)` to `[happy]` and `[laugh]` to `[laughing]`. Run them in that order. A cut falls at a sentence end, and `Dr.` is not one. For a reply that is still streaming, use `FishSpeaker.speak_stream` from the voice package: it also holds back half-finished spans such as an open `**` or a URL that has not ended. The [kit README](packages/kit/README.md) lists every helper, including the ASR ones (`scrub_asr`, `is_asr_hallucination`) and caption output (`format_as_srt`).
 
 </details>
 
