@@ -8,7 +8,7 @@ description: >-
   or when the user names one specific command (e.g. "run pytest").
 metadata:
   owner: fish-audio-suite
-  sources: AGENTS.md, .github/workflows/ci.yml, pyproject.toml, README.md
+  sources: AGENTS.md, CONTRIBUTING.md, .github/workflows/ci.yml, pyproject.toml, README.md
 ---
 
 # Finalize
@@ -25,7 +25,7 @@ and **stops for approval**.
 
 ## Edit scope
 
-May edit README / nested `AGENTS.md`, tests for the dirty behavior, and
+May edit the README, the files under `docs/`, `CONTRIBUTING.md`, tests for the dirty behavior, and
 files a failing gate points at. May `git commit` only after the user
 approves the posted plan. Does not push or change CI unless asked.
 
@@ -34,7 +34,7 @@ approves the posted plan. Does not push or change CI unless asked.
 1. List dirty paths (`git status --porcelain`; add `git diff --name-only` if needed).
 2. Load [close-out.md](references/close-out.md) and apply hygiene, docstring sync, and test-gap on those paths.
 3. Docs: patch root [`README.md`](../../../README.md) and the dirty package README if a public claim, env var, or command changed. Verify against the diff. No new docs unless asked.
-4. Touch a nested `AGENTS.md` only if Commands, Boundaries, or Gotchas actually changed. Read that tree's `AGENTS.md` before editing it.
+4. Touch [`docs/ARCHITECTURE.md`](../../../docs/ARCHITECTURE.md) only if a module moved or an invariant changed, and [`CONTRIBUTING.md`](../../../CONTRIBUTING.md) only if a workflow rule changed. The root `AGENTS.md` stays short: do not grow it.
 5. Load [gate-map.md](references/gate-map.md), union commands for the dirty set, run fastest first. On failure: read the error, fix, rerun that gate. Same gate still failing after one fix → **Blocked**.
 6. Do not run `fish-voice --smoke` or live Fish/OpenRouter calls unless the user asked (needs `FISH_API_KEY` / `FISH_VOICE_ID`).
 7. Load [commit-plan.md](references/commit-plan.md), review **all** uncommitted work, draft the grouping, post it, and **stop**.
