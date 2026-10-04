@@ -309,7 +309,7 @@ def test_openrouter_stream_joins_tokens(fake_openrouter: type[_FakeOpenRouter]) 
     assert _FakeChat.last_kw is not None
     assert _FakeChat.last_kw["stream"] is True
     assert _FakeChat.last_kw["model"] == "org/model:nitro"
-    assert _FakeChat.last_kw["provider"] == {"sort": "throughput"}
+    assert _FakeChat.last_kw["provider"] == {"sort": "latency"}
     assert _FakeChat.last_kw["max_completion_tokens"] == 1200
     assert "reasoning" not in _FakeChat.last_kw
     assert "max_tokens" not in _FakeChat.last_kw
@@ -330,8 +330,11 @@ def test_request_settings_come_from_the_tune(
     assert _FakeChat.last_kw["timeout_ms"] == 30_000
     assert _FakeChat.last_kw["provider"] == {"sort": "price"}
     asyncio.run(run(_tune(nitro=False)))
-    assert "provider" not in _FakeChat.last_kw
+    # The sort does not need :nitro.
+    assert _FakeChat.last_kw["provider"] == {"sort": "latency"}
     assert _FakeChat.last_kw["model"] == "org/model"
+    asyncio.run(run(_tune(provider_sort="")))
+    assert "provider" not in _FakeChat.last_kw
     assert fake_openrouter.last_init is not None
 
 
@@ -1185,3 +1188,23 @@ def test_a_deeply_nested_error_body_still_gives_one_line() -> None:
     line = describe_http_error(502, "some/model", "[" * 20_000)
     assert line.startswith("HTTP 502, model=some/model: [[[")
     assert "\n" not in line
+
+
+@pytest.mark.parametrize(
+    ("raw", "sort"),
+    [
+        (None, "latency"),
+        ("Throughput", "throughput"),
+        ("price", "price"),
+        ("off", ""),
+        ("fastest", "latency"),
+    ],
+)
+def test_provider_sort_reads_the_env(
+    monkeypatch: pytest.MonkeyPatch, raw: str | None, sort: str
+) -> None:
+    if raw is None:
+        monkeypatch.delenv("FISH_LLM_PROVIDER_SORT", raising=False)
+    else:
+        monkeypatch.setenv("FISH_LLM_PROVIDER_SORT", raw)
+    assert LlmTune.from_env().provider_sort == sort
