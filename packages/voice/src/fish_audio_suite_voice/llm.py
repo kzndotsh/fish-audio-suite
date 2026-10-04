@@ -560,9 +560,10 @@ async def llm_token_stream(
 
     Notes
     -----
-    A 429 waits for ``Retry-After`` and tries once more when that wait is at
-    most 15 seconds. With no ``Retry-After`` it waits about one second and
-    tries once more, unless the quota is exhausted. A longer wait, a spent
+    A 429 that arrives before the first text delta waits for ``Retry-After`` and
+    tries once more when that wait is at most 15 seconds. With no
+    ``Retry-After`` it waits about one second and tries once more, unless the
+    quota is exhausted. Once any text has been yielded there is no retry. A longer wait, a spent
     quota, or cancel ends the iterator. Any other stream error is logged and ends the iterator. With
     ``tune.continuation`` on, a ``stop`` before a sentence end sends one more
     request with that text as the assistant line, and only a suffix that

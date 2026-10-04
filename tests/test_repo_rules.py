@@ -8,12 +8,14 @@ from __future__ import annotations
 import ast
 import re
 import sys
+from functools import cache
 from pathlib import Path
 
 from fish_audio_suite_proxy.settings import DEFAULT_GRACEFUL_S
 
 ROOT = Path(__file__).resolve().parents[1]
 KIT_SRC = ROOT / "packages" / "kit" / "src"
+KIT_PACKAGE = KIT_SRC / "fish_audio_suite_kit"
 VOICE_SRC = ROOT / "packages" / "voice" / "src" / "fish_audio_suite_voice"
 
 
@@ -21,15 +23,74 @@ def _modules(base: Path) -> list[Path]:
     return sorted(p for p in base.rglob("*.py") if "__pycache__" not in p.parts)
 
 
+@cache
+def _kit_root_exports() -> frozenset[str]:
+    tree = ast.parse((KIT_PACKAGE / "__init__.py").read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets
+        ):
+            return frozenset(ast.literal_eval(node.value))
+    return frozenset()
+
+
 def _imports(path: Path) -> list[tuple[str, int]]:
-    """Return ``(module, line)`` for every import in a file, absolute imports only."""
+    """Return ``(module, line)`` for every import in a file, absolute imports only.
+
+    ``from pkg import name`` also reports ``pkg.name`` when that is a module on
+    disk and the root does not export something of that name, because it then
+    loads the submodule just as ``import pkg.name`` does. ``scrub_tts`` is both a
+    module and a root function, and the root function wins.
+    """
     found: list[tuple[str, int]] = []
     for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
         if isinstance(node, ast.Import):
             found.extend((alias.name, node.lineno) for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             found.append((node.module, node.lineno))
+            if node.module == "fish_audio_suite_kit":
+                found.extend(
+                    (f"fish_audio_suite_kit.{alias.name}", node.lineno)
+                    for alias in node.names
+                    if (KIT_PACKAGE / f"{alias.name}.py").exists()
+                    and alias.name not in _kit_root_exports()
+                )
     return found
+
+
+def _reads_environment(path: Path) -> list[int]:
+    """Return the lines where a file reads ``os.environ`` or calls ``os.getenv``.
+
+    Aliases are followed (``import os as host``, ``from os import environ as env``),
+    and a mention in a docstring or comment is not a read.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    os_names: set[str] = set()
+    env_names: set[str] = set()
+    getenv_names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            os_names.update(a.asname or a.name for a in node.names if a.name == "os")
+        elif isinstance(node, ast.ImportFrom) and node.module == "os" and node.level == 0:
+            for alias in node.names:
+                target = alias.asname or alias.name
+                if alias.name in {"environ", "environb"}:
+                    env_names.add(target)
+                elif alias.name in {"getenv", "getenvb"}:
+                    getenv_names.add(target)
+    lines: list[int] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+            if node.value.id in os_names and node.attr in {
+                "environ",
+                "environb",
+                "getenv",
+                "getenvb",
+            }:
+                lines.append(node.lineno)
+        elif isinstance(node, ast.Name) and node.id in env_names | getenv_names:
+            lines.append(node.lineno)
+    return lines
 
 
 def test_the_justfile_and_the_ci_action_use_the_same_coverage_floors() -> None:
@@ -94,13 +155,12 @@ def test_the_nixos_module_default_matches_the_proxy_graceful_shutdown() -> None:
 def test_voice_reads_the_environment_only_in_its_settings_layer() -> None:
     """Settings come from ``config`` and the ``*.from_env`` tunes; the rest take arguments."""
     allowed = {"config.py", "tune.py", "llm_tune.py", "debug.py", "envfile.py"}
-    offenders: list[str] = []
-    for path in _modules(VOICE_SRC):
-        if path.name in allowed:
-            continue
-        text = path.read_text(encoding="utf-8")
-        if re.search(r"\bos\.(environ|getenv)\b|\benviron\b", text):
-            offenders.append(str(path.relative_to(ROOT)))
+    offenders = [
+        f"{path.relative_to(ROOT)}:{line}"
+        for path in _modules(VOICE_SRC)
+        if path.name not in allowed
+        for line in _reads_environment(path)
+    ]
     assert not offenders, "read settings in config/tune and pass them down:\n" + "\n".join(
         offenders
     )

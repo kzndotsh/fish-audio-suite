@@ -2,7 +2,8 @@
 
 Ctrl+C has to stop the TTS turn (``session.turn``) as well as the mic
 (``quit_requested``). Cancelling only the mic leaves Fish speaking until the
-reply ends. ``TurnSignals.fire`` is safe to call from any thread.
+reply ends. ``TurnSignals.fire`` is safe to call from another thread while the
+turn's loop is running; see its notes.
 """
 
 from __future__ import annotations
