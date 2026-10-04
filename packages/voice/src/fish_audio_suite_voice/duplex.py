@@ -1,4 +1,4 @@
-"""One duplex turn: listen, Fish ASR, LLM, then isolated TTS."""
+"""One duplex turn: listen, Fish ASR, LLM, then TTS on a private loop."""
 
 from __future__ import annotations
 
@@ -119,7 +119,7 @@ async def duplex_turns(
     backend: ChatBackend,
     session: DuplexSession | None = None,
 ) -> int:
-    """Mic, Fish ASR, LLM, then one isolated TTS turn, until quit.
+    """Mic, Fish ASR, LLM, then one TTS turn on a private loop, until quit.
 
     Parameters
     ----------

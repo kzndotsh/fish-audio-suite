@@ -1539,7 +1539,7 @@ def test_a_sink_without_output_latency_still_finishes_the_turn() -> None:
     assert result.bytes_played == 0
 
 
-def test_an_isolated_result_built_from_a_status_gets_the_matching_error() -> None:
+def test_a_result_built_from_a_status_gets_the_matching_error() -> None:
     from fish_audio_suite_kit import FishAuthError
 
     fatal = TtsResult("", 0, False, False, None, None, error_status=401, error_message="no")

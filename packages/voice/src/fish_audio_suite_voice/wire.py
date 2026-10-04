@@ -472,7 +472,7 @@ async def _tee_text_events(
 
 
 def tts_result(run: TurnRun) -> TtsResult:
-    """Build the result returned after an isolated speak finishes."""
+    """Build the result returned after a speak turn finishes."""
     spec = run.spec
     audio = run.audio
     if (

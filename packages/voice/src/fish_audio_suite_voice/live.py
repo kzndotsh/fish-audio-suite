@@ -136,7 +136,11 @@ def _quiet_result(cancelled: bool) -> TtsResult:
 
 @dataclass(kw_only=True, eq=False)
 class FishSpeaker:
-    """Fish `stream_websocket` on a fresh loop. Do not merge the LLM socket onto this WS."""
+    """Speak text through Fish, one websocket per turn on a private loop.
+
+    The turn never shares the caller's event loop, so the LLM stream is not
+    held up. Do not merge the LLM socket onto this websocket.
+    """
 
     api_key: str = field(repr=False)
     voice_id: str

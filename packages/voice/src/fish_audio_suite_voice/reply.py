@@ -207,7 +207,7 @@ async def speak_reply(
     trace_id: str | None,
     resumes: bool = False,
 ) -> tuple[LatencySnapshot, int | None]:
-    """Speak a finished reply through one isolated TTS turn.
+    """Speak a finished reply through one TTS turn on a private loop.
 
     With ``resumes``, ``reply`` is the rest of a reply a false barge-in cut
     off, and it joins the last assistant message in history.
