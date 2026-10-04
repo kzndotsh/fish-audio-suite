@@ -373,3 +373,18 @@ def test_write_mono_wav_accepts_a_path_a_string_and_a_file_object(tmp_path: Path
             assert wf.getnchannels() == 1
             assert wf.getframerate() == 16_000
             assert wf.getnframes() == 160
+
+
+def test_a_sink_finished_mid_write_stops_writing() -> None:
+    sink = SounddeviceSink(sample_rate=16_000)
+    written: list[bytes] = []
+
+    class Stream:
+        def write(self, chunk: bytes) -> bool:
+            written.append(chunk)
+            sink._stream = None
+            return False
+
+    sink._stream = Stream()
+    sink.write(b"\x00\x00" * 8_000)
+    assert len(written) == 1

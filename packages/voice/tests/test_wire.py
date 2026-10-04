@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import threading
 import time
 from collections.abc import AsyncIterator
@@ -498,3 +499,39 @@ def test_pump_stops_when_the_stream_itself_is_cancelled() -> None:
     with pytest.raises(asyncio.CancelledError):
         asyncio.run(pump())
     assert sink.chunks == [b"\x01\x02"]
+
+
+def test_a_slow_device_write_does_not_stall_the_turn_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    run, sink = make_run()
+    ticks: list[float] = []
+
+    async def close_client() -> None:
+        return None
+
+    async def chunks():
+        yield b"\x01\x00" * 4
+        yield b"\x02\x00" * 4
+
+    original_write = sink.write
+
+    def slow_write(chunk: bytes) -> None:
+        time.sleep(0.2)
+        original_write(chunk)
+
+    monkeypatch.setattr(sink, "write", slow_write)
+
+    async def main() -> None:
+        async def ticker() -> None:
+            while True:
+                ticks.append(time.perf_counter())
+                await asyncio.sleep(0.01)
+
+        tick = asyncio.create_task(ticker())
+        await _pump_ws_audio(chunks(), run, close_client)
+        tick.cancel()
+        await asyncio.gather(tick, return_exceptions=True)
+
+    asyncio.run(main())
+    assert len(sink.chunks) == 2
+    # The loop kept running while each chunk played.
+    assert max(b - a for a, b in itertools.pairwise(ticks)) < 0.1

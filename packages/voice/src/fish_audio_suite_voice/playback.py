@@ -343,7 +343,10 @@ class SounddeviceSink(_Played):
 
     def write(self, chunk: bytes) -> None:
         """Play PCM in short slices, tapping far-end before each blocking write."""
-        if not chunk or self._stream is None:
+        # Writes run on a worker thread, so finish() may clear the stream
+        # between slices. Hold the stream this write started with.
+        stream = self._stream
+        if not chunk or stream is None:
             return
         data = self._odd + chunk
         self._odd = b""
@@ -352,7 +355,7 @@ class SounddeviceSink(_Played):
             data = data[:-1]
         step = dac_slice_bytes(self.sample_rate)
         for piece in iter_pcm_slices(data, step):
-            if self._cancel is not None and self._cancel.is_set():
+            if self._stream is not stream or (self._cancel is not None and self._cancel.is_set()):
                 self._odd = b""
                 return
             # Tap before the blocking DAC write so AEC has far-end while this slice plays.
@@ -360,7 +363,7 @@ class SounddeviceSink(_Played):
                 self._aec.tap_playback(piece, self.sample_rate)
             # PortAudio reports True when the device ran dry before this write,
             # which plays as a click or a gap.
-            if self._stream.write(piece):
+            if stream.write(piece):
                 debug("tts.underrun after {} kB played", self._played // 1000)
             self._count(piece)
 
