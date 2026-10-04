@@ -95,34 +95,41 @@ sequenceDiagram
 
 Module by module:
 
+```mermaid
+flowchart LR
+    mic([mic]) --> aec --> listen --> asr --> hearing --> history --> llm["llm / transports"] --> reply
+    subgraph main[main event loop]
+        listen
+        asr
+        hearing
+        history
+        llm
+        reply
+    end
+    reply --> scrub
+    subgraph tts[fish-tts thread]
+        scrub[stream_scrub] --> wire["speaker / wire"]
+    end
+    wire --> playback --> spk([speakers])
+    playback -. far end .-> aec
+    barge -. cancel .-> wire
+    wire -. heard text .-> spoken -.-> history
 ```
-mic frames (30 ms, 16 kHz)
-  │  listen.py: webrtcvad + loudness floor start and end the utterance;
-  │  AEC3 removes the bot's own voice
-  ▼
-WAV clip ──► Fish ASR (REST)
-  ▼
-hearing.py: skip hallucinations, fillers and stale repeats; detect quit
-  ▼
-history.py: append the user line (trimmed to FISH_VOICE_HISTORY_TURNS)
-  ▼
-llm.py / transports.py: stream tokens from the chat model        ┐ run at the
-  ▼                                                              │ same time,
-reply.py: _TokenPipe hands tokens to the TTS thread              │ on two event
-  ▼                                                              │ loops in two
-stream_scrub.py (kit helpers): scrub markup, hold open spans,    │ threads
-  cut sentences, normalize [cue] tags                            │
-  ▼                                                              │
-speaker.py / tts_turn.py / wire.py: one Fish websocket per turn, ┘
-  on a private event loop; text events + flush ──► audio chunks
-  ▼
-playback.py: SounddeviceSink writes ~30 ms slices on a worker thread;
-  each slice also feeds the AEC far-end reference
-  ▼
-barge.py: while audio plays, loud voiced mic frames cancel the turn
-  ▼
-spoken.py: history records only what was actually heard (spoken_so_far)
-```
+
+| Module | Job |
+| --- | --- |
+| `aec` | AEC3 removes the bot's own voice from the mic, using what `playback` sends as the reference |
+| `listen` | webrtcvad and a loudness floor start and end the utterance |
+| `asr` | Sends the WAV clip to Fish ASR |
+| `hearing` | Skips hallucinations, fillers and stale repeats; detects quit |
+| `history` | Appends the user line and trims to `FISH_VOICE_HISTORY_TURNS` |
+| `llm` / `transports` | Streams tokens from the chat model |
+| `reply` | `_TokenPipe` hands tokens to the TTS thread |
+| `stream_scrub` | Kit helpers scrub markup, hold open spans, cut sentences, normalize cues |
+| `speaker` / `tts_turn` / `wire` | One Fish websocket per turn: text and flush out, audio chunks back |
+| `playback` | Writes ~30 ms slices to the speakers on a worker thread |
+| `barge` | Watches the mic on its own thread while audio plays; loud voiced frames cancel the turn |
+| `spoken` | Records only what was heard (`spoken_so_far`) for history |
 
 > [!TIP]
 > Two threads matter. The LLM streams on the main asyncio loop. The Fish websocket runs on its own loop in a `fish-tts` thread, so a slow or cancelled Fish stream can never stall the LLM, and the SDK's anyio cancel scopes stay on the loop that created them. Microphone capture uses PortAudio callbacks, and the barge-in gate watches the mic on a thread of its own.
@@ -275,24 +282,4 @@ Known architectural debt and likely changes, roughly in order of value:
 
 ## 11. Glossary
 
-| Term | Meaning |
-| --- | --- |
-| **AEC / AEC3** | Acoustic echo cancellation. WebRTC's AEC3 removes the bot's own voice from the microphone signal, using what was sent to the speakers as the reference ("far end") |
-| **ASR** | Automatic speech recognition: Fish's speech-to-text |
-| **Backchannel** | A listener noise such as "mm-hmm" or "yeah". Over a reply it means "go on" and is ignored; on its own turn "yeah" is an answer |
-| **Barge-in** | Talking over the bot. Enough loud voiced frames in a row cancel the reply and start a new listen |
-| **Bleed delay** | Time after playback starts before barge-in listens, so the speaker's own sound is not taken for a user |
-| **Cue** | A bracketed stage direction for Fish TTS, such as `[happy]` or `[laughing]`. Never spoken as words |
-| **Cooldown** | Seconds the mic stays shut after a reply ends |
-| **Duplex** | The two-way loop in `fish-voice`: listen and speak, with interruption |
-| **Early flush** | A `FlushEvent` sent after the first sentence of a streamed reply, so Fish starts speaking before the model finishes |
-| **Flush** | Tells Fish to synthesize the text it holds. Fish waits for a flush (or a full chunk) before speaking |
-| **Held span** | Streamed text kept back because it is unfinished: an open `**`, `<think>`, `(` or URL that a scrub rule would remove once closed |
-| **Kit** | `fish-audio-suite-kit`, the shared library |
-| **Lead cue** | A cue at the start of a reply or sentence that sets its mood |
-| **Private loop** | The separate asyncio event loop and thread a Fish websocket turn runs on |
-| **Sink** | Where audio goes: `SounddeviceSink` (speakers), `FileSink`, `StdoutSink`, `MpvSink` |
-| **Spoken so far** | The part of a reply that was actually heard, estimated from bytes played. Only this goes into history after a barge-in |
-| **TTFA / first token** | Time to first audio from Fish; time to the first token from the LLM |
-| **Turn** | One user line and the bot's reply |
-| **VAD** | Voice activity detection: webrtcvad decides whether a 30 ms frame contains speech |
+The project's terms are defined in [GLOSSARY.md](GLOSSARY.md).
