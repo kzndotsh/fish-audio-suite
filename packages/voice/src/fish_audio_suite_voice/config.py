@@ -292,8 +292,15 @@ def system_prompt_from_file(path: str, default: str) -> str | None:
         can fall back to the default prompt.
     """
     file = Path(path).expanduser()
+    if file.exists() and not file.is_file():
+        # A directory, a FIFO or a device would block or never end when read.
+        warn(f"fish-voice: prompt file {file} is not a regular file, ignoring it")
+        return None
     try:
-        raw = file.read_bytes()
+        # One byte past the limit is enough to tell a file is too big, and a
+        # huge file is never read into memory.
+        with file.open("rb") as handle:
+            raw = handle.read(_PROMPT_FILE_MAX_BYTES + 1)
         if len(raw) > _PROMPT_FILE_MAX_BYTES:
             warn(
                 f"fish-voice: prompt file {file} is over {_PROMPT_FILE_MAX_BYTES // 1024} KiB, ignoring it"

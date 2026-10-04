@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 from pathlib import Path
 
@@ -119,3 +120,19 @@ def test_the_cli_flag_loads_the_file_and_a_bad_path_exits_2(
     assert (
         main(["--env-file", str(tmp_path / ".env"), "--prompt-file", str(tmp_path / "no.md")]) == 2
     )
+
+
+def test_a_directory_or_a_fifo_is_refused_without_reading_it(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert system_prompt_from_file(str(tmp_path), "RULES") is None
+    fifo = tmp_path / "pipe"
+    os.mkfifo(fifo)
+    assert system_prompt_from_file(str(fifo), "RULES") is None
+    assert capsys.readouterr().err.count("is not a regular file") == 2
+
+
+def test_only_one_byte_past_the_limit_is_read(tmp_path: Path) -> None:
+    big = tmp_path / "big.md"
+    big.write_bytes(b"a" * (10 * 1024 * 1024))
+    assert system_prompt_from_file(str(big), "RULES") is None

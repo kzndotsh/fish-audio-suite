@@ -230,7 +230,7 @@ def _error_detail(body: str) -> tuple[str, str]:
             specific = inner.get("error") or inner.get("message")
             if isinstance(specific, dict):
                 specific = cast(dict[str, Any], specific).get("message")
-        detail = specific if isinstance(specific, str) and specific else raw
+        detail = specific if isinstance(specific, str) and specific else (raw or detail)
     return (provider if isinstance(provider, str) else ""), detail
 
 

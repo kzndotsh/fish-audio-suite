@@ -1165,3 +1165,17 @@ def test_other_error_bodies_still_give_a_short_line(body: str, expected: str) ->
 def test_a_huge_error_body_is_cut_to_one_short_line() -> None:
     line = describe_http_error(500, "m", "x" * 5000)
     assert len(line) < 300
+
+
+def test_an_empty_raw_field_keeps_the_message_the_reply_did_have() -> None:
+    body = json.dumps(
+        {
+            "error": {
+                "message": "Provider returned error",
+                "metadata": {"raw": "", "provider_name": "X"},
+            }
+        }
+    )
+    assert (
+        describe_http_error(502, "m", body) == "HTTP 502 from X, model=m: Provider returned error"
+    )
