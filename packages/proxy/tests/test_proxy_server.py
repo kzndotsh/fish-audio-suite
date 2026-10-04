@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator
+
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from fish_audio_suite_proxy.server import _uvicorn_run_kwargs, app
+from fish_audio_suite_proxy.server import _iter_upstream, _uvicorn_run_kwargs, app
 
 
 def test_health_without_api_key() -> None:
@@ -69,3 +73,16 @@ def test_uvicorn_run_kwargs_workers_and_limit(monkeypatch: pytest.MonkeyPatch) -
     assert kw["workers"] == 4
     assert kw["limit_concurrency"] == 32
     assert kw["timeout_graceful_shutdown"] == 90
+
+
+def test_streamed_audio_is_passed_on_as_it_arrives() -> None:
+    class Pieces(httpx.AsyncByteStream):
+        async def __aiter__(self) -> AsyncIterator[bytes]:
+            for piece in (b"a" * 10, b"b" * 20, b"c" * 5):
+                yield piece
+
+    async def collect() -> list[bytes]:
+        response = httpx.Response(200, stream=Pieces())
+        return [chunk async for chunk in _iter_upstream(response)]
+
+    assert asyncio.run(collect()) == [b"a" * 10, b"b" * 20, b"c" * 5]

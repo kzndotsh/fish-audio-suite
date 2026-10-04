@@ -68,10 +68,11 @@ from fish_audio_suite_proxy.upstream import RetryPolicy, fish_send
 __all__ = ["app", "lifespan", "main"]
 
 log: Final[logging.Logger] = logging.getLogger("fish-audio-suite-proxy")
-_TTS_CHUNK = 4096
 _PREVIEW_CHARS = 160
 _MAX_CONNECTIONS = 100
-_MAX_KEEPALIVE = 20
+# Keep every pooled connection warm, so a burst over the old limit of 20 did
+# not pay new TLS handshakes to Fish on the next burst.
+_MAX_KEEPALIVE = _MAX_CONNECTIONS
 _KEEPALIVE_EXPIRY_S = 30.0
 _STARTED_AT = int(time.time())
 _OWNER = "fish-audio"
@@ -262,7 +263,9 @@ def _request_id(*candidates: object) -> str:
 
 async def _iter_upstream(upstream: httpx.Response) -> AsyncIterator[bytes]:
     try:
-        async for chunk in upstream.aiter_bytes(_TTS_CHUNK):
+        # No chunk size: httpx would hold bytes back until a full chunk had
+        # arrived, which delays the first audio when Fish sends small pieces.
+        async for chunk in upstream.aiter_bytes():
             yield chunk
     finally:
         await upstream.aclose()
