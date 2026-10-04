@@ -42,6 +42,8 @@ llm ▸  [happy] Yes, I can hear you! [curious] What's on your mind today?
 
 ## Docs
 
+The [index](docs/INDEX.md) explains every doc and who it is for.
+
 | Doc | Read it for |
 | --- | --- |
 | [Install](docs/INSTALL.md) | Every way to install and run it: a clone, `uv tool`, Docker, Compose, NixOS |

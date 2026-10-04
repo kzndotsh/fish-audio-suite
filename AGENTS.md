@@ -9,6 +9,20 @@ Unofficial Fish Audio toolkit, not affiliated with Fish Audio. Three distributio
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): how the packages fit together, and the [invariants](docs/ARCHITECTURE.md#9-invariants), the rules most easily broken, each with its reason.
 - The package README (`packages/<kit|proxy|voice>/README.md`) for user-facing behavior and settings.
 
+## Docs to consult
+
+[docs/INDEX.md](docs/INDEX.md) lists every doc. Reach for these by task:
+
+| When you are... | Read |
+| --- | --- |
+| Changing how modules, threads or packages relate | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), especially the [invariants](docs/ARCHITECTURE.md#9-invariants) |
+| Adding or renaming a setting | [CONTRIBUTING.md](CONTRIBUTING.md#environment-variable-names), the package README tables and `.env.example` |
+| Touching latency, streaming or playback | [docs/PERFORMANCE.md](docs/PERFORMANCE.md) |
+| Changing a log line or an error message | [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md), which quotes them |
+| Changing install, Docker or NixOS behavior | [docs/INSTALL.md](docs/INSTALL.md) |
+| Changing the proxy's HTTP API or a client-facing behavior | [docs/INTEGRATIONS.md](docs/INTEGRATIONS.md) and the [proxy README](packages/proxy/README.md) |
+| Meeting an unfamiliar term | [docs/GLOSSARY.md](docs/GLOSSARY.md) |
+
 ## Commands
 
 - `uv sync --all-packages --extra cli --group dev --group test`, then `just check` (ruff, pydoclint, basedpyright, public-API types, pytest with the CI coverage floors). `just --list` shows the rest.

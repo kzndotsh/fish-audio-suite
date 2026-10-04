@@ -130,7 +130,7 @@ curl -s -H "Authorization: Bearer $OPENROUTER_API_KEY" \
   | jq '.data.endpoints[] | {provider_name, latency_last_30m, throughput_last_30m}'
 ```
 
-A snapshot of models (October 2026, last 30 minutes, fastest provider). The first five are roleplay-tuned; the last three are general-purpose and widely used, and I have not tested them on adult roleplay content:
+A snapshot of models (October 2026, last 30 minutes, fastest provider). The first five are roleplay-tuned; the last three are general-purpose and widely used:
 
 > [!NOTE]
 > These numbers move from hour to hour. Run the `curl` above before you pick.

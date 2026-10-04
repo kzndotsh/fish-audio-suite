@@ -23,7 +23,7 @@ fish-audio-suite/
 │       ├── tests/
 │       └── dev.sh                 # runs fish-voice from the checkout
 ├── tests/                         # repo-wide: documented env defaults
-├── docs/                          # install, integrations, architecture, …
+├── docs/                          # INDEX.md lists them all
 ├── nix/module.nix                 # NixOS module for the proxy service
 ├── flake.nix, flake.lock          # Nix packages, apps, checks
 ├── Dockerfile                     # proxy container image
