@@ -168,7 +168,7 @@ def _send_kwargs(call: ChatCall) -> dict[str, Any]:
     tune = call.tune
     send_kw = _chat_body(call, "max_completion_tokens")
     send_kw["timeout_ms"] = int(tune.timeout_s * MS_PER_S)
-    if tune.nitro and tune.provider_sort and call.route_model.endswith(":nitro"):
+    if tune.provider_sort:
         send_kw["provider"] = {"sort": tune.provider_sort}
     if call.session_id:
         send_kw["session_id"] = call.session_id
