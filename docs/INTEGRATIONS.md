@@ -163,6 +163,71 @@ http://127.0.0.1:8850 {
 
 Point the app at `http://127.0.0.1:8850/v1` instead of port 8849.
 
+> [!TIP]
+> No Caddy? A small Python script does the same job, and it works for any API a browser app cannot reach, not only this proxy. Save it as `cors_proxy.py` and run it with `uv run cors_proxy.py`. It forwards every request to `UPSTREAM`, streams the reply back, and adds the CORS headers. The client's own `Authorization` header is passed through, so the script stores no key.
+>
+> ```python
+> # /// script
+> # requires-python = ">=3.12"
+> # dependencies = ["fastapi", "uvicorn", "httpx"]
+> # ///
+> """Add CORS headers to any HTTP API, for browser apps. Streams replies through."""
+>
+> import os
+>
+> import httpx
+> import uvicorn
+> from fastapi import FastAPI, Request
+> from fastapi.responses import Response, StreamingResponse
+> from starlette.background import BackgroundTask
+>
+> UPSTREAM = os.environ.get("UPSTREAM", "http://127.0.0.1:8849").rstrip("/")
+> PORT = int(os.environ.get("PORT", "8850"))
+> # Set to your app's origin, for example https://risuai.xyz, instead of "*".
+> ALLOW_ORIGIN = os.environ.get("ALLOW_ORIGIN", "*")
+>
+> CORS = {
+>     "access-control-allow-origin": ALLOW_ORIGIN,
+>     "access-control-allow-methods": "GET, POST, OPTIONS",
+>     "access-control-allow-headers": "*",
+>     "access-control-max-age": "600",
+> }
+> SKIP_REQ = {"host", "content-length", "origin", "referer", "connection", "accept-encoding"}
+> SKIP_RESP = {"content-length", "content-encoding", "transfer-encoding", "connection", "date", "server"}
+>
+> app = FastAPI()
+> client = httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=15.0))
+>
+>
+> @app.api_route("/{path:path}", methods=["GET", "POST", "OPTIONS"])
+> async def forward(path: str, request: Request) -> Response:
+>     if request.method == "OPTIONS":
+>         return Response(status_code=204, headers=CORS)
+>     upstream = await client.send(
+>         client.build_request(
+>             request.method,
+>             f"{UPSTREAM}/{path}",
+>             params=request.query_params,
+>             headers={k: v for k, v in request.headers.items() if k.lower() not in SKIP_REQ},
+>             content=await request.body(),
+>         ),
+>         stream=True,
+>     )
+>     headers = {k: v for k, v in upstream.headers.items() if k.lower() not in SKIP_RESP}
+>     return StreamingResponse(
+>         upstream.aiter_bytes(),
+>         status_code=upstream.status_code,
+>         headers={**headers, **CORS},
+>         background=BackgroundTask(upstream.aclose),
+>     )
+>
+>
+> if __name__ == "__main__":
+>     uvicorn.run(app, host="127.0.0.1", port=PORT, log_level="warning")
+> ```
+>
+> Point the app at `http://127.0.0.1:8850/v1`. To put CORS in front of another API, set `UPSTREAM`, for example `UPSTREAM=https://api.example.com PORT=8851 uv run cors_proxy.py`. This is the same approach that fixed RisuAI's web build calling an LLM provider that sent no CORS headers.
+
 ## OpenAI SDKs and plain HTTP
 
 The proxy implements OpenAI's `/v1/audio/speech`, `/v1/audio/transcriptions` and `/v1/models`, so the official SDKs work with a changed base URL.
