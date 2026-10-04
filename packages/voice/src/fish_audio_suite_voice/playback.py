@@ -15,6 +15,7 @@ from typing import Any, BinaryIO, Final, Protocol, runtime_checkable
 
 from fish_audio_suite_kit import MS_PER_S, AudioFormat, SuiteDefaults
 from fish_audio_suite_voice.aec import SAMPLE_BYTES, EchoCanceller, even_pcm
+from fish_audio_suite_voice.debug import debug
 
 __all__ = [
     "DEFAULT_PLAYBACK",
@@ -357,7 +358,10 @@ class SounddeviceSink(_Played):
             # Tap before the blocking DAC write so AEC has far-end while this slice plays.
             if self._aec is not None:
                 self._aec.tap_playback(piece, self.sample_rate)
-            self._stream.write(piece)
+            # PortAudio reports True when the device ran dry before this write,
+            # which plays as a click or a gap.
+            if self._stream.write(piece):
+                debug("tts.underrun after {} kB played", self._played // 1000)
             self._count(piece)
 
     def finish(self, *, kill: bool = False) -> None:

@@ -12,6 +12,7 @@ from voice_fakes import make_result
 
 from fish_audio_suite_kit import SuiteDefaults
 from fish_audio_suite_voice.cancel import is_cancel_noise
+from fish_audio_suite_voice.debug import configure_voice_logging
 from fish_audio_suite_voice.playback import (
     FileSink,
     MpvSink,
@@ -264,6 +265,22 @@ def test_sounddevice_sink_stops_after_the_slice_that_cancelled(
     sink.write(b"\x00\x00" * 8_000)
     assert len(written) == 1
     assert sink.bytes_played() == len(written[0])
+
+
+def test_sounddevice_sink_logs_an_underrun_when_the_device_ran_dry(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    configure_voice_logging(debug=True)
+    sink = SounddeviceSink(sample_rate=16_000)
+
+    class Stream:
+        def write(self, chunk: bytes) -> bool:
+            return True
+
+    sink._stream = Stream()
+    sink.write(b"\x00\x00" * 1_000)
+    assert "underrun after" in capsys.readouterr().err
+    assert sink.bytes_played() == 2_000
 
 
 def test_sounddevice_sink_skips_write_when_cancelled() -> None:
