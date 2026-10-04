@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-import queue
+import contextlib
 import threading
 import time
 from collections.abc import AsyncIterator, Callable
@@ -42,42 +42,61 @@ __all__ = [
 # watch() polls the mic for 0.2 s. The join has to cover that poll so the
 # stream is closed before the next listen opens the device.
 _BARGE_JOIN_S: Final = 1.0
-# The TTS side reads the token queue on its own loop. A short poll keeps the
-# hand-off under one frame without a cross-loop wake-up.
-_PIPE_POLL_S: Final = 0.005
 
 
 class _TokenPipe:
     """Hand LLM tokens to the TTS thread's event loop.
 
-    The two sides run on different loops and threads, so the queue is a plain
-    thread-safe one and the reader polls it.
+    The two sides run on different loops and threads. ``push`` appends under a
+    lock and wakes the reader's loop with ``call_soon_threadsafe``, so a token
+    is read as soon as it arrives and nothing polls while the model is quiet.
+    Tokens pushed before the reader starts wait in the buffer.
     """
 
     def __init__(self) -> None:
-        self._queue: queue.SimpleQueue[str | None] = queue.SimpleQueue()
+        self._lock = threading.Lock()
+        self._pending: list[str | None] = []
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._wake: asyncio.Event | None = None
 
     def push(self, token: str) -> None:
         """Add one token."""
-        self._queue.put(token)
+        self._put(token)
 
     def close(self) -> None:
         """Mark the end of the reply."""
-        self._queue.put(None)
+        self._put(None)
+
+    def _put(self, item: str | None) -> None:
+        with self._lock:
+            self._pending.append(item)
+            loop, wake = self._loop, self._wake
+        if loop is not None and wake is not None:
+            # The reader's loop is gone once the turn has ended.
+            with contextlib.suppress(RuntimeError):
+                loop.call_soon_threadsafe(wake.set)
 
     def __aiter__(self) -> AsyncIterator[str]:
         return self._drain()
 
     async def _drain(self) -> AsyncIterator[str]:
+        wake = asyncio.Event()
+        with self._lock:
+            self._loop = asyncio.get_running_loop()
+            self._wake = wake
         while True:
-            try:
-                item = self._queue.get_nowait()
-            except queue.Empty:
-                await asyncio.sleep(_PIPE_POLL_S)
+            with self._lock:
+                items, self._pending = self._pending, []
+                if not items:
+                    # Cleared under the lock, so a push after this sets it again.
+                    wake.clear()
+            if not items:
+                await wake.wait()
                 continue
-            if item is None:
-                return
-            yield item
+            for item in items:
+                if item is None:
+                    return
+                yield item
 
 
 async def collect_reply(

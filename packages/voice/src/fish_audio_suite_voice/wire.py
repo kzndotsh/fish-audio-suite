@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
 from collections.abc import (
     AsyncIterable,
@@ -52,7 +53,10 @@ __all__ = [
     "turn_failure",
 ]
 
-QUEUE_POLL_S: Final = 0.25
+# How often the cancel watcher checks that its turn is still running. Cancel
+# itself wakes the pump at once; this only bounds how long the watcher thread
+# outlives a turn that ended without one.
+_CANCEL_WATCH_S: Final = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -321,22 +325,30 @@ async def _pump_ws_audio(
     # rest of a long reply in memory.
     queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=1)
     reader = asyncio.create_task(_read_stream(aiter(stream), queue))
+    cancelled, stop_watching = _watch_cancel(run.cancel)
+    cancel_wait = asyncio.ensure_future(cancelled.wait())
+    get: asyncio.Future[Any] | None = None
     try:
         while True:
             if run.cancel.is_set():
                 debug("tts.cancel before/during stream")
                 await close_client()
                 return
-            try:
-                # A timeout only re-checks cancel. It never touches the reader.
-                item = await asyncio.wait_for(queue.get(), QUEUE_POLL_S)
-            except TimeoutError:
+            if get is None:
+                get = asyncio.ensure_future(queue.get())
+            done, _ = await asyncio.wait(
+                {get, cancel_wait, reader}, return_when=asyncio.FIRST_COMPLETED
+            )
+            if get not in done:
                 # The reader ends without a marker only when the stream itself
-                # was cancelled. Raise that instead of polling forever.
-                if reader.done() and queue.empty():
+                # was cancelled. Raise that instead of waiting forever.
+                if reader in done and queue.empty():
                     reader.result()
                     return
+                # Cancel was set: the loop top closes the client.
                 continue
+            item = get.result()
+            get = None
             if item is _STREAM_END:
                 return
             if isinstance(item, BaseException):
@@ -349,9 +361,37 @@ async def _pump_ws_audio(
                 return
             await _play(run.sink, item)
     finally:
+        stop_watching.set()
+        for waiter in (get, cancel_wait):
+            if waiter is not None and not waiter.done():
+                waiter.cancel()
         if not reader.done():
             reader.cancel()
             await reap(reader, wait_s=_REAP_TIMEOUT_S)
+
+
+def _watch_cancel(cancel: threading.Event) -> tuple[asyncio.Event, threading.Event]:
+    """Mirror a thread-side cancel flag into an event this loop can await.
+
+    A barge-in or Ctrl+C sets ``cancel`` on another thread. Polling it from the
+    loop delayed the stop by up to the poll interval, so a thread waits on it
+    and wakes the loop as soon as it is set. Set the returned stop event when
+    the turn ends, and the thread exits within ``_CANCEL_WATCH_S``.
+    """
+    loop = asyncio.get_running_loop()
+    cancelled = asyncio.Event()
+    stop = threading.Event()
+
+    def watch() -> None:
+        while not stop.is_set():
+            if cancel.wait(_CANCEL_WATCH_S):
+                # The loop may already be closed if the turn ended meanwhile.
+                with contextlib.suppress(RuntimeError):
+                    loop.call_soon_threadsafe(cancelled.set)
+                return
+
+    threading.Thread(target=watch, name="fish-tts-cancel", daemon=True).start()
+    return cancelled, stop
 
 
 async def _play(sink: PlaybackSink, chunk: bytes) -> None:

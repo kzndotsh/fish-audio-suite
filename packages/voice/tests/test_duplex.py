@@ -466,6 +466,31 @@ def test_token_pipe_hands_tokens_across_in_order() -> None:
     assert asyncio.run(drain()) == ["Hello ", "there"]
 
 
+def test_token_pipe_wakes_a_reader_on_another_thread() -> None:
+    pipe = _TokenPipe()
+    got: list[tuple[str, float]] = []
+    reading = threading.Event()
+
+    def reader() -> None:
+        async def drain() -> None:
+            reading.set()
+            got.extend([(token, time.perf_counter()) async for token in pipe])
+
+        asyncio.run(drain())
+
+    thread = threading.Thread(target=reader)
+    thread.start()
+    assert reading.wait(5)
+    time.sleep(0.05)
+    pushed = time.perf_counter()
+    pipe.push("Hi")
+    time.sleep(0.05)
+    pipe.close()
+    thread.join(5)
+    assert [token for token, _ in got] == ["Hi"]
+    assert got[0][1] >= pushed
+
+
 async def _two_tokens(*_args: object, **_kwargs: object) -> AsyncIterator[str]:
     for token in ("Hello ", "there friend."):
         yield token

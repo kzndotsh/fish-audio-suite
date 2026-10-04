@@ -536,3 +536,29 @@ def test_a_slow_device_write_does_not_stall_the_turn_loop(monkeypatch: pytest.Mo
     # gets about 40 turns. A blocked loop gets two or three. The bound is loose
     # so a slow runner cannot fail it.
     assert len(ticks) >= 12
+
+
+@pytest.mark.perf
+def test_cancel_while_waiting_for_audio_stops_the_pump_at_once() -> None:
+    run, sink = make_run()
+    closed: list[float] = []
+
+    async def close_client() -> None:
+        closed.append(time.perf_counter())
+
+    async def silent():
+        await asyncio.sleep(10)
+        yield b"\x01\x00"
+
+    async def main() -> float:
+        loop = asyncio.get_running_loop()
+        started = time.perf_counter()
+        loop.call_later(0.05, run.cancel.set)
+        await _pump_ws_audio(silent(), run, close_client)
+        return time.perf_counter() - started
+
+    elapsed = asyncio.run(main())
+    assert closed
+    assert not sink.chunks
+    # Polling waited up to 0.25 s after the cancel. Now it takes one loop turn.
+    assert elapsed < 0.2
