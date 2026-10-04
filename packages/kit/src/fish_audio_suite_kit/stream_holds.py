@@ -9,7 +9,7 @@ the scrubber removes only once it is complete.
 from __future__ import annotations
 
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from functools import partial
 
 from fish_audio_suite_kit._charsets import (
@@ -511,6 +511,12 @@ def _sentence_lead_hold(text: str, *, sentence_start: bool, before: str = "") ->
 # Text-only checks. Order does not matter: the earliest start wins.
 _TEXT_HOLDS: tuple[_Hold, ...] = (
     partial(_first_unclosed_pair, open_re=THOUGHT_OPEN_RE, close_re=THOUGHT_CLOSE_RE),
+    # The spans most often held across many tokens go first, so tts_hold_at
+    # stops early on them. The order does not change the result.
+    partial(unclosed_span_start, open_ch="(", close_ch=")"),
+    partial(unclosed_span_start, open_ch="（", close_ch="）"),
+    partial(unclosed_span_start, open_ch="[", close_ch="]"),
+    _url_at_end,
     partial(_first_unclosed_pair, open_re=_WHISPER_OPEN_RE, close_re=_WHISPER_CLOSE_RE),
     partial(
         _first_unclosed_pair,
@@ -536,10 +542,6 @@ _TEXT_HOLDS: tuple[_Hold, ...] = (
     _incomplete_table_row,
     _ref_label_before_id,
     _trailing_ref_link,
-    _url_at_end,
-    partial(unclosed_span_start, open_ch="(", close_ch=")"),
-    partial(unclosed_span_start, open_ch="（", close_ch="）"),
-    partial(unclosed_span_start, open_ch="[", close_ch="]"),
     _open_markdown_link,
     _finished_link_hold,
     _open_ref_link,
@@ -579,13 +581,31 @@ def tts_hold_at(
     int
         Start of the unfinished span, or ``len(text)`` when the chunk is stable.
     """
-    marks = [check(text) for check in _TEXT_HOLDS]
-    marks.append(sentence_closer_hold_at(text, lead=lead))
-    marks.append(_mark_on_its_line(_open_heading(text), line_start=line_start))
-    marks.append(_mark_on_its_line(_open_list_marker(text), line_start=line_start))
+    # A held span grows by one token at a time, and every check reads the whole
+    # buffer. Stop at the first hold at index 0, since nothing can start
+    # earlier, so a long held span does not rerun every check on every token.
+    best = len(text)
+    for mark in _hold_marks(
+        text, line_start=line_start, sentence_start=sentence_start, before=before, lead=lead
+    ):
+        if mark is not None and mark < best:
+            best = mark
+            if best == 0:
+                break
+    return best
+
+
+def _hold_marks(
+    text: str, *, line_start: bool, sentence_start: bool, before: str, lead: bool
+) -> Iterator[int | None]:
+    # Cheapest and most often held first. The lead holds come last because
+    # they cost the most, and a span held at index 0 skips them.
+    for check in _TEXT_HOLDS:
+        yield check(text)
+    yield sentence_closer_hold_at(text, lead=lead)
+    yield _mark_on_its_line(_open_heading(text), line_start=line_start)
+    yield _mark_on_its_line(_open_list_marker(text), line_start=line_start)
     if lead:
-        marks.append(_entity_stop_hold(text))
-        marks.append(mood_lead_hold_at(text, sentence_start=sentence_start))
-        marks.append(_sentence_lead_hold(text, sentence_start=sentence_start, before=before))
-    starts = [mark for mark in marks if mark is not None]
-    return min(starts) if starts else len(text)
+        yield _entity_stop_hold(text)
+        yield mood_lead_hold_at(text, sentence_start=sentence_start)
+        yield _sentence_lead_hold(text, sentence_start=sentence_start, before=before)

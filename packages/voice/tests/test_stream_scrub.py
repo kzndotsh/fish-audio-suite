@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 
+import pytest
 from wire_helpers import (
     event_kinds,
     stream_events,
@@ -632,3 +634,21 @@ def test_a_mood_word_inside_a_long_sentence_is_not_rewritten_as_a_cue() -> None:
     spoken = asyncio.run(run())
     assert "[excited]" not in spoken.lower()
     assert "Excited" in spoken
+
+
+@pytest.mark.parametrize("opener", ["<think>", "(", "```\n"])
+def test_a_long_held_span_streams_without_rechecking_everything_per_token(opener: str) -> None:
+    # 20k characters in 4-character tokens. Rerunning every hold check on the
+    # whole buffer for each token took over 15 s; stopping at the first hold
+    # at index 0 keeps it well under a second for a think block.
+    text = opener + "x y " * 5_000
+    pieces = [text[i : i + 4] for i in range(0, len(text), 4)]
+
+    async def drain() -> None:
+        events = delta_events(pieces, threading.Event(), partial_chars=40, mood_lead=True)
+        async for _event in events:
+            pass
+
+    started = time.perf_counter()
+    asyncio.run(drain())
+    assert time.perf_counter() - started < 6.0
