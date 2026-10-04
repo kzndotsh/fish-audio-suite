@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
-from typing import Literal
+from typing import Final, Literal
 
 import httpx
 
@@ -48,14 +48,42 @@ def _skip_asr(reason: str, text: str) -> Literal["skip"]:
     return "skip"
 
 
+# Hesitation sounds, never an answer. "yeah", "yep", "uh-huh" and "嗯" are
+# backchannels too, but after the assistant asks something they answer it.
+_FILLERS: Final = frozenset(
+    {"ah", "hmm", "huh", "mm", "uh", "um", "えっと", "呃", "唔", "啊", "어", "음"}
+)
+
+
 def classify_transcript(
     text: str,
     last_user: str,
     *,
     stale: bool = True,
+    over_reply: bool = True,
 ) -> Literal["skip", "quit", "ok"]:
-    """Decide whether recognized text is skipped, a quit word, or a line to answer."""
-    if is_backchannel(text):
+    """Decide whether recognized text is skipped, a quit word, or a line to answer.
+
+    Parameters
+    ----------
+    text : str
+        What Fish ASR heard.
+    last_user : str
+        The previous user line, to drop a stale copy of it.
+    stale : bool, optional
+        Whether the clip ended so soon after the mic opened that it may be a
+        copy of the previous line.
+    over_reply : bool, optional
+        Whether the clip was said over the assistant's reply (a barge-in). There
+        a lone "yeah" or "mm-hmm" means "go on" and is skipped. On a turn of its
+        own it answers the assistant, so only hesitation sounds are skipped.
+
+    Returns
+    -------
+    str
+        ``"skip"``, ``"quit"`` or ``"ok"``.
+    """
+    if is_backchannel(text, phrases=None if over_reply else _FILLERS):
         return _skip_asr("backchannel", text)
     if is_asr_hallucination(text):
         return _skip_asr("hallucination", text)
@@ -86,6 +114,7 @@ async def recognize(
     last_user: str,
     *,
     stale: bool = True,
+    over_reply: bool = True,
 ) -> HeardLine:
     """Send one utterance to Fish ASR and classify the text it returns."""
     c = ctx.config
@@ -119,7 +148,7 @@ async def recognize(
     if ctx.session.quit_requested.is_set():
         return HeardLine("bye")
     asr_ms = elapsed_ms(started)
-    decision = classify_transcript(text, last_user, stale=stale)
+    decision = classify_transcript(text, last_user, stale=stale, over_reply=over_reply)
     if decision == "quit":
         return HeardLine("bye")
     if decision == "skip":
@@ -166,7 +195,7 @@ async def hear_line(ctx: DuplexContext, last_user: str) -> HeardLine:
     # A barge-in clip carries fresh speech, so it is never a stale copy.
     window = ctx.config.repeat_window_s
     stale = not prefix and time.monotonic() - opened < window
-    heard = await recognize(ctx, wav, last_user, stale=stale)
+    heard = await recognize(ctx, wav, last_user, stale=stale, over_reply=bool(prefix))
     # Quit during the Fish request used to come back as a normal line, so
     # the LLM still answered after Ctrl+C.
     if ctx.session.quit_requested.is_set():

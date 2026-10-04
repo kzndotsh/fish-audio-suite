@@ -14,7 +14,7 @@ from fish_audio_suite_kit import ChatMessage, FishHttpError, LatencySnapshot
 from fish_audio_suite_voice.config import VoiceCliConfig
 from fish_audio_suite_voice.duplex import duplex_turns
 from fish_audio_suite_voice.duplex_state import DuplexContext
-from fish_audio_suite_voice.hearing import HeardLine, classify_transcript, recognize
+from fish_audio_suite_voice.hearing import HeardLine, classify_transcript, hear_line, recognize
 from fish_audio_suite_voice.history import opening_history, remember_user, trim_history
 from fish_audio_suite_voice.llm_tune import DEFAULT_HISTORY_TURNS, LlmTune
 from fish_audio_suite_voice.playback import PortAudioMissingError
@@ -103,6 +103,16 @@ def test_classify_transcript_drops_echoes_and_keeps_a_real_line() -> None:
     assert classify_transcript("bye.", "bye") == "quit"
     assert classify_transcript("I said hello there", "hello there") == "ok"
     assert classify_transcript("hello there", "earlier") == "ok"
+
+
+def test_a_lone_yeah_answers_on_its_own_turn_but_not_over_a_reply() -> None:
+    # Said over the reply, "yeah" means "go on". On its own turn it answers.
+    assert classify_transcript("Yeah.", "", over_reply=True) == "skip"
+    assert classify_transcript("Yeah.", "", over_reply=False) == "ok"
+    assert classify_transcript("uh-huh", "", over_reply=False) == "ok"
+    # A hesitation is never an answer.
+    assert classify_transcript("Um.", "", over_reply=False) == "skip"
+    assert classify_transcript("hmm", "", over_reply=False) == "skip"
 
 
 def test_history_keeps_the_system_prompt_and_drops_the_oldest_turn() -> None:
@@ -854,3 +864,21 @@ def test_noise_after_a_barge_in_speaks_the_rest_and_joins_history(
     assert said[1] == "How was your day today?"
     assert ctx.resume_text == ""
     assert ctx.history[-1] == {"role": "assistant", "content": "Hello there. Hello there."}
+
+
+@pytest.mark.parametrize(("barge_prefix", "kind"), [(b"", "line"), (b"clip", "noise")])
+def test_hear_line_answers_a_yeah_unless_it_was_said_over_the_reply(
+    monkeypatch: pytest.MonkeyPatch, barge_prefix: bytes, kind: str
+) -> None:
+    ctx = _ctx()
+    ctx.barge_prefix = barge_prefix
+
+    def wav(*_args: object, **_kwargs: object) -> bytes:
+        return b"RIFFwav"
+
+    async def asr(*_args: object, **_kwargs: object) -> str:
+        return "Yeah."
+
+    monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", wav)
+    monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", asr)
+    assert asyncio.run(hear_line(ctx, "")).kind == kind

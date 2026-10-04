@@ -76,6 +76,8 @@ The chat history gets only what you probably heard. For PCM that is a word-align
 
 If the interrupt turns out not to be speech (Fish hears no words, a backchannel such as "mm-hmm", or a clip too short to keep), the rest of the reply is spoken again from where it was cut, and joins the same history message. A real line drops the rest. Only text the model had already written is resumed.
 
+On a turn of its own, a lone "yeah", "yep" or "uh-huh" is an answer and gets a reply. Only a hesitation such as "um" or "hmm" is skipped there.
+
 ### Cues in replies
 
 With the default system prompt the session starts with one pinned exchange that shows several cues
