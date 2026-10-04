@@ -24,6 +24,7 @@ Import: `fish_audio_suite_kit`. Tests: `uv run pytest packages/kit`. `tests/` ha
 | `http_errors` | `FishHttpError` and its subclasses, `FishErrorBody`, retry and backoff helpers, `retry_after_s` |
 | `literals` | `FishLatency`, `AudioFormat`, `AsrFormat`, `TtsModel`, `ChatRole`. Types only |
 | `payloads` | `ChatMessage`, `AsrBody`, `AsrSegment`, `AsrWord`, `OpenAIErrorDetail`, `OpenAIErrorBody`. Types only |
+| `_single_pass` | Private. Single-pass text rules (space runs, table rows, emphasis) used where a regex would rescan a run |
 | `_version` | Private. `read_version` for `__version__` |
 | `captions` | `CaptionCue`, `format_as_srt`, `format_as_vtt`. No network |
 | `trace_context` | W3C `traceparent` parse and make, `ensure_trace_headers`. No OpenTelemetry |

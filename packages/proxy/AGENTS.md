@@ -19,9 +19,12 @@ CLI: `fish-audio-suite-proxy`. Import: `fish_audio_suite_proxy`. Start uvicorn w
 | `upstream.py` | `fish_send`: bounded retry, `Retry-After` (kit `retry_after_s`), deadline, stops on disconnect, optional per-request read timeout. `FishHttp` is the client Protocol. Transcription passes `FISH_PROXY_ASR_TIMEOUT` as its read timeout and deadline; speech keeps the client-wide ones |
 | `body_limit.py` | Request body cap middleware |
 | `models.py` | TTS aliases, ASR id rules, `/v1/models` ids |
-| `fields.py` | Format, silence, the `read_*` request-field readers (`read_format`, `read_flag`, `read_choice`, `read_present`, `read_reference_id`), base64 audio (`decode_audio_b64`, `AudioDecodeError`), trace headers |
-| `speech.py`, `transcribe.py` | Fish TTS body and ASR upload/response |
-| `errors.py` | OpenAI error envelope (`OpenAIErrorBody`), `ProxyError`. `provider_json_error` / `provider_json_from_raw` for a Fish error body, `json_from_call_failure` for a Fish call with no usable answer. `AudioDecodeError` (`fields.py`) is a `ProxyError` with status 400, and `ClipError` (`speech.py`) is the reference-clip kind of it. A transcription error names `input_audio`, never "reference audio" |
+| `audio.py` | `ClientFormat` and the supported formats, `fish_audio_format`, `media_type`, `pcm_sample_rate`, local silence (`silent_speech`), base64 audio (`decode_audio_b64`, `AudioDecodeError`) |
+| `request_fields.py` | The `read_*` request-field readers (`read_format`, `read_flag`, `read_choice`, `read_present`, `read_reference_id`), `prepare_tts_text`, `traced_model_headers` |
+| `speech.py` | Fish TTS body from a speech request |
+| `transcribe.py` | ASR upload parsing and the transcription response bodies |
+| `phrases.py` | `caption_cues`, `word_cues`: group Fish's word-level segments into timed phrase cues, with punctuation aligned from the text |
+| `errors.py` | OpenAI error envelope (`OpenAIErrorBody`), `ProxyError`. `provider_json_error` / `provider_json_from_raw` for a Fish error body, `json_from_call_failure` for a Fish call with no usable answer. `AudioDecodeError` (`audio.py`) is a `ProxyError` with status 400, and `ClipError` (`speech.py`) is the reference-clip kind of it. A transcription error names `input_audio`, never "reference audio" |
 
 Invariants:
 - `FISH_API_KEY` is read in lifespan. Importing the app and `GET /health` must work with it unset. A missing key is 503 on any request that would call Fish, and a wrong client key is 401. Text that is only junk returns local silence first, so it never reaches the key check.
