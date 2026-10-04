@@ -30,6 +30,7 @@ dependencies = [
 
 [project.optional-dependencies]
 speakers = ["sounddevice>=0.5"]
+# webrtcvad-wheels, not PyPI webrtcvad: the original has no wheel for Python 3.12.
 vad = ["webrtcvad-wheels>=2.0.14"]
 aec = ["pywebrtc-audio>=0.2"]
 cli = [

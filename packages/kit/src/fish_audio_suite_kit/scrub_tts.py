@@ -554,6 +554,12 @@ def scrub_tts(
         Spoken text. The no-argument call is the whole string, stripped.
         A neighbor character keeps one edge space the replacement inserted.
 
+    Notes
+    -----
+    A streaming caller passes what came before and after as arguments
+    (``before``, ``after``, ``continued``). Neighbor state never travels in a
+    context variable, so a call has no hidden input.
+
     Examples
     --------
     >>> scrub_tts("**Hello** there!")

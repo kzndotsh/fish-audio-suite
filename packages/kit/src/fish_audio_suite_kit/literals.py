@@ -1,4 +1,10 @@
-"""Closed value sets the three packages share. Types only, no behavior."""
+"""Closed value sets the three packages share. Types only, no behavior.
+
+A helper that reads one of these from a string (``known_latency``,
+``known_audio_format``) narrows it with a table lookup, so no caller needs a
+``cast``. ``normalize_tts_model`` stays ``str`` because another model id passes
+through; ``catalog_tts_model`` narrows to ``TtsModel``.
+"""
 
 from __future__ import annotations
 

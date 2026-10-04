@@ -1,4 +1,8 @@
-"""OpenAI-shaped caption files from timed ASR cues. No network."""
+"""OpenAI-shaped caption files from timed ASR cues. No network.
+
+Times are compared as integer milliseconds, never as formatted clocks, so two
+cues that print the same second are still ordered correctly.
+"""
 
 from __future__ import annotations
 
