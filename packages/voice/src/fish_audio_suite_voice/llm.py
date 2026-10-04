@@ -22,6 +22,7 @@ from fish_audio_suite_kit import MS_PER_S, ChatMessage, ends_sentence, utf8_text
 from fish_audio_suite_voice.cancel import is_cancel_noise, is_own_cancel, reap
 from fish_audio_suite_voice.console import console_print
 from fish_audio_suite_voice.debug import debug, short_model, trace, warn
+from fish_audio_suite_voice.llm_tune import LlmTune, is_openrouter_host
 from fish_audio_suite_voice.pause import sleep_unless
 from fish_audio_suite_voice.transports import (
     ChatCall,
@@ -29,7 +30,6 @@ from fish_audio_suite_voice.transports import (
     http_client,
     openrouter_client,
 )
-from fish_audio_suite_voice.tune import LlmTune, is_openrouter_host
 
 __all__ = [
     "ChatBackend",

@@ -17,7 +17,7 @@ CLI: `fish-audio-suite-proxy`. Import: `fish_audio_suite_proxy`. Start uvicorn w
 | `server.py` | App, lifespan, routes, client-key check |
 | `settings.py` | `ProxySettings`, built once in lifespan on `app.state.settings`. No other module reads the env. |
 | `upstream.py` | `fish_send`: bounded retry, `Retry-After` (kit `retry_after_s`), deadline, stops on disconnect, optional per-request read timeout. `FishHttp` is the client Protocol. Transcription passes `FISH_PROXY_ASR_TIMEOUT` as its read timeout and deadline; speech keeps the client-wide ones |
-| `limits.py` | Request body cap middleware |
+| `body_limit.py` | Request body cap middleware |
 | `models.py` | TTS aliases, ASR id rules, `/v1/models` ids |
 | `fields.py` | Format, silence, the `read_*` request-field readers (`read_format`, `read_flag`, `read_choice`, `read_present`, `read_reference_id`), base64 audio (`decode_audio_b64`, `AudioDecodeError`), trace headers |
 | `speech.py`, `transcribe.py` | Fish TTS body and ASR upload/response |

@@ -19,7 +19,7 @@ from fish_audio_suite_kit import (
     utf8_text,
 )
 from fish_audio_suite_voice.debug import debug, debug_enabled, warn
-from fish_audio_suite_voice.tune import LlmTune
+from fish_audio_suite_voice.llm_tune import LlmTune
 
 __all__ = [
     "ChatCall",

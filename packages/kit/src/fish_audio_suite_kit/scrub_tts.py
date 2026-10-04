@@ -14,7 +14,7 @@ from fish_audio_suite_kit._charsets import (
     plain_breaks,
     utf8_text,
 )
-from fish_audio_suite_kit._linear import (
+from fish_audio_suite_kit._single_pass import (
     blank_table_separators,
     collapse_space_before_stop,
     emphasis_runs,

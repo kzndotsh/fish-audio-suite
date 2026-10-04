@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from fish_audio_suite_kit._charsets import utf8_text
-from fish_audio_suite_kit.dialogue import extract_quoted_speech, is_tts_junk
+from fish_audio_suite_kit.dialogue import extract_quoted_speech
+from fish_audio_suite_kit.junk import is_tts_junk
 from fish_audio_suite_kit.scrub_tts import scrub_tts
 from fish_audio_suite_kit.stream_holds import (
     is_empty_delta,

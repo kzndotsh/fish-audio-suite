@@ -12,7 +12,7 @@ import pytest
 from fish_audio_suite_voice.cli import llm_setting_names
 from fish_audio_suite_voice.debug import configure_voice_logging
 from fish_audio_suite_voice.llm import open_chat_backend
-from fish_audio_suite_voice.tune import (
+from fish_audio_suite_voice.llm_tune import (
     EXPERIENTIAL_API_BASE,
     OPENROUTER_API_BASE,
     LlmTune,

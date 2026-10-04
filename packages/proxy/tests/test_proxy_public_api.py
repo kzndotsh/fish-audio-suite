@@ -14,19 +14,19 @@ import pytest
 from starlette.requests import Request
 
 from fish_audio_suite_kit import AsrFormat, FishErrorBody
-from fish_audio_suite_proxy.errors import (
-    ProxyError,
-    provider_json_error,
-    proxy_error_response,
-)
-from fish_audio_suite_proxy.fields import (
+from fish_audio_suite_proxy.audio import (
     SUPPORTED_FORMATS,
     AudioDecodeError,
     ClientFormat,
     decode_audio_b64,
     fish_audio_format,
-    read_format,
 )
+from fish_audio_suite_proxy.errors import (
+    ProxyError,
+    provider_json_error,
+    proxy_error_response,
+)
+from fish_audio_suite_proxy.request_fields import read_format
 from fish_audio_suite_proxy.settings import ProxySettings
 from fish_audio_suite_proxy.speech import (
     ClipError,
@@ -41,10 +41,12 @@ from fish_audio_suite_proxy.transcribe import (
 from fish_audio_suite_proxy.upstream import FishHttp, RetryPolicy
 
 _MODULES = (
+    "audio",
+    "body_limit",
     "errors",
-    "fields",
-    "limits",
     "models",
+    "phrases",
+    "request_fields",
     "server",
     "settings",
     "speech",

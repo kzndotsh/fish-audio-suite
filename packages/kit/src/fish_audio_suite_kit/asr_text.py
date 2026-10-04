@@ -16,8 +16,8 @@ from fish_audio_suite_kit._charsets import (
     plain_breaks,
     utf8_text,
 )
-from fish_audio_suite_kit._linear import collapse_space_before_stop
-from fish_audio_suite_kit.dialogue import DEFAULT_MIN_LETTERS, DEFAULT_SHORT_WORDS
+from fish_audio_suite_kit._single_pass import collapse_space_before_stop
+from fish_audio_suite_kit.junk import DEFAULT_MIN_LETTERS, DEFAULT_SHORT_WORDS
 from fish_audio_suite_kit.payloads import AsrSegment
 
 __all__ = [

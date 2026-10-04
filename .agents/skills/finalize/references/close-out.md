@@ -41,8 +41,8 @@ regexes into proxy or voice. Do not read `FISH_API_KEY` at import.
 
 Behavior change with no covering test → add one, or report **Blocked**.
 
-Tests live in `packages/<member>/tests/` (`test_kit.py`, `test_proxy.py`,
-`test_playback.py`, plus new files if a module needs its own). Grep for
+Tests live in `packages/<member>/tests/` (one `test_<area>.py` per area, such as
+`test_cues.py`, `test_proxy_speech.py` or `test_playback.py`, plus new files if a module needs its own). Grep for
 the export name. Prefer `uv run pytest packages/<member>`.
 
 New tests: one behavior per test, assert contracts not call sequences.

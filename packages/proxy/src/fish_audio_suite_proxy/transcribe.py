@@ -23,8 +23,8 @@ from fish_audio_suite_kit import (
     scrub_asr,
     utf8_text,
 )
+from fish_audio_suite_proxy.audio import AudioDecodeError, decode_audio_b64
 from fish_audio_suite_proxy.errors import ProxyError, json_error, read_json_object
-from fish_audio_suite_proxy.fields import AudioDecodeError, decode_audio_b64
 from fish_audio_suite_proxy.phrases import word_cues
 
 __all__ = [

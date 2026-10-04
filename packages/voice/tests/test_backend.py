@@ -8,8 +8,8 @@ import httpx
 import pytest
 
 from fish_audio_suite_voice.llm import ChatBackend, open_chat_backend
+from fish_audio_suite_voice.llm_tune import LlmTune
 from fish_audio_suite_voice.transports import chat_completions_url
-from fish_audio_suite_voice.tune import LlmTune
 
 SSE = (
     'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n'

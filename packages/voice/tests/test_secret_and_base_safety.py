@@ -5,8 +5,8 @@ import pytest
 
 from fish_audio_suite_voice.config import VoiceCliConfig, warn_if_insecure_base
 from fish_audio_suite_voice.debug import with_detail
+from fish_audio_suite_voice.llm_tune import LlmTune
 from fish_audio_suite_voice.speaker import FishSpeaker
-from fish_audio_suite_voice.tune import LlmTune
 from fish_audio_suite_voice.wire import _classify_fish_exc
 
 SECRET = "sk-very-secret-value"

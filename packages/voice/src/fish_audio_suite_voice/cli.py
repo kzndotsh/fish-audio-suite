@@ -34,6 +34,7 @@ from fish_audio_suite_voice.debug import (
 from fish_audio_suite_voice.duplex import EXIT_FATAL, EXIT_OK, bye, duplex_turns
 from fish_audio_suite_voice.envfile import apply_cli_env_files
 from fish_audio_suite_voice.llm import open_chat_backend
+from fish_audio_suite_voice.llm_tune import LlmTune, provider_for_base
 from fish_audio_suite_voice.playback import (
     FileSink,
     audio_format_for,
@@ -42,7 +43,6 @@ from fish_audio_suite_voice.playback import (
 )
 from fish_audio_suite_voice.signals import DuplexSession
 from fish_audio_suite_voice.speaker import FishSpeaker
-from fish_audio_suite_voice.tune import LlmTune, provider_for_base
 from fish_audio_suite_voice.ws_tap import install_fish_ws_tap
 
 __all__ = [

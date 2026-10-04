@@ -47,7 +47,6 @@ from fish_audio_suite_kit.defaults import (
     normalize_tts_model,
     strip_base,
 )
-from fish_audio_suite_kit.dialogue import DEFAULT_SHORT_WORDS
 from fish_audio_suite_kit.env import (
     clamp_number,
     env_base,
@@ -82,18 +81,13 @@ from fish_audio_suite_kit.http_errors import (
     retry_after_s,
     should_retry_fish_status,
 )
-from fish_audio_suite_kit.literals import (
-    AsrFormat,
-    AudioFormat,
-    ChatMessage,
-    ChatRole,
-    FishLatency,
-    TtsModel,
-)
+from fish_audio_suite_kit.junk import DEFAULT_SHORT_WORDS
+from fish_audio_suite_kit.literals import AsrFormat, AudioFormat, ChatRole, FishLatency, TtsModel
 from fish_audio_suite_kit.payloads import (
     AsrBody,
     AsrSegment,
     AsrWord,
+    ChatMessage,
     OpenAIErrorBody,
     OpenAIErrorDetail,
 )

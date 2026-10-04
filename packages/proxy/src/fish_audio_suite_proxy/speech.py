@@ -29,21 +29,23 @@ from fish_audio_suite_kit import (
     parse_number,
     utf8_text,
 )
-from fish_audio_suite_proxy.errors import ProxyError, json_error
-from fish_audio_suite_proxy.fields import (
+from fish_audio_suite_proxy.audio import (
     AudioDecodeError,
     ClientFormat,
     decode_audio_b64,
     fish_audio_format,
     media_type,
     pcm_sample_rate,
+)
+from fish_audio_suite_proxy.errors import ProxyError, json_error
+from fish_audio_suite_proxy.models import resolve_tts_model
+from fish_audio_suite_proxy.request_fields import (
     read_choice,
     read_flag,
     read_format,
     read_reference_id,
     traced_model_headers,
 )
-from fish_audio_suite_proxy.models import resolve_tts_model
 
 __all__ = [
     "ClipError",

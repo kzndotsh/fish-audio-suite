@@ -19,6 +19,7 @@ from fish_audio_suite_voice.llm import (
     check_openrouter_model,
     llm_token_stream,
 )
+from fish_audio_suite_voice.llm_tune import LlmTune, is_openrouter_host
 from fish_audio_suite_voice.transports import (
     ChatCall,
     _abort_http,
@@ -27,7 +28,6 @@ from fish_audio_suite_voice.transports import (
     describe_http_error,
     openrouter_client,
 )
-from fish_audio_suite_voice.tune import LlmTune, is_openrouter_host
 
 OR_BASE = "https://openrouter.ai/api/v1"
 

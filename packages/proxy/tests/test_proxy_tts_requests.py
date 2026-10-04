@@ -9,36 +9,26 @@ import pytest
 from fastapi.testclient import TestClient
 from proxy_helpers import (
     AudioStream,
-    FakeUpstream,
-    asr_body,
     capture_upstream,
     content_part,
     json_part,
     not_response,
-    run_fish_send,
 )
-from starlette.datastructures import FormData
-from starlette.responses import JSONResponse
 
 from fish_audio_suite_kit import (
-    CaptionCue,
     SuiteDefaults,
     chunk_length_hi,
-    ensure_trace_headers,
-    is_asr_hallucination,
     is_tts_junk,
 )
+from fish_audio_suite_proxy.audio import pcm_sample_rate
 from fish_audio_suite_proxy.errors import ProxyError
-from fish_audio_suite_proxy.fields import (
-    pcm_sample_rate,
+from fish_audio_suite_proxy.request_fields import (
     prepare_tts_text,
     read_flag,
     read_format,
     read_reference_id,
 )
-from fish_audio_suite_proxy.models import catalog_ids, resolve_asr_model, resolve_tts_model
-from fish_audio_suite_proxy.phrases import caption_cues
-from fish_audio_suite_proxy.server import _uvicorn_run_kwargs, app
+from fish_audio_suite_proxy.server import app
 from fish_audio_suite_proxy.settings import load_settings, runtime_defaults
 from fish_audio_suite_proxy.speech import (
     SpeechControls,
@@ -46,7 +36,6 @@ from fish_audio_suite_proxy.speech import (
     pack_tts,
     speech_controls,
 )
-from fish_audio_suite_proxy.transcribe import _granularity_list, form_strings, transcription_body
 
 
 def test_prepare_tts_normalizes_cues() -> None:
@@ -148,16 +137,6 @@ def test_prepare_keeps_stacked_cues_and_speaker_token() -> None:
     assert "[whispering]" in spoken
 
 
-def test_asr_model_whisper_remap() -> None:
-    assert resolve_asr_model("whisper-1", "transcribe-1") == "transcribe-1"
-    assert resolve_asr_model("whisper-1", " Transcribe-1 ") == "transcribe-1"
-    assert resolve_asr_model(None, "fish-audio/Transcribe-1-Pro") == "transcribe-1-pro"
-    assert resolve_asr_model("gpt-4o-transcribe", "CustomAsr") == "CustomAsr"
-    assert resolve_asr_model("gpt-4o-transcribe", "transcribe-1\nbad") == "transcribe-1-pro"
-    assert resolve_asr_model("whisper-1", "custom\nid") == "transcribe-1-pro"
-    assert resolve_asr_model("whisper-1", "   ") == "transcribe-1-pro"
-
-
 def test_mp3_bitrate_env_snaps(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FISH_MP3_BITRATE", "96")
     assert runtime_defaults().mp3_bitrate == 128
@@ -182,26 +161,6 @@ def test_format_env_uses_the_request_alias(monkeypatch: pytest.MonkeyPatch) -> N
     assert runtime_defaults().asr_model == "transcribe-1-pro"
 
 
-def test_tts_and_asr_model_aliases() -> None:
-    assert resolve_tts_model("fish-audio/s2.1-pro", "s1") == "s2.1-pro"
-    assert resolve_tts_model("tts-1", "s1") == "s1"
-    assert resolve_tts_model("gpt-4o-mini-tts", "s2.1-pro") == "s2.1-pro"
-    assert resolve_tts_model("playai-tts", "s1") == "playai-tts"
-    assert resolve_tts_model("voice-a", "s1", {"voice-a": "s2-pro"}) == "s2-pro"
-    assert resolve_tts_model("s2.1-pro-free", "s2.1-pro") == "s2.1-pro-free"
-    assert resolve_tts_model("drama-3-preview", "s2.1-pro") == "drama-3-preview"
-    assert resolve_tts_model("S2.1-PRO", "s1") == "s2.1-pro"
-    assert resolve_tts_model("fish-audio/ Drama-3-Preview ", "s1") == "drama-3-preview"
-    assert resolve_tts_model("CustomModel", "s1") == "CustomModel"
-    assert resolve_tts_model("custom\nid", "s1") == "s1"
-    assert resolve_tts_model(["s2.1-pro"], "s1") == "s1"
-    assert resolve_tts_model("   ", "s1") == "s1"
-    assert resolve_asr_model(["whisper-1"], "transcribe-1") == "transcribe-1"
-    assert resolve_asr_model("fish-audio/transcribe-1", "transcribe-1-pro") == "transcribe-1"
-    assert resolve_asr_model("gpt-4o-transcribe", "transcribe-1") == "transcribe-1"
-    assert resolve_asr_model("fish-audio/transcribe-1-pro", "transcribe-1") == "transcribe-1-pro"
-
-
 def test_pcm16_format_and_rate() -> None:
     assert read_format({"response_format": "pcm16"}, "mp3") == "pcm16"
     assert pcm_sample_rate("pcm16", {}, 44100) == 24000
@@ -212,23 +171,6 @@ def test_pcm16_format_and_rate() -> None:
     assert pcm_sample_rate("pcm", {"sample_rate": 0}, 44100) == 44100
     assert pcm_sample_rate("pcm16", {"sample_rate": -1}, 44100) == 24000
     assert pcm_sample_rate("opus", {"sample_rate": 0}, 48000) == 48000
-
-
-def test_catalog_includes_fish_audio_slugs() -> None:
-    ids = catalog_ids()
-    assert "s2.1-pro" in ids
-    assert "fish-audio/s2.1-pro" in ids
-    assert "fish-audio/transcribe-1" in ids
-    assert "whisper-1" in ids
-    assert "tts-1" in ids
-    assert "my-voice" in catalog_ids({"my-voice": "s2-pro"})
-    assert "tts-1" not in catalog_ids({"my-voice": "s2-pro"})
-
-
-def test_asr_hallucination_without_network() -> None:
-    assert is_asr_hallucination("谢谢观看")
-    assert not is_asr_hallucination("你好")
-    assert not is_asr_hallucination("hello there friend")
 
 
 def test_chunk_length_hi_cloud_vs_self_host() -> None:
@@ -279,22 +221,6 @@ def test_read_reference_id_list() -> None:
     assert read_reference_id({"reference_id": [None, ""], "voice": "kept"}) == "kept"
     assert read_reference_id({"reference_id": "", "voice": "kept"}) == "kept"
     assert read_reference_id({"reference_id": ["a"], "voice": "ignored"}) == ["a"]
-
-
-def test_empty_transcription_is_fish_error_shape() -> None:
-    with TestClient(app) as client:
-        r = client.post(
-            "/v1/audio/transcriptions",
-            files={"file": ("a.wav", b"", "audio/wav")},
-        )
-        assert r.status_code == 400
-        assert r.json() == {
-            "error": {
-                "code": 400,
-                "message": "empty audio upload",
-                "type": "invalid_request_error",
-            }
-        }
 
 
 def test_speech_input_must_be_a_string() -> None:
@@ -482,304 +408,3 @@ def test_speech_json_bom_is_a_request(monkeypatch: pytest.MonkeyPatch) -> None:
         )
     assert response.status_code == 200
     assert "Hello there friend" in captured["json"]["text"]
-
-
-def test_transcription_bad_multipart_is_openai_error() -> None:
-    with TestClient(app) as client:
-        broken = client.post(
-            "/v1/audio/transcriptions",
-            content=b"not-a-form",
-            headers={"content-type": "multipart/form-data"},
-        )
-        assert broken.status_code == 400
-        body = broken.json()
-        assert body["error"]["type"] == "invalid_request_error"
-        assert body["error"]["message"] == "invalid multipart form body"
-
-
-def test_transcription_bad_json_is_400() -> None:
-    with TestClient(app) as client:
-        broken = client.post(
-            "/v1/audio/transcriptions",
-            content=b"{",
-            headers={"content-type": "application/json"},
-        )
-        assert broken.status_code == 400
-        assert broken.json()["error"]["message"] == "invalid JSON body"
-
-
-def test_fish_client_timeout_and_user_agent() -> None:
-    with TestClient(app) as client:
-        assert client.get("/health").status_code == 200
-        http = app.state.http
-        assert isinstance(http, httpx.AsyncClient)
-        assert http.timeout.connect == 10.0
-        assert http.timeout.read == 120.0
-        assert http.timeout.write == 120.0
-        assert http.timeout.pool == 5.0
-        assert http.headers["User-Agent"].startswith("fish-audio-suite-proxy/")
-
-
-def test_health_without_api_key() -> None:
-    with TestClient(app) as client:
-        r = client.get("/health")
-        assert r.status_code == 200
-        body = r.json()
-        assert body["status"] == "ok"
-        assert body["defaults"]["asr_strip_speakers"] is True
-        assert body["defaults"]["asr_strip_cues"] is False
-        assert body["defaults"]["tts_dialogue_only"] is False
-        models = client.get("/v1/models")
-        ids = {m["id"] for m in models.json()["data"]}
-        assert "s2.1-pro-free" in ids
-        assert "drama-3-preview" in ids
-        assert "fish-audio/s2.1-pro" in ids
-
-
-def test_upstream_trace_headers_forward_or_mint() -> None:
-    sample = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
-    forwarded = ensure_trace_headers({"traceparent": sample, "tracestate": "vendor=1"})
-    assert forwarded["traceparent"] == sample
-    assert forwarded["tracestate"] == "vendor=1"
-    minted = ensure_trace_headers({})
-    assert minted["traceparent"].startswith("00-")
-
-
-def test_uvicorn_run_kwargs_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("FISH_PROXY_WORKERS", raising=False)
-    monkeypatch.delenv("WEB_CONCURRENCY", raising=False)
-    monkeypatch.delenv("FISH_PROXY_LIMIT_CONCURRENCY", raising=False)
-    monkeypatch.delenv("FISH_PROXY_GRACEFUL_SHUTDOWN", raising=False)
-    monkeypatch.delenv("FISH_PROXY_PORT", raising=False)
-    kw = _uvicorn_run_kwargs()
-    assert kw["workers"] == 1
-    assert kw["port"] == 8849
-    assert kw["loop"] == "auto"
-    assert kw["http"] == "auto"
-    assert kw["ws"] == "none"
-    assert kw["timeout_graceful_shutdown"] == 120
-    assert kw["timeout_keep_alive"] == 5
-    assert "limit_concurrency" not in kw
-
-
-def test_uvicorn_port_out_of_range_uses_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("FISH_PROXY_PORT", "70000")
-    assert _uvicorn_run_kwargs()["port"] == 8849
-    monkeypatch.setenv("FISH_PROXY_PORT", "0")
-    assert _uvicorn_run_kwargs()["port"] == 8849
-    monkeypatch.setenv("FISH_PROXY_PORT", "9000")
-    assert _uvicorn_run_kwargs()["port"] == 9000
-
-
-def test_uvicorn_timeouts_cannot_be_negative(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("FISH_PROXY_KEEP_ALIVE", "-1")
-    monkeypatch.setenv("FISH_PROXY_GRACEFUL_SHUTDOWN", "-5")
-    kw = _uvicorn_run_kwargs()
-    assert kw["timeout_keep_alive"] == 5
-    assert kw["timeout_graceful_shutdown"] == 120
-    monkeypatch.setenv("FISH_PROXY_KEEP_ALIVE", "0")
-    monkeypatch.setenv("FISH_PROXY_GRACEFUL_SHUTDOWN", "0")
-    kw = _uvicorn_run_kwargs()
-    assert kw["timeout_keep_alive"] == 0
-    assert kw["timeout_graceful_shutdown"] == 0
-
-
-def test_uvicorn_run_kwargs_workers_and_limit(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("FISH_PROXY_WORKERS", "4")
-    monkeypatch.setenv("FISH_PROXY_LIMIT_CONCURRENCY", "32")
-    monkeypatch.setenv("FISH_PROXY_GRACEFUL_SHUTDOWN", "90")
-    kw = _uvicorn_run_kwargs()
-    assert kw["workers"] == 4
-    assert kw["limit_concurrency"] == 32
-    assert kw["timeout_graceful_shutdown"] == 90
-
-
-def test_fish_send_retries_429_then_ok(monkeypatch: pytest.MonkeyPatch) -> None:
-    out, client, sleeps = run_fish_send(
-        monkeypatch,
-        [
-            FakeUpstream(429, b'{"message": "slow down", "status": 429}'),
-            FakeUpstream(200),
-        ],
-    )
-    assert isinstance(out, FakeUpstream)
-    assert out.status_code == 200
-    assert client.sends == 2
-    sleeps.assert_awaited_once()
-
-
-def test_fish_send_does_not_treat_a_redirect_as_audio(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    out, client, sleeps = run_fish_send(
-        monkeypatch,
-        [FakeUpstream(302, b"<html>moved</html>")],
-    )
-    assert isinstance(out, JSONResponse)
-    assert out.status_code == 302
-    assert client.sends == 1
-    sleeps.assert_not_awaited()
-
-
-def test_fish_send_does_not_retry_401(monkeypatch: pytest.MonkeyPatch) -> None:
-    out, client, sleeps = run_fish_send(
-        monkeypatch,
-        [FakeUpstream(401, b'{"message": "Invalid Token", "status": 401}')],
-    )
-    assert out.status_code == 401
-    assert client.sends == 1
-    sleeps.assert_not_awaited()
-
-
-def test_fish_send_retries_a_connect_timeout_then_ok(monkeypatch: pytest.MonkeyPatch) -> None:
-    out, client, sleeps = run_fish_send(
-        monkeypatch,
-        [httpx.ConnectTimeout("timed out"), FakeUpstream(200)],
-    )
-    assert isinstance(out, FakeUpstream)
-    assert out.status_code == 200
-    assert client.sends == 2
-    sleeps.assert_awaited_once()
-
-
-def test_form_strings_merges_bracket_alias() -> None:
-    both = FormData(
-        [
-            ("timestamp_granularities", "word"),
-            ("timestamp_granularities[]", "segment"),
-        ]
-    )
-    assert form_strings(both, "timestamp_granularities", "timestamp_granularities[]") == [
-        "word",
-        "segment",
-    ]
-    bracket = FormData([("timestamp_granularities[]", "segment")])
-    assert form_strings(bracket, "timestamp_granularities", "timestamp_granularities[]") == [
-        "segment"
-    ]
-    padded = FormData([("timestamp_granularities", " word ")])
-    assert form_strings(padded, "timestamp_granularities") == ["word"]
-
-
-def test_granularity_list_keeps_strings_only() -> None:
-    assert _granularity_list([" word ", 1, None, {"type": "word"}]) == ["word"]
-
-
-def test_verbose_duration_rejects_a_boolean() -> None:
-    body = transcription_body(
-        "verbose_json",
-        "hello",
-        [CaptionCue(0.0, 1.5, "hello")],
-        {"duration": True},
-        language=None,
-        granularities=[],
-    )
-    assert isinstance(body, dict)
-    assert body["duration"] is None
-    kept = transcription_body(
-        "verbose_json",
-        "hello",
-        [CaptionCue(0.0, 1.5, "hello")],
-        {"duration": 1.5},
-        language=None,
-        granularities=[],
-    )
-    assert isinstance(kept, dict)
-    assert kept["duration"] == 1.5
-
-
-def test_verbose_words_accepts_padded_granularity() -> None:
-    body = transcription_body(
-        "verbose_json",
-        "hello",
-        [CaptionCue(0.0, 1.0, "hello")],
-        {},
-        language=None,
-        granularities=[" word "],
-    )
-    assert isinstance(body, dict)
-    assert "words" not in body
-    with_words = transcription_body(
-        "verbose_json",
-        "hello",
-        [CaptionCue(0.0, 1.0, "hello")],
-        asr_body({"words": [{"word": "hello", "start": 0.0, "end": 0.4}, {"word": 7}, "junk"]}),
-        language=None,
-        granularities=[" word "],
-    )
-    assert isinstance(with_words, dict)
-    assert with_words["words"] == [{"word": "hello", "start": 0.0, "end": 0.4}]
-
-
-def test_caption_cues_drop_a_watermark_segment() -> None:
-    # Fish segments are words. The watermark sentence becomes its own phrase and is
-    # dropped; the speech after it stays.
-    cues = caption_cues(
-        {
-            "duration": 2.0,
-            "segments": [
-                {"text": "Thanks", "start": 0, "end": 0.2},
-                {"text": "for", "start": 0.2, "end": 0.3},
-                {"text": "watching", "start": 0.3, "end": 0.4},
-                {"text": "ok", "start": 0.4, "end": 0.6},
-                {"text": "hello", "start": 0.6, "end": 1.0},
-                {"text": "there", "start": 1.0, "end": 1.3},
-                {"text": "friend", "start": 1.3, "end": 1.5},
-            ],
-        },
-        "Thanks for watching. Ok. Hello there friend.",
-        strip_speakers=False,
-    )
-    assert [cue.text for cue in cues] == ["Ok.", "Hello there friend."]
-    only = caption_cues(
-        {
-            "duration": 1.0,
-            "segments": [{"text": "Thanks for watching.", "start": 0, "end": 1}],
-        },
-        "hello there friend",
-        strip_speakers=False,
-    )
-    assert [cue.text for cue in only] == ["hello there friend"]
-
-
-def test_caption_cues_skip_non_string_segment_text() -> None:
-    cues = caption_cues(
-        asr_body(
-            {
-                "segments": [
-                    {"text": ["hello"], "start": 0, "end": 1},
-                    {"text": "there", "start": 1, "end": 2},
-                ]
-            }
-        ),
-        "there",
-        strip_speakers=False,
-    )
-    assert [(c.start, c.end, c.text) for c in cues] == [(1.0, 2.0, "there")]
-
-
-def test_caption_cues_keep_zero_when_times_are_junk() -> None:
-    cues = caption_cues(
-        asr_body({"segments": [{"text": "hello", "start": "nope", "end": None}]}),
-        "hello",
-        strip_speakers=False,
-    )
-    assert [(c.start, c.end, c.text) for c in cues] == [(0.0, 0.0, "hello")]
-    whole = caption_cues({"duration": float("nan")}, "hello", strip_speakers=False)
-    assert [(c.start, c.end, c.text) for c in whole] == [(0.0, 0.0, "hello")]
-    negative = caption_cues({"duration": -3}, "hello", strip_speakers=False)
-    assert [(c.start, c.end, c.text) for c in negative] == [(0.0, 0.0, "hello")]
-    flagged = caption_cues({"duration": True}, "hello", strip_speakers=False)
-    assert [(c.start, c.end, c.text) for c in flagged] == [(0.0, 0.0, "hello")]
-    flagged_start = caption_cues(
-        {"segments": [{"text": "hello", "start": True, "end": False}]},
-        "hello",
-        strip_speakers=False,
-    )
-    assert [(c.start, c.end, c.text) for c in flagged_start] == [(0.0, 0.0, "hello")]
-    backwards = caption_cues(
-        {"segments": [{"text": "hello", "start": 2.0, "end": -1.0}]},
-        "hello",
-        strip_speakers=False,
-    )
-    assert [(c.start, c.end, c.text) for c in backwards] == [(2.0, 2.0, "hello")]

@@ -12,7 +12,8 @@ Renamed names are just renamed: no aliases, shims or old env names (see the root
 
 | File | Owns |
 | --- | --- |
-| `tune.py` | Frozen `ListenTune`, `BargeTune`, `AecTune`, `LlmTune`, their defaults, `read_int` / `read_float` / `read_flag`. `LlmTune.from_env` picks the backend and keeps provider keys apart. |
+| `tune.py` | Frozen `ListenTune`, `BargeTune`, `AecTune`, their defaults, and the `read_int` / `read_float` / `read_flag` / `read_text` / `read_raw` env readers. |
+| `llm_tune.py` | Frozen `LlmTune`, the `LLM_PROVIDERS` table, `provider_for_base`, and the chat defaults (`DEFAULT_LLM_*`, `DEFAULT_HISTORY_TURNS`). `LlmTune.from_env` picks the backend and keeps provider keys apart. |
 | `config.py` | `VoiceCliConfig`: Fish/TTS fields plus the three tunes and `LlmTune`, `history_turns`, `mood_lead`, `drop_narration`. `system_prompt_from_file` builds a character prompt (file text, then the kit's voice rules) and `pin_seed` says whether the cue example is pinned: true for the default and for a file, false for an inline prompt. |
 | `signals.py` | `DuplexSession` (quit flag `quit_requested`, `TurnSignals`, `EchoCanceller`) and `install_sigint`. No module-level flags. `TurnSignals.fire` is thread-safe for the asyncio event. |
 | `speaker.py` | `FishSpeaker`. `speak(text, sink, *, cancel=None, on_first_audio=None)` and `speak_stream(deltas, sink, ...)` run on a **private thread + loop**; `cancel` is keyword-only. Its async twins `_speak_here` and `_speak_stream_here` run on the caller's loop and stay private. `TtsResult` (in `wire.py`; `error` is a kit `FishHttpError`; duplex tells fatal from transient by `isinstance(..., FishAuthError)`, never by status numbers) is what a turn returns. SDK coercions (`low` latency, `aac`/`flac`) warn once. |
@@ -49,7 +50,7 @@ Renamed names are just renamed: no aliases, shims or old env names (see the root
 
 `--smoke` uses `FileSink`; exits 2 if `FISH_API_KEY` or `FISH_VOICE_ID` is missing. Do not commit `.env`. `dev.sh` builds PortAudio + Pulse with nix only on NixOS or with `FISH_VOICE_NIX=1`, pinned to this flake's lock; override with `FISH_VOICE_PORTAUDIO_LIB`.
 
-LLM providers live in one table, `LLM_PROVIDERS` in `tune.py` (name, default base, host, key variable, model variable). A provider is always read from the **host of the final base URL**, never from `FISH_LLM_PROVIDER` alone, and each provider reads only its own key variable, so a key cannot go to another host. Add a provider by adding a row, a test in `test_llm_providers.py`, and its README table row. A provider that speaks the OpenAI chat-completions API needs no new backend.
+LLM providers live in one table, `LLM_PROVIDERS` in `llm_tune.py` (name, default base, host, key variable, model variable). A provider is always read from the **host of the final base URL**, never from `FISH_LLM_PROVIDER` alone, and each provider reads only its own key variable, so a key cannot go to another host. Add a provider by adding a row, a test in `test_llm_providers.py`, and its README table row. A provider that speaks the OpenAI chat-completions API needs no new backend.
 
 Extras `speakers` / `vad` / `aec` / `cli` are optional. `sounddevice`, `webrtcvad`, `pywebrtc_audio`, and `openrouter` stay imported inside the functions that need them so `import fish_audio_suite_voice` works without extras. The `vad` extra is **`webrtcvad-wheels`**, not PyPI `webrtcvad` (breaks on 3.12). Mic/speakers need system PortAudio; missing lib → `PortAudioMissingError` (CLI exits 2 with hints).
 

@@ -27,7 +27,7 @@ from fish_audio_suite_kit import (
     known_mp3_bitrate,
     normalize_tts_model,
 )
-from fish_audio_suite_proxy.fields import ClientFormat, fish_audio_format, known_client_format
+from fish_audio_suite_proxy.audio import ClientFormat, fish_audio_format, known_client_format
 from fish_audio_suite_proxy.models import default_tts_aliases, parse_aliases, resolve_asr_model
 
 __all__ = [

@@ -4,7 +4,16 @@ from __future__ import annotations
 
 from typing import NotRequired, TypedDict
 
-__all__ = ["AsrBody", "AsrSegment", "AsrWord", "OpenAIErrorBody", "OpenAIErrorDetail"]
+from fish_audio_suite_kit.literals import ChatRole
+
+__all__ = [
+    "AsrBody",
+    "AsrSegment",
+    "AsrWord",
+    "ChatMessage",
+    "OpenAIErrorBody",
+    "OpenAIErrorDetail",
+]
 
 
 class AsrWord(TypedDict, total=False):
@@ -61,3 +70,10 @@ class OpenAIErrorBody(TypedDict):
     """An OpenAI-style error response: ``{"error": {...}}``."""
 
     error: OpenAIErrorDetail
+
+
+class ChatMessage(TypedDict):
+    """One chat message in the shape OpenAI-style APIs take."""
+
+    role: ChatRole
+    content: str

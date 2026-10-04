@@ -10,7 +10,7 @@ import pytest
 
 from fish_audio_suite_kit import SuiteDefaults
 from fish_audio_suite_voice.config import VoiceCliConfig, load_config
-from fish_audio_suite_voice.tune import DEFAULT_HISTORY_TURNS
+from fish_audio_suite_voice.llm_tune import DEFAULT_HISTORY_TURNS
 
 
 class EnvCase(NamedTuple):

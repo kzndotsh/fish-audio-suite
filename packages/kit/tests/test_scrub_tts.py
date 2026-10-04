@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from kit_timing import assert_linear_time
+from kit_helpers import assert_linear_time
 
 from fish_audio_suite_kit import (
     is_tts_junk,

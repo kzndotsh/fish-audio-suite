@@ -14,15 +14,16 @@ Import: `fish_audio_suite_kit`. Tests: `uv run pytest packages/kit`. `tests/` ha
 | `cues` | `normalize_cues`, `ensure_lead_cue`, `strip_cue_tags`, S1 parens, aliases, mood leads |
 | `scrub_tts` | `scrub_tts`: strips thoughts, markdown, HTML, URLs and asides from text bound for TTS |
 | `stream_holds` | `tts_hold_at`: one list of hold checks. A hold mirrors a `scrub_tts` rule |
-| `dialogue` | `extract_quoted_speech`, `is_tts_junk`, narration, the letter floor |
+| `dialogue` | `extract_quoted_speech`: the quoted lines of roleplay text |
+| `junk` | `is_tts_junk`, `too_thin`, the narration heuristic and the letter floor |
 | `cuts` | `next_tts_cut`, `split_tts_piece`, `ends_sentence` |
 | `asr_text` | `scrub_asr`, `is_asr_hallucination`, `asr_language_hint`, backchannel and quit gates, watermarks |
 | `defaults` | `SuiteDefaults`, the default system prompt, the Fish model, latency and format name tables, `chunk_length_hi`, `is_insecure_fish_base`, `strip_base` |
 | `env` | `env_int` / `env_float` / `env_bool` / `env_text` / `env_token` / `env_base`, `parse_number`, `clamp_number`. A bad value falls back to the default |
 | `timing` | `LatencySnapshot`, `elapsed_ms`, `MS_PER_S` |
 | `http_errors` | `FishHttpError` and its subclasses, `FishErrorBody`, retry and backoff helpers, `retry_after_s` |
-| `literals` | `FishLatency`, `AudioFormat`, `AsrFormat`, `TtsModel`, `ChatRole`, `ChatMessage`. Types only |
-| `payloads` | `AsrBody`, `AsrSegment`, `AsrWord`, `OpenAIErrorDetail`, `OpenAIErrorBody`. Types only |
+| `literals` | `FishLatency`, `AudioFormat`, `AsrFormat`, `TtsModel`, `ChatRole`. Types only |
+| `payloads` | `ChatMessage`, `AsrBody`, `AsrSegment`, `AsrWord`, `OpenAIErrorDetail`, `OpenAIErrorBody`. Types only |
 | `_version` | Private. `read_version` for `__version__` |
 | `captions` | `CaptionCue`, `format_as_srt`, `format_as_vtt`. No network |
 | `trace_context` | W3C `traceparent` parse and make, `ensure_trace_headers`. No OpenTelemetry |

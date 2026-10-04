@@ -497,7 +497,7 @@ def test_stream_tts_is_off_unless_asked(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_a_blank_llm_key_does_not_hide_the_provider_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    from fish_audio_suite_voice.tune import LlmTune
+    from fish_audio_suite_voice.llm_tune import LlmTune
 
     for name in ("FISH_LLM_BASE", "OPENROUTER_BASE_URL", "FISH_LLM_BACKEND", "OPENAI_API_KEY"):
         monkeypatch.delenv(name, raising=False)
@@ -511,7 +511,7 @@ def test_a_blank_llm_key_does_not_hide_the_provider_key(monkeypatch: pytest.Monk
 def test_a_malformed_llm_base_warns_and_falls_back(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from fish_audio_suite_voice.tune import LlmTune, is_openrouter_host
+    from fish_audio_suite_voice.llm_tune import LlmTune, is_openrouter_host
 
     monkeypatch.delenv("FISH_LLM_BACKEND", raising=False)
     monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
