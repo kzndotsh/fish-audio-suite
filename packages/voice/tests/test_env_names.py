@@ -26,6 +26,7 @@ _CASES: list[EnvCase] = [
     EnvCase("FISH_VOICE_SYSTEM_PROMPT", "a prompt", "a prompt", attrgetter("system_prompt")),
     EnvCase("FISH_VOICE_STREAM_TTS", "1", True, attrgetter("stream_tts")),
     EnvCase("FISH_VOICE_REPEAT_WINDOW", "2.5", 2.5, attrgetter("repeat_window_s")),
+    EnvCase("FISH_VOICE_FADE_MS", "6", 6.0, attrgetter("fade_ms")),
     EnvCase("FISH_VOICE_PRE_PAD_FRAMES", "40", 40, attrgetter("listen.pre_pad_frames")),
     EnvCase("FISH_VOICE_MIN_VOICED_FRAMES", "9", 9, attrgetter("listen.min_voiced_frames")),
     EnvCase("FISH_VOICE_BARGE_PLAYING_GAIN", "3.5", 3.5, attrgetter("barge.playing_gain")),

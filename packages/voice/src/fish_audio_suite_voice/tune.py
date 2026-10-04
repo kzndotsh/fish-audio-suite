@@ -21,6 +21,7 @@ __all__ = [
     "DEFAULT_BARGE_RMS",
     "DEFAULT_BLEED_DELAY_S",
     "DEFAULT_END_SILENCE_FRAMES",
+    "DEFAULT_FADE_MS",
     "DEFAULT_MIN_SPEECH_RMS",
     "DEFAULT_MIN_VOICED_FRAMES",
     "DEFAULT_POST_SPEAK_COOLDOWN_S",
@@ -55,6 +56,9 @@ DEFAULT_POST_SPEAK_COOLDOWN_S: Final = 0.8
 
 DEFAULT_AEC_BLEED_DELAY_S: Final = 0.3
 DEFAULT_AEC_WET: Final = 0.85
+# Fade-in, in milliseconds, at each sound that starts out of silence, so a sentence does
+# not click when it begins. 0 turns it off.
+DEFAULT_FADE_MS: Final = 4.0
 # Idle seconds an ASR or LLM connection stays open. httpx drops it after 5 s,
 # which is shorter than the gap between two turns, so every turn paid a new
 # TLS handshake.

@@ -185,7 +185,7 @@ There is no frontend. The user-facing parts are an HTTP API (the proxy) and a te
 | Settings | `config` (`VoiceCliConfig`), `tune` (listen, barge and AEC tunes, env readers), `llm_tune` (`LlmTune`, provider table) |
 | Duplex loop | `duplex` (the loop), `duplex_state` (`DuplexContext`), `hearing` (listen and ASR), `reply` (answer and speak), `history`, `signals` (cancel and quit flags) |
 | Audio in | `listen`, `barge`, `floor`, `aec` |
-| Speech out | `speaker` (`FishSpeaker`), `tts_turn` (one turn with retry), `wire` (websocket pump, `TtsResult`), `stream_scrub`, `playback`, `spoken` |
+| Speech out | `speaker` (`FishSpeaker`), `tts_turn` (one turn with retry), `wire` (websocket pump, `TtsResult`), `declick` (fades the start and end of each sentence that meets silence), `stream_scrub`, `playback`, `spoken` |
 | LLM | `llm` (`ChatBackend`, retry, stats), `transports` (OpenRouter SDK or httpx SSE) |
 | Support | `asr`, `cancel`, `pause`, `debug`, `console`, `ws_tap`, `envfile`, `cli` |
 

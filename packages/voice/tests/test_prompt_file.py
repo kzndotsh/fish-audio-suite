@@ -136,3 +136,38 @@ def test_only_one_byte_past_the_limit_is_read(tmp_path: Path) -> None:
     big = tmp_path / "big.md"
     big.write_bytes(b"a" * (10 * 1024 * 1024))
     assert system_prompt_from_file(str(big), "RULES") is None
+
+
+def test_a_slot_in_the_file_puts_the_voice_rules_where_the_file_says(tmp_path: Path) -> None:
+    path = _card(tmp_path, "{{default_prompt}}\n\nNow the character: Mira.")
+    assert system_prompt_from_file(str(path), "RULES") == "RULES\n\nNow the character: Mira."
+    middle = _card(tmp_path, "Mira is dry.\n{{ default_prompt }}\nShe never rambles.")
+    assert (
+        system_prompt_from_file(str(middle), "RULES") == "Mira is dry.\nRULES\nShe never rambles."
+    )
+
+
+def test_a_file_without_the_slot_still_gets_the_rules_after_it(tmp_path: Path) -> None:
+    assert system_prompt_from_file(str(_card(tmp_path)), "RULES") == f"{CARD}\n\nRULES"
+
+
+def test_the_slot_is_replaced_literally_and_every_time(tmp_path: Path) -> None:
+    rules = r"Say \1 and \g<0> as written. {{default_prompt}} stays."
+    path = _card(tmp_path, "A {{default_prompt}} B {{default_prompt}} C")
+    assert system_prompt_from_file(str(path), rules) == f"A {rules} B {rules} C"
+
+
+def test_a_file_that_is_only_the_slot_gives_the_default_prompt(tmp_path: Path) -> None:
+    path = _card(tmp_path, "  {{default_prompt}}  \n")
+    assert system_prompt_from_file(str(path), DEFAULT_SYSTEM_PROMPT) == DEFAULT_SYSTEM_PROMPT
+
+
+def test_the_slot_works_through_the_environment_variable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv(
+        "FISH_VOICE_SYSTEM_PROMPT_FILE", str(_card(tmp_path, "{{default_prompt}}\n\n" + CARD))
+    )
+    config = load_config()
+    assert config.system_prompt == f"{DEFAULT_SYSTEM_PROMPT}\n\n{CARD}"
+    assert config.pin_seed

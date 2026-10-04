@@ -104,6 +104,16 @@ Look for `tts underrun after N kB played`. The speaker ran out of audio between 
 
 Not every audio system reports underruns: on PipeWire the line can be missing even when the speaker briefly ran dry. If you hear a blip at sentence ends with no underrun line, compare the `tts audio` arrival times with how long each chunk plays (bytes ÷ 88,200 per second at 44.1 kHz). A chunk that arrives just as the previous one ends is the cause. `FISH_LATENCY=balanced` makes Fish deliver sooner.
 
+### A faint click at the start or end of a sentence
+
+Fish can begin a sentence on a loud sample right after silence, and stop one while it is
+still loud, and the step between sound and nothing is heard as a tick. `fish-voice` fades
+the first and last 4 ms of each sound next to silence, which removes it. The fade is on
+by default (`FISH_VOICE_FADE_MS=4`). If you still hear clicks, try `8`. If words seem to
+start or end too softly, lower it, and `0` turns the fade off. The fade only changes the
+few milliseconds at a sentence edge, never the length of the audio, and it applies to the
+`pcm` format only. It holds back about 10 ms of audio to see what follows.
+
 ### A sigh, laugh or odd noise after the last sentence
 
 The model ended its reply with a cue such as `[sigh]`. The default prompt tells it not to, but some roleplay models still do. Check the `llm ▸` line. If it keeps happening, add "Never end a reply with a cue" to your character file.
