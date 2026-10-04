@@ -221,7 +221,7 @@ max-branches = 15
 "packages/proxy/src/fish_audio_suite_proxy/phrases.py" = ["RUF001"]
 "packages/proxy/tests/test_proxy_asr_phrases.py" = ["RUF001"]
 "packages/kit/tests/{test_asr_text,test_cues,test_dialogue,test_scrub_tts}.py" = ["RUF001"]
-"packages/voice/tests/{test_wire,test_spoken_properties,test_stream_scrub_properties}.py" = ["RUF001"]
+"packages/voice/tests/{test_stream_scrub,test_spoken_properties,test_stream_scrub_properties}.py" = ["RUF001"]
 # These modules import the optional extras (sounddevice, webrtcvad, pywebrtc_audio,
 # openrouter) inside functions, so the base install imports without them.
 "packages/voice/src/fish_audio_suite_voice/{aec,barge,listen,llm,playback,transports}.py" = ["PLC0415"]
