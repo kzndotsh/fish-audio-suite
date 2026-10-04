@@ -60,7 +60,7 @@ def _request_id(headers: Mapping[str, str], body: object) -> str:
 def _json_or_none(text: str) -> object:
     try:
         return json.loads(text)
-    except ValueError:
+    except (ValueError, RecursionError):
         return None
 
 
@@ -220,7 +220,7 @@ async def fish_asr(
             return ""
     try:
         body = response.json()
-    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+    except (json.JSONDecodeError, UnicodeDecodeError, RecursionError) as exc:
         raise FishHttpError.for_non_json() from exc
     if isinstance(body, dict):
         meta = public_meta(body)

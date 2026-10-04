@@ -212,7 +212,7 @@ def _abort_text(body: object) -> str:
 def _json_object(text: str) -> dict[str, Any] | None:
     try:
         parsed: object = json.loads(text)
-    except (json.JSONDecodeError, ValueError):
+    except (ValueError, RecursionError):
         return None
     return cast(dict[str, Any], parsed) if isinstance(parsed, dict) else None
 
@@ -299,7 +299,7 @@ def _retry_after_seconds(headers: httpx.Headers | None, body: str) -> float | No
 def _seconds_in_json(body: str) -> float | None:
     try:
         parsed: object = json.loads(body)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
         return None
     return _find_retry_seconds(parsed)
 
@@ -312,7 +312,14 @@ def _json_seconds(raw: object) -> float | None:
     return retry_after_s({"Retry-After": str(raw)})
 
 
-def _find_retry_seconds(value: object) -> float | None:
+# Retry hints sit near the top of an error body. A cap keeps a deeply nested
+# body from recursing to the interpreter limit.
+_RETRY_HINT_DEPTH: Final = 8
+
+
+def _find_retry_seconds(value: object, depth: int = 0) -> float | None:
+    if depth > _RETRY_HINT_DEPTH:
+        return None
     if isinstance(value, dict):
         for key in ("retry_after_seconds", "Retry-After", "retry-after"):
             if key in value:
@@ -320,12 +327,12 @@ def _find_retry_seconds(value: object) -> float | None:
                 if found is not None:
                     return found
         for item in value.values():
-            found = _find_retry_seconds(item)
+            found = _find_retry_seconds(item, depth + 1)
             if found is not None:
                 return found
     elif isinstance(value, list):
         for item in value:
-            found = _find_retry_seconds(item)
+            found = _find_retry_seconds(item, depth + 1)
             if found is not None:
                 return found
     return None
@@ -334,7 +341,7 @@ def _find_retry_seconds(value: object) -> float | None:
 def _sse_object(data: str) -> dict[str, Any] | None:
     try:
         parsed = json.loads(data)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
         return None
     return parsed if isinstance(parsed, dict) else None
 

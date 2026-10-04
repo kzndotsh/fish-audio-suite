@@ -186,7 +186,8 @@ async def read_json_object(request: Request) -> dict[str, Any] | JSONResponse:
         # request would 400 before Fish saw the text.
         raw = await request.body()
         parsed = json.loads(raw.decode("utf-8-sig"))
-    except (json.JSONDecodeError, UnicodeDecodeError):
+    # A client can nest arrays deep enough to raise RecursionError.
+    except (json.JSONDecodeError, UnicodeDecodeError, RecursionError):
         return json_error(400, "invalid JSON body")
     if not isinstance(parsed, dict):
         return json_error(400, "JSON body must be an object")
