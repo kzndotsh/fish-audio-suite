@@ -24,6 +24,7 @@ from fish_audio_suite_voice.transports import (
     _abort_http,
     _chat_body,
     _feed_sse,
+    describe_http_error,
     openrouter_client,
 )
 from fish_audio_suite_voice.tune import LlmSettings, is_openrouter_host
@@ -1098,3 +1099,83 @@ def test_abort_http_marks_a_quota_429() -> None:
         limited, 429, "m", '{"error":{"message":"temporarily rate-limited upstream"}}', None
     )
     assert not limited.quota_exhausted
+
+
+def test_a_wrapped_provider_429_becomes_one_readable_line() -> None:
+    # The body OpenRouter returned when Parasail was rate limited.
+    body = json.dumps(
+        {
+            "error": {
+                "message": "Provider returned error",
+                "code": 429,
+                "metadata": {
+                    "raw": "thedrummer/cydonia-24b-v4.1 is temporarily rate-limited upstream. Please retry shortly",
+                    "provider_name": "Parasail",
+                },
+            },
+            "user_id": "user_123",
+        }
+    )
+    line = describe_http_error(429, "thedrummer/cydonia-24b-v4.1", body)
+    assert line.startswith("HTTP 429 from Parasail, model=thedrummer/cydonia-24b-v4.1: ")
+    assert "temporarily rate-limited upstream" in line
+    assert "\n" not in line
+    assert "user_123" not in line
+
+
+def test_a_provider_refusal_shows_what_the_provider_said() -> None:
+    # xAI answered 403 with its own JSON inside OpenRouter's.
+    inner = json.dumps(
+        {"code": "permission-denied", "error": "I'm sorry, I can't help with that request."}
+    )
+    body = json.dumps(
+        {
+            "error": {
+                "message": "Provider returned error",
+                "code": 403,
+                "metadata": {"raw": inner, "provider_name": "xAI"},
+            }
+        }
+    )
+    assert (
+        describe_http_error(403, "x-ai/grok-4.20", body)
+        == "HTTP 403 from xAI, model=x-ai/grok-4.20: I'm sorry, I can't help with that request."
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        (
+            '{"error":{"message":"No auth credentials found","code":401}}',
+            "No auth credentials found",
+        ),
+        ('{"error":"insufficient_quota"}', "insufficient_quota"),
+        ("<html>Bad gateway</html>", "<html>Bad gateway</html>"),
+        ("", "no detail in the reply"),
+        ("[1, 2]", "[1, 2]"),
+    ],
+)
+def test_other_error_bodies_still_give_a_short_line(body: str, expected: str) -> None:
+    line = describe_http_error(500, "m", body)
+    assert line.endswith(expected)
+    assert line.startswith("HTTP 500, model=m: ")
+
+
+def test_a_huge_error_body_is_cut_to_one_short_line() -> None:
+    line = describe_http_error(500, "m", "x" * 5000)
+    assert len(line) < 300
+
+
+def test_an_empty_raw_field_keeps_the_message_the_reply_did_have() -> None:
+    body = json.dumps(
+        {
+            "error": {
+                "message": "Provider returned error",
+                "metadata": {"raw": "", "provider_name": "X"},
+            }
+        }
+    )
+    assert (
+        describe_http_error(502, "m", body) == "HTTP 502 from X, model=m: Provider returned error"
+    )

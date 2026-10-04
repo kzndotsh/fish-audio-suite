@@ -6,7 +6,7 @@ import json
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, Final, Protocol
+from typing import Any, Final, Protocol, cast
 
 import httpx
 
@@ -25,11 +25,14 @@ __all__ = [
     "ChatCall",
     "chat_completions_url",
     "chat_events",
+    "describe_http_error",
     "http_client",
     "openrouter_client",
 ]
 
 _ABORT_CHARS: Final = 800
+# One warning line stays short enough to read. The whole body is in the debug log.
+_ERROR_LINE_CHARS: Final = 220
 _SSE_DATA: Final = "data:"
 
 
@@ -195,6 +198,68 @@ def _abort_text(body: object) -> str:
     return str(body)
 
 
+def _json_object(text: str) -> dict[str, Any] | None:
+    try:
+        parsed: object = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    return cast(dict[str, Any], parsed) if isinstance(parsed, dict) else None
+
+
+def _error_detail(body: str) -> tuple[str, str]:
+    """Pull the provider name and the most specific message out of an error body."""
+    outer = _json_object(body)
+    error = outer.get("error") if outer else None
+    if isinstance(error, str):
+        return "", error
+    if not isinstance(error, dict):
+        return "", body
+    info = cast(dict[str, Any], error)
+    meta = info.get("metadata")
+    meta_dict = cast(dict[str, Any], meta) if isinstance(meta, dict) else {}
+    provider = meta_dict.get("provider_name")
+    message = info.get("message")
+    detail = message if isinstance(message, str) else ""
+    # OpenRouter wraps the real answer from the provider as a JSON string in
+    # metadata.raw, and says only "Provider returned error" itself.
+    raw = meta_dict.get("raw")
+    if isinstance(raw, str):
+        inner = _json_object(raw)
+        specific = None
+        if inner:
+            specific = inner.get("error") or inner.get("message")
+            if isinstance(specific, dict):
+                specific = cast(dict[str, Any], specific).get("message")
+        detail = specific if isinstance(specific, str) and specific else (raw or detail)
+    return (provider if isinstance(provider, str) else ""), detail
+
+
+def describe_http_error(status: object, model: str, body: str) -> str:
+    """Say what a failed chat request returned in one readable line.
+
+    Parameters
+    ----------
+    status : object
+        HTTP status of the reply.
+    model : str
+        The model that was asked.
+    body : str
+        Raw response body. OpenRouter puts the provider's own message in a JSON
+        string inside it, which is unwrapped.
+
+    Returns
+    -------
+    str
+        ``HTTP 429 from Parasail, model=org/m: temporarily rate-limited upstream``.
+        Falls back to the start of the body when it is not a known error shape.
+        The full body goes to the debug log, not here.
+    """
+    provider, detail = _error_detail(body)
+    detail = " ".join(detail.split())[:_ERROR_LINE_CHARS] or "no detail in the reply"
+    who = f" from {provider}" if provider else ""
+    return f"HTTP {status}{who}, model={model}: {detail}"
+
+
 def _abort_http(
     stats: _AbortStats,
     status: object,
@@ -202,7 +267,8 @@ def _abort_http(
     body: str,
     headers: httpx.Headers | None = None,
 ) -> None:
-    warn(f"[llm] HTTP {status} model={model}: {body[:_ABORT_CHARS]}")
+    warn(f"[llm] {describe_http_error(status, model, body)}")
+    debug("llm.error body={}", body[:_ABORT_CHARS])
     stats.aborted = True
     stats.http_status = status if isinstance(status, int) else None
     if stats.http_status == 429:

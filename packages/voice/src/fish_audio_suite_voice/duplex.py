@@ -127,7 +127,7 @@ async def duplex_turns(
     session = session or DuplexSession(aec=EchoCanceller(c.aec))
     async with AsyncExitStack() as stack:
         asr_http = await stack.enter_async_context(asr_client())
-        history, pinned = opening_history(c.system_prompt)
+        history, pinned = opening_history(c.system_prompt, seed=c.pin_seed)
         ctx = DuplexContext(
             config=c,
             tts=tts,
