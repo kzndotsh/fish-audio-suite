@@ -19,3 +19,11 @@ result-*
 
 # Hypothesis example database
 .hypothesis/
+
+# Scratch output from the scripts (clips, reports)
+/tmp/
+
+prompts.txt
+prompt.txt
+prompt.md
+prompts.md

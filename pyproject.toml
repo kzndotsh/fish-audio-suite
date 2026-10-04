@@ -30,7 +30,7 @@ test = [
 testpaths = ["packages", "tests"]
 # Shared test helpers live next to the tests under unique module names, so two
 # packages can never both claim a package called "tests".
-pythonpath = ["packages/kit/tests", "packages/proxy/tests", "packages/voice/tests"]
+pythonpath = ["packages/kit/tests", "packages/proxy/tests", "packages/voice/tests", "scripts"]
 markers = [
     "perf: timing guards. A slow runner can trip them, so run `-m 'not perf'` to skip them.",
 ]
@@ -227,6 +227,8 @@ max-branches = 15
 "packages/voice/src/fish_audio_suite_voice/{aec,barge,listen,llm,playback,transports}.py" = ["PLC0415"]
 # Both print to the terminal on purpose.
 "packages/voice/src/fish_audio_suite_voice/{console,debug,cli}.py" = ["T20"]
+# A command-line script prints its results, and is not a package.
+"scripts/*.py" = ["T20", "INP001"]
 
 [tool.pydoclint]
 style = "numpy"
@@ -256,9 +258,11 @@ pythonPlatform = "All"
 venvPath = "."
 venv = ".venv"
 typeCheckingMode = "strict"
-include = ["packages", "tests"]
+include = ["packages", "tests", "scripts"]
 exclude = [".venv", "dist", "**/__pycache__"]
 extraPaths = [
+    "scripts",
+    "packages/voice/tests",
     "packages/kit/src",
     "packages/proxy/src",
     "packages/voice/src",

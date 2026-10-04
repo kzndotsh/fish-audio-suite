@@ -12,7 +12,7 @@ Union rows. Fastest first: format/lint → docstrings → types → tests → ni
 
 | Dirty paths | Run |
 | --- | --- |
-| `packages/**/*.py`, `.github/scripts/**/*.py`, `pyproject.toml` | `uv run ruff format packages .github/scripts`, `uv run ruff check packages .github/scripts`, `uv run pydoclint --config=pyproject.toml packages`, `uv run basedpyright` |
+| `packages/**/*.py`, `.github/scripts/**/*.py`, `pyproject.toml` | `uv run ruff format packages .github/scripts scripts`, `uv run ruff check packages .github/scripts scripts`, `uv run pydoclint --config=pyproject.toml packages`, `uv run basedpyright` |
 | `packages/kit/**` | plus `uv run pytest packages/kit` |
 | `packages/proxy/**` | plus `uv run pytest packages/proxy` |
 | `packages/voice/**` | plus `uv run pytest packages/voice` |
