@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import math
+from collections import deque
 from collections.abc import Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Final
 
 from fish_audio_suite_kit import LatencySnapshot
@@ -25,9 +26,9 @@ from fish_audio_suite_voice.events import (
 __all__ = [
     "METER_LOUDEST_DB",
     "METER_QUIETEST_DB",
-    "AutoLevel",
     "Ballistics",
     "SessionView",
+    "SpeechScale",
     "TurnTimings",
     "level_fraction",
     "processing_level",
@@ -39,10 +40,8 @@ __all__ = [
 
 _FULL_SCALE: Final = 32768.0  # the peak of 16-bit audio
 _QUIETEST_DB: Final = -60.0  # the floor for measuring a level at all (silence reads as this)
-# The mic meter's window. Speech into a mic sits around -35 to -20 dB, so a window that ends
-# at 0 dB leaves it at half height. This one ends a little above the loud syllables of a hot
-# mic (up to about -11 dB), so they reach the top without a run of bars all being full: that
-# draws a flat block, and a normal speaking level sits at about half to three fifths.
+# The window of the plain level meter, `SessionView.mic_fraction`. The waveform does not use it:
+# it scales to the signal itself, with SpeechScale.
 METER_QUIETEST_DB: Final = -54.0  # at or below this, a meter shows empty
 METER_LOUDEST_DB: Final = -9.0  # at or above this, it shows full
 _METER_SPAN_DB: Final = METER_LOUDEST_DB - METER_QUIETEST_DB
@@ -50,21 +49,17 @@ _METER_SPAN_DB: Final = METER_LOUDEST_DB - METER_QUIETEST_DB
 BODY_RELEASE_PER_S: Final = 6.0  # a bar falls from full to empty in about a sixth of a second
 PEAK_HOLD_S: Final = 0.3  # the cap above a bar stays put this long after a peak
 PEAK_RELEASE_PER_S: Final = 60.0 / _METER_SPAN_DB  # then falls at 60 dB per second
-# The speaker is scaled against the reply's own loudest recent moment, not a fixed scale.
-SPEAKER_SPAN_DB: Final = 24.0  # a bar is empty this far below that moment
-SPEAKER_START_DB: Final = -30.0  # what "loud" is assumed to be until the reply shows otherwise
-SPEAKER_PEAK_FALL_DB_PER_S: Final = 1.5  # how fast that moment is forgotten
-SPEAKER_PEAK_FLOOR_DB: Final = -45.0  # a very quiet reply is not stretched past this
-# The mic uses the same scaling. Its reference peak never drops below this, so a quiet room
-# stays empty instead of being stretched up to look like speech, while speech still reaches
-# the top of the bar.
-MIC_PEAK_FLOOR_DB: Final = -24.0
-# A mic hears things that are not speech: a plosive, a key, a bump. If one such block set the
-# reference at once, every syllable after it would look small until it was forgotten. So the
-# mic's reference can only rise this fast, which a single block barely moves, and it is
-# forgotten faster than the speaker's.
-MIC_PEAK_RISE_DB_PER_S: Final = 40.0
-MIC_PEAK_FALL_DB_PER_S: Final = 4.0
+# How a waveform is scaled to the signal it shows, see SpeechScale.
+SCALE_WINDOW_S: Final = 6.0  # how much recent audio the noise floor and the speech level come from
+SCALE_NOISE_FLOOR_DB: Final = -70.0  # a floor is never taken to be quieter than this
+SCALE_SPEECH_MARGIN_DB: Final = 10.0  # a block is speech when it is this far above the floor
+SCALE_SPEECH_PERCENTILE: Final = 0.9  # the speech level: loud, but not the loudest block
+SCALE_HEADROOM_DB: Final = 2.0  # the top of the bar sits this far above the speech level
+SCALE_FLOOR_GAP_DB: Final = 3.0  # the bottom sits this far above the noise floor
+SCALE_MAX_SPAN_DB: Final = 24.0  # a bar spans at most this much, or steady speech looks flat
+SCALE_MIN_SPAN_DB: Final = 18.0  # and at least this much, or a quiet room is stretched
+SCALE_MIN_SPEECH_BLOCKS: Final = 5  # speech blocks needed before the speech level is updated
+SCALE_MIN_BLOCKS: Final = 10  # blocks needed before the noise floor is measured
 _BRAILLE: Final = 0x2800  # the first Braille pattern, which has no dots
 # The bit that raises each dot of a Braille cell, by dot row (top to bottom) and column.
 _DOT_BITS: Final = ((0x01, 0x08), (0x02, 0x10), (0x04, 0x20), (0x40, 0x80))
@@ -441,64 +436,87 @@ def processing_level(seconds: float) -> float:
 
 
 @dataclass(slots=True)
-class AutoLevel:
-    """Scale a steady, always-loud signal such as a TTS voice to the full height of a bar.
+class SpeechScale:
+    """Scale a signal's level to the height of a bar, from what the signal itself is like.
 
-    A fixed dB scale would keep every syllable of a reply near the same height, because
-    synthesised speech is about as loud from one word to the next. This measures each block
-    against the loudest recent one instead, so the pauses and the stressed syllables show.
+    A fixed dB scale suits no mic: a quiet one leaves speech at a third of a bar and a hot
+    one fills it. Scaling to the loudest block fails the other way, because one plosive or
+    bump sets the scale and shrinks every syllable after it. This measures two things from the
+    last few seconds instead, as speech tools do:
+
+    * the **noise floor**, the low end of the recent levels (the idea of "minimum
+      statistics"): the bottom of the bar sits just above it, so a quiet room is empty;
+    * the **speech level**, a high percentile of the blocks well above that floor (a cousin of
+      ITU-T P.56's "active speech level", which averages only the speech): the top of the bar
+      sits just above it. A percentile cannot be moved by a block or two, and pauses do not
+      count, so the level is kept through a pause.
 
     Attributes
     ----------
-    peak_db : float
-        The loudest recent block, in dB below full scale. Rises at once, falls slowly.
-    floor_peak_db : float
-        The peak never falls below this, so a signal that is quiet all the time (a room
-        with nobody speaking) is not stretched up to full height.
-    rise_db_per_s : float or None
-        The most the peak may rise in a second, or None to rise at once. A limit stops one
-        loud block, such as a plosive, from setting the scale for what follows.
-    fall_db_per_s : float
-        How fast the peak is forgotten.
+    start_speech_db : float
+        The speech level to assume until enough speech has been heard.
+    start_noise_db : float
+        The noise floor to assume until enough has been heard to measure it.
     """
 
-    peak_db: float = SPEAKER_START_DB
-    floor_peak_db: float = -120.0
-    rise_db_per_s: float | None = None
-    fall_db_per_s: float = SPEAKER_PEAK_FALL_DB_PER_S
+    start_speech_db: float = -35.0
+    start_noise_db: float = -60.0
+    _history: deque[tuple[float, float]] = field(default_factory=deque, init=False, repr=False)
+    _speech_db: float = field(default=0.0, init=False, repr=False)
 
-    def update(self, rms: float, dt: float) -> float:
+    def __post_init__(self) -> None:
+        """Start from the assumed speech level."""
+        self._speech_db = self.start_speech_db
+
+    @property
+    def speech_db(self) -> float:
+        """The speech level now, in dB below full scale."""
+        return self._speech_db
+
+    def update(self, rms: float, now: float) -> float:
         """Measure one block of audio.
 
         Parameters
         ----------
         rms : float
-            RMS of the block, on the int16 scale.
-        dt : float
-            Seconds since the last block. Negative counts as zero.
+            RMS of the block, on the int16 scale. Zero, negative or NaN count as silence.
+        now : float
+            When the block was taken, in seconds. It only has to count upwards.
 
         Returns
         -------
         float
-            From 0 to 1: 1 at the loudest recent block, 0 at ``SPEAKER_SPAN_DB`` below it.
+            From 0 to 1: the height of the bar for this block.
 
         Examples
         --------
-        >>> a = AutoLevel()
-        >>> a.update(3277.0, 0.06)  # -20 dB, louder than the assumed -30: it sets the peak
-        1.0
-        >>> round(a.update(819.0, 0.06), 2)  # 12 dB lower
-        0.5
-        >>> a.update(0.0, 0.06)
+        >>> scale = SpeechScale()
+        >>> 0.0 < scale.update(1000.0, 0.0) <= 1.0  # ordinary speech on a fresh scale
+        True
+        >>> scale.update(0.0, 0.1)
         0.0
         """
         ratio = rms / _FULL_SCALE  # a tiny rms can underflow to zero here, so test the ratio
-        db = max(_QUIETEST_DB, 20 * math.log10(ratio)) if ratio > 0 else _QUIETEST_DB
-        dt = max(0.0, dt)
-        if db > self.peak_db:
-            reach = db if self.rise_db_per_s is None else self.peak_db + self.rise_db_per_s * dt
-            self.peak_db = min(db, reach)
-        else:
-            self.peak_db = max(db, self.peak_db - self.fall_db_per_s * dt)  # never below this block
-        self.peak_db = max(self.peak_db, self.floor_peak_db)
-        return min(1.0, max(0.0, (db - (self.peak_db - SPEAKER_SPAN_DB)) / SPEAKER_SPAN_DB))
+        db = max(_QUIETEST_DB - 30.0, 20 * math.log10(ratio)) if ratio > 0 else _QUIETEST_DB - 30.0
+        self._history.append((now, db))
+        while self._history and self._history[0][0] < now - SCALE_WINDOW_S:
+            self._history.popleft()
+        levels = [level for _, level in self._history]
+        noise = (
+            max(_percentile(levels, 0.1), SCALE_NOISE_FLOOR_DB)
+            if len(levels) >= SCALE_MIN_BLOCKS
+            else self.start_noise_db
+        )
+        speech = [level for level in levels if level > noise + SCALE_SPEECH_MARGIN_DB]
+        if len(speech) >= SCALE_MIN_SPEECH_BLOCKS:
+            self._speech_db = _percentile(speech, SCALE_SPEECH_PERCENTILE)
+        top = self._speech_db + SCALE_HEADROOM_DB
+        bottom = min(
+            max(noise + SCALE_FLOOR_GAP_DB, top - SCALE_MAX_SPAN_DB), top - SCALE_MIN_SPAN_DB
+        )
+        return min(1.0, max(0.0, (db - bottom) / (top - bottom)))
+
+
+def _percentile(values: Sequence[float], fraction: float) -> float:
+    ordered = sorted(values)
+    return ordered[min(len(ordered) - 1, max(0, round(fraction * (len(ordered) - 1))))]

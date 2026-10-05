@@ -35,7 +35,6 @@ from fish_audio_suite_voice.events import (
     TurnEnded,
 )
 from fish_audio_suite_voice.inputs import LiveInput
-from fish_audio_suite_voice.session_view import MIC_PEAK_FLOOR_DB, SPEAKER_SPAN_DB
 from fish_audio_suite_voice.signals import DuplexSession
 from fish_audio_suite_voice.tui import Conversation, Timings, VoiceApp, Waveform
 
@@ -93,11 +92,13 @@ def _dots(char: str) -> int:
 
 
 def _mic_rms(height: float) -> float:
-    """An RMS the mic strip draws at ``height`` (0 to 1) while its scale sits at the floor."""
+    """An RMS the mic strip draws at ``height`` (0 to 1) while its scale is still unlearnt.
+
+    A fresh scale puts the top of the bar at -33 dB and the bottom 24 dB below it.
+    """
     if height <= 0:
         return 0.0
-    db = MIC_PEAK_FLOOR_DB - SPEAKER_SPAN_DB * (1.0 - height)
-    return 32768.0 * 10 ** (db / 20)
+    return 32768.0 * 10 ** ((-57.0 + 24.0 * height) / 20)
 
 
 def _timings_text(harness: _Harness) -> str:
@@ -941,22 +942,29 @@ def _strip_after(feed: Callable[[Waveform], None]) -> list[str]:
     return lines
 
 
-def test_the_mic_and_the_speaker_draw_the_same_shape_whatever_their_loudness() -> None:
-    # The same ups and downs, in dB below each source's loudest moment.
-    shape = (0.0, -3.0, -6.0, -12.0, -24.0, -9.0, -3.0, 0.0, -18.0, -6.0)
+def test_the_mic_and_the_speaker_draw_alike_once_each_has_learnt_its_source() -> None:
+    # The same ups and downs, in dB below each source's loud level, repeated for ten seconds.
+    shape = (0.0, -3.0, -6.0, -12.0, -22.0, -9.0, -3.0, 0.0, -18.0, -6.0, -40.0, -40.0)
 
-    def rms(peak_db: float, below: float) -> float:
-        return 32768.0 * 10 ** ((peak_db + below) / 20)
+    def feed(
+        wave: Waveform, push: Callable[[Waveform, float, float], None], loud_db: float
+    ) -> None:
+        for step in range(130):
+            rms = 32768.0 * 10 ** ((loud_db + shape[step % len(shape)]) / 20)
+            push(wave, rms, step * 0.09)
 
-    def mic(wave: Waveform) -> None:
-        for step, below in enumerate(shape):  # a mic whose loudest moment is -24 dB
-            wave.push(rms(MIC_PEAK_FLOOR_DB, below), 1.0, now=step * 0.06)
+    def mic(wave: Waveform, rms: float, now: float) -> None:
+        wave.push(rms, 1.0, now=now)
 
-    def speaker(wave: Waveform) -> None:
-        for step, below in enumerate(shape):  # a much hotter voice: -6 dB, 18 dB louder
-            wave.push_speaker(rms(-6.0, below), now=step * 0.06)
+    def speaker(wave: Waveform, rms: float, now: float) -> None:
+        wave.push_speaker(rms, now=now)
 
-    assert _strip_after(mic) == _strip_after(speaker)
+    def ink(lines: list[str]) -> int:
+        return sum(_dots(ch) for line in lines for ch in line[-12:])  # the newest twelve cells
+
+    quiet_mic = _strip_after(lambda wave: feed(wave, mic, -32.0))
+    hot_speaker = _strip_after(lambda wave: feed(wave, speaker, -8.0))  # 24 dB louder
+    assert ink(quiet_mic) == pytest.approx(ink(hot_speaker), rel=0.2)
 
 
 def test_a_quiet_room_is_not_stretched_into_a_waveform_by_the_mic_scale() -> None:
@@ -965,11 +973,12 @@ def test_a_quiet_room_is_not_stretched_into_a_waveform_by_the_mic_scale() -> Non
             wave.push(32768.0 * 10 ** (-50.0 / 20), 1500.0, now=step * 0.06)
 
     lines = _strip_after(room)
-    assert max(_dots(ch) for line in lines for ch in line) <= 2  # only the thin line
+    # After the first second, while the scale measures the room, there is only the thin line.
+    assert max(_dots(ch) for line in lines for ch in line[-20:]) <= 2
 
     def speech(wave: Waveform) -> None:
         room(wave)
-        wave.push(32768.0 * 10 ** (-24.0 / 20), 1500.0, now=4.0)  # then someone speaks
+        wave.push(32768.0 * 10 ** (-30.0 / 20), 1500.0, now=4.0)  # then someone speaks
 
     assert max(_dots(ch) for line in _strip_after(speech) for ch in line) >= 4
 
@@ -1065,7 +1074,7 @@ def test_speaker_bars_follow_the_voices_own_ups_and_downs() -> None:
             await pilot.pause()
             loud, pause, loud_again, stressed = (_column_dots(wave, i) for i in (-4, -3, -2, -1))
             assert pause < loud  # a pause really is lower
-            assert loud_again == loud  # the same loudness draws the same height
+            assert loud_again == pytest.approx(loud, rel=0.2)  # the same loudness, the same height
             assert stressed < loud  # and a softer syllable sits between
 
     asyncio.run(main())

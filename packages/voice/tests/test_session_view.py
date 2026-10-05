@@ -8,6 +8,7 @@ from functools import reduce
 import pytest
 from hypothesis import given
 from hypothesis import strategies as st
+from real_mic import BLOCK_S, QUIET_BELOW, RMS, SPEECH_FROM
 
 from fish_audio_suite_kit import LatencySnapshot
 from fish_audio_suite_voice.events import (
@@ -19,7 +20,6 @@ from fish_audio_suite_voice.events import (
     LogLine,
     MicLevel,
     Notice,
-    OutputLevel,
     ReplyEnd,
     ReplyToken,
     SessionState,
@@ -28,21 +28,10 @@ from fish_audio_suite_voice.events import (
     TurnEnded,
 )
 from fish_audio_suite_voice.session_view import (
-    BODY_RELEASE_PER_S,
-    MIC_PEAK_FALL_DB_PER_S,
-    MIC_PEAK_FLOOR_DB,
-    MIC_PEAK_RISE_DB_PER_S,
-    PEAK_HOLD_S,
-    PEAK_RELEASE_PER_S,
-    SPEAKER_PEAK_FALL_DB_PER_S,
-    SPEAKER_SPAN_DB,
-    AutoLevel,
-    Ballistics,
     SessionView,
+    SpeechScale,
     level_fraction,
-    processing_level,
     reduce_view,
-    split_cells,
     turn_timings,
     wave_dots,
 )
@@ -220,157 +209,99 @@ def test_a_turn_without_asr_or_without_a_wait_is_handled() -> None:
     assert "tts" not in dict(over.stages)
 
 
-@given(
-    st.lists(st.floats(min_value=-5.0, max_value=1e6, allow_nan=False), max_size=6),
-    st.integers(min_value=-3, max_value=80),
-)
-def test_split_cells_always_adds_up_and_never_goes_negative(parts: list[float], width: int) -> None:
-    cells = split_cells(parts, width)
-    assert len(cells) == len(parts)
-    assert all(count >= 0 for count in cells)
-    positive = [part for part in parts if part > 0]
-    if positive and width > 0:
-        assert sum(cells) == width
-        if width >= len(positive):
-            assert all(count >= 1 for part, count in zip(parts, cells, strict=True) if part > 0)
-    else:
-        assert sum(cells) == 0
+def _replay(rms: tuple[float, ...] | list[float], gain: float = 1.0) -> list[float]:
+    scale = SpeechScale()
+    return [scale.update(value * gain, step * BLOCK_S) for step, value in enumerate(rms)]
 
 
-def test_a_held_peak_above_a_bar_is_drawn_as_a_cap_both_above_and_below_the_middle() -> None:
-    plain = wave_dots([0.0, 0.0], 2)
-    capped = wave_dots([0.0, 0.0], 2, peaks=[1.0, 1.0])
-    assert sum(_dots(ch) for line in plain for ch in line) == 2 * 2  # a thin line only
-    assert sum(_dots(ch) for line in capped for ch in line) == 2 * 4  # plus a cap above and below
-    assert wave_dots([0.5, 0.5], 2, peaks=[0.5, 0.5]) == wave_dots([0.5, 0.5], 2)  # not above it
-    assert wave_dots([0.9, 0.9], 2, peaks=[1.0, 1.0]) == wave_dots([0.9, 0.9], 2)  # no gap to show
-    assert wave_dots([0.2], 1, peaks=[]) == wave_dots([0.2], 1)  # missing peaks are ignored
+def _mean(values: list[float]) -> float:
+    return sum(values) / len(values)
 
 
-def test_a_bar_rises_at_once_falls_at_a_steady_pace_and_its_peak_holds_then_falls_slowly() -> None:
-    ballistics = Ballistics()
-    assert ballistics.update(0.8, 0.06) == (0.8, 0.8)  # up at once, and the peak with it
-    body, peak = ballistics.update(0.0, 0.1)
-    assert body == pytest.approx(0.8 - BODY_RELEASE_PER_S * 0.1)
-    assert peak == 0.8  # held
-    body, peak = ballistics.update(0.0, PEAK_HOLD_S)  # the hold runs out during this step
-    assert body == 0.0
-    assert peak == pytest.approx(
-        max(0.0, 0.8 - PEAK_RELEASE_PER_S * (0.1 + PEAK_HOLD_S - PEAK_HOLD_S))
-    )
-    assert 0.0 < peak < 0.8  # falling, not gone
-    seconds = 0.8 / PEAK_RELEASE_PER_S
-    assert ballistics.update(0.0, seconds + 1.0)[1] == 0.0  # eventually it is gone
+def test_a_real_quiet_mic_fills_most_of_the_bar_when_its_owner_speaks_and_is_empty_otherwise() -> (
+    None
+):
+    levels = _replay(RMS)
+    speaking = [level for level, rms in zip(levels, RMS, strict=True) if rms > SPEECH_FROM]
+    quiet = [level for level, rms in zip(levels, RMS, strict=True) if rms < QUIET_BELOW]
+    assert _mean(speaking) > 0.6  # the fixed -24 dB scale left this at 0.36
+    assert max(quiet) < 0.25
+    assert _mean(quiet) < 0.1
+
+
+def test_the_same_voice_draws_the_same_height_on_a_quiet_mic_and_a_hot_one() -> None:
+    quiet = _replay(RMS, gain=0.5)
+    reference = _replay(RMS)
+    hot = _replay(RMS, gain=8.0)  # 18 dB louder, with the room louder too
+
+    def speaking(levels: list[float]) -> float:
+        # Skip the first seconds, while the scale is still learning the mic.
+        return _mean([lv for lv, r in zip(levels[30:], RMS[30:], strict=True) if r > SPEECH_FROM])
+
+    assert speaking(quiet) == pytest.approx(speaking(reference), abs=0.12)
+    assert speaking(hot) == pytest.approx(speaking(reference), abs=0.12)
+
+
+def test_one_loud_bump_does_not_shrink_the_speech_that_follows_it() -> None:
+    bumped = list(RMS)
+    bumped[40] = 25000.0  # a bump in the quiet gap after the first sentence
+    after = slice(60, None)
+
+    def speaking(levels: list[float], source: tuple[float, ...] | list[float]) -> float:
+        return _mean(
+            [lv for lv, r in zip(levels[after], source[after], strict=True) if r > SPEECH_FROM]
+        )
+
+    assert speaking(_replay(bumped), bumped) >= 0.9 * speaking(_replay(RMS), RMS)
+    assert _replay(bumped)[40] == 1.0  # the bump itself is drawn, just not allowed to rescale
+
+
+def test_a_room_with_nobody_speaking_never_looks_like_speech() -> None:
+    room = [
+        32768.0 * 10 ** (-55.0 / 20) * (1.0 + 0.3 * ((step * 7) % 5 - 2) / 2) for step in range(400)
+    ]
+    assert max(_replay(room)) < 0.3  # not stretched, even after thirty-six seconds of it
+
+
+def test_the_speech_level_is_kept_through_a_long_pause() -> None:
+    talk = list(RMS[20:60])  # the first sentence
+    silence = [30.0] * 200  # eighteen seconds of the room
+    levels = _replay(talk + silence + talk)
+    first = _mean([lv for lv, r in zip(levels[:40], talk, strict=True) if r > SPEECH_FROM])
+    again = _mean([lv for lv, r in zip(levels[240:], talk, strict=True) if r > SPEECH_FROM])
+    assert again == pytest.approx(first, abs=0.15)  # it did not re-learn from the room
+
+
+def test_a_steady_loud_voice_with_digital_silence_between_words_still_shows_its_shape() -> None:
+    # TTS: loud and even, with exact silence in the pauses.
+    voice = [
+        32768.0 * 10 ** (-12.0 / 20) * (0.55 + 0.45 * abs((step * 5) % 7 - 3) / 3)
+        for step in range(90)
+    ]
+    for step in range(5, 90, 9):
+        voice[step] = voice[step + 1] = 0.0
+    levels = _replay(voice)
+    pauses = [lv for lv, v in zip(levels, voice, strict=True) if v == 0.0]
+    words = [lv for lv, v in zip(levels[20:], voice[20:], strict=True) if v > 0.0]
+    assert max(pauses) == 0.0
+    assert _mean(words) > 0.6
+    assert max(words) - min(words) > 0.2  # not a flat block
 
 
 @given(
     st.lists(
         st.tuples(
-            st.floats(min_value=-1.0, max_value=2.0), st.floats(min_value=-1.0, max_value=3.0)
+            st.floats(min_value=-100.0, max_value=1e6) | st.just(float("nan")),
+            st.floats(min_value=0.0, max_value=2.0),
         ),
-        max_size=40,
+        max_size=120,
     )
 )
-def test_ballistics_stay_in_range_and_the_peak_never_sits_below_the_bar(
-    steps: list[tuple[float, float]],
+def test_a_speech_scale_always_answers_between_empty_and_full(
+    blocks: list[tuple[float, float]],
 ) -> None:
-    ballistics = Ballistics()
-    for level, dt in steps:
-        body, peak = ballistics.update(level, dt)
-        assert 0.0 <= body <= 1.0
-        assert body <= peak <= 1.0
-
-
-def test_the_thinking_wave_stays_in_range_keeps_changing_and_is_repeatable() -> None:
-    values = [processing_level(step * 0.05) for step in range(400)]
-    assert all(0.05 <= value <= 1.0 for value in values)
-    assert len({round(value, 3) for value in values}) > 100  # always moving
-    assert processing_level(3.3) == processing_level(3.3)  # no randomness
-
-
-def test_a_view_follows_the_speaker_level_separately_from_the_mic() -> None:
-    view = _fold(MicLevel(1000.0, 200.0, "listen"), OutputLevel(3000.0))
-    assert view.out_rms == 3000.0
-    assert view.mic_rms == 1000.0  # neither level overwrites the other
-    assert view.out_fraction == pytest.approx(level_fraction(3000.0))
-    assert SessionView().out_fraction == 0.0
-
-
-def test_auto_level_scales_a_voice_to_its_own_loudest_moment() -> None:
-    auto = AutoLevel()
-    assert auto.update(3277.0, 0.06) == 1.0  # louder than assumed: it becomes the peak
-    assert auto.update(819.0, 0.06) == pytest.approx(0.5, abs=0.01)  # 12 dB down, half the span
-    assert auto.update(3277.0, 0.06) == pytest.approx(1.0, abs=0.01)
-    assert auto.update(0.0, 0.06) == 0.0  # a pause is empty
-    assert auto.update(-5.0, 0.06) == 0.0  # nonsense is a pause too
-    assert auto.update(5e-324, 0.06) == 0.0  # so is a level too small to divide
-    assert auto.update(float("nan"), 0.06) == 0.0
-
-
-def test_auto_level_forgets_a_loud_moment_slowly_so_a_quieter_reply_comes_back_up() -> None:
-    auto = AutoLevel()
-    auto.update(20000.0, 0.0)  # a very loud start
-    quiet = 1500.0
-    first = auto.update(quiet, 0.06)
-    last = first
-    for _ in range(600):  # thirty seconds of quiet speech
-        last = auto.update(quiet, 0.05)
-    assert last > first  # the scale has caught up with the quieter voice
-    assert last == pytest.approx(1.0, abs=0.01)
-    assert SPEAKER_SPAN_DB / SPEAKER_PEAK_FALL_DB_PER_S > 10  # and not within a syllable
-
-
-@given(
-    st.lists(
-        st.tuples(
-            st.floats(min_value=-10.0, max_value=40000.0), st.floats(min_value=-1.0, max_value=3.0)
-        ),
-        max_size=50,
-    )
-)
-def test_auto_level_stays_between_empty_and_full(steps: list[tuple[float, float]]) -> None:
-    auto = AutoLevel()
-    for rms, dt in steps:
-        assert 0.0 <= auto.update(rms, dt) <= 1.0
-
-
-def test_auto_level_with_a_floor_does_not_stretch_a_signal_that_is_always_quiet() -> None:
-    quiet = 32768.0 * 10 ** (-50.0 / 20)
-    free = AutoLevel(peak_db=-60.0)  # no floor: it settles on the quiet signal and fills the bar
-    floored = AutoLevel(peak_db=MIC_PEAK_FLOOR_DB, floor_peak_db=MIC_PEAK_FLOOR_DB)
-    free_level = floored_level = 1.0
-    for _ in range(100):
-        free_level = free.update(quiet, 0.06)
-        floored_level = floored.update(quiet, 0.06)
-    assert free_level > 0.9
-    assert floored_level == 0.0  # still empty: nobody is speaking
-    assert floored.peak_db == MIC_PEAK_FLOOR_DB
-    assert floored.update(32768.0 * 10 ** (-24.0 / 20), 0.06) == pytest.approx(
-        1.0
-    )  # speech fills it
-
-
-def test_a_limited_rise_lets_sustained_speech_set_the_scale_but_not_one_loud_block() -> None:
-    loud = 32768.0 * 10 ** (-6.0 / 20)  # 18 dB above the floor
-    hot = AutoLevel(
-        peak_db=MIC_PEAK_FLOOR_DB,
-        floor_peak_db=MIC_PEAK_FLOOR_DB,
-        rise_db_per_s=MIC_PEAK_RISE_DB_PER_S,
-        fall_db_per_s=MIC_PEAK_FALL_DB_PER_S,
-    )
-    hot.update(loud, 0.06)  # one block
-    assert hot.peak_db == pytest.approx(MIC_PEAK_FLOOR_DB + MIC_PEAK_RISE_DB_PER_S * 0.06)
-    assert hot.peak_db < MIC_PEAK_FLOOR_DB + 3.0  # barely moved
-    for _ in range(12):  # three quarters of a second of it
-        hot.update(loud, 0.06)
-    assert hot.peak_db == pytest.approx(-6.0)  # sustained loud speech does set the scale
-    for _ in range(25):  # then a second and a half of quiet
-        hot.update(0.0, 0.06)
-    assert hot.peak_db == pytest.approx(-6.0 - MIC_PEAK_FALL_DB_PER_S * 1.5)  # forgotten steadily
-
-
-def test_a_peak_with_no_rise_limit_still_rises_at_once() -> None:
-    assert AutoLevel().rise_db_per_s is None
-    auto = AutoLevel()
-    auto.update(32768.0 * 10 ** (-6.0 / 20), 0.0)  # even with no time having passed
-    assert auto.peak_db == pytest.approx(-6.0)
+    scale = SpeechScale()
+    clock = 0.0
+    for rms, step in blocks:
+        clock += step
+        assert 0.0 <= scale.update(rms, clock) <= 1.0

@@ -51,13 +51,9 @@ from fish_audio_suite_voice.events import (
 from fish_audio_suite_voice.inputs import LiveInput
 from fish_audio_suite_voice.reply import turn_summary
 from fish_audio_suite_voice.session_view import (
-    MIC_PEAK_FALL_DB_PER_S,
-    MIC_PEAK_FLOOR_DB,
-    MIC_PEAK_RISE_DB_PER_S,
-    SPEAKER_PEAK_FLOOR_DB,
-    AutoLevel,
     Ballistics,
     SessionView,
+    SpeechScale,
     processing_level,
     reduce_view,
     split_cells,
@@ -76,6 +72,13 @@ _WAVE_STILL_BARS = 60  # bars of the frozen thinking wave when animations are of
 _THINK_TICK_S = 0.05  # one new bar of the thinking wave
 _BLINK_S = 0.45  # the listening cursor's half cycle
 _SPEAKER_NEW_REPLY_S = 1.5  # a pause this long means the next audio is a new reply
+
+
+def _speaker_scale() -> SpeechScale:
+    # TTS is steady and loud, and its pauses are digital silence, so it starts higher than a mic.
+    return SpeechScale(start_speech_db=-20.0, start_noise_db=-70.0)
+
+
 _LOUD_STEPS = (0.34, 0.67)  # where a bar passes from dim to medium to bright
 _QUIT_GRACE_S = 3.0
 _NARROW_BELOW = 72  # columns: under this the side column keeps only the state and the mic
@@ -134,13 +137,8 @@ class Waveform(Widget):
         self._cursor_on = True
 
     def _reset_meters(self) -> None:
-        self._mic_auto = AutoLevel(
-            peak_db=MIC_PEAK_FLOOR_DB,
-            floor_peak_db=MIC_PEAK_FLOOR_DB,
-            rise_db_per_s=MIC_PEAK_RISE_DB_PER_S,
-            fall_db_per_s=MIC_PEAK_FALL_DB_PER_S,
-        )
-        self._speaker_auto = AutoLevel(floor_peak_db=SPEAKER_PEAK_FLOOR_DB)
+        self._mic_scale = SpeechScale()
+        self._speaker_scale = _speaker_scale()
         self._mic_ease = Ballistics()
         self._speaker_ease = Ballistics()
 
@@ -149,8 +147,7 @@ class Waveform(Widget):
         """What the strip is doing besides drawing the mic: listening, thinking or still."""
         return self._mood
 
-    def _elapsed(self, now: float | None) -> float:
-        now = time.monotonic() if now is None else now
+    def _elapsed(self, now: float) -> float:
         elapsed = 0.0 if self._last_push is None else min(0.5, max(0.0, now - self._last_push))
         self._last_push = now
         return elapsed
@@ -167,8 +164,9 @@ class Waveform(Widget):
         now : float, optional
             When the level was taken, in ``time.monotonic`` seconds. Now by default.
         """
+        now = time.monotonic() if now is None else now
         elapsed = self._elapsed(now)
-        level = self._mic_ease.update(self._mic_auto.update(rms, elapsed), elapsed)[0]
+        level = self._mic_ease.update(self._mic_scale.update(rms, now), elapsed)[0]
         self._bars.append((level, "heard" if rms >= need > 0.0 else "quiet"))
         self.refresh()
 
@@ -189,11 +187,11 @@ class Waveform(Widget):
         now = time.monotonic() if now is None else now
         gap = None if self._last_speaker is None else now - self._last_speaker
         if gap is None or gap > _SPEAKER_NEW_REPLY_S:
-            self._speaker_auto = AutoLevel(floor_peak_db=SPEAKER_PEAK_FLOOR_DB)
+            self._speaker_scale = _speaker_scale()
             self._speaker_ease = Ballistics()
         self._last_speaker = now
         elapsed = 0.0 if gap is None else min(gap, _SPEAKER_NEW_REPLY_S)
-        level = self._speaker_ease.update(self._speaker_auto.update(rms, elapsed), elapsed)[0]
+        level = self._speaker_ease.update(self._speaker_scale.update(rms, now), elapsed)[0]
         self._bars.append((level, "speaker"))
         self.refresh()
 
