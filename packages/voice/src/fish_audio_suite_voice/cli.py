@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import gc
 import importlib.util
 import sys
 import tempfile
@@ -58,6 +59,13 @@ __all__ = [
 
 DEFAULT_ENV_FILE: Final = Path(".env")
 _SMOKE_MIN_BYTES: Final = 1000
+# Seconds a Python thread may hold the GIL before another is let in. The default of 5 ms lets the
+# screen's drawing keep the playback thread waiting longer than the sound card's buffer lasts,
+# which is heard as clicks and drop-outs. Shorter hands over sooner, at a small cost in speed.
+_TUI_SWITCH_INTERVAL_S: Final = 0.0005
+# The garbage collector stops every thread while it runs, and a big full-screen app has plenty to
+# scan. Collecting less often, and not scanning what was built at startup, keeps those stops rare.
+_TUI_GC_THRESHOLD: Final = (20_000, 50, 100)
 _SMOKE_FAIL: Final = 1
 
 
@@ -186,6 +194,21 @@ def _preflight(c: VoiceCliConfig) -> int | None:
     if playback_problem is not None:
         warn(f"BLOCKER: {playback_problem}")
         return EXIT_FATAL
+    return _require_deepgram(c)
+
+
+def _require_deepgram(c: VoiceCliConfig) -> int | None:
+    """Return an exit code when Deepgram is chosen but cannot be used."""
+    if c.stt.provider != "deepgram":
+        return None
+    if not c.stt.deepgram_key:
+        return _blocker("DEEPGRAM_API_KEY (FISH_VOICE_STT=deepgram)")
+    if importlib.util.find_spec("websockets") is None:
+        warn(
+            "BLOCKER: FISH_VOICE_STT=deepgram needs the deepgram extra: "
+            "pip install 'fish-audio-suite-voice[deepgram]' (or uv sync --extra deepgram)"
+        )
+        return EXIT_FATAL
     return None
 
 
@@ -259,6 +282,10 @@ async def run_tui(c: VoiceCliConfig, *, debug: DebugLevel) -> int:
     blocked = _preflight(c)
     if blocked is not None:
         return blocked
+    if c.output_latency == "auto":
+        c = replace(
+            c, output_latency="high"
+        )  # the screen is busy drawing: a bigger buffer rides it out
     # Imported here because Textual is an optional extra, checked for in ``main``.
     from fish_audio_suite_voice.tui import VoiceApp  # noqa: PLC0415 - optional extra
 
@@ -269,6 +296,12 @@ async def run_tui(c: VoiceCliConfig, *, debug: DebugLevel) -> int:
     # From here the screen owns the terminal, so logging moves into the log pane.
     configure_voice_logging(debug=debug, to_stderr=False)
     stop_forwarding = forward_logs()
+    switch_interval = sys.getswitchinterval()
+    sys.setswitchinterval(_TUI_SWITCH_INTERVAL_S)
+    gc_threshold = gc.get_threshold()
+    gc.collect()
+    gc.freeze()
+    gc.set_threshold(*_TUI_GC_THRESHOLD)
     try:
         async with open_chat_backend(c.llm, session_id=uuid.uuid4().hex) as backend:
 
@@ -284,6 +317,9 @@ async def run_tui(c: VoiceCliConfig, *, debug: DebugLevel) -> int:
             app = VoiceApp(runner, live=live, session=session, info=info)
             code = await app.run_async()
     finally:
+        sys.setswitchinterval(switch_interval)
+        gc.set_threshold(*gc_threshold)
+        gc.unfreeze()
         stop_forwarding()
     return code or EXIT_OK
 

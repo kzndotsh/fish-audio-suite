@@ -215,6 +215,40 @@ uv run --package fish-audio-suite-voice --extra cli --extra tui fish-voice --tui
 
 Ctrl+C is not quit here, because the app uses it to copy. Without the `tui` extra, `fish-voice --tui` says how to install it and exits 2. The panels shrink with the terminal: under 72 columns the timings and the log go, under 22 rows the timings go, and under 50x14 it asks for a bigger window (typing and Ctrl+Q still work). With no terminal on stdin or stdout, `--tui` falls back to the plain loop. `NO_COLOR` is honoured, and `TEXTUAL_ANIMATIONS=none` stops the pulsing "you" line, the listening cursor and the thinking wave from moving. A modern terminal works best; macOS's Terminal.app is limited to 256 colors, so use iTerm2, Kitty, WezTerm or Ghostty there.
 
+### Streaming speech recognition (Deepgram)
+
+By default `fish-voice` waits for a pause, then sends the whole utterance to Fish ASR. With
+`FISH_VOICE_STT=deepgram` it streams your speech to [Deepgram's Flux](https://developers.deepgram.com/docs/flux/quickstart)
+while you talk instead. Flux says for itself when you have finished, so the reply starts
+sooner: there is no fixed silence to wait out and no upload and transcribe step afterwards. The
+words also appear in the full-screen app as you say them.
+
+```bash
+uv sync --extra deepgram          # or pip install 'fish-audio-suite-voice[deepgram]'
+export DEEPGRAM_API_KEY=...
+FISH_VOICE_STT=deepgram fish-voice
+```
+
+What happens, and what leaves your machine:
+
+- Nothing is sent while the mic waits for you. The same voice detector as before decides when
+  speech starts, and then the first frames are held until there is as much voiced audio as the
+  batch path asks for (`FISH_VOICE_MIN_VOICED_FRAMES`), so a knock or a cough never leaves your
+  machine. Only then is the connection opened and audio sent, beginning with the held pre-roll so
+  the first word is not clipped. A barge-in sends its saved clip first. (Deepgram
+  closes a connection that sits without audio, so none is held open while you are quiet.)
+- Every connection asks Deepgram not to keep the audio or the transcript (`mip_opt_out=true`).
+  `FISH_VOICE_DEEPGRAM_REGION` picks a regional endpoint that processes it in the EU, Australia or
+  India.
+- `FISH_VOICE_SILENCE_FRAMES` is still a limit: if Flux has not ended the turn by then, it is
+  asked to.
+- If Deepgram cannot be reached when you start speaking, that turn is heard with Fish ASR from
+  the speech already captured, with a warning, so nothing you said is lost. A missing key,
+  a refused key or a missing `deepgram` extra stops the app at the start instead.
+- A transcript is judged exactly as a Fish one is: quit words, stray "mm-hmm" over a reply, and
+  stale copies of the last line are dropped.
+- Only the PortAudio microphone path streams. Typed lines, mute and interrupt work as before.
+
 ## Extras
 
 | Extra | Pulls in |
@@ -224,6 +258,7 @@ Ctrl+C is not quit here, because the app uses it to copy. Without the `tui` extr
 | `aec` | `pywebrtc-audio` |
 | `cli` | the three above, plus `openrouter` |
 | `tui` | `textual`, for `fish-voice --tui` |
+| `deepgram` | `websockets`, for `FISH_VOICE_STT=deepgram` |
 
 `import fish_audio_suite_voice` works without them. The heavy imports happen inside the functions that need them.
 
@@ -258,6 +293,7 @@ Speech:
 | `FISH_ASR_MODEL` | `transcribe-1-pro` (or `transcribe-1`) |
 | `FISH_VOICE_PLAYBACK` | `sounddevice` |
 | `FISH_VOICE_DEVICE` | host default. A PortAudio index or name |
+| `FISH_VOICE_OUTPUT_LATENCY` | `auto`, or `low` / `high`. A bigger playback buffer (`high`) stops clicks when the machine is busy, and starts the sound a little later. `auto` is `high` in `--tui` and `low` otherwise |
 
 LLM:
 
@@ -279,6 +315,17 @@ LLM:
 | `FISH_VOICE_STREAM_TTS` | off | Speak the reply while the model is still writing it. See streaming above |
 | `FISH_VOICE_REPEAT_WINDOW` | `1.5` | Seconds. A line equal to the previous one is dropped only if it ends this soon after the mic opens. 0 never drops a repeat |
 | `FISH_TTS_MOOD_LEAD`, `FISH_TTS_DROP_NARRATION` | off | See roleplay helpers |
+
+Speech recognition. See [Streaming speech recognition](#streaming-speech-recognition-deepgram).
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `FISH_VOICE_STT` | `fish` | `fish` sends a clip to Fish ASR when you stop. `deepgram` streams your speech to Deepgram Flux |
+| `DEEPGRAM_API_KEY` | none | Your Deepgram key. Required when `FISH_VOICE_STT=deepgram` |
+| `FISH_VOICE_DEEPGRAM_MODEL` | `flux-general-en` | `flux-general-multi` for ten languages |
+| `FISH_VOICE_DEEPGRAM_REGION` | `global` | `eu`, `au` or `in` to have Deepgram process the audio inside the European Union, Australia or India. A regional request fails instead of going elsewhere |
+| `FISH_VOICE_EOT_THRESHOLD` | `0.7` | How sure Flux must be that you have finished, 0.5 to 1. Higher waits a little longer and cuts in less often |
+| `FISH_VOICE_STT_SAVE_DIR` | unset | A folder. Each streamed turn's audio, as Deepgram was sent it, is saved there as a 16 kHz WAV, to find out why it heard nothing. Only for debugging: it writes your voice to disk |
 
 Listen and interrupt. Times are approximate at 30 ms frames.
 

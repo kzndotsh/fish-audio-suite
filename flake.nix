@@ -69,8 +69,8 @@
         system: env:
         let
           pkgs = nixpkgs.legacyPackages.${system};
-          libs = [ pkgs.portaudio ] ++ lib.optional pkgs.stdenv.isLinux pkgs.libpulseaudio;
-          libVar = if pkgs.stdenv.isLinux then "LD_LIBRARY_PATH" else "DYLD_FALLBACK_LIBRARY_PATH";
+          libs = [ pkgs.portaudio ] ++ lib.optional pkgs.stdenv.hostPlatform.isLinux pkgs.libpulseaudio;
+          libVar = if pkgs.stdenv.hostPlatform.isLinux then "LD_LIBRARY_PATH" else "DYLD_FALLBACK_LIBRARY_PATH";
           wrap = bin: "makeWrapper ${env}/bin/${bin} $out/bin/${bin} --prefix ${libVar} : ${lib.makeLibraryPath libs}";
         in
         pkgs.stdenv.mkDerivation {
@@ -100,6 +100,7 @@
             fish-audio-suite-voice = [
               "cli"
               "tui"
+              "deepgram"
             ];
           };
         in

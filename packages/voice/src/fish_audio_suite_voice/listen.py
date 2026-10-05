@@ -1,9 +1,10 @@
-"""One microphone utterance: VAD start, silence end, WAV for Fish ASR."""
+"""One microphone utterance: VAD start, silence end, then a WAV for Fish ASR or a live stream."""
 
 from __future__ import annotations
 
 import collections
 import io
+from collections.abc import Callable
 from typing import Any, Final
 
 from fish_audio_suite_voice.aec import EchoCanceller, pcm_rms
@@ -34,6 +35,7 @@ __all__ = [
     "spike_start_allowed",
     "start_frames_needed",
     "start_hit",
+    "stream_utterance",
     "trailing_start_hits",
 ]
 
@@ -366,3 +368,83 @@ def record_utterance(
     if quit_requested is not None and quit_requested.is_set():
         return None
     return _clip_wav(heard, tune)
+
+
+class _StreamListen(_Listen):
+    """A listen that hands each frame of the utterance to ``sink`` as it is kept."""
+
+    def __init__(self, tune: ListenTune, vad: Any, sink: Callable[[bytes, bool], None]) -> None:
+        super().__init__(tune, vad)
+        self._sink = sink
+
+    def remember(self, frame: bytes, hit: bool) -> None:
+        """Keep the frame as ``_Listen`` does, and pass it on with whether it was speech.
+
+        Parameters
+        ----------
+        frame : bytes
+            One PCM frame.
+        hit : bool
+            True when this frame is speech.
+        """
+        super().remember(frame, hit)
+        self._sink(frame, hit)
+
+
+def stream_utterance(
+    device: str | int | None,
+    quit_requested: StopFlag | None,
+    sink: Callable[[bytes, bool], None],
+    *,
+    prefix: bytes = b"",
+    tune: ListenTune | None = None,
+    aec: EchoCanceller | None = None,
+    vad: Any = None,
+) -> bool:
+    """Block until one utterance ends, passing its frames to ``sink`` as they come.
+
+    Parameters
+    ----------
+    device : str or int or None
+        PortAudio input. None uses the host default.
+    quit_requested : StopFlag or None
+        Ends the listen when set.
+    sink : Callable
+        Called with ``(frame, voiced)`` for every frame of the utterance, in order: first
+        the pre-roll and any ``prefix``, then each frame as it is captured. It runs on this
+        thread and has to return quickly. Nothing is passed while the mic is waiting for
+        speech to start, so only the speech leaves the machine.
+    prefix : bytes, optional
+        PCM kept from the barge-in that interrupted the previous reply.
+    tune : ListenTune or None, optional
+        VAD and utterance limits. None uses the defaults.
+    aec : EchoCanceller or None, optional
+        Cleans each frame against the far-end tap.
+    vad : Any, optional
+        A voice-activity detector with ``is_speech(frame, rate)``. WebRTC's by default.
+
+    Returns
+    -------
+    bool
+        True when the silence at the end of the speech ended it, so the caller should decide
+        the turn is over. False when ``quit_requested`` stopped it.
+
+    Notes
+    -----
+    This is ``record_utterance`` without the WAV: the same start gate (VAD, level, impulse
+    rejection) and the same ``MicLevel`` events, but the end of the turn is for the caller to
+    judge, with this silence as the limit.
+    """
+    if vad is None:
+        import webrtcvad
+
+        vad = webrtcvad.Vad((tune or ListenTune()).vad_aggressiveness)
+    tune = tune or ListenTune()
+    heard = _StreamListen(tune, vad, sink)
+    _prime_listen(heard, prefix)
+    for idle_frames, frame in enumerate(
+        mic_frames(device, quit_requested, timeout=_MIC_POLL_S, aec=aec), start=1
+    ):
+        if heard.take(frame, idle_frames):
+            return True
+    return False

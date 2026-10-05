@@ -36,6 +36,9 @@ aec = ["pywebrtc-audio>=0.2"]
 # The full-screen terminal app (fish-voice --tui). Keep the bound equal to the one in the
 # root test group, which a test checks.
 tui = ["textual>=8.2.8"]
+# Streaming speech recognition through Deepgram (FISH_VOICE_STT=deepgram). The new asyncio
+# client (websockets.asyncio) starts at 14. Keep the bound equal to the root test group's.
+deepgram = ["websockets>=14"]
 cli = [
     "sounddevice>=0.5",
     "webrtcvad-wheels>=2.0.14",

@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 import wave
 from collections.abc import Iterator
 from enum import StrEnum
@@ -61,14 +62,19 @@ _MONO: Final = 1
 _DEFAULT_RATE: Final = SuiteDefaults().sample_rate
 
 
-def pcm_stream_kwargs(sample_rate: int, device: str | int | None) -> dict[str, Any]:
-    """Return RawStream kwargs for mono int16 PCM."""
-    return {
+def pcm_stream_kwargs(
+    sample_rate: int, device: str | int | None, *, latency: str | None = None
+) -> dict[str, Any]:
+    """Return RawStream kwargs for mono int16 PCM, with a buffer size when ``latency`` is given."""
+    kwargs: dict[str, Any] = {
         "samplerate": sample_rate,
         "channels": _MONO,
         "dtype": "int16",
         "device": device,
     }
+    if latency is not None:
+        kwargs["latency"] = latency
+    return kwargs
 
 
 def load_sounddevice() -> Any:
@@ -349,8 +355,10 @@ class SounddeviceSink(_Played):
         device: str | int | None = None,
         cancel: threading.Event | None = None,
         aec: EchoCanceller | None = None,
+        latency: str = "low",
     ) -> None:
         super().__init__()
+        self.latency = latency
         self.sample_rate: int = _positive_rate(sample_rate)
         self.device: str | int | None = device
         self._cancel = cancel
@@ -358,6 +366,8 @@ class SounddeviceSink(_Played):
         self._stream: Any = None
         self._odd = b""
         self._tap = _LevelTap(self.sample_rate)
+        self._wrote_at = 0.0  # when the last slice went to the device
+        self._chunk_idle_ms = 0.0
 
     def start(self) -> None:
         """Open a PortAudio output stream and clear the far-end tap."""
@@ -366,9 +376,12 @@ class SounddeviceSink(_Played):
         self._reset_played()
         self._odd = b""
         self._tap.clear()
+        self._wrote_at = 0.0
         if self._aec is not None:
             self._aec.clear()
-        self._stream = sd.RawOutputStream(**pcm_stream_kwargs(self.sample_rate, self.device))
+        self._stream = sd.RawOutputStream(
+            **pcm_stream_kwargs(self.sample_rate, self.device, latency=self.latency)
+        )
         self._stream.start()
         self.output_latency_s = _stream_latency_s(self._stream)
         if self._aec is not None:
@@ -387,6 +400,9 @@ class SounddeviceSink(_Played):
             self._odd = data[-1:]
             data = data[:-1]
         step = dac_slice_bytes(self.sample_rate)
+        # How long the device was left without a new chunk: audio that arrived late.
+        arrived = time.perf_counter()
+        self._chunk_idle_ms = (arrived - self._wrote_at) * 1000 if self._wrote_at else 0.0
         for piece in iter_pcm_slices(data, step):
             if self._stream is not stream or (self._cancel is not None and self._cancel.is_set()):
                 self._odd = b""
@@ -396,8 +412,22 @@ class SounddeviceSink(_Played):
                 self._aec.tap_playback(piece, self.sample_rate)
             # PortAudio reports True when the device ran dry before this write,
             # which plays as a click or a gap.
-            if stream.write(piece):
-                debug("tts.underrun after {} kB played", self._played // 1000)
+            before = time.perf_counter()
+            underflowed = stream.write(piece)
+            took_ms = (time.perf_counter() - before) * 1000
+            if underflowed:
+                # chunk_wait is how long since the last slice when this chunk came in, in_python
+                # how long this thread spent between two writes, and write how long this write
+                # call took, which includes waiting to get the GIL back after it.
+                debug(
+                    "tts.underrun after {} kB played "
+                    "(chunk_wait {:.0f} ms, in_python {:.0f} ms, write {:.0f} ms)",
+                    self._played // 1000,
+                    self._chunk_idle_ms,
+                    (before - self._wrote_at) * 1000 if self._wrote_at else 0.0,
+                    took_ms,
+                )
+            self._wrote_at = time.perf_counter()
             self._count(piece)
             self._tap.feed(piece)
 
@@ -578,6 +608,7 @@ def make_sink(
     device: str | int | None = None,
     cancel: threading.Event | None = None,
     aec: EchoCanceller | None = None,
+    latency: str = "low",
 ) -> PlaybackSink:
     """Build the sink named by ``FISH_VOICE_PLAYBACK`` or ``--playback``.
 
@@ -595,6 +626,8 @@ def make_sink(
         Passed to the sounddevice sink so a barge-in can stop the stream.
     aec : EchoCanceller or None, optional
         Far-end tap filled by the sounddevice sink.
+    latency : str, optional
+        ``low`` or ``high``: the sounddevice sink's buffer size.
 
     Returns
     -------
@@ -616,5 +649,7 @@ def make_sink(
     if kind is PlaybackKind.MPV:
         return MpvSink()
     if kind is not None and kind.is_speaker:
-        return SounddeviceSink(sample_rate=sample_rate, device=device, cancel=cancel, aec=aec)
+        return SounddeviceSink(
+            sample_rate=sample_rate, device=device, cancel=cancel, aec=aec, latency=latency
+        )
     raise ValueError(f"unknown playback sink {name!r}")

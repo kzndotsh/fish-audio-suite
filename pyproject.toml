@@ -20,6 +20,7 @@ dev = [
 ]
 test = [
     "textual>=8.2.8",
+    "websockets>=14",
     "hypothesis>=6.140",
     "pytest-cov>=7",
     "pytest-randomly>=3.16",

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import gc
+import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import Any
@@ -98,9 +100,13 @@ class _FakeApp:
         self.session = session
         self.info = info
         self.code: int | None = 0
+        self.switch_interval = 0.0
+        self.gc_threshold = (0, 0, 0)
         _FakeApp.instances.append(self)
 
     async def run_async(self) -> int | None:
+        self.switch_interval = sys.getswitchinterval()
+        self.gc_threshold = gc.get_threshold()
         await self.runner()
         return self.code
 
@@ -148,13 +154,36 @@ def test_run_tui_gives_the_session_to_the_app_with_the_console_off(
     assert "voice123" in app.info
     assert "model" in app.info
     args, kwargs = calls["duplex"]
-    assert args[0] is c
+    assert args[0] == replace(c, output_latency="high")  # the screen asks for a bigger buffer
+    assert c.sink_latency == "low"
     assert args[4] is app.session
     assert kwargs["source"] is app.live
     assert kwargs["console"] is False
     # Logging moves off stderr, which the screen owns, and the forwarding is undone.
     assert calls["logging"] == {"debug": DebugLevel.EVENTS, "to_stderr": False}
     assert calls["stopped"] is True
+
+
+def test_the_screen_hands_the_gil_over_sooner_while_it_runs_and_puts_it_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    c = _configured(monkeypatch)
+    _patch_session(monkeypatch, {})
+    before = sys.getswitchinterval()
+    assert asyncio.run(run_tui(c, debug=DebugLevel.OFF)) == 0
+    assert _FakeApp.instances[0].switch_interval < before  # so the audio thread is not kept waiting
+    assert sys.getswitchinterval() == before
+
+
+def test_the_garbage_collector_runs_less_often_while_the_screen_runs_and_is_put_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    c = _configured(monkeypatch)
+    _patch_session(monkeypatch, {})
+    before = gc.get_threshold()
+    assert asyncio.run(run_tui(c, debug=DebugLevel.OFF)) == 0
+    assert _FakeApp.instances[0].gc_threshold[0] > before[0]  # fewer stop-the-world passes
+    assert gc.get_threshold() == before
 
 
 def test_run_tui_returns_the_code_the_app_reports(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -207,3 +236,22 @@ def test_a_screen_needs_both_ends_on_a_tty(
     monkeypatch.setattr("sys.stdin", _Stream(stdin_tty))
     monkeypatch.setattr("sys.stdout", _Stream(stdout_tty))
     assert _can_draw_a_screen() is expected
+
+
+def test_choosing_deepgram_needs_its_key_and_its_extra(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from fish_audio_suite_voice.cli import _preflight
+    from fish_audio_suite_voice.tune import SttTune
+
+    base = _configured(monkeypatch)
+    fish = replace(base, stt=SttTune(provider="fish"))
+    assert _preflight(fish) is None  # the default needs nothing from Deepgram
+    keyless = replace(base, stt=SttTune(provider="deepgram"))
+    assert _preflight(keyless) == EXIT_FATAL
+    assert "DEEPGRAM_API_KEY" in capsys.readouterr().err
+    ready = replace(base, stt=SttTune(provider="deepgram", deepgram_key="k"))
+    assert _preflight(ready) is None  # websockets is installed in the test environment
+    monkeypatch.setattr("importlib.util.find_spec", lambda name, *_a: None)
+    assert _preflight(ready) == EXIT_FATAL
+    assert "deepgram extra" in capsys.readouterr().err

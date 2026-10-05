@@ -38,6 +38,7 @@ from fish_audio_suite_voice.events import (
     EventBus,
     EventQueue,
     Heard,
+    Interim,
     LogLine,
     MicLevel,
     Notice,
@@ -394,6 +395,7 @@ class Conversation(VerticalScroll):
         super().__init__(**kwargs)
         self._reply: Static | None = None
         self._pending: Static | None = None
+        self._words = ""
         self._pulse: Timer | None = None
         self._expiry: Timer | None = None
         self._phase = 0
@@ -414,10 +416,26 @@ class Conversation(VerticalScroll):
             self._expiry.stop()
         self._expiry = self.set_timer(_HEARING_HOLD_S, self._drop_pending)
 
+    def show_words(self, text: str) -> None:
+        """Show what the user has said so far, on the line that is about to become their words.
+
+        Parameters
+        ----------
+        text : str
+            Everything recognised in the turn up to now. Each call replaces the last.
+        """
+        self._words = _printable(text).strip()
+        self.show_hearing()
+        if self._pending is not None:
+            self._pending.update(self._pulse_content())
+
     def _pulse_content(self) -> Content:
         levels = [(math.sin(self._phase * 0.7 + i * 0.6) + 1) / 2 for i in range(_PULSE_CELLS * 2)]
         (dots,) = wave_dots(levels, 1)
-        return Content.assemble(("you ▸ ", "bold $text-primary"), (dots, "$text-success"))
+        label = ("you ▸ ", "bold $text-primary")
+        if self._words:
+            return Content.assemble(label, (dots, "$text-success"), " ", self._words)
+        return Content.assemble(label, (dots, "$text-success"))
 
     def _advance_pulse(self) -> None:
         if self._pending is not None:
@@ -426,6 +444,7 @@ class Conversation(VerticalScroll):
 
     def _stop_pending(self) -> Static | None:
         pending, self._pending = self._pending, None
+        self._words = ""
         for timer in (self._pulse, self._expiry):
             if timer is not None:
                 timer.stop()
@@ -606,6 +625,8 @@ class VoiceApp(App[int]):
         match event:
             case MicLevel(rms=rms, need=need, source="listen") if rms >= need > 0.0:
                 conversation.show_hearing()
+            case Interim(text=text):
+                conversation.show_words(text)
             case Heard(text=text):
                 conversation.add_user(text)
             case ReplyToken() | ReplyEnd():

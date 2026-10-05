@@ -38,17 +38,21 @@ from fish_audio_suite_voice.tune import (
     AecTune,
     BargeTune,
     ListenTune,
+    SttTune,
     read_flag,
     read_float,
     read_int,
+    read_text,
 )
 
 # A fresh utterance cannot end sooner: the turn needs about 1.2 s of silence plus
 # the minimum voiced time. A faster clip is mostly pre-roll or leftover audio.
 DEFAULT_REPEAT_WINDOW_S: Final = 1.5
+OUTPUT_LATENCIES: Final = ("auto", "low", "high")
 
 __all__ = [
     "OPENROUTER_API_BASE",
+    "OUTPUT_LATENCIES",
     "VoiceCliConfig",
     "load_config",
     "system_prompt_from_file",
@@ -63,7 +67,7 @@ class VoiceCliConfig:
     Notes
     -----
     ``fish_api_key`` and ``fish_voice_id`` are empty unless the env sets them.
-    The four tune objects are read once here and passed down, so nothing below
+    The five tune objects are read once here and passed down, so nothing below
     this layer reads the environment. Process env wins over ``--env-file``.
 
     Attributes
@@ -76,6 +80,8 @@ class VoiceCliConfig:
         Barge-in gate and the pauses around a reply.
     aec : AecTune
         Echo cancellation.
+    stt : SttTune
+        Which speech recognition hears the user.
     history_turns : int
         User and assistant pairs kept in the chat history.
     repeat_window_s : float
@@ -90,6 +96,10 @@ class VoiceCliConfig:
         click when it begins. 0 turns it off.
     drop_narration : bool
         Drop stage-direction lines such as ``She smiles.`` before TTS.
+    output_latency : str
+        The sound card's playback buffer: ``"low"`` or ``"high"`` (bigger, so a busy moment
+        does not make it run dry and click). ``"auto"`` is ``"high"`` in the full-screen app,
+        which is busy drawing, and ``"low"`` otherwise.
     """
 
     fish_api_key: str = field(repr=False)
@@ -109,18 +119,25 @@ class VoiceCliConfig:
     playback: str
     system_prompt: str
     device: str | None
+    output_latency: str = "auto"
     asr_model: str = "transcribe-1-pro"
     pin_seed: bool = True
     llm: LlmTune = field(default_factory=LlmTune)
     listen: ListenTune = field(default_factory=ListenTune)
     barge: BargeTune = field(default_factory=BargeTune)
     aec: AecTune = field(default_factory=AecTune)
+    stt: SttTune = field(default_factory=SttTune)
     history_turns: int = DEFAULT_HISTORY_TURNS
     repeat_window_s: float = DEFAULT_REPEAT_WINDOW_S
     mood_lead: bool = False
     drop_narration: bool = False
     stream_tts: bool = False
     fade_ms: float = DEFAULT_FADE_MS
+
+    @property
+    def sink_latency(self) -> str:
+        """Return the buffer size the playback stream asks for: ``low`` or ``high``."""
+        return "low" if self.output_latency == "auto" else self.output_latency
 
 
 def _asr_model(default: str) -> str:
@@ -166,6 +183,15 @@ def warn_if_insecure_base(c: VoiceCliConfig) -> bool:
         )
         warned = True
     return warned
+
+
+def _output_latency() -> str:
+    """Read ``FISH_VOICE_OUTPUT_LATENCY``: ``auto``, ``low`` or ``high``."""
+    value = read_text("FISH_VOICE_OUTPUT_LATENCY", "auto").lower() or "auto"
+    if value not in OUTPUT_LATENCIES:
+        warn(f"fish-voice: ignoring FISH_VOICE_OUTPUT_LATENCY={value!r}, use auto, low or high")
+        return "auto"
+    return value
 
 
 def load_config() -> VoiceCliConfig:
@@ -236,11 +262,13 @@ def load_config() -> VoiceCliConfig:
         system_prompt=prompt.text,
         pin_seed=prompt.pin_seed,
         device=os.environ.get("FISH_VOICE_DEVICE"),
+        output_latency=_output_latency(),
         asr_model=_asr_model(d.asr_model),
         llm=LlmTune.from_env(),
         listen=ListenTune.from_env(),
         barge=BargeTune.from_env(),
         aec=AecTune.from_env(),
+        stt=SttTune.from_env(),
         history_turns=read_int(
             "FISH_VOICE_HISTORY_TURNS",
             DEFAULT_HISTORY_TURNS,

@@ -82,6 +82,24 @@ In the log, `listen speech_start` comes within a few hundred ms of `listen open`
 
 These are deliberate. A transcript that is only a hesitation ("um", "hmm") is skipped, as are lines speech-to-text invents in silence, such as "Thanks for watching". Said over the bot, "yeah" and "mm-hmm" are skipped as well, because they mean "go on". On a turn of its own, "yeah" is answered.
 
+## Streaming speech recognition (Deepgram)
+
+### `BLOCKER: FISH_VOICE_STT=deepgram needs ...`
+
+Set `DEEPGRAM_API_KEY`, and install the `deepgram` extra (`uv sync --extra deepgram`, or `pip install 'fish-audio-suite-voice[deepgram]'`). The Nix package already includes it.
+
+### `[stt] could not reach Deepgram: ... CERTIFICATE_VERIFY_FAILED`
+
+The WebSocket could not verify Deepgram's certificate. The connection uses `certifi`'s certificates, so this means `certifi` is missing or a proxy is rewriting TLS. That turn is heard with Fish ASR instead, from the speech already captured.
+
+### `stt.empty Flux was sent N kB (X s of audio) and found no speech`
+
+Flux heard the audio and recognised no words, so it never started a turn. The usual cause is a quiet mic: speech around -50 to -40 dBFS (an rms of roughly 100 to 300) was missed in testing. Raise the input volume or the mic's gain, and set `FISH_VOICE_STT_SAVE_DIR=tmp/stt` to save what was sent and listen to it. A `stt.noise` line instead means the local gate dropped a knock or a cough before anything was sent.
+
+### Turns end late, with `stt end trigger=manual`
+
+Flux was not sure enough that you had finished (its `confidence` was below `FISH_VOICE_EOT_THRESHOLD`), so the silence limit (`FISH_VOICE_SILENCE_FRAMES`) ended the turn. Lower `FISH_VOICE_EOT_THRESHOLD` (0.5 at the least) to let Flux end it sooner.
+
 ## Barge-in
 
 ### Coughs, chairs or keyboard noise interrupt the bot
@@ -103,6 +121,8 @@ You were not loud enough for long enough. Check `barge mic rms=... need=...` in 
 Look for `tts underrun after N kB played`. The speaker ran out of audio between chunks. Playback runs on its own thread, so this should be rare. If it shows up, a very slow model is the usual cause: Fish is waiting for text. Use streaming (`FISH_VOICE_STREAM_TTS=1`) and a faster model.
 
 Not every audio system reports underruns: on PipeWire the line can be missing even when the speaker briefly ran dry. If you hear a blip at sentence ends with no underrun line, compare the `tts audio` arrival times with how long each chunk plays (bytes ÷ 88,200 per second at 44.1 kHz). A chunk that arrives just as the previous one ends is the cause. `FISH_LATENCY=balanced` makes Fish deliver sooner.
+
+In `--tui` the screen shares the process with playback. It asks for a bigger sound-card buffer (`FISH_VOICE_OUTPUT_LATENCY`, `high` there by default), lets the playback thread in sooner, and collects garbage less often. An underrun line now also shows `chunk_wait` (the audio arrived late), `in_python` (the thread was busy before the write) and `write` (the call itself waited, usually for Python's lock).
 
 ### A faint click at the start or end of a sentence
 
