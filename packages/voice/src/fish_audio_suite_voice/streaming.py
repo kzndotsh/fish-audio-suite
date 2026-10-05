@@ -112,6 +112,7 @@ class _Turn:
     def hear(self, text: str) -> None:
         if text and text != self.text:
             self.text = text
+            trace("stt.turn {}", text)
             EVENTS.emit(Interim(text))
 
 
@@ -119,7 +120,6 @@ async def _read(stream: FluxStream, turn: _Turn) -> None:
     async for message in stream.messages():
         match message:
             case TurnStarted(text=text) | TurnUpdate(text=text):
-                trace("stt.turn {}", text)
                 turn.hear(text)
             case TurnEnded(text=text, confidence=confidence, trigger=trigger):
                 debug("stt.end trigger={} confidence={:.2f}", trigger, confidence)
