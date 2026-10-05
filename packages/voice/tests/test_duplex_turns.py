@@ -15,6 +15,7 @@ from fish_audio_suite_voice.config import VoiceCliConfig
 from fish_audio_suite_voice.duplex import duplex_turns
 from fish_audio_suite_voice.duplex_state import DuplexContext
 from fish_audio_suite_voice.hearing import HeardLine
+from fish_audio_suite_voice.inputs import TurnSource
 from fish_audio_suite_voice.playback import PortAudioMissingError
 from fish_audio_suite_voice.signals import DuplexSession
 from fish_audio_suite_voice.speaker import FishSpeaker
@@ -52,8 +53,20 @@ def _run(
     tokens: Callable[..., AsyncIterator[str]] | None = _hello,
     session: DuplexSession | None = None,
 ) -> int:
+    return _run_with(cfg, tts, tokens, None, session)
+
+
+def _run_with(
+    cfg: VoiceCliConfig,
+    tts: FishSpeaker,
+    tokens: Callable[..., AsyncIterator[str]] | None,
+    source: TurnSource | None,
+    session: DuplexSession | None = None,
+) -> int:
     return asyncio.run(
-        asyncio.wait_for(duplex_turns(cfg, tts, None, _FakeBackend(tokens), session), 5)
+        asyncio.wait_for(
+            duplex_turns(cfg, tts, None, _FakeBackend(tokens), session, source=source), 5
+        )
     )
 
 

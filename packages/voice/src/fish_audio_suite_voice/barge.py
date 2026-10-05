@@ -7,7 +7,7 @@ import threading
 from collections import deque
 from collections.abc import Iterator
 from dataclasses import replace
-from typing import Any, Final
+from typing import Any, Final, Protocol
 
 from fish_audio_suite_kit import MS_PER_S
 from fish_audio_suite_voice.aec import (
@@ -43,6 +43,7 @@ __all__ = [
     "MIC_LEVEL_EVERY_FRAMES",
     "SAMPLE_RATE",
     "BargeGate",
+    "StopFlag",
     "barge_rms_need",
     "frame_is_speech",
     "mic_frames",
@@ -313,6 +314,14 @@ class BargeGate:
         return thread
 
 
+class StopFlag(Protocol):
+    """Anything with ``is_set``, such as a ``threading.Event``, that ends a mic stream."""
+
+    def is_set(self) -> bool:
+        """Return whether the stream should stop."""
+        ...
+
+
 def frame_is_speech(vad: Any, frame: bytes) -> bool:
     """Return whether WebRTC VAD scores this 16 kHz frame as speech."""
     return bool(vad.is_speech(frame, SAMPLE_RATE))
@@ -334,7 +343,7 @@ def _take_full_frames(pending: bytearray, chunk: bytes, frame_bytes: int) -> lis
 
 def mic_frames(
     device: str | int | None,
-    stop: threading.Event | None,
+    stop: StopFlag | None,
     *,
     timeout: float,
     aec: EchoCanceller | None = None,
@@ -345,7 +354,7 @@ def mic_frames(
     ----------
     device : str or int or None
         PortAudio input.
-    stop : threading.Event or None
+    stop : StopFlag or None
         Ends the stream when set.
     timeout : float
         Seconds to wait for audio before checking ``stop`` again.

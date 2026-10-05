@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import collections
 import io
-import threading
 from typing import Any, Final
 
 from fish_audio_suite_voice.aec import EchoCanceller, pcm_rms
@@ -15,6 +14,7 @@ from fish_audio_suite_voice.barge import (
     LISTEN_HEARTBEAT_FRAMES,
     MIC_LEVEL_EVERY_FRAMES,
     SAMPLE_RATE,
+    StopFlag,
     frame_is_speech,
     mic_frames,
 )
@@ -304,7 +304,7 @@ def _prime_listen(heard: _Listen, pcm: bytes) -> None:
 
 def record_utterance(
     device: str | int | None = None,
-    quit_requested: threading.Event | None = None,
+    quit_requested: StopFlag | None = None,
     *,
     prefix: bytes = b"",
     tune: ListenTune | None = None,
@@ -316,8 +316,8 @@ def record_utterance(
     ----------
     device : str or int or None, optional
         PortAudio input. None uses the host default.
-    quit_requested : threading.Event or None, optional
-        The session's quit flag (Ctrl+C). When set, return None.
+    quit_requested : StopFlag or None, optional
+        Ends the listen when set, such as the session's quit flag (Ctrl+C). Returns None.
     prefix : bytes, optional
         PCM kept from the barge-in that interrupted the previous reply.
         The next listen starts from this clip instead of a cooldown.

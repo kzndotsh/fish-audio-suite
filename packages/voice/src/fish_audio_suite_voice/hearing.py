@@ -21,6 +21,7 @@ from fish_audio_suite_kit import (
     trace_id_of,
 )
 from fish_audio_suite_voice.asr import fish_asr
+from fish_audio_suite_voice.barge import StopFlag
 from fish_audio_suite_voice.console import console_print
 from fish_audio_suite_voice.debug import (
     clear_turn,
@@ -165,8 +166,26 @@ async def recognize(
     )
 
 
-async def hear_line(ctx: DuplexContext, last_user: str) -> HeardLine:
-    """Open the mic, record one utterance, and return what was heard."""
+async def hear_line(
+    ctx: DuplexContext, last_user: str, *, stop: StopFlag | None = None
+) -> HeardLine:
+    """Open the mic, record one utterance, and return what was heard.
+
+    Parameters
+    ----------
+    ctx : DuplexContext
+        The session.
+    last_user : str
+        The previous line, used to drop an echo of it.
+    stop : StopFlag or None, optional
+        Ends the recording when set, in place of the session's quit flag. Pass one
+        that is set on quit too, or Ctrl+C will not stop the mic.
+
+    Returns
+    -------
+    HeardLine
+        What the loop should do next.
+    """
     if debug_enabled():
         debug("listen.waiting for you")
     else:
@@ -181,7 +200,7 @@ async def hear_line(ctx: DuplexContext, last_user: str) -> HeardLine:
         wav = await asyncio.to_thread(
             record_utterance,
             ctx.device,
-            ctx.session.quit_requested,
+            ctx.session.quit_requested if stop is None else stop,
             prefix=prefix,
             tune=ctx.config.listen,
             aec=ctx.session.aec,

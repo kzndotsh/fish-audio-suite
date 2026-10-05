@@ -17,6 +17,7 @@ from fish_audio_suite_voice.duplex_state import EXIT_FATAL, EXIT_OK, DuplexConte
 from fish_audio_suite_voice.events import EVENTS, Bye, TurnEnded
 from fish_audio_suite_voice.hearing import HeardLine, hear_line
 from fish_audio_suite_voice.history import opening_history, remember_user
+from fish_audio_suite_voice.inputs import TurnSource
 from fish_audio_suite_voice.llm import ChatBackend
 from fish_audio_suite_voice.reply import collect_reply, speak_reply, stream_turn, turn_summary
 from fish_audio_suite_voice.signals import DuplexSession
@@ -122,6 +123,8 @@ async def duplex_turns(
     device: str | int | None,
     backend: ChatBackend,
     session: DuplexSession | None = None,
+    *,
+    source: TurnSource | None = None,
 ) -> int:
     """Mic, Fish ASR, LLM, then one TTS turn on a private loop, until quit.
 
@@ -138,6 +141,8 @@ async def duplex_turns(
     session : DuplexSession or None, optional
         Cancel flags and the echo canceller. A new one is created when omitted.
         Pass your own to wire ``request_quit`` to a signal handler.
+    source : TurnSource or None, optional
+        Where each turn comes from. The mic when omitted.
 
     Returns
     -------
@@ -168,7 +173,9 @@ async def duplex_turns(
         )
         last_user = ""
         while True:
-            heard = await hear_line(ctx, last_user)
+            heard = await (
+                hear_line(ctx, last_user) if source is None else source.next_turn(ctx, last_user)
+            )
             if heard.kind == "bye":
                 return bye()
             if heard.kind == "fatal":
