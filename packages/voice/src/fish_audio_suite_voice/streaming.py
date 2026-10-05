@@ -21,7 +21,7 @@ from typing import Final, Literal
 from fish_audio_suite_kit import elapsed_ms, make_traceparent, trace_id_of
 from fish_audio_suite_voice.aec import EchoCanceller
 from fish_audio_suite_voice.barge import FRAME_BYTES, SAMPLE_RATE, StopFlag
-from fish_audio_suite_voice.debug import debug, warn
+from fish_audio_suite_voice.debug import debug, trace, warn
 from fish_audio_suite_voice.deepgram import (
     DeepgramError,
     FluxStream,
@@ -107,6 +107,7 @@ class _Turn:
         self.ended = False
         self.error = ""
         self.last_voice = 0.0
+        self.sent = 0  # bytes of audio sent to Flux
 
     def hear(self, text: str) -> None:
         if text and text != self.text:
@@ -118,8 +119,10 @@ async def _read(stream: FluxStream, turn: _Turn) -> None:
     async for message in stream.messages():
         match message:
             case TurnStarted(text=text) | TurnUpdate(text=text):
+                trace("stt.turn {}", text)
                 turn.hear(text)
-            case TurnEnded(text=text):
+            case TurnEnded(text=text, confidence=confidence, trigger=trigger):
+                debug("stt.end trigger={} confidence={:.2f}", trigger, confidence)
                 turn.hear(text)
                 turn.ended = True
                 return
@@ -127,7 +130,7 @@ async def _read(stream: FluxStream, turn: _Turn) -> None:
                 turn.error = f"{code}: {description}"
                 return
             case StreamWarning(code=code, description=description):
-                debug("deepgram.warning {}: {}", code, description)
+                debug("stt.warning {}: {}", code, description)
                 if code == _NO_TURN_CODE:  # nothing was said that Flux took for speech
                     turn.ended = True
                     return
@@ -148,10 +151,12 @@ async def _send(
         pending += frame
         if len(pending) >= _SEND_BYTES:
             await stream.send_audio(bytes(pending))
+            turn.sent += len(pending)
             pending.clear()
         item = await frames.get()
     if pending:
         await stream.send_audio(bytes(pending))
+        turn.sent += len(pending)
 
 
 class _Capture:
@@ -219,10 +224,11 @@ async def _connect(
     try:
         await stream.open()
     except DeepgramError as exc:
-        warn(f"[deepgram] {exc}")
+        warn(f"[stt] {exc}")
         if exc.fatal:
             return "fatal"
         return StreamFallback(capture.captured())
+    debug("stt.open connected, sending speech")
     return None
 
 
@@ -262,16 +268,20 @@ def _outcome(
 ) -> StreamedTurn | StreamFallback | Stopped:
     """Turn what happened into the result."""
     if turn.error:
-        warn(f"[deepgram] {turn.error}")
+        warn(f"[stt] {turn.error}")
         return "again"
     if reader_done and not turn.ended:
-        warn("[deepgram] the connection closed before the turn ended")
+        warn("[stt] the connection closed before the turn ended")
         return "again"
     if not turn.ended and not local_end:
         return "stopped"
     text = turn.text.strip()
     if not text:
-        debug("deepgram.empty turn")
+        debug(
+            "stt.empty Flux was sent {} kB ({:.1f} s of audio) and found no speech",
+            turn.sent // 1000,
+            turn.sent / (SAMPLE_RATE * 2),
+        )
         return "noise"
     started = turn.last_voice or time.perf_counter()
     return StreamedTurn(
@@ -326,7 +336,7 @@ async def stream_turn(
         (Deepgram could not be reached, so the batch recogniser takes over this turn).
     """
     if not stt.deepgram_key:
-        warn("[deepgram] DEEPGRAM_API_KEY is not set")
+        warn("[stt] DEEPGRAM_API_KEY is not set")
         return "fatal"
     url = flux_url(
         stt.deepgram_model,

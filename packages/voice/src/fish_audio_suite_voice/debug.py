@@ -188,6 +188,7 @@ _TAG_COLORS: Final = {
     "you": "96",
     "listen": "36",
     "asr": "33",
+    "stt": "33",
     "llm": "35",
     "turn": "37",
     "tts": "32",
