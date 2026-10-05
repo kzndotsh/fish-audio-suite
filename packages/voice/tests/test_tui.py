@@ -547,3 +547,25 @@ def test_a_typed_line_and_barge_in_levels_do_not_start_the_pulse() -> None:
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
+
+
+def test_control_characters_in_untrusted_text_never_reach_the_screen() -> None:
+    harness = _Harness()
+    evil = "a\x1b]0;pwned\x07b\x1b[2Jc\x9bd\x08e\tf"
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        harness.bus.emit(Heard(evil, 1.0))
+        harness.bus.emit(ReplyToken(evil))
+        harness.bus.emit(Notice(evil))
+        harness.bus.emit(LogLine("INFO", "llm", evil))
+        await pilot.pause(0.1)
+        shown = [*harness.messages(), *harness.log_lines()]
+        assert len(shown) == 4
+        for text in shown:
+            assert not any(
+                (ord(ch) < 32 and ch not in "\n\t") or 0x7F <= ord(ch) <= 0x9F for ch in text
+            )
+        assert "you ▸ a]0;pwnedb[2Jcde\tf" in shown  # the printable remainder is kept
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0

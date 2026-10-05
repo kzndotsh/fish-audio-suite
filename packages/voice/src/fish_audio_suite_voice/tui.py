@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 import threading
+import unicodedata
 from collections import deque
 from collections.abc import Awaitable, Callable
 from typing import Any, ClassVar
@@ -63,10 +64,20 @@ _PULSE_BARS = "\u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588"
 _NO_TURNS = "no turns yet"
 
 
+def _printable(text: str) -> str:
+    """Return ``text`` without control characters, which would reach the terminal as escapes.
+
+    Replies, transcripts and log lines are untrusted: an ESC in one could clear the screen
+    or retitle the window. A newline and a tab are kept.
+    """
+    return "".join(ch for ch in text if ch in "\n\t" or unicodedata.category(ch) != "Cc")
+
+
 def _cue_content(text: str) -> Content:
     """Return ``text`` as content with each ``[cue]`` styled and nothing read as markup."""
     parts: list[tuple[str, str] | str] = [
-        (piece, "italic $text-accent") if is_cue else piece for piece, is_cue in split_cues(text)
+        (piece, "italic $text-accent") if is_cue else piece
+        for piece, is_cue in split_cues(_printable(text))
     ]
     return Content.assemble(*parts)
 
@@ -186,7 +197,7 @@ class Conversation(VerticalScroll):
         If the "you" line was pulsing, it becomes this line where it stands.
         """
         self._reply = None
-        content = Content.assemble(("you ▸ ", "bold $text-primary"), text)
+        content = Content.assemble(("you ▸ ", "bold $text-primary"), _printable(text))
         pending = self._stop_pending()
         if pending is None:
             self._add("you", content)
@@ -196,7 +207,7 @@ class Conversation(VerticalScroll):
 
     def add_note(self, text: str) -> None:
         """Add a dim status line, such as a retry or an interruption."""
-        self._add("note", Content.assemble((text, "dim")))
+        self._add("note", Content.assemble((_printable(text), "dim")))
 
     def show_reply(self, text: str) -> None:
         """Show the reply so far, adding its line on the first call and updating it after."""
@@ -339,7 +350,7 @@ class VoiceApp(App[int]):
             case Notice(text=text):
                 conversation.add_note(text)
             case LogLine(level=level, tag=tag, text=text):
-                self.query_one("#log", Log).write_line(f"{level[:1]} {tag:<6} {text}")
+                self.query_one("#log", Log).write_line(_printable(f"{level[:1]} {tag:<6} {text}"))
             case Bye(code=code):
                 self._on_bye(code)
             case _:
