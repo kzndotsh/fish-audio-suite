@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import threading
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from time import monotonic
@@ -21,6 +21,7 @@ from fish_audio_suite_kit import LatencySnapshot
 from fish_audio_suite_voice.debug import log_tag, warn
 
 __all__ = [
+    "DEFAULT_KEYS",
     "EVENTS",
     "BargedIn",
     "Bye",
@@ -255,6 +256,19 @@ class SessionAction(StrEnum):
     MUTE = "mute"
     UNMUTE = "unmute"
     QUIT = "quit"
+
+
+# Keys a terminal always passes on: Enter, Escape, function keys and Ctrl with a letter
+# that is not also another key. Not Ctrl+C (copy in a UI, interrupt in a shell), not
+# Ctrl+I or Ctrl+M (a terminal sends them as Tab and Enter), and nothing with Cmd,
+# Option or the Windows key, which usually never arrive. Mute and unmute share a key.
+DEFAULT_KEYS: Final[Mapping[SessionAction, str]] = {
+    SessionAction.SEND: "enter",
+    SessionAction.INTERRUPT: "escape",
+    SessionAction.MUTE: "f2",
+    SessionAction.UNMUTE: "f2",
+    SessionAction.QUIT: "ctrl+q",
+}
 
 
 @dataclass(frozen=True, slots=True)

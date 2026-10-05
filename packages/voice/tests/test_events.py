@@ -32,6 +32,7 @@ from fish_audio_suite_voice.cli import _quit_line  # pyright: ignore[reportPriva
 from fish_audio_suite_voice.debug import configure_voice_logging
 from fish_audio_suite_voice.duplex import duplex_turns
 from fish_audio_suite_voice.events import (
+    DEFAULT_KEYS,
     EVENTS,
     BargedIn,
     Bye,
@@ -45,6 +46,7 @@ from fish_audio_suite_voice.events import (
     Notice,
     ReplyEnd,
     ReplyToken,
+    SessionAction,
     SessionState,
     Speaking,
     StateChanged,
@@ -490,3 +492,27 @@ def test_a_cancelled_session_still_sends_bye_and_stops_the_console(
     EVENTS.emit(Listening())
     EVENTS.emit(Heard("late", 1.0))
     assert capsys.readouterr().out == ""
+
+
+_UNIVERSAL_KEYS = {"enter", "escape", "space", "tab", *(f"f{n}" for n in range(1, 11))}
+_NOT_SAFE = {"ctrl+c", "ctrl+i", "ctrl+j", "ctrl+m", "ctrl+h", "ctrl+z", "ctrl+s", "ctrl+d"}
+
+
+def test_every_action_has_a_default_key_a_terminal_really_sends() -> None:
+    assert set(DEFAULT_KEYS) == set(SessionAction)
+    for action, key in DEFAULT_KEYS.items():
+        assert key == key.lower(), f"{action}: write keys in lower case"
+        assert not any(w in key for w in ("cmd", "option", "alt", "super", "win", "meta")), (
+            f"{action}: {key} is a modifier terminals often swallow"
+        )
+        assert key not in _NOT_SAFE, f"{action}: {key} is another key or a terminal shortcut"
+        is_ctrl_letter = key.startswith("ctrl+") and len(key) == len("ctrl+x")
+        assert key in _UNIVERSAL_KEYS or is_ctrl_letter, f"{action}: {key} may not reach the app"
+
+
+def test_default_keys_do_not_clash_except_the_mute_toggle() -> None:
+    assert DEFAULT_KEYS[SessionAction.MUTE] == DEFAULT_KEYS[SessionAction.UNMUTE]
+    keys = [k for a, k in DEFAULT_KEYS.items() if a is not SessionAction.UNMUTE]
+    assert len(keys) == len(set(keys))
+    # A printable key would be typed into the input line, so none is a plain letter.
+    assert all(len(k) > 1 for k in keys)
