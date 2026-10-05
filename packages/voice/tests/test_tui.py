@@ -704,3 +704,18 @@ def test_bordered_widgets_share_the_screens_background_so_none_shows_past_its_bo
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
+
+
+def test_focus_does_not_tint_past_the_border_of_the_log_conversation_or_input() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        for selector in ("#log", "#conversation", "#line"):
+            widget = harness.app.query_one(selector)
+            widget.focus()
+            await pilot.pause(0.05)
+            assert widget.has_focus, selector
+            assert widget.styles.background_tint.a == 0, f"{selector} is tinted when focused"
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0

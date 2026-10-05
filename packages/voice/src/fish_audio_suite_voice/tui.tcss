@@ -127,3 +127,20 @@ Conversation {
     scrollbar-color-hover: $secondary;
     scrollbar-color-active: $primary;
 }
+
+/* A focused widget gets a lighter tint over its whole box by default, which includes the
+   border cells and reads as a halo past the border. The border colour marks focus instead. */
+#log,
+#line,
+#conversation {
+    background-tint: transparent;
+
+    &:focus {
+        background-tint: transparent;
+    }
+}
+
+#log:focus,
+#conversation:focus {
+    border: round $primary;
+}
