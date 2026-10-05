@@ -59,6 +59,12 @@ SPEAKER_PEAK_FLOOR_DB: Final = -45.0  # a very quiet reply is not stretched past
 # stays empty instead of being stretched up to look like speech, while speech still reaches
 # the top of the bar.
 MIC_PEAK_FLOOR_DB: Final = -24.0
+# A mic hears things that are not speech: a plosive, a key, a bump. If one such block set the
+# reference at once, every syllable after it would look small until it was forgotten. So the
+# mic's reference can only rise this fast, which a single block barely moves, and it is
+# forgotten faster than the speaker's.
+MIC_PEAK_RISE_DB_PER_S: Final = 40.0
+MIC_PEAK_FALL_DB_PER_S: Final = 4.0
 _BRAILLE: Final = 0x2800  # the first Braille pattern, which has no dots
 # The bit that raises each dot of a Braille cell, by dot row (top to bottom) and column.
 _DOT_BITS: Final = ((0x01, 0x08), (0x02, 0x10), (0x04, 0x20), (0x40, 0x80))
@@ -449,10 +455,17 @@ class AutoLevel:
     floor_peak_db : float
         The peak never falls below this, so a signal that is quiet all the time (a room
         with nobody speaking) is not stretched up to full height.
+    rise_db_per_s : float or None
+        The most the peak may rise in a second, or None to rise at once. A limit stops one
+        loud block, such as a plosive, from setting the scale for what follows.
+    fall_db_per_s : float
+        How fast the peak is forgotten.
     """
 
     peak_db: float = SPEAKER_START_DB
     floor_peak_db: float = -120.0
+    rise_db_per_s: float | None = None
+    fall_db_per_s: float = SPEAKER_PEAK_FALL_DB_PER_S
 
     def update(self, rms: float, dt: float) -> float:
         """Measure one block of audio.
@@ -481,6 +494,11 @@ class AutoLevel:
         """
         ratio = rms / _FULL_SCALE  # a tiny rms can underflow to zero here, so test the ratio
         db = max(_QUIETEST_DB, 20 * math.log10(ratio)) if ratio > 0 else _QUIETEST_DB
-        fallen = self.peak_db - SPEAKER_PEAK_FALL_DB_PER_S * max(0.0, dt)
-        self.peak_db = max(db, fallen, self.floor_peak_db)
+        dt = max(0.0, dt)
+        if db > self.peak_db:
+            reach = db if self.rise_db_per_s is None else self.peak_db + self.rise_db_per_s * dt
+            self.peak_db = min(db, reach)
+        else:
+            self.peak_db = max(db, self.peak_db - self.fall_db_per_s * dt)  # never below this block
+        self.peak_db = max(self.peak_db, self.floor_peak_db)
         return min(1.0, max(0.0, (db - (self.peak_db - SPEAKER_SPAN_DB)) / SPEAKER_SPAN_DB))

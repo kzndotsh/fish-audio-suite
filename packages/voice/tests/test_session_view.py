@@ -29,7 +29,9 @@ from fish_audio_suite_voice.events import (
 )
 from fish_audio_suite_voice.session_view import (
     BODY_RELEASE_PER_S,
+    MIC_PEAK_FALL_DB_PER_S,
     MIC_PEAK_FLOOR_DB,
+    MIC_PEAK_RISE_DB_PER_S,
     PEAK_HOLD_S,
     PEAK_RELEASE_PER_S,
     SPEAKER_PEAK_FALL_DB_PER_S,
@@ -346,3 +348,29 @@ def test_auto_level_with_a_floor_does_not_stretch_a_signal_that_is_always_quiet(
     assert floored.update(32768.0 * 10 ** (-24.0 / 20), 0.06) == pytest.approx(
         1.0
     )  # speech fills it
+
+
+def test_a_limited_rise_lets_sustained_speech_set_the_scale_but_not_one_loud_block() -> None:
+    loud = 32768.0 * 10 ** (-6.0 / 20)  # 18 dB above the floor
+    hot = AutoLevel(
+        peak_db=MIC_PEAK_FLOOR_DB,
+        floor_peak_db=MIC_PEAK_FLOOR_DB,
+        rise_db_per_s=MIC_PEAK_RISE_DB_PER_S,
+        fall_db_per_s=MIC_PEAK_FALL_DB_PER_S,
+    )
+    hot.update(loud, 0.06)  # one block
+    assert hot.peak_db == pytest.approx(MIC_PEAK_FLOOR_DB + MIC_PEAK_RISE_DB_PER_S * 0.06)
+    assert hot.peak_db < MIC_PEAK_FLOOR_DB + 3.0  # barely moved
+    for _ in range(12):  # three quarters of a second of it
+        hot.update(loud, 0.06)
+    assert hot.peak_db == pytest.approx(-6.0)  # sustained loud speech does set the scale
+    for _ in range(25):  # then a second and a half of quiet
+        hot.update(0.0, 0.06)
+    assert hot.peak_db == pytest.approx(-6.0 - MIC_PEAK_FALL_DB_PER_S * 1.5)  # forgotten steadily
+
+
+def test_a_peak_with_no_rise_limit_still_rises_at_once() -> None:
+    assert AutoLevel().rise_db_per_s is None
+    auto = AutoLevel()
+    auto.update(32768.0 * 10 ** (-6.0 / 20), 0.0)  # even with no time having passed
+    assert auto.peak_db == pytest.approx(-6.0)

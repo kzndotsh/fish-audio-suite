@@ -949,11 +949,11 @@ def test_the_mic_and_the_speaker_draw_the_same_shape_whatever_their_loudness() -
         return 32768.0 * 10 ** ((peak_db + below) / 20)
 
     def mic(wave: Waveform) -> None:
-        for step, below in enumerate(shape):  # a quiet mic: its loudest moment is -20 dB
-            wave.push(rms(-20.0, below), 1.0, now=step * 0.06)
+        for step, below in enumerate(shape):  # a mic whose loudest moment is -24 dB
+            wave.push(rms(MIC_PEAK_FLOOR_DB, below), 1.0, now=step * 0.06)
 
     def speaker(wave: Waveform) -> None:
-        for step, below in enumerate(shape):  # a much hotter voice: -6 dB
+        for step, below in enumerate(shape):  # a much hotter voice: -6 dB, 18 dB louder
             wave.push_speaker(rms(-6.0, below), now=step * 0.06)
 
     assert _strip_after(mic) == _strip_after(speaker)
@@ -1091,3 +1091,22 @@ def test_a_reply_after_a_pause_is_scaled_afresh_not_against_the_last_reply() -> 
             assert _column_dots(wave, -1) < same_reply  # judged against the loud moment just before
 
     asyncio.run(main())
+
+
+def test_one_loud_transient_does_not_shrink_the_speech_that_follows_it() -> None:
+    def speech(wave: Waveform, *, transient: bool) -> None:
+        clock = 0.0
+        for rms in ([15000.0] if transient else [150.0]) + [150.0] * 2:  # a bump, or nothing
+            wave.push(rms, 200.0, now=clock)
+            clock += 0.06
+        for rms in (3000.0, 4500.0, 4000.0, 3500.0, 4800.0, 4200.0):  # then ordinary speech
+            wave.push(rms, 200.0, now=clock)
+            clock += 0.06
+
+    bumped = _strip_after(lambda wave: speech(wave, transient=True))
+    clean = _strip_after(lambda wave: speech(wave, transient=False))
+
+    def height(lines: list[str]) -> int:
+        return sum(_dots(ch) for line in lines for ch in line[-4:])  # the speech's own cells
+
+    assert height(bumped) >= 0.85 * height(clean)  # a bump costs it almost nothing

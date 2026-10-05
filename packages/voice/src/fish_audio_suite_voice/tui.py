@@ -51,7 +51,9 @@ from fish_audio_suite_voice.events import (
 from fish_audio_suite_voice.inputs import LiveInput
 from fish_audio_suite_voice.reply import turn_summary
 from fish_audio_suite_voice.session_view import (
+    MIC_PEAK_FALL_DB_PER_S,
     MIC_PEAK_FLOOR_DB,
+    MIC_PEAK_RISE_DB_PER_S,
     SPEAKER_PEAK_FLOOR_DB,
     AutoLevel,
     Ballistics,
@@ -132,7 +134,12 @@ class Waveform(Widget):
         self._cursor_on = True
 
     def _reset_meters(self) -> None:
-        self._mic_auto = AutoLevel(peak_db=MIC_PEAK_FLOOR_DB, floor_peak_db=MIC_PEAK_FLOOR_DB)
+        self._mic_auto = AutoLevel(
+            peak_db=MIC_PEAK_FLOOR_DB,
+            floor_peak_db=MIC_PEAK_FLOOR_DB,
+            rise_db_per_s=MIC_PEAK_RISE_DB_PER_S,
+            fall_db_per_s=MIC_PEAK_FALL_DB_PER_S,
+        )
         self._speaker_auto = AutoLevel(floor_peak_db=SPEAKER_PEAK_FLOOR_DB)
         self._mic_ease = Ballistics()
         self._speaker_ease = Ballistics()
