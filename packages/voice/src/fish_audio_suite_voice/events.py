@@ -221,14 +221,17 @@ class TurnEnded:
 
 @dataclass(frozen=True, slots=True)
 class Bye:
-    """The session is ending.
+    """The session is over, sent once however it ended.
 
     Attributes
     ----------
+    code : int
+        The exit code: 0 for a normal quit, 2 for a fatal error or a crash.
     at : float
         ``time.monotonic()`` when the event was made. Not part of equality.
     """
 
+    code: int = 0
     at: float = field(default_factory=_now, compare=False, kw_only=True)
 
 
@@ -303,6 +306,15 @@ def next_state(state: SessionState, event: Event) -> SessionState:
             return state
 
 
+class _Subscription:
+    """One call to ``subscribe``, so the same callback can subscribe twice."""
+
+    __slots__ = ("callback",)
+
+    def __init__(self, callback: Callable[[Event], None]) -> None:
+        self.callback = callback
+
+
 class EventBus:
     """Hands each event to every subscriber, in the order they subscribed.
 
@@ -316,7 +328,7 @@ class EventBus:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._subscribers: list[Callable[[Event], None]] = []
+        self._subscribers: list[_Subscription] = []
         # A failure is reported through the log, which a subscriber may itself
         # be listening to. This stops that from going round in circles.
         self._reporting = threading.local()
@@ -334,13 +346,14 @@ class EventBus:
         Callable
             Call it to stop. Calling it twice is harmless.
         """
+        subscription = _Subscription(callback)
         with self._lock:
-            self._subscribers.append(callback)
+            self._subscribers.append(subscription)
 
         def unsubscribe() -> None:
             with self._lock:
-                if callback in self._subscribers:
-                    self._subscribers.remove(callback)
+                if subscription in self._subscribers:
+                    self._subscribers.remove(subscription)
 
         return unsubscribe
 
@@ -354,9 +367,9 @@ class EventBus:
         """
         with self._lock:
             subscribers = tuple(self._subscribers)
-        for callback in subscribers:
+        for subscription in subscribers:
             try:
-                callback(event)
+                subscription.callback(event)
             except Exception as e:  # noqa: BLE001 - a display must never break the session
                 if getattr(self._reporting, "on", False):
                     continue

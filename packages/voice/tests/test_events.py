@@ -48,7 +48,7 @@ from fish_audio_suite_voice.events import (
     next_state,
     notice,
 )
-from fish_audio_suite_voice.hearing import hear_line
+from fish_audio_suite_voice.hearing import HeardLine, hear_line
 from fish_audio_suite_voice.listen import _Listen  # pyright: ignore[reportPrivateUsage]
 from fish_audio_suite_voice.speaker import FishSpeaker
 from fish_audio_suite_voice.tune import ListenTune
@@ -350,3 +350,46 @@ def test_the_first_audio_of_a_reply_is_reported_as_speaking(
     kinds = [type(e) for e in seen]
     assert kinds.index(Speaking) > kinds.index(ReplyEnd)
     assert kinds.index(Speaking) < kinds.index(TurnEnded)
+
+
+def test_the_same_callback_can_subscribe_twice_and_each_unsubscribes_alone() -> None:
+    bus = EventBus()
+    got: list[Event] = []
+    first = bus.subscribe(got.append)
+    bus.subscribe(got.append)
+    bus.emit(Listening())
+    assert len(got) == 2
+    first()
+    first()  # the second call must not remove the other subscription
+    bus.emit(Listening())
+    assert len(got) == 3
+
+
+@pytest.mark.parametrize(
+    ("heard", "code"), [(HeardLine("fatal", code=2), 2), (HeardLine("bye"), 0)]
+)
+def test_bye_is_sent_once_with_the_exit_code_however_the_session_ends(
+    monkeypatch: pytest.MonkeyPatch,
+    seen: list[Event],
+    capsys: pytest.CaptureFixture[str],
+    heard: HeardLine,
+    code: int,
+) -> None:
+    tts = FishSpeaker(api_key="k", voice_id="voice")
+    _Loop(monkeypatch, heard)
+    assert _run(_quick(), tts, _hello) == code
+    assert [e for e in seen if isinstance(e, Bye)] == [Bye(code)]
+    assert next(e for e in seen if isinstance(e, Bye)).code == code
+    assert ("bye" in capsys.readouterr().out) is (code == 0)
+
+
+def test_bye_is_sent_when_the_session_crashes(
+    monkeypatch: pytest.MonkeyPatch, seen: list[Event]
+) -> None:
+    async def broken(_ctx: object, _last: str) -> HeardLine:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr("fish_audio_suite_voice.duplex.hear_line", broken)
+    with pytest.raises(RuntimeError, match="boom"):
+        _run(_quick(), FishSpeaker(api_key="k", voice_id="voice"), _hello)
+    assert [e for e in seen if isinstance(e, Bye)] == [Bye(2)]

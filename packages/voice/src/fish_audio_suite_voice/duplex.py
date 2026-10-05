@@ -32,14 +32,13 @@ __all__ = [
 
 
 def bye() -> int:
-    """Report the end of the session and return success.
+    """Return the exit code of a normal quit.
 
     Returns
     -------
     int
         ``EXIT_OK`` (0). Fatal Fish and PortAudio failures use 2 instead.
     """
-    EVENTS.emit(Bye())
     return EXIT_OK
 
 
@@ -152,12 +151,31 @@ async def duplex_turns(
     One sampled trace id is shared by ASR and the TTS websocket for that turn.
     Barge-in keeps the audio that tripped the gate and skips the post-speak
     cooldown. ``session.request_quit`` cancels the in-flight reply and ends
-    the loop.
+    the loop. A ``Bye`` event carrying the exit code is sent once however the
+    session ends, including a fatal error or a crash.
     """
     session = session or DuplexSession(aec=EchoCanceller(c.aec))
+    printer = ConsoleSink(EVENTS) if console else None
+    code = EXIT_FATAL  # a crash ends the session like a fatal error
+    try:
+        code = await _session(c, tts, device, backend, session=session, source=source)
+        return code
+    finally:
+        EVENTS.emit(Bye(code))
+        if printer is not None:
+            printer.close()
+
+
+async def _session(
+    c: VoiceCliConfig,
+    tts: FishSpeaker,
+    device: str | int | None,
+    backend: ChatBackend,
+    *,
+    session: DuplexSession,
+    source: TurnSource | None,
+) -> int:
     async with AsyncExitStack() as stack:
-        if console:
-            stack.callback(ConsoleSink(EVENTS).close)
         asr_http = await stack.enter_async_context(asr_client())
         history, pinned = opening_history(c.system_prompt, seed=c.pin_seed)
         ctx = DuplexContext(

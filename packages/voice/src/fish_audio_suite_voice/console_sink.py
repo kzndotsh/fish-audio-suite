@@ -6,6 +6,7 @@ from collections.abc import Callable
 
 from fish_audio_suite_voice.console import console_print, end_reply_line, write_reply_token
 from fish_audio_suite_voice.debug import conversation, debug, debug_enabled, trace
+from fish_audio_suite_voice.duplex_state import EXIT_OK
 from fish_audio_suite_voice.events import (
     Bye,
     Event,
@@ -74,7 +75,8 @@ class ConsoleSink:
                     trace("turn.timing {}", snapshot.log_line())
                 else:
                     console_print(summary, flush=True)
-            case Bye():
-                console_print("\nbye")
+            case Bye(code=code):
+                if code == EXIT_OK:
+                    console_print("\nbye")
             case _:
                 return
