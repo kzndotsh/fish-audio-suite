@@ -56,7 +56,7 @@ _NO_TURNS = "no turns yet"
 def _cue_content(text: str) -> Content:
     """Return ``text`` as content with each ``[cue]`` styled and nothing read as markup."""
     parts: list[tuple[str, str] | str] = [
-        (piece, "italic $accent") if is_cue else piece for piece, is_cue in split_cues(text)
+        (piece, "italic $text-accent") if is_cue else piece for piece, is_cue in split_cues(text)
     ]
     return Content.assemble(*parts)
 
@@ -176,7 +176,7 @@ class VoiceApp(App[int]):
             case Heard(text=text):
                 self._reply_widget = None
                 self._reply_text = ""
-                self._add_message("you", Content.assemble(("you ▸ ", "bold $primary"), text))
+                self._add_message("you", Content.assemble(("you ▸ ", "bold $text-primary"), text))
             case ReplyToken(text=text):
                 self._reply_text += text
                 self._show_reply()
@@ -204,7 +204,7 @@ class VoiceApp(App[int]):
         self._add_message("note", Content.assemble((text, "dim")))
 
     def _show_reply(self) -> None:
-        content = Content.assemble(("llm ▸ ", "bold $accent"), _cue_content(self._reply_text))
+        content = Content.assemble(("llm ▸ ", "bold $text-accent"), _cue_content(self._reply_text))
         if self._reply_widget is None:
             self._reply_widget = self._add_message("llm", content)
         else:

@@ -383,3 +383,24 @@ def test_the_stylesheet_ships_inside_the_package_next_to_the_app() -> None:
     # Hatchling includes every file under the package directory in the wheel.
     config = (Path(tui_module.__file__).parents[2] / "pyproject.toml").read_text(encoding="utf-8")
     assert 'packages = ["src/fish_audio_suite_voice"]' in config
+
+
+def test_the_app_draws_under_every_builtin_theme() -> None:
+    """Colors come from theme variables, so a theme that lacks one would break the screen."""
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        harness.bus.emit(Heard("hello", 1.0))
+        harness.bus.emit(ReplyEnd("[calm] hi there"))
+        harness.bus.emit(Speaking())
+        await pilot.pause(0.05)
+        themes = sorted(harness.app.available_themes)
+        assert len(themes) >= 5
+        for name in themes:
+            harness.app.theme = name
+            await pilot.pause(0.02)
+            assert harness.app.theme == name
+            assert harness.messages() == ["you ▸ hello", "llm ▸ [calm] hi there"]
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0

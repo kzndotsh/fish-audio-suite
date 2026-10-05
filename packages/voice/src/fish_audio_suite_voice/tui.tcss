@@ -14,7 +14,7 @@ Screen {
 #conversation {
     width: 2fr;
     border: round $primary;
-    border-title-color: $primary;
+    border-title-color: $text-primary;
     padding: 0 1;
 
     .message {
@@ -35,7 +35,7 @@ Screen {
     #mic-box,
     #latency-box {
         border: $panel-border;
-        border-title-color: $secondary;
+        border-title-color: $text-secondary;
         padding: 0 1;
     }
 
@@ -48,19 +48,19 @@ Screen {
 
 #status {
     &.state-listening {
-        color: $success;
+        color: $text-success;
     }
 
     &.state-thinking {
-        color: $warning;
+        color: $text-warning;
     }
 
     &.state-speaking {
-        color: $accent;
+        color: $text-accent;
     }
 
     &.ended {
-        color: $error;
+        color: $text-error;
     }
 }
 
