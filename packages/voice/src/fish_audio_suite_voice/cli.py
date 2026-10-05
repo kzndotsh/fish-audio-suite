@@ -344,6 +344,11 @@ def _quit_line() -> int:
     return bye()
 
 
+def _can_draw_a_screen() -> bool:
+    """Say whether the full-screen app has a terminal to draw on."""
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
 def main(argv: list[str] | None = None) -> int:
     """``fish-voice`` entry. Load dotenv, then smoke or duplex.
 
@@ -372,6 +377,12 @@ def main(argv: list[str] | None = None) -> int:
             "pip install 'fish-audio-suite-voice[tui]' (or uv sync --extra tui)\n"
         )
         return EXIT_FATAL
+    if args.tui and not _can_draw_a_screen():
+        sys.stderr.write(
+            "fish-voice --tui needs a terminal (stdin and stdout on a TTY): "
+            "running the plain loop instead\n"
+        )
+        args.tui = False
     if args.env_file:
         loaded = apply_cli_env_files(args.env_file, required=True)
     else:

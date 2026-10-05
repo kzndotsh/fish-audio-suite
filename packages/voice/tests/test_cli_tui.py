@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from fish_audio_suite_voice import cli
-from fish_audio_suite_voice.cli import EXIT_FATAL, load_config, main, run_tui
+from fish_audio_suite_voice.cli import EXIT_FATAL, _can_draw_a_screen, load_config, main, run_tui
 from fish_audio_suite_voice.config import VoiceCliConfig
 from fish_audio_suite_voice.debug import DebugLevel
 from fish_audio_suite_voice.inputs import LiveInput
@@ -51,6 +51,7 @@ def test_the_tui_flag_runs_the_app_and_not_the_plain_loop(monkeypatch: pytest.Mo
     monkeypatch.setattr("fish_audio_suite_voice.cli.warn_if_insecure_base", lambda _c: False)
     monkeypatch.setattr("fish_audio_suite_voice.cli.run_tui", fake_tui)
     monkeypatch.setattr("fish_audio_suite_voice.cli.run_loop", fake_loop)
+    monkeypatch.setattr("fish_audio_suite_voice.cli._can_draw_a_screen", lambda: True)
     assert main(["--tui", "--debug"]) == 7
     assert seen["tui"][1] >= DebugLevel.EVENTS
 
@@ -167,3 +168,42 @@ def test_run_tui_returns_the_code_the_app_reports(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr("fish_audio_suite_voice.tui.VoiceApp", _Failing)
     assert asyncio.run(run_tui(c, debug=DebugLevel.OFF)) == 2
+
+
+def test_the_tui_flag_falls_back_to_the_plain_loop_without_a_terminal(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    async def fake_tui(_c: object, *, debug: DebugLevel) -> int:
+        raise AssertionError("no terminal, so no full-screen app")
+
+    async def fake_loop(_c: object) -> int:
+        return 3
+
+    monkeypatch.setattr("fish_audio_suite_voice.cli.apply_cli_env_files", lambda *_a, **_k: [])
+    monkeypatch.setattr("fish_audio_suite_voice.cli.configure_voice_logging", lambda **_k: None)
+    monkeypatch.setattr("fish_audio_suite_voice.cli.load_config", object)
+    monkeypatch.setattr("fish_audio_suite_voice.cli.warn_if_insecure_base", lambda _c: False)
+    monkeypatch.setattr("fish_audio_suite_voice.cli.run_tui", fake_tui)
+    monkeypatch.setattr("fish_audio_suite_voice.cli.run_loop", fake_loop)
+    monkeypatch.setattr("fish_audio_suite_voice.cli._can_draw_a_screen", lambda: False)
+    assert main(["--tui"]) == 3
+    assert "needs a terminal" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("stdin_tty", "stdout_tty", "expected"),
+    [(True, True, True), (False, True, False), (True, False, False), (False, False, False)],
+)
+def test_a_screen_needs_both_ends_on_a_tty(
+    monkeypatch: pytest.MonkeyPatch, *, stdin_tty: bool, stdout_tty: bool, expected: bool
+) -> None:
+    class _Stream:
+        def __init__(self, tty: bool) -> None:
+            self._tty = tty
+
+        def isatty(self) -> bool:
+            return self._tty
+
+    monkeypatch.setattr("sys.stdin", _Stream(stdin_tty))
+    monkeypatch.setattr("sys.stdout", _Stream(stdout_tty))
+    assert _can_draw_a_screen() is expected
