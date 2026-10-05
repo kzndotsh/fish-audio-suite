@@ -14,6 +14,7 @@ from fish_audio_suite_voice.events import (
     Heard,
     MicLevel,
     Notice,
+    OutputLevel,
     ReplyEnd,
     ReplyToken,
     SessionState,
@@ -22,6 +23,7 @@ from fish_audio_suite_voice.events import (
 )
 
 __all__ = [
+    "AutoLevel",
     "Ballistics",
     "SessionView",
     "TurnTimings",
@@ -39,6 +41,10 @@ _QUIETEST_DB: Final = -60.0  # at or below this, a meter shows empty
 BODY_RELEASE_PER_S: Final = 1.5  # a bar falls from full to empty in about two thirds of a second
 PEAK_HOLD_S: Final = 1.2  # the cap above a bar stays put this long after a peak
 PEAK_RELEASE_PER_S: Final = 25.0 / -_QUIETEST_DB  # then falls at 25 dB per second
+# The speaker is scaled against the reply's own loudest recent moment, not a fixed scale.
+SPEAKER_SPAN_DB: Final = 24.0  # a bar is empty this far below that moment
+SPEAKER_START_DB: Final = -30.0  # what "loud" is assumed to be until the reply shows otherwise
+SPEAKER_PEAK_FALL_DB_PER_S: Final = 1.5  # how fast that moment is forgotten
 _BRAILLE: Final = 0x2800  # the first Braille pattern, which has no dots
 # The bit that raises each dot of a Braille cell, by dot row (top to bottom) and column.
 _DOT_BITS: Final = ((0x01, 0x08), (0x02, 0x10), (0x04, 0x20), (0x40, 0x80))
@@ -68,6 +74,8 @@ class SessionView:
         The latest status line, such as a retry.
     exit_code : int or None
         Set when the session has ended. None while it runs.
+    out_rms : float
+        The latest level of the reply being played.
     """
 
     state: SessionState = SessionState.IDLE
@@ -79,6 +87,12 @@ class SessionView:
     mic_need: float = 0.0
     last_notice: str = ""
     exit_code: int | None = None
+    out_rms: float = 0.0
+
+    @property
+    def out_fraction(self) -> float:
+        """How full the speaker meter is, from 0 to 1."""
+        return level_fraction(self.out_rms)
 
     @property
     def mic_fraction(self) -> float:
@@ -113,9 +127,10 @@ def level_fraction(rms: float) -> float:
     >>> round(level_fraction(1000.0), 2)
     0.49
     """
-    if rms <= 0:
+    ratio = rms / _FULL_SCALE  # a tiny rms can underflow to zero here, so test the ratio
+    if not ratio > 0:
         return 0.0
-    decibels = 20 * math.log10(rms / _FULL_SCALE)
+    decibels = 20 * math.log10(ratio)
     return min(1.0, max(0.0, (decibels - _QUIETEST_DB) / -_QUIETEST_DB))
 
 
@@ -202,6 +217,8 @@ def reduce_view(view: SessionView, event: Event) -> SessionView:
             return replace(moved, reply=text)
         case MicLevel(rms=rms, need=need):
             return replace(moved, mic_rms=rms, mic_need=need)
+        case OutputLevel(rms=rms):
+            return replace(moved, out_rms=rms)
         case Notice(text=text):
             return replace(moved, last_notice=text)
         case TurnEnded(snapshot=snapshot):
@@ -398,3 +415,50 @@ def processing_level(seconds: float) -> float:
         + 0.15 * math.cos(seconds * 2.0)
     )
     return min(1.0, max(0.05, 0.2 + waves))
+
+
+@dataclass(slots=True)
+class AutoLevel:
+    """Scale a steady, always-loud signal such as a TTS voice to the full height of a bar.
+
+    A fixed dB scale would keep every syllable of a reply near the same height, because
+    synthesised speech is about as loud from one word to the next. This measures each block
+    against the loudest recent one instead, so the pauses and the stressed syllables show.
+
+    Attributes
+    ----------
+    peak_db : float
+        The loudest recent block, in dB below full scale. Rises at once, falls slowly.
+    """
+
+    peak_db: float = SPEAKER_START_DB
+
+    def update(self, rms: float, dt: float) -> float:
+        """Measure one block of audio.
+
+        Parameters
+        ----------
+        rms : float
+            RMS of the block, on the int16 scale.
+        dt : float
+            Seconds since the last block. Negative counts as zero.
+
+        Returns
+        -------
+        float
+            From 0 to 1: 1 at the loudest recent block, 0 at ``SPEAKER_SPAN_DB`` below it.
+
+        Examples
+        --------
+        >>> a = AutoLevel()
+        >>> a.update(3277.0, 0.06)  # -20 dB, louder than the assumed -30: it sets the peak
+        1.0
+        >>> round(a.update(819.0, 0.06), 2)  # 12 dB lower
+        0.5
+        >>> a.update(0.0, 0.06)
+        0.0
+        """
+        ratio = rms / _FULL_SCALE  # a tiny rms can underflow to zero here, so test the ratio
+        db = max(_QUIETEST_DB, 20 * math.log10(ratio)) if ratio > 0 else _QUIETEST_DB
+        self.peak_db = max(db, self.peak_db - SPEAKER_PEAK_FALL_DB_PER_S * max(0.0, dt))
+        return min(1.0, max(0.0, (db - (self.peak_db - SPEAKER_SPAN_DB)) / SPEAKER_SPAN_DB))

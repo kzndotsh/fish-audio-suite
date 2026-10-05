@@ -27,6 +27,7 @@ from fish_audio_suite_voice.events import (
     LogLine,
     MicLevel,
     Notice,
+    OutputLevel,
     ReplyEnd,
     ReplyToken,
     SessionState,
@@ -945,5 +946,109 @@ def test_brightness_follows_loudness_and_colour_follows_what_the_bar_is() -> Non
             soft, medium, loud = colours[-3], colours[-2], colours[-1]
             assert None not in (soft, medium, loud)
             assert sum(soft) < sum(medium) < sum(loud)  # type: ignore[arg-type]  # brighter as it gets louder
+
+    asyncio.run(main())
+
+
+def test_while_the_model_speaks_the_strip_shows_the_speaker_and_hands_back_to_the_mic() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        wave = harness.app.query_one(Waveform)
+        box = harness.app.query_one("#mic-box")
+        assert box.border_title == "mic"
+        harness.bus.emit(Listening())
+        harness.bus.emit(Heard("hi", 1.0))
+        harness.bus.emit(Speaking())
+        await pilot.pause(0.1)
+        assert box.border_title == "speaker"
+        before = _wave_lines(wave)
+        # The mic hearing the speakers (the barge-in watch) is not drawn while the reply plays.
+        harness.bus.emit(MicLevel(30000.0, 200.0, "barge"))
+        await pilot.pause(0.1)
+        assert _wave_lines(wave) == before
+        for _ in range(6):
+            harness.bus.emit(OutputLevel(8000.0))
+        await pilot.pause(0.1)
+        after = _wave_lines(wave)
+        assert after != before  # the reply's level is drawn
+        assert max(_dots(ch) for line in after for ch in line) >= 4
+        harness.bus.emit(BargedIn())  # the user talks over it: back to the mic
+        await pilot.pause(0.1)
+        assert box.border_title == "mic"
+        harness.bus.emit(OutputLevel(8000.0))  # a late slice of the old reply
+        harness.bus.emit(MicLevel(1000.0, 200.0, "listen"))
+        await pilot.pause(0.1)
+        assert harness.app.view.out_rms == 8000.0
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+
+
+def test_speaker_bars_are_the_accent_colour_and_the_mics_are_not() -> None:
+    async def main() -> None:
+        host = _WaveHost()
+        async with host.run_test(size=(40, 10)) as pilot:
+            wave = host.query_one(Waveform)
+            await pilot.pause()
+            for _ in range(2):
+                wave.push_speaker(8000.0, now=0.0)
+            for _ in range(2):
+                wave.push(0.9, 0.1, now=0.0)  # a loud mic bar, heard
+            await pilot.pause()
+            colours = _wave_colours(wave, 1)
+            speaker, mic = colours[-2], colours[-1]
+            assert speaker is not None
+            assert mic is not None
+            assert speaker != mic
+
+    asyncio.run(main())
+
+
+def _column_dots(wave: Waveform, cell: int) -> int:
+    lines = _wave_lines(wave)
+    return sum(_dots(line[cell]) for line in lines)
+
+
+def test_speaker_bars_follow_the_voices_own_ups_and_downs_with_no_caps() -> None:
+    async def main() -> None:
+        host = _WaveHost()
+        async with host.run_test(size=(40, 10)) as pilot:
+            wave = host.query_one(Waveform)
+            await pilot.pause()
+            clock = 0.0
+            # Two bars to a character: loud, loud | pause, pause | loud, loud | stressed, soft.
+            for rms in (9000.0, 9000.0, 60.0, 60.0, 9000.0, 9000.0, 9000.0, 1800.0):
+                wave.push_speaker(rms, now=clock)
+                clock += 0.06
+            await pilot.pause()
+            loud, pause, loud_again, stressed = (_column_dots(wave, i) for i in (-4, -3, -2, -1))
+            assert pause < loud  # a pause really is lower
+            assert loud_again == loud  # the same loudness draws the same height
+            assert stressed < loud  # and a softer syllable sits between
+            # No floating cap above the pause: a bar that fell does not leave a dot behind.
+            assert _dots(_wave_lines(wave)[0][-3]) == 0
+
+    asyncio.run(main())
+
+
+def test_a_reply_after_a_pause_is_scaled_afresh_not_against_the_last_reply() -> None:
+    async def main() -> None:
+        host = _WaveHost()
+        async with host.run_test(size=(40, 10)) as pilot:
+            wave = host.query_one(Waveform)
+            await pilot.pause()
+            wave.push_speaker(30000.0, now=0.0)  # a very loud first reply
+            wave.push_speaker(30000.0, now=0.06)
+            wave.push_speaker(1500.0, now=5.0)  # much later: the next reply, much quieter
+            wave.push_speaker(1500.0, now=5.06)
+            await pilot.pause()
+            same_reply = _column_dots(wave, -1)
+            wave.push_speaker(30000.0, now=6.0)
+            wave.push_speaker(30000.0, now=6.06)
+            wave.push_speaker(1500.0, now=6.1)  # soon after a loud one: the same reply
+            wave.push_speaker(1500.0, now=6.16)
+            await pilot.pause()
+            assert _column_dots(wave, -1) < same_reply  # judged against the loud moment just before
 
     asyncio.run(main())

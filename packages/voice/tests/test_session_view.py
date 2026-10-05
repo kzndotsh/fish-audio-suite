@@ -19,6 +19,7 @@ from fish_audio_suite_voice.events import (
     LogLine,
     MicLevel,
     Notice,
+    OutputLevel,
     ReplyEnd,
     ReplyToken,
     SessionState,
@@ -30,6 +31,9 @@ from fish_audio_suite_voice.session_view import (
     BODY_RELEASE_PER_S,
     PEAK_HOLD_S,
     PEAK_RELEASE_PER_S,
+    SPEAKER_PEAK_FALL_DB_PER_S,
+    SPEAKER_SPAN_DB,
+    AutoLevel,
     Ballistics,
     SessionView,
     level_fraction,
@@ -130,6 +134,8 @@ def test_the_same_mic_level_twice_gives_an_equal_view_so_a_screen_need_not_refre
 def test_the_meter_is_empty_when_silent_full_at_the_peak_and_never_outside_zero_to_one() -> None:
     assert level_fraction(0.0) == 0.0
     assert level_fraction(-5.0) == 0.0
+    assert level_fraction(5e-324) == 0.0  # too small to divide: still empty, not an error
+    assert level_fraction(float("nan")) == 0.0
     assert level_fraction(0.5) == 0.0  # far below the quietest level shown
     assert level_fraction(32768.0) == 1.0
     assert level_fraction(1e9) == 1.0
@@ -275,3 +281,49 @@ def test_the_thinking_wave_stays_in_range_keeps_changing_and_is_repeatable() -> 
     assert all(0.05 <= value <= 1.0 for value in values)
     assert len({round(value, 3) for value in values}) > 100  # always moving
     assert processing_level(3.3) == processing_level(3.3)  # no randomness
+
+
+def test_a_view_follows_the_speaker_level_separately_from_the_mic() -> None:
+    view = _fold(MicLevel(1000.0, 200.0, "listen"), OutputLevel(3000.0))
+    assert view.out_rms == 3000.0
+    assert view.mic_rms == 1000.0  # neither level overwrites the other
+    assert view.out_fraction == pytest.approx(level_fraction(3000.0))
+    assert SessionView().out_fraction == 0.0
+
+
+def test_auto_level_scales_a_voice_to_its_own_loudest_moment() -> None:
+    auto = AutoLevel()
+    assert auto.update(3277.0, 0.06) == 1.0  # louder than assumed: it becomes the peak
+    assert auto.update(819.0, 0.06) == pytest.approx(0.5, abs=0.01)  # 12 dB down, half the span
+    assert auto.update(3277.0, 0.06) == pytest.approx(1.0, abs=0.01)
+    assert auto.update(0.0, 0.06) == 0.0  # a pause is empty
+    assert auto.update(-5.0, 0.06) == 0.0  # nonsense is a pause too
+    assert auto.update(5e-324, 0.06) == 0.0  # so is a level too small to divide
+    assert auto.update(float("nan"), 0.06) == 0.0
+
+
+def test_auto_level_forgets_a_loud_moment_slowly_so_a_quieter_reply_comes_back_up() -> None:
+    auto = AutoLevel()
+    auto.update(20000.0, 0.0)  # a very loud start
+    quiet = 1500.0
+    first = auto.update(quiet, 0.06)
+    last = first
+    for _ in range(600):  # thirty seconds of quiet speech
+        last = auto.update(quiet, 0.05)
+    assert last > first  # the scale has caught up with the quieter voice
+    assert last == pytest.approx(1.0, abs=0.01)
+    assert SPEAKER_SPAN_DB / SPEAKER_PEAK_FALL_DB_PER_S > 10  # and not within a syllable
+
+
+@given(
+    st.lists(
+        st.tuples(
+            st.floats(min_value=-10.0, max_value=40000.0), st.floats(min_value=-1.0, max_value=3.0)
+        ),
+        max_size=50,
+    )
+)
+def test_auto_level_stays_between_empty_and_full(steps: list[tuple[float, float]]) -> None:
+    auto = AutoLevel()
+    for rms, dt in steps:
+        assert 0.0 <= auto.update(rms, dt) <= 1.0
