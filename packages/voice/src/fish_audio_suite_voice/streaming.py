@@ -2,8 +2,10 @@
 
 The mic is gated as it always is: nothing leaves the machine until the voice detector hears
 speech start, and the connection is not even opened until then (Deepgram closes a connection
-that sits without audio). From then on every frame is sent as it is captured, the pre-roll
-first, and Flux says when the turn is over. The silence timer of the batch path stays as a
+that sits without audio). A bump or a cough starts the gate too, so the first frames are held
+until there is as much voiced audio as the batch path asks for (``min_voiced_frames``). Then
+the connection opens, the held audio goes first, and every frame after it is sent as it is
+captured, and Flux says when the turn is over. The silence timer of the batch path stays as a
 limit: if Flux has not ended the turn by then, it is asked to.
 """
 
@@ -139,11 +141,12 @@ async def _read(stream: FluxStream, turn: _Turn) -> None:
 async def _send(
     stream: FluxStream,
     frames: asyncio.Queue[tuple[bytes, bool, float] | None],
-    first: tuple[bytes, bool, float],
+    held: list[tuple[bytes, bool, float]],
     turn: _Turn,
 ) -> None:
     pending = bytearray()
-    item: tuple[bytes, bool, float] | None = first
+    backlog = iter(held)
+    item: tuple[bytes, bool, float] | None = next(backlog, None) or await frames.get()
     while item is not None:
         frame, voiced, at = item
         if voiced:
@@ -153,7 +156,7 @@ async def _send(
             await stream.send_audio(bytes(pending))
             turn.sent += len(pending)
             pending.clear()
-        item = await frames.get()
+        item = next(backlog, None) or await frames.get()
     if pending:
         await stream.send_audio(bytes(pending))
         turn.sent += len(pending)
@@ -175,7 +178,7 @@ class _Capture:
     ) -> None:
         loop = asyncio.get_running_loop()
         self.frames: asyncio.Queue[tuple[bytes, bool, float] | None] = asyncio.Queue()
-        self.first: tuple[bytes, bool, float] | None = None  # the frame that started the turn
+        self.held: list[tuple[bytes, bool, float]] = []  # frames taken while waiting for speech
         self._decided = threading.Event()  # set to stop the mic thread once the turn is decided
 
         def sink(frame: bytes, voiced: bool) -> None:
@@ -202,12 +205,34 @@ class _Capture:
     def captured(self) -> bytes:
         """Return every frame captured so far that has not been taken from the queue."""
         self._decided.set()  # a fallback listens afresh, so this thread has to let go of the mic
-        pieces = [self.first[0]] if self.first else []
+        pieces = [frame for frame, _voiced, _at in self.held]
         while not self.frames.empty():
             item = self.frames.get_nowait()
             if item is not None:
                 pieces.append(item[0])
         return b"".join(pieces)
+
+
+async def _hold_until_voiced(capture: _Capture, need: int) -> Stopped | None:
+    """Keep the frames until there is enough voiced audio to be speech and not a bump.
+
+    Returns
+    -------
+    str or None
+        None when there is. ``"stopped"`` when the mic was stopped first, ``"noise"`` when the
+        gate ended the turn first: it was a cough or a knock, and nothing was connected or sent.
+    """
+    voiced = 0
+    while voiced < need:
+        item = await capture.frames.get()
+        if item is None:
+            local_end = await capture.pump
+            if local_end:
+                debug("stt.noise {} voiced frames of {} needed, nothing sent", voiced, need)
+            return "noise" if local_end else "stopped"
+        capture.held.append(item)
+        voiced += item[1]
+    return None
 
 
 async def _connect(
@@ -235,7 +260,6 @@ async def _connect(
 async def _stream_until_decided(
     stream: FluxStream,
     capture: _Capture,
-    first: tuple[bytes, bool, float],
     turn: _Turn,
     tasks: list[asyncio.Task[None]],
 ) -> bool:
@@ -247,7 +271,7 @@ async def _stream_until_decided(
         True when the silence limit ended the mic side, so Flux was asked to end the turn.
     """
     reader = asyncio.create_task(_read(stream, turn))
-    sender = asyncio.create_task(_send(stream, capture.frames, first, turn))
+    sender = asyncio.create_task(_send(stream, capture.frames, capture.held, turn))
     tasks += [reader, sender]
     await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     if reader.done():
@@ -357,14 +381,12 @@ async def stream_turn(
     turn = _Turn()
     tasks: list[asyncio.Task[None]] = []
     try:
-        # Nothing is connected or sent until speech has started: the first frame is the pre-roll.
-        first = await capture.frames.get()
-        if first is None:
-            return "stopped"
-        capture.first = first
+        # Nothing is connected or sent until the gate has opened and there is enough voice.
+        if (quiet := await _hold_until_voiced(capture, listen.min_voiced_frames)) is not None:
+            return quiet
         if (failed := await _connect(stream, capture)) is not None:
             return failed
-        local_end = await _stream_until_decided(stream, capture, first, turn, tasks)
+        local_end = await _stream_until_decided(stream, capture, turn, tasks)
         capture.decided()
         reader_done = tasks[0].done()
         return _outcome(turn, local_end=local_end, reader_done=reader_done)

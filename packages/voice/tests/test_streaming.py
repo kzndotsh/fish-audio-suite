@@ -28,6 +28,8 @@ from fish_audio_suite_voice.tune import ListenTune, SttTune
 
 FRAME = b"\x01\x00" * (FRAME_BYTES // 2)
 STT = SttTune(provider="deepgram", deepgram_key="secret")
+# Most tests are about the stream, so one voiced frame is enough to open it.
+ONE_VOICED = ListenTune(min_voiced_frames=1)
 
 
 class _FakeFlux(FluxStream):
@@ -89,10 +91,13 @@ def _mic(
     frames: int,
     *,
     local_end: bool = False,
-    voiced: bool = True,
+    voiced: bool | Sequence[bool] = True,
     seen: dict[str, Any] | None = None,
 ) -> Callable[..., bool]:
-    """A mic thread that hands over ``frames`` frames, then waits to be stopped."""
+    """A mic thread that hands over ``frames`` frames, then waits to be stopped.
+
+    ``voiced`` is one flag for every frame, or one per frame.
+    """
 
     def listen(
         _device: object,
@@ -105,8 +110,8 @@ def _mic(
     ) -> bool:
         if seen is not None:
             seen.update(prefix=prefix, tune=tune)
-        for _ in range(frames):
-            sink(FRAME, voiced)
+        for index in range(frames):
+            sink(FRAME, voiced if isinstance(voiced, bool) else voiced[index])
         if local_end:
             return True
         while not stop.is_set():
@@ -123,13 +128,14 @@ def _run(
     stt: SttTune = STT,
     stop: StopFlag | None = None,
     prefix: bytes = b"",
+    listen: ListenTune = ONE_VOICED,
 ) -> streaming.StreamedTurn | StreamFallback | str:
     quit_flag = threading.Event()
 
     async def go() -> streaming.StreamedTurn | StreamFallback | str:
         return await stream_turn(
             stt=stt,
-            listen=ListenTune(),
+            listen=listen,
             device=None,
             aec=None,
             quit_requested=quit_flag,
@@ -379,7 +385,7 @@ def test_the_connection_goes_to_the_regional_endpoint_that_was_chosen() -> None:
     async def go(region: str) -> object:
         return await stream_turn(
             stt=replace(STT, deepgram_region=region),
-            listen=ListenTune(),
+            listen=ONE_VOICED,
             device=None,
             aec=None,
             quit_requested=threading.Event(),
@@ -393,3 +399,32 @@ def test_the_connection_goes_to_the_regional_endpoint_that_was_chosen() -> None:
     assert urls[0].startswith("wss://api.deepgram.com/v2/listen?")
     assert urls[1].startswith("wss://api.eu.deepgram.com/v2/listen?")
     assert all("mip_opt_out=true" in url for url in urls)  # whichever region, nothing is kept
+
+
+def test_a_knock_or_a_cough_is_dropped_before_anything_is_connected_or_sent() -> None:
+    needs_voice = ListenTune(min_voiced_frames=4)
+    for voiced in (False, [True, False, True, False, False]):  # no voice, or too little of it
+        fake = _FakeFlux()
+        assert _run(fake, _mic(5, local_end=True, voiced=voiced), listen=needs_voice) == "noise"
+        assert fake.opens == 0
+        assert fake.sent == []
+
+
+def test_stopping_while_the_first_frames_are_held_is_not_noise() -> None:
+    stop = threading.Event()
+    stop.set()
+    fake = _FakeFlux()
+    result = _run(fake, _mic(2, voiced=False), listen=ListenTune(min_voiced_frames=4), stop=stop)
+    assert result == "stopped"
+    assert fake.opens == 0
+
+
+def test_once_there_is_enough_voice_the_held_pre_roll_goes_first_and_in_order() -> None:
+    fake = _FakeFlux(
+        lambda total: [TurnEnded("hi", 0.9, "model")] if total >= FRAME_BYTES * 6 else []
+    )
+    pattern = [False, False, True, True, True, True]  # two quiet pre-roll frames, then speech
+    result = _run(fake, _mic(6, voiced=pattern), listen=ListenTune(min_voiced_frames=3))
+    assert isinstance(result, StreamedTurn)
+    assert fake.opens == 1
+    assert b"".join(fake.sent) == FRAME * 6  # the pre-roll was not lost

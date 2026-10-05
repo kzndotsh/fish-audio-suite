@@ -232,8 +232,10 @@ FISH_VOICE_STT=deepgram fish-voice
 What happens, and what leaves your machine:
 
 - Nothing is sent while the mic waits for you. The same voice detector as before decides when
-  speech starts, and only then is the connection opened and audio sent, beginning with the short
-  pre-roll so the first word is not clipped. A barge-in sends its saved clip first. (Deepgram
+  speech starts, and then the first frames are held until there is as much voiced audio as the
+  batch path asks for (`FISH_VOICE_MIN_VOICED_FRAMES`), so a knock or a cough never leaves your
+  machine. Only then is the connection opened and audio sent, beginning with the held pre-roll so
+  the first word is not clipped. A barge-in sends its saved clip first. (Deepgram
   closes a connection that sits without audio, so none is held open while you are quiet.)
 - Every connection asks Deepgram not to keep the audio or the transcript (`mip_opt_out=true`).
   `FISH_VOICE_DEEPGRAM_REGION` picks a regional endpoint that processes it in the EU, Australia or
