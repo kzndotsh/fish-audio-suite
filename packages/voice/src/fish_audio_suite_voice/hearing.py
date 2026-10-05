@@ -34,7 +34,7 @@ from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexContext
 from fish_audio_suite_voice.events import EVENTS, Heard, Listening
 from fish_audio_suite_voice.listen import record_utterance
 from fish_audio_suite_voice.playback import PortAudioMissingError
-from fish_audio_suite_voice.streaming import StreamedTurn, stream_turn
+from fish_audio_suite_voice.streaming import StreamedTurn, StreamFallback, stream_turn
 
 __all__ = [
     "HeardLine",
@@ -297,7 +297,10 @@ async def _hear_streaming(
         stop=quit_requested if stop is None else stop,
         prefix=prefix,
     )
-    if outcome == "fallback":
+    if isinstance(outcome, StreamFallback):
+        # Deepgram failed once speech had started. The batch recogniser carries on from the
+        # speech captured so far, the way it carries on from a barge-in.
+        ctx.barge_prefix = outcome.prefix
         return None
     ctx.barge_prefix = b""  # the stream had it
     if quit_requested.is_set():

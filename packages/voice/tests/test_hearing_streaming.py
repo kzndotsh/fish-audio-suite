@@ -12,7 +12,7 @@ from session_fakes import make_ctx
 from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexContext
 from fish_audio_suite_voice.events import EVENTS, Event, Heard
 from fish_audio_suite_voice.hearing import HeardLine, hear_line
-from fish_audio_suite_voice.streaming import StreamedTurn
+from fish_audio_suite_voice.streaming import StreamedTurn, StreamFallback
 from fish_audio_suite_voice.tune import SttTune
 
 
@@ -59,10 +59,11 @@ def test_the_default_provider_never_touches_deepgram(monkeypatch: pytest.MonkeyP
     assert calls == []
 
 
-def test_when_deepgram_cannot_be_reached_the_turn_is_heard_the_usual_way(
+def test_when_deepgram_cannot_be_reached_the_turn_is_heard_the_usual_way_from_the_speech_so_far(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _stream_returns(monkeypatch, "fallback")
+    captured = b"\x05\x00" * 200
+    _stream_returns(monkeypatch, StreamFallback(captured))
     recorded: list[bytes] = []
 
     def record(*_args: Any, prefix: bytes = b"", **_kwargs: Any) -> bytes:
@@ -70,10 +71,8 @@ def test_when_deepgram_cannot_be_reached_the_turn_is_heard_the_usual_way(
         return b""
 
     monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", record)
-    ctx = _ctx()
-    ctx.barge_prefix = b"\x05\x00" * 100  # an interrupt that has to reach whichever path hears it
-    assert asyncio.run(hear_line(ctx, "")) == HeardLine("noise")
-    assert recorded == [b"\x05\x00" * 100]
+    assert asyncio.run(hear_line(_ctx(), "")) == HeardLine("noise")
+    assert recorded == [captured]  # the batch path carries on from what was already said
 
 
 @pytest.mark.parametrize(

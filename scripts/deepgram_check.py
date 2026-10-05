@@ -27,7 +27,7 @@ from pathlib import Path
 
 from fish_audio_suite_voice.envfile import apply_cli_env_files
 from fish_audio_suite_voice.events import EVENTS, Event, Interim
-from fish_audio_suite_voice.streaming import StreamedTurn, stream_turn
+from fish_audio_suite_voice.streaming import StreamedTurn, StreamFallback, stream_turn
 from fish_audio_suite_voice.tune import ListenTune, SttTune
 
 
@@ -72,8 +72,10 @@ async def run(turns: int, device: str | int | None) -> int:
                 print(f"  final: {outcome.text}")
                 print(f"  {outcome.asr_ms:.0f} ms from your last speech to the final text")
             else:
-                print(f"  no turn: {outcome}")
-                if outcome in {"fatal", "fallback"}:
+                print(
+                    f"  no turn: {'could not reach Deepgram' if isinstance(outcome, StreamFallback) else outcome}"
+                )
+                if isinstance(outcome, StreamFallback) or outcome == "fatal":
                     return 2
     finally:
         stop_showing()

@@ -232,14 +232,16 @@ FISH_VOICE_STT=deepgram fish-voice
 What happens, and what leaves your machine:
 
 - Nothing is sent while the mic waits for you. The same voice detector as before decides when
-  speech starts, and only then is audio sent, beginning with the short pre-roll so the first
-  word is not clipped. A barge-in sends its saved clip first.
+  speech starts, and only then is the connection opened and audio sent, beginning with the short
+  pre-roll so the first word is not clipped. A barge-in sends its saved clip first. (Deepgram
+  closes a connection that sits without audio, so none is held open while you are quiet.)
 - Every connection asks Deepgram not to keep the audio or the transcript (`mip_opt_out=true`).
   `FISH_VOICE_DEEPGRAM_REGION` picks a regional endpoint that processes it in the EU, Australia or
   India.
 - `FISH_VOICE_SILENCE_FRAMES` is still a limit: if Flux has not ended the turn by then, it is
   asked to.
-- If Deepgram cannot be reached, that turn is heard with Fish ASR, with a warning. A missing key,
+- If Deepgram cannot be reached when you start speaking, that turn is heard with Fish ASR from
+  the speech already captured, with a warning, so nothing you said is lost. A missing key,
   a refused key or a missing `deepgram` extra stops the app at the start instead.
 - A transcript is judged exactly as a Fish one is: quit words, stray "mm-hmm" over a reply, and
   stale copies of the last line are dropped.

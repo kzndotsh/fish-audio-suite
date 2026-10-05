@@ -17,12 +17,13 @@ from fish_audio_suite_voice.deepgram import (
     FluxMessage,
     FluxStream,
     StreamError,
+    StreamWarning,
     TurnEnded,
     TurnStarted,
     TurnUpdate,
 )
 from fish_audio_suite_voice.events import EVENTS, Event, Interim
-from fish_audio_suite_voice.streaming import StreamedTurn, stream_turn
+from fish_audio_suite_voice.streaming import StreamedTurn, StreamFallback, stream_turn
 from fish_audio_suite_voice.tune import ListenTune, SttTune
 
 FRAME = b"\x01\x00" * (FRAME_BYTES // 2)
@@ -122,10 +123,10 @@ def _run(
     stt: SttTune = STT,
     stop: StopFlag | None = None,
     prefix: bytes = b"",
-) -> streaming.StreamedTurn | str:
+) -> streaming.StreamedTurn | StreamFallback | str:
     quit_flag = threading.Event()
 
-    async def go() -> streaming.StreamedTurn | str:
+    async def go() -> streaming.StreamedTurn | StreamFallback | str:
         return await stream_turn(
             stt=stt,
             listen=ListenTune(),
@@ -225,45 +226,46 @@ def test_a_turn_with_no_words_is_noise(monkeypatch: pytest.MonkeyPatch) -> None:
     assert _run(_FakeFlux(), _mic(3, local_end=True)) == "noise"  # nothing came back at all
 
 
-def test_a_missing_key_and_a_refused_connection_are_fatal_but_an_outage_falls_back() -> None:
+def test_a_missing_key_and_a_refused_connection_are_fatal_but_an_outage_hands_over_the_speech() -> (
+    None
+):
     no_key = SttTune(provider="deepgram", deepgram_key="")
     assert _run(_FakeFlux(), _mic(1), stt=no_key) == "fatal"
     assert _run(_FakeFlux(open_errors=[DeepgramError("HTTP 401", fatal=True)]), _mic(1)) == "fatal"
-    assert _run(_FakeFlux(open_errors=[DeepgramError("no route")]), _mic(1)) == "fallback"
+    outage = _run(_FakeFlux(open_errors=[DeepgramError("no route")]), _mic(3))
+    # Deepgram could not be reached once speech had started, so the batch recogniser takes
+    # over from the speech captured so far, and the first words are not lost.
+    assert isinstance(outage, StreamFallback)
+    assert outage.prefix.startswith(FRAME)
+    assert len(outage.prefix) >= FRAME_BYTES
 
 
-def test_an_idle_connection_that_dropped_is_opened_again_when_speech_starts() -> None:
-    fake = _FakeFlux(
+def test_nothing_is_connected_until_speech_starts_and_then_it_is_connected_once() -> None:
+    idle = _FakeFlux()
+    stop = threading.Event()
+    stop.set()
+    assert _run(idle, _mic(0), stop=stop) == "stopped"
+    assert (
+        idle.opens == 0
+    )  # an idle connection would be closed by Deepgram, and sends nothing anyway
+
+    spoken = _FakeFlux(
         lambda total: [TurnEnded("hi", 0.9, "model")] if total >= FRAME_BYTES * 3 else []
     )
+    assert isinstance(_run(spoken, _mic(3)), StreamedTurn)
+    assert spoken.opens == 1
 
-    def drop_after_first_open(listen: Callable[..., bool]) -> Callable[..., bool]:
-        def wrapped(*args: Any, **kwargs: Any) -> bool:
-            fake._connected = False
-            return listen(*args, **kwargs)
 
-        return wrapped
-
-    result = _run(fake, drop_after_first_open(_mic(3)))
-    assert isinstance(result, StreamedTurn)
-    assert fake.opens == 2
-
-    dead = _FakeFlux(open_errors=[])
-    dead._open_errors = []
-
-    class Fussy(_FakeFlux):
-        async def open(self) -> None:
-            await super().open()
-            if self.opens > 1:
-                raise DeepgramError("gone")
-
-    broken = Fussy()
-
-    def listen_then_drop(*args: Any, **kwargs: Any) -> bool:
-        broken._connected = False
-        return _mic(3)(*args, **kwargs)
-
-    assert _run(broken, listen_then_drop) == "again"
+def test_a_forced_end_with_no_turn_to_end_is_noise_straight_away_not_after_the_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(streaming, "_FORCE_WAIT_S", 5.0)  # it must not wait this long
+    # Flux took the sound for no speech, so it answers ForceEndTurn with a warning, not an EndOfTurn.
+    fake = _FakeFlux(on_force=[StreamWarning("FORCE_END_TURN_NO_ACTIVE_TURN", "no turn")])
+    started = time.monotonic()
+    assert _run(fake, _mic(3, local_end=True)) == "noise"
+    assert time.monotonic() - started < 2.0
+    assert fake.forced == 1
 
 
 def test_an_error_from_flux_or_a_dropped_connection_mid_turn_means_listen_again() -> None:
@@ -383,11 +385,11 @@ def test_the_connection_goes_to_the_regional_endpoint_that_was_chosen() -> None:
             quit_requested=threading.Event(),
             stop=threading.Event(),
             make_stream=make,
-            listen_fn=_mic(0),
+            listen_fn=_mic(1),
         )
 
     for region in ("global", "eu"):
-        assert asyncio.run(go(region)) == "fallback"
+        assert isinstance(asyncio.run(go(region)), StreamFallback)
     assert urls[0].startswith("wss://api.deepgram.com/v2/listen?")
     assert urls[1].startswith("wss://api.eu.deepgram.com/v2/listen?")
     assert all("mip_opt_out=true" in url for url in urls)  # whichever region, nothing is kept

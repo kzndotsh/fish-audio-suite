@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import ssl
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Final
@@ -278,6 +279,20 @@ def _is_closed(exc: Exception) -> bool:
     return isinstance(exc, ConnectionClosed)
 
 
+def _tls_context() -> ssl.SSLContext:
+    """Trust the same certificate authorities as the HTTP client: certifi's, when installed.
+
+    ``websockets`` uses the system store alone, which some installs (Nix, some Pythons from
+    uv) do not have, so the handshake fails with ``CERTIFICATE_VERIFY_FAILED`` while the Fish
+    and LLM calls, which use certifi, work.
+    """
+    try:
+        import certifi  # noqa: PLC0415 - a dependency of httpx, so normally present
+    except ImportError:
+        return ssl.create_default_context()
+    return ssl.create_default_context(cafile=certifi.where())
+
+
 async def _websockets_connect(url: str, *, key: str) -> Any:
     """Open a real connection. Imported here so the extra is only needed when this runs."""
     try:
@@ -289,6 +304,7 @@ async def _websockets_connect(url: str, *, key: str) -> Any:
     try:
         return await connect(
             url,
+            ssl=_tls_context(),
             additional_headers={"Authorization": f"Token {key}"},
             open_timeout=_OPEN_TIMEOUT_S,
             close_timeout=_CLOSE_TIMEOUT_S,
@@ -327,11 +343,6 @@ class FluxStream:
         self._key = key
         self._connect = connect or _websockets_connect
         self._socket: Any = None
-
-    @property
-    def connected(self) -> bool:
-        """Whether there is a connection that has not closed."""
-        return self._socket is not None and getattr(self._socket, "close_code", None) is None
 
     async def open(self) -> None:
         """Connect. Raises ``DeepgramError`` when Deepgram cannot be reached or says no."""

@@ -102,7 +102,7 @@ sequenceDiagram
     participant Flux as Deepgram Flux
     participant Hear as hearing.py
 
-    Note over Mic,Flux: connected before the mic opens, nothing sent yet
+    Note over Mic,Flux: nothing connected or sent until speech starts
     You->>Mic: speech, in 30 ms frames
     Mic->>Flux: pre-roll, then each frame, once speech has started
     Flux-->>Hear: the words so far (Interim events)
@@ -292,8 +292,8 @@ The rules most easily broken, each with its reason. A test or a lint rule enforc
 
 ### Listening
 
-- **With a streaming recogniser, only speech leaves the machine.** Nothing is sent while the mic waits for speech to start. The same gate (`listen._Listen`) as the batch path decides when it starts, the pre-roll and any barge-in prefix go first, and every connection sets `mip_opt_out=true`. A recogniser that streamed all the time would send a room's worth of audio nobody meant to share. A test checks that nothing is sent before speech.
-- **The batch path stays the default and the fallback.** `FISH_VOICE_STT` is `fish` unless set, and a turn Deepgram cannot serve (an outage, not a bad key) is heard with Fish ASR, with the barge-in prefix intact. A bad or missing key is fatal at startup instead, because falling back would hide it.
+- **With a streaming recogniser, only speech leaves the machine.** Nothing is connected or sent while the mic waits for speech to start (Deepgram closes a connection left without audio, about 10 s on its general STT API, so connecting early would only fail). The same gate (`listen._Listen`) as the batch path decides when it starts, the pre-roll and any barge-in prefix go first, and every connection sets `mip_opt_out=true`. A recogniser that streamed all the time would send a room's worth of audio nobody meant to share. A test checks that nothing is sent before speech.
+- **The batch path stays the default and the fallback.** `FISH_VOICE_STT` is `fish` unless set, and a turn Deepgram cannot serve (an outage, not a bad key) is heard with Fish ASR: `StreamFallback.prefix` carries the speech captured so far into the batch path as the barge-in prefix, so the first words are kept. A bad or missing key is fatal at startup instead, because falling back would hide it.
 - **`DEEPGRAM_API_KEY` is read with the other settings, never at import, and `websockets` is imported when a connection opens.** The voice package imports without the `deepgram` extra.
 
 ### Speaking

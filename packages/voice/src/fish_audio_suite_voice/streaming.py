@@ -1,9 +1,10 @@
 """Hear one turn by streaming it to Deepgram Flux while the user is still speaking.
 
 The mic is gated as it always is: nothing leaves the machine until the voice detector hears
-speech start. From then on every frame is sent as it is captured (with the pre-roll first),
-and Flux says when the turn is over. The silence timer of the batch path stays as a limit:
-if Flux has not ended the turn by then, it is asked to.
+speech start, and the connection is not even opened until then (Deepgram closes a connection
+that sits without audio). From then on every frame is sent as it is captured, the pre-roll
+first, and Flux says when the turn is over. The silence timer of the batch path stays as a
+limit: if Flux has not ended the turn by then, it is asked to.
 """
 
 from __future__ import annotations
@@ -37,6 +38,7 @@ from fish_audio_suite_voice.listen import stream_utterance
 from fish_audio_suite_voice.tune import ListenTune, SttTune
 
 __all__ = [
+    "StreamFallback",
     "StreamedTurn",
     "stream_turn",
 ]
@@ -46,7 +48,9 @@ _SEND_BYTES: Final = FRAME_BYTES * 3
 # How long to wait for Flux to answer when it was asked to end the turn.
 _FORCE_WAIT_S: Final = 2.5
 
-type Stopped = Literal["stopped", "noise", "again", "fallback", "fatal"]
+type Stopped = Literal["stopped", "noise", "again", "fatal"]
+# Flux says this when asked to end a turn that never started: there is nothing to end.
+_NO_TURN_CODE: Final = "FORCE_END_TURN_NO_ACTIVE_TURN"
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +73,20 @@ class StreamedTurn:
     asr_ms: float
     started: float
     trace_id: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class StreamFallback:
+    """Deepgram could not be reached once speech had started, so use Fish ASR for this turn.
+
+    Attributes
+    ----------
+    prefix : bytes
+        The speech captured so far, the pre-roll included. The batch recogniser carries on from
+        it, so the first words are not lost.
+    """
+
+    prefix: bytes
 
 
 class _AnyStop:
@@ -110,6 +128,9 @@ async def _read(stream: FluxStream, turn: _Turn) -> None:
                 return
             case StreamWarning(code=code, description=description):
                 debug("deepgram.warning {}: {}", code, description)
+                if code == _NO_TURN_CODE:  # nothing was said that Flux took for speech
+                    turn.ended = True
+                    return
 
 
 async def _send(
@@ -149,6 +170,7 @@ class _Capture:
     ) -> None:
         loop = asyncio.get_running_loop()
         self.frames: asyncio.Queue[tuple[bytes, bool, float] | None] = asyncio.Queue()
+        self.first: tuple[bytes, bool, float] | None = None  # the frame that started the turn
         self._decided = threading.Event()  # set to stop the mic thread once the turn is decided
 
         def sink(frame: bytes, voiced: bool) -> None:
@@ -172,26 +194,35 @@ class _Capture:
         """Stop the mic thread: the turn has its answer."""
         self._decided.set()
 
+    def captured(self) -> bytes:
+        """Return every frame captured so far that has not been taken from the queue."""
+        self._decided.set()  # a fallback listens afresh, so this thread has to let go of the mic
+        pieces = [self.first[0]] if self.first else []
+        while not self.frames.empty():
+            item = self.frames.get_nowait()
+            if item is not None:
+                pieces.append(item[0])
+        return b"".join(pieces)
 
-async def _connect(stream: FluxStream) -> Stopped | None:
-    """Open the connection, or say why it cannot be used."""
+
+async def _connect(
+    stream: FluxStream, capture: _Capture
+) -> StreamFallback | Literal["fatal"] | None:
+    """Open the connection now that speech has started.
+
+    Returns
+    -------
+    StreamFallback or str or None
+        None when it is open. ``"fatal"`` when the key is refused. Otherwise a fallback
+        carrying the speech captured while it was trying.
+    """
     try:
         await stream.open()
     except DeepgramError as exc:
         warn(f"[deepgram] {exc}")
-        return "fatal" if exc.fatal else "fallback"
-    return None
-
-
-async def _reopen(stream: FluxStream) -> Stopped | None:
-    """Open the connection again if it dropped while we waited for speech."""
-    if stream.connected:
-        return None
-    try:
-        await stream.open()
-    except DeepgramError as exc:
-        warn(f"[deepgram] {exc}")
-        return "fatal" if exc.fatal else "again"
+        if exc.fatal:
+            return "fatal"
+        return StreamFallback(capture.captured())
     return None
 
 
@@ -226,7 +257,9 @@ async def _stream_until_decided(
     return local_end
 
 
-def _outcome(turn: _Turn, *, local_end: bool, reader_done: bool) -> StreamedTurn | Stopped:
+def _outcome(
+    turn: _Turn, *, local_end: bool, reader_done: bool
+) -> StreamedTurn | StreamFallback | Stopped:
     """Turn what happened into the result."""
     if turn.error:
         warn(f"[deepgram] {turn.error}")
@@ -260,7 +293,7 @@ async def stream_turn(
     prefix: bytes = b"",
     make_stream: Callable[[str, str], FluxStream] = FluxStream,
     listen_fn: Callable[..., bool] = stream_utterance,
-) -> StreamedTurn | Stopped:
+) -> StreamedTurn | StreamFallback | Stopped:
     """Open the mic, stream one turn to Flux, and return what it heard.
 
     Parameters
@@ -286,11 +319,11 @@ async def stream_turn(
 
     Returns
     -------
-    StreamedTurn or str
-        The turn, or why there is none: ``"stopped"`` (quit or ``stop`` was set),
-        ``"noise"`` (nothing recognisable was said), ``"again"`` (the connection failed
-        mid-turn, so listen again), ``"fallback"`` (Deepgram cannot be reached, so use the
-        batch recogniser for this turn) or ``"fatal"`` (the key is missing, wrong or unpaid).
+    StreamedTurn or StreamFallback or str
+        The turn, or why there is none: ``"stopped"`` (quit or ``stop`` was set), ``"noise"``
+        (nothing recognisable was said), ``"again"`` (the connection failed mid-turn, so listen
+        again), ``"fatal"`` (the key is missing, wrong or unpaid) or a ``StreamFallback``
+        (Deepgram could not be reached, so the batch recogniser takes over this turn).
     """
     if not stt.deepgram_key:
         warn("[deepgram] DEEPGRAM_API_KEY is not set")
@@ -302,9 +335,6 @@ async def stream_turn(
         base=flux_base(stt.deepgram_region),
     )
     stream = make_stream(url, stt.deepgram_key)
-    # Connect before the mic opens, so the speech that follows has nowhere to wait.
-    if (failed := await _connect(stream)) is not None:
-        return failed
     capture = _Capture(
         listen_fn,
         device=device,
@@ -317,11 +347,12 @@ async def stream_turn(
     turn = _Turn()
     tasks: list[asyncio.Task[None]] = []
     try:
-        # Nothing is sent until speech has started: the first frame is the pre-roll.
+        # Nothing is connected or sent until speech has started: the first frame is the pre-roll.
         first = await capture.frames.get()
         if first is None:
             return "stopped"
-        if (failed := await _reopen(stream)) is not None:
+        capture.first = first
+        if (failed := await _connect(stream, capture)) is not None:
             return failed
         local_end = await _stream_until_decided(stream, capture, first, turn, tasks)
         capture.decided()
