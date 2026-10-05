@@ -463,8 +463,9 @@ class EventQueue:
         How many ``MicLevel`` and ``LogLine`` events to keep while the consumer
         is behind. The oldest go first. Every other event is always kept.
     wake : Callable or None, optional
-        Called after each event is added, from the thread that emitted it.
-        Use it to wake an event loop, for example ``loop.call_soon_threadsafe``.
+        Called after each event is added, from the thread that emitted it, so it
+        may only call thread-safe things. Use it to wake an event loop, for example
+        ``loop.call_soon_threadsafe``, or to post a message to a UI.
 
     Attributes
     ----------

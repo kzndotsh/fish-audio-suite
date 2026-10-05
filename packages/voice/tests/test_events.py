@@ -13,7 +13,7 @@ from typing import Any
 
 import pytest
 from loguru import logger
-from test_duplex import _ctx  # pyright: ignore[reportPrivateUsage]
+from test_duplex import _ctx, _FakeBackend  # pyright: ignore[reportPrivateUsage]
 from test_duplex_turns import (
     _hello,  # pyright: ignore[reportPrivateUsage]
     _line,  # pyright: ignore[reportPrivateUsage]
@@ -29,6 +29,7 @@ from fish_audio_suite_voice import events as events_module
 from fish_audio_suite_voice.barge import FRAME_BYTES, MIC_LEVEL_EVERY_FRAMES, BargeGate
 from fish_audio_suite_voice.cli import _quit_line  # pyright: ignore[reportPrivateUsage]
 from fish_audio_suite_voice.debug import configure_voice_logging
+from fish_audio_suite_voice.duplex import duplex_turns
 from fish_audio_suite_voice.events import (
     EVENTS,
     BargedIn,
@@ -452,3 +453,36 @@ def test_only_the_actions_that_make_sense_now_are_offered(
     state: SessionState, muted: bool, expected: set[str]
 ) -> None:
     assert {str(a) for a in available_actions(state, muted=muted)} == expected
+
+
+def test_a_cancelled_session_still_sends_bye_and_stops_the_console(
+    monkeypatch: pytest.MonkeyPatch, seen: list[Event], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A UI runs the session as a worker, and a worker is cancelled when the app exits."""
+    listening = asyncio.Event()
+
+    async def wait_forever(_ctx: object, _last: str) -> HeardLine:
+        listening.set()
+        await asyncio.sleep(3600)
+        return HeardLine("bye")
+
+    monkeypatch.setattr("fish_audio_suite_voice.duplex.hear_line", wait_forever)
+
+    async def scenario() -> None:
+        task = asyncio.ensure_future(
+            duplex_turns(
+                _quick(), FishSpeaker(api_key="k", voice_id="voice"), None, _FakeBackend(_hello)
+            )
+        )
+        await listening.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(scenario())
+    assert [e for e in seen if isinstance(e, Bye)] == [Bye(1)]
+    capsys.readouterr()  # drop what the session itself printed
+    # The console subscriber was removed with the session, so later events print nothing.
+    EVENTS.emit(Listening())
+    EVENTS.emit(Heard("late", 1.0))
+    assert capsys.readouterr().out == ""
