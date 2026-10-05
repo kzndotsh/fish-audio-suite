@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import threading
 from collections.abc import Awaitable, Callable
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
@@ -61,6 +61,44 @@ def _cue_content(text: str) -> Content:
     return Content.assemble(*parts)
 
 
+class Conversation(VerticalScroll):
+    """The conversation: what you said, the reply as it streams in, and short notes.
+
+    The app tells it what happened and it keeps the rest to itself, including which
+    widget is the reply being written, so the app holds no widget state for it.
+    """
+
+    BORDER_TITLE = "conversation"
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._reply: Static | None = None
+
+    def add_user(self, text: str) -> None:
+        """Add a line the user said or typed. The reply that follows starts fresh."""
+        self._reply = None
+        self._add("you", Content.assemble(("you ▸ ", "bold $text-primary"), text))
+
+    def add_note(self, text: str) -> None:
+        """Add a dim status line, such as a retry or an interruption."""
+        self._add("note", Content.assemble((text, "dim")))
+
+    def show_reply(self, text: str) -> None:
+        """Show the reply so far, adding its line on the first call and updating it after."""
+        if self._reply is None and not text:
+            return
+        content = Content.assemble(("llm ▸ ", "bold $text-accent"), _cue_content(text))
+        if self._reply is None:
+            self._reply = self._add("llm", content)
+        else:
+            self._reply.update(content)
+
+    def _add(self, role: str, content: Content) -> Static:
+        message = Static(content, classes=f"message {role}")
+        self.mount(message)
+        return message
+
+
 class VoiceApp(App[int]):
     """Conversation, status, mic meter, timings and log of one ``fish-voice`` session.
 
@@ -109,8 +147,6 @@ class VoiceApp(App[int]):
         self._wake_pending = threading.Event()
         # Subscribed now, so nothing the session says before the screen is up is lost.
         self._queue = EventQueue(bus, wake=self._wake)
-        self._reply_widget: Static | None = None
-        self._reply_text = ""
         self._ended = False
 
     @property
@@ -122,16 +158,18 @@ class VoiceApp(App[int]):
         """Lay out the conversation, the side panels, the input line and the footer."""
         yield Header()
         with Horizontal(id="body"):
-            conversation = VerticalScroll(id="conversation")
-            conversation.border_title = "conversation"
-            yield conversation
+            yield Conversation(id="conversation")
             with Vertical(id="side"):
                 with VerticalGroup(id="status-box") as status_box:
                     status_box.border_title = "state"
                     yield Static("idle", id="status")
                 with VerticalGroup(id="mic-box") as mic_box:
                     mic_box.border_title = "mic"
-                    yield Static("", id="meter")
+                    meter = Static("", id="meter")
+                    meter.tooltip = (
+                        "The bar is the mic level. A bar past the | means it hears speech."
+                    )
+                    yield meter
                 with VerticalGroup(id="latency-box") as latency_box:
                     latency_box.border_title = "last turn"
                     yield Static(_NO_TURNS, id="latency")
@@ -169,46 +207,26 @@ class VoiceApp(App[int]):
             self._side_effects(event)
         if events:
             self._render_view()
-            self.query_one("#conversation", VerticalScroll).scroll_end(animate=False)
+            self.query_one(Conversation).scroll_end(animate=False)
 
     def _side_effects(self, event: Event) -> None:
+        conversation = self.query_one(Conversation)
         match event:
             case Heard(text=text):
-                self._reply_widget = None
-                self._reply_text = ""
-                self._add_message("you", Content.assemble(("you ▸ ", "bold $text-primary"), text))
-            case ReplyToken(text=text):
-                self._reply_text += text
-                self._show_reply()
-            case ReplyEnd(text=text):
-                if text or self._reply_widget is not None:
-                    self._reply_text = text
-                    self._show_reply()
+                conversation.add_user(text)
+            case ReplyToken() | ReplyEnd():
+                # The view has already folded the tokens into the reply so far.
+                conversation.show_reply(self._view.reply)
             case BargedIn():
-                self._add_note("(interrupted)")
+                conversation.add_note("(interrupted)")
             case Notice(text=text):
-                self._add_note(text)
+                conversation.add_note(text)
             case LogLine(level=level, tag=tag, text=text):
                 self.query_one("#log", Log).write_line(f"{level[:1]} {tag:<6} {text}")
             case Bye(code=code):
                 self._on_bye(code)
             case _:
                 return
-
-    def _add_message(self, role: str, content: Content) -> Static:
-        message = Static(content, classes=f"message {role}")
-        self.query_one("#conversation", VerticalScroll).mount(message)
-        return message
-
-    def _add_note(self, text: str) -> None:
-        self._add_message("note", Content.assemble((text, "dim")))
-
-    def _show_reply(self) -> None:
-        content = Content.assemble(("llm ▸ ", "bold $text-accent"), _cue_content(self._reply_text))
-        if self._reply_widget is None:
-            self._reply_widget = self._add_message("llm", content)
-        else:
-            self._reply_widget.update(content)
 
     def _on_bye(self, code: int) -> None:
         self._ended = True
@@ -271,7 +289,7 @@ class VoiceApp(App[int]):
         if event.state is WorkerState.ERROR:
             self._ended = True
             self._exit_code = 1
-            self._add_note(f"the session stopped: {event.worker.error!r}")
+            self.query_one(Conversation).add_note(f"the session stopped: {event.worker.error!r}")
             self._render_view()
         elif event.state is WorkerState.SUCCESS and not self._ended:
             self.exit(int(event.worker.result or 0))

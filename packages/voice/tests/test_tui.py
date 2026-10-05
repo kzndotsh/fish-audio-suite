@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.pilot import Pilot
 from textual.widgets import Input, Log, Static
@@ -32,7 +33,7 @@ from fish_audio_suite_voice.events import (
 )
 from fish_audio_suite_voice.inputs import LiveInput
 from fish_audio_suite_voice.signals import DuplexSession
-from fish_audio_suite_voice.tui import VoiceApp
+from fish_audio_suite_voice.tui import Conversation, VoiceApp
 
 
 class _SpyInput(LiveInput):
@@ -170,7 +171,7 @@ def test_events_from_another_thread_reach_the_screen_without_flooding_it() -> No
         wakes.append(1)
         return original(message)
 
-    harness.app.post_message = counting  # type: ignore[method-assign]
+    harness.app.post_message = counting
 
     async def scenario(pilot: Pilot[int]) -> None:
         def audio_thread() -> None:
@@ -404,3 +405,57 @@ def test_the_app_draws_under_every_builtin_theme() -> None:
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
+
+
+class _ConversationApp(App[None]):
+    """Hosts a ``Conversation`` alone, to test it without a session."""
+
+    def compose(self) -> ComposeResult:
+        yield Conversation()
+
+
+def _conversation_lines(conversation: Conversation) -> list[str]:
+    return [str(child.content) for child in conversation.children if isinstance(child, Static)]
+
+
+def test_the_conversation_widget_adds_its_reply_once_then_updates_it() -> None:
+    async def main() -> None:
+        app = _ConversationApp()
+        async with app.run_test() as pilot:
+            conversation = app.query_one(Conversation)
+            conversation.show_reply("")  # nothing to show yet: no empty line
+            conversation.add_user("hi")
+            conversation.show_reply("[calm] Hel")
+            conversation.show_reply("[calm] Hello")
+            await pilot.pause(0.05)
+            assert _conversation_lines(conversation) == ["you ▸ hi", "llm ▸ [calm] Hello"]
+            conversation.add_user("again")
+            conversation.show_reply("Sure")
+            await pilot.pause(0.05)
+            assert _conversation_lines(conversation) == [
+                "you ▸ hi",
+                "llm ▸ [calm] Hello",
+                "you ▸ again",
+                "llm ▸ Sure",
+            ]
+
+    asyncio.run(asyncio.wait_for(main(), 20))
+
+
+def test_the_conversation_widget_keeps_notes_in_order_and_titles_itself() -> None:
+    async def main() -> None:
+        app = _ConversationApp()
+        async with app.run_test() as pilot:
+            conversation = app.query_one(Conversation)
+            conversation.add_user("a")
+            conversation.add_note("(interrupted)")
+            conversation.add_note("[llm 429, retrying in 4s]")
+            await pilot.pause(0.05)
+            assert _conversation_lines(conversation) == [
+                "you ▸ a",
+                "(interrupted)",
+                "[llm 429, retrying in 4s]",
+            ]
+            assert conversation.border_title == "conversation"
+
+    asyncio.run(asyncio.wait_for(main(), 20))
