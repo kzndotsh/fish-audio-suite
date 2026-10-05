@@ -14,6 +14,7 @@ from fish_audio_suite_voice.config import VoiceCliConfig
 from fish_audio_suite_voice.console import console_print
 from fish_audio_suite_voice.debug import debug, debug_enabled, trace
 from fish_audio_suite_voice.duplex_state import EXIT_FATAL, EXIT_OK, DuplexContext
+from fish_audio_suite_voice.events import EVENTS, Bye, TurnEnded
 from fish_audio_suite_voice.hearing import HeardLine, hear_line
 from fish_audio_suite_voice.history import opening_history, remember_user
 from fish_audio_suite_voice.llm import ChatBackend
@@ -38,6 +39,7 @@ def bye() -> int:
         ``EXIT_OK`` (0). Fatal Fish and PortAudio failures use 2 instead.
     """
     console_print("\nbye")
+    EVENTS.emit(Bye())
     return EXIT_OK
 
 
@@ -72,6 +74,7 @@ async def _answer_line(ctx: DuplexContext, heard: HeardLine) -> int | None:
             )
             if fatal is not None:
                 return fatal
+    EVENTS.emit(TurnEnded(snapshot))
     summary = turn_summary(snapshot)
     if debug_enabled():
         debug("turn.summary {}", summary.strip().removeprefix("\u21b3 "))

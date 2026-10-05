@@ -23,9 +23,10 @@ from fish_audio_suite_kit import (
 )
 from fish_audio_suite_voice.barge import BargeGate
 from fish_audio_suite_voice.cancel import is_cancel_noise, is_own_cancel
-from fish_audio_suite_voice.console import console_print, end_reply_line, write_reply_token
+from fish_audio_suite_voice.console import end_reply_line, write_reply_token
 from fish_audio_suite_voice.debug import conversation, debug, debug_enabled, warn
 from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexContext
+from fish_audio_suite_voice.events import EVENTS, ReplyEnd, ReplyToken, notice
 from fish_audio_suite_voice.hearing import HeardLine
 from fish_audio_suite_voice.playback import PortAudioMissingError, make_sink
 from fish_audio_suite_voice.spoken import unspoken_text
@@ -123,6 +124,7 @@ async def collect_reply(
             parts.append(tok)
             if live:
                 write_reply_token(tok)
+            EVENTS.emit(ReplyToken(tok))
             if on_token is not None:
                 on_token(tok)
     except asyncio.CancelledError:
@@ -138,6 +140,7 @@ async def collect_reply(
     reply = "".join(parts).strip()
     if reply and not live:
         conversation("llm", reply)
+    EVENTS.emit(ReplyEnd(reply))
     return reply, ttft_ms
 
 
@@ -169,12 +172,9 @@ def after_speech(
     if isinstance(result.error, FishAuthError):
         return snapshot, EXIT_FATAL
     if not result.got_audio and result.cancelled:
-        console_print("  [tts cancelled before audio]", flush=True)
+        notice("  [tts cancelled before audio]")
     elif not result.got_audio and result.error_status is None and not result.error_message:
-        console_print(
-            f"  [tts silent] voice={c.fish_voice_id} model={c.tts_model}",
-            flush=True,
-        )
+        notice(f"  [tts silent] voice={c.fish_voice_id} model={c.tts_model}")
     spoken = result.spoken_so_far
     # The last history row is the user line this reply answers. Saving an
     # exact copy teaches the next turn to repeat them again.
@@ -227,7 +227,7 @@ async def speak_reply(
     c = ctx.config
     scrubbed = ensure_lead_cue(normalize_cues(scrub_tts(reply), lead=c.mood_lead))
     if is_tts_junk(scrubbed, drop_narration=c.drop_narration):
-        console_print("  (skip junk TTS)", flush=True)
+        notice("  (skip junk TTS)")
         return snapshot, None
     barge = BargeGate(device=ctx.device, tune=c.barge, aec=ctx.session.aec)
     thread = barge.start_after_bleed(cancel)

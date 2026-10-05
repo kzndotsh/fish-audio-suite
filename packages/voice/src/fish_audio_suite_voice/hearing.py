@@ -32,6 +32,7 @@ from fish_audio_suite_voice.debug import (
     warn,
 )
 from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexContext
+from fish_audio_suite_voice.events import EVENTS, Heard, Listening
 from fish_audio_suite_voice.listen import record_utterance
 from fish_audio_suite_voice.playback import PortAudioMissingError
 
@@ -154,6 +155,7 @@ async def recognize(
     if decision == "skip":
         return HeardLine("noise")
     conversation("you", text)
+    EVENTS.emit(Heard(text, asr_ms))
     return HeardLine(
         "line",
         text=text,
@@ -169,6 +171,7 @@ async def hear_line(ctx: DuplexContext, last_user: str) -> HeardLine:
         debug("listen.waiting for you")
     else:
         console_print("listening…")
+    EVENTS.emit(Listening())
     clear_turn()
     trace("listen.waiting device={}", ctx.device)
     try:

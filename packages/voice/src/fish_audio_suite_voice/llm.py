@@ -20,8 +20,8 @@ import httpx
 
 from fish_audio_suite_kit import MS_PER_S, ChatMessage, ends_sentence, utf8_text
 from fish_audio_suite_voice.cancel import is_cancel_noise, is_own_cancel, reap
-from fish_audio_suite_voice.console import console_print
 from fish_audio_suite_voice.debug import debug, short_model, trace, warn
+from fish_audio_suite_voice.events import notice
 from fish_audio_suite_voice.llm_tune import LlmTune, is_openrouter_host
 from fish_audio_suite_voice.pause import sleep_unless
 from fish_audio_suite_voice.transports import (
@@ -116,7 +116,7 @@ async def check_openrouter_model(client: Any, tune: LlmTune) -> None:
     # The ready line already names the model. A remap is announced below.
     trace("llm.model {} ({} token context){}", name or short_model(mid or route), ctx, routed)
     if isinstance(mid, str) and mid and mid != route:
-        console_print(f"  [llm model {route} → {mid}]", flush=True)
+        notice(f"  [llm model {route} → {mid}]")
 
 
 def _event_field(event: object, name: str) -> Any:
@@ -582,7 +582,7 @@ async def llm_token_stream(
     generations = (1, 2) if tune.continuation else (1,)
     for generation in generations:
         if generation == 2:
-            console_print("  [llm cut off, continuing]", flush=True)
+            notice("  [llm cut off, continuing]")
         held = _HeldStats()
         extra: list[str] = []
         async for piece in _stream_generation(
@@ -738,5 +738,5 @@ async def _maybe_retry_429(stats: _ChatStats, cancel: asyncio.Event | None) -> b
     wait = _retry_wait(stats, cancel)
     if wait is None:
         return False
-    console_print(f"  [llm 429, retrying in {_wait_label(wait)}s]", flush=True)
+    notice(f"  [llm 429, retrying in {_wait_label(wait)}s]")
     return not await _pause_for_retry(cancel, wait)

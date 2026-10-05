@@ -187,6 +187,7 @@ There is no frontend. The user-facing parts are an HTTP API (the proxy) and a te
 | Audio in | `listen`, `barge`, `floor`, `aec` |
 | Speech out | `speaker` (`FishSpeaker`), `tts_turn` (one turn with retry), `wire` (websocket pump, `TtsResult`), `declick` (fades the start and end of each sentence that meets silence), `stream_scrub`, `playback`, `spoken` |
 | LLM | `llm` (`ChatBackend`, retry, stats), `transports` (OpenRouter SDK or httpx SSE) |
+| Events | `events` (`EVENTS`, the typed events a display can follow, and `notice`) |
 | Support | `asr`, `cancel`, `pause`, `debug`, `console`, `ws_tap`, `envfile`, `cli` |
 
 ## 4. Data stores
@@ -303,6 +304,7 @@ The rules most easily broken, each with its reason. A test or a lint rule enforc
 
 Known architectural debt and likely changes, roughly in order of value:
 
+- **A full-screen terminal app.** The loop now reports each step as an event (`events.EVENTS`), so a Textual app could follow a session without reading console output. It would sit behind an optional extra in the voice package, and it would need the console output and log lines muted while it runs. The barge-in, mic-level and speaking events it would show are not emitted yet.
 - **A mic that stays open.** The mic closes during each reply and reopens afterwards, so speech in the post-reply cooldown, and about 50 to 300 ms after a barge-in, is lost. A persistent capture stream that is gated, not closed, would fix both.
 - **Turn detection beyond silence.** A small end-of-turn model (for example Pipecat's Smart Turn) would allow a shorter end-of-speech wait without cutting off pauses.
 - **Trimming trailing silence** from ASR clips.
