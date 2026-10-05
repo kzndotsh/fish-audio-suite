@@ -7,13 +7,7 @@ import threading
 import time
 
 import pytest
-from test_duplex import _ctx  # pyright: ignore[reportPrivateUsage]
-from test_duplex_turns import (
-    _hello,  # pyright: ignore[reportPrivateUsage]
-    _quick,  # pyright: ignore[reportPrivateUsage]
-    _run_with,  # pyright: ignore[reportPrivateUsage]
-    _spoken_by,  # pyright: ignore[reportPrivateUsage]
-)
+from session_fakes import hello_tokens, make_ctx, quick_config, run_session_with, speak_with_fakes
 from voice_fakes import install_audio
 
 from fish_audio_suite_voice.barge import StopFlag
@@ -52,7 +46,7 @@ def _turn(source: LiveInput, ctx: DuplexContext) -> HeardLine:
 
 
 def test_a_typed_line_is_answered_like_a_spoken_one() -> None:
-    ctx = _ctx()
+    ctx = make_ctx()
     ctx.barge_prefix = b"clip"
     seen: list[Event] = []
     unsubscribe = EVENTS.subscribe(seen.append)
@@ -72,7 +66,7 @@ def test_blank_lines_are_ignored_and_lines_keep_their_order() -> None:
     source.submit("   ")
     source.submit("one")
     source.submit("two")
-    ctx = _ctx()
+    ctx = make_ctx()
     assert _turn(source, ctx).text == "one"
     assert _turn(source, ctx).text == "two"
 
@@ -85,7 +79,7 @@ def test_a_typed_line_stops_the_mic_and_drops_what_it_caught(
     timer = threading.Timer(0.05, source.submit, args=("typed instead",))
     timer.start()
     try:
-        heard = _turn(source, _ctx())
+        heard = _turn(source, make_ctx())
     finally:
         timer.cancel()
     assert mic.opened.is_set()
@@ -97,7 +91,7 @@ def test_a_mic_result_is_returned_when_nothing_interrupts(
 ) -> None:
     spoken = HeardLine("line", text="from the mic")
     mic = _Mic(monkeypatch, spoken)
-    assert _turn(LiveInput(), _ctx()) is spoken
+    assert _turn(LiveInput(), make_ctx()) is spoken
     assert mic.calls == 1
 
 
@@ -112,7 +106,7 @@ def test_a_muted_session_keeps_the_mic_closed_until_unmuted_or_typed(
     timer.start()
     start = time.monotonic()
     try:
-        heard = _turn(source, _ctx())
+        heard = _turn(source, make_ctx())
     finally:
         timer.cancel()
     assert time.monotonic() - start >= 0.1
@@ -122,14 +116,14 @@ def test_a_muted_session_keeps_the_mic_closed_until_unmuted_or_typed(
     muted.mute()
     muted.submit("typed while muted")
     mic.calls = 0
-    assert _turn(muted, _ctx()).text == "typed while muted"
+    assert _turn(muted, make_ctx()).text == "typed while muted"
     assert mic.calls == 0
 
 
 def test_muting_during_a_recording_stops_it(monkeypatch: pytest.MonkeyPatch) -> None:
     _Mic(monkeypatch)
     source = LiveInput()
-    ctx = _ctx()
+    ctx = make_ctx()
     timers = [
         threading.Timer(0.05, source.mute),
         threading.Timer(0.2, source.submit, args=("now typing",)),
@@ -146,7 +140,7 @@ def test_muting_during_a_recording_stops_it(monkeypatch: pytest.MonkeyPatch) -> 
 
 def test_quit_ends_a_muted_wait_and_a_recording(monkeypatch: pytest.MonkeyPatch) -> None:
     _Mic(monkeypatch)
-    ctx = _ctx()
+    ctx = make_ctx()
     source = LiveInput()
     source.mute()
     timer = threading.Timer(0.05, ctx.session.quit_requested.set)
@@ -161,12 +155,12 @@ def test_quit_ends_a_muted_wait_and_a_recording(monkeypatch: pytest.MonkeyPatch)
 def test_the_loop_answers_a_typed_line_through_a_source(monkeypatch: pytest.MonkeyPatch) -> None:
     tts = FishSpeaker(api_key="k", voice_id="voice")
     install_audio(monkeypatch)
-    said = _spoken_by(monkeypatch, tts)
+    said = speak_with_fakes(monkeypatch, tts)
     source = LiveInput()
     source.submit("tell me something")
     # The second turn finds nothing typed, so the fake mic says goodbye.
     _Mic(monkeypatch, HeardLine("bye"))
-    assert _run_with(_quick(), tts, _hello, source) == 0
+    assert run_session_with(quick_config(), tts, hello_tokens, source) == 0
     assert said == ["Hello there friend."]
 
 
@@ -177,7 +171,7 @@ def _bound_turn(ctx: DuplexContext) -> tuple[threading.Event, asyncio.Event]:
 
 
 def test_a_typed_line_stops_the_reply_that_is_playing() -> None:
-    ctx = _ctx()
+    ctx = make_ctx()
     source = LiveInput()
     source.submit("first")
     _turn(source, ctx)  # the source now knows the session
@@ -188,7 +182,7 @@ def test_a_typed_line_stops_the_reply_that_is_playing() -> None:
 
 
 def test_a_typed_line_can_wait_for_the_reply_to_finish() -> None:
-    ctx = _ctx()
+    ctx = make_ctx()
     source = LiveInput()
     source.submit("first")
     _turn(source, ctx)
@@ -201,7 +195,7 @@ def test_a_typed_line_can_wait_for_the_reply_to_finish() -> None:
 def test_a_line_typed_before_the_first_turn_has_nothing_to_stop() -> None:
     source = LiveInput()
     source.submit("early")  # no session seen yet: must not fail
-    assert _turn(source, _ctx()).text == "early"
+    assert _turn(source, make_ctx()).text == "early"
 
 
 def test_toggling_mute_flips_the_switch_and_reports_the_new_state() -> None:
@@ -214,7 +208,7 @@ def test_toggling_mute_flips_the_switch_and_reports_the_new_state() -> None:
 
 def test_stopping_the_reply_cancels_the_turn_and_does_nothing_before_a_session() -> None:
     LiveInput().stop_reply()  # no session seen yet: nothing to stop, and no error
-    ctx = _ctx()
+    ctx = make_ctx()
     source = LiveInput()
     source.submit("first")
     _turn(source, ctx)

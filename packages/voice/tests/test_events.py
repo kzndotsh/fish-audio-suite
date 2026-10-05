@@ -13,14 +13,15 @@ from typing import Any
 
 import pytest
 from loguru import logger
-from test_duplex import _ctx, _FakeBackend  # pyright: ignore[reportPrivateUsage]
-from test_duplex_turns import (
-    _hello,  # pyright: ignore[reportPrivateUsage]
-    _line,  # pyright: ignore[reportPrivateUsage]
-    _Loop,  # pyright: ignore[reportPrivateUsage]
-    _quick,  # pyright: ignore[reportPrivateUsage]
-    _run,  # pyright: ignore[reportPrivateUsage]
-    _spoken_by,  # pyright: ignore[reportPrivateUsage]
+from session_fakes import (
+    FakeBackend,
+    ScriptedHearing,
+    heard_line,
+    hello_tokens,
+    make_ctx,
+    quick_config,
+    run_session,
+    speak_with_fakes,
 )
 from voice_fakes import install_audio, install_vad, make_result, set_tts
 
@@ -130,7 +131,7 @@ def test_hear_line_reports_listening_and_the_transcript(
 
     monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", lambda *_a, **_k: b"w")
     monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", asr)
-    heard = asyncio.run(hear_line(_ctx(), ""))
+    heard = asyncio.run(hear_line(make_ctx(), ""))
     assert heard.kind == "line"
     assert seen[0] == Listening()
     assert isinstance(seen[1], Heard)
@@ -143,9 +144,9 @@ def test_a_turn_reports_the_reply_as_it_streams_then_the_timings_then_bye(
 ) -> None:
     tts = FishSpeaker(api_key="k", voice_id="voice")
     install_audio(monkeypatch)
-    _spoken_by(monkeypatch, tts)
-    _Loop(monkeypatch, _line("hi there"))
-    assert _run(_quick(), tts, _hello) == 0
+    speak_with_fakes(monkeypatch, tts)
+    ScriptedHearing(monkeypatch, heard_line("hi there"))
+    assert run_session(quick_config(), tts, hello_tokens) == 0
     assert [type(e) for e in seen] == [ReplyToken, ReplyToken, ReplyEnd, TurnEnded, Bye]
     assert [e.text for e in seen if isinstance(e, ReplyToken)] == ["Hello ", "there friend."]
     assert ReplyEnd("Hello there friend.") in seen
@@ -351,8 +352,8 @@ def test_the_first_audio_of_a_reply_is_reported_as_speaking(
         return make_result(text, bytes_played=4, got_audio=True, tts_first_audio_ms=3.0)
 
     set_tts(monkeypatch, tts, speak=speak)
-    _Loop(monkeypatch, _line("hi there"))
-    assert _run(_quick(), tts, _hello) == 0
+    ScriptedHearing(monkeypatch, heard_line("hi there"))
+    assert run_session(quick_config(), tts, hello_tokens) == 0
     kinds = [type(e) for e in seen]
     assert kinds.index(Speaking) > kinds.index(ReplyEnd)
     assert kinds.index(Speaking) < kinds.index(TurnEnded)
@@ -382,8 +383,8 @@ def test_bye_is_sent_once_with_the_exit_code_however_the_session_ends(
     code: int,
 ) -> None:
     tts = FishSpeaker(api_key="k", voice_id="voice")
-    _Loop(monkeypatch, heard)
-    assert _run(_quick(), tts, _hello) == code
+    ScriptedHearing(monkeypatch, heard)
+    assert run_session(quick_config(), tts, hello_tokens) == code
     assert [e for e in seen if isinstance(e, Bye)] == [Bye(code)]
     assert next(e for e in seen if isinstance(e, Bye)).code == code
     assert ("bye" in capsys.readouterr().out) is (code == 0)
@@ -397,7 +398,7 @@ def test_bye_is_sent_when_the_session_crashes(
 
     monkeypatch.setattr("fish_audio_suite_voice.duplex.hear_line", broken)
     with pytest.raises(RuntimeError, match="boom"):
-        _run(_quick(), FishSpeaker(api_key="k", voice_id="voice"), _hello)
+        run_session(quick_config(), FishSpeaker(api_key="k", voice_id="voice"), hello_tokens)
     assert [e for e in seen if isinstance(e, Bye)] == [Bye(1)]
 
 
@@ -471,7 +472,10 @@ def test_a_cancelled_session_still_sends_bye_and_stops_the_console(
     async def scenario() -> None:
         task = asyncio.ensure_future(
             duplex_turns(
-                _quick(), FishSpeaker(api_key="k", voice_id="voice"), None, _FakeBackend(_hello)
+                quick_config(),
+                FishSpeaker(api_key="k", voice_id="voice"),
+                None,
+                FakeBackend(hello_tokens),
             )
         )
         await listening.wait()

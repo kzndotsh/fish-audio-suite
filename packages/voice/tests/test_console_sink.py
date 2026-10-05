@@ -6,12 +6,12 @@ import asyncio
 import re
 
 import pytest
-from test_duplex import _FakeBackend  # pyright: ignore[reportPrivateUsage]
-from test_duplex_turns import (
-    _hello,  # pyright: ignore[reportPrivateUsage]
-    _quick,  # pyright: ignore[reportPrivateUsage]
-    _run_with,  # pyright: ignore[reportPrivateUsage]
-    _spoken_by,  # pyright: ignore[reportPrivateUsage]
+from session_fakes import (
+    FakeBackend,
+    hello_tokens,
+    quick_config,
+    run_session_with,
+    speak_with_fakes,
 )
 from voice_fakes import install_audio
 
@@ -128,14 +128,14 @@ def test_a_whole_turn_prints_the_same_transcript_as_before(
 ) -> None:
     tts = FishSpeaker(api_key="k", voice_id="voice")
     install_audio(monkeypatch)
-    _spoken_by(monkeypatch, tts)
+    speak_with_fakes(monkeypatch, tts)
 
     async def asr(*_args: object, **_kwargs: object) -> str:
         return "tell me something fun"
 
     monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", lambda *_a, **_k: b"w")
     monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", asr)
-    assert _run_with(_quick(), tts, _hello, _OneTurn(real=True)) == 0
+    assert run_session_with(quick_config(), tts, hello_tokens, _OneTurn(real=True)) == 0
     out = capsys.readouterr().out.splitlines()
     assert out[:3] == ["listening…", "you ▸ tell me something fun", "llm ▸ Hello there friend."]
     assert out[3].startswith("  ↳ ")
@@ -147,17 +147,17 @@ def test_a_display_that_draws_its_own_screen_leaves_the_console_off(
 ) -> None:
     tts = FishSpeaker(api_key="k", voice_id="voice")
     install_audio(monkeypatch)
-    _spoken_by(monkeypatch, tts)
+    speak_with_fakes(monkeypatch, tts)
     seen: list[Event] = []
     unsubscribe = EVENTS.subscribe(seen.append)
     try:
         code = asyncio.run(
             asyncio.wait_for(
                 duplex_turns(
-                    _quick(),
+                    quick_config(),
                     tts,
                     None,
-                    _FakeBackend(_hello),
+                    FakeBackend(hello_tokens),
                     source=_OneTurn(real=False),
                     console=False,
                 ),
