@@ -23,6 +23,8 @@ from fish_audio_suite_voice.events import (
 )
 
 __all__ = [
+    "METER_LOUDEST_DB",
+    "METER_QUIETEST_DB",
     "AutoLevel",
     "Ballistics",
     "SessionView",
@@ -36,11 +38,17 @@ __all__ = [
 ]
 
 _FULL_SCALE: Final = 32768.0  # the peak of 16-bit audio
-_QUIETEST_DB: Final = -60.0  # at or below this, a meter shows empty
-# How a level bar moves. The scale is the meter's own: 0 to 1 spans _QUIETEST_DB to 0 dB.
+_QUIETEST_DB: Final = -60.0  # the floor for measuring a level at all (silence reads as this)
+# The mic meter's window. Speech into a mic sits around -35 to -20 dB, so a window that ends
+# at 0 dB leaves it at half height. This one ends where the loud syllables of ordinary speech
+# do, so they reach the top and a normal speaking level sits at about three fifths.
+METER_QUIETEST_DB: Final = -54.0  # at or below this, a meter shows empty
+METER_LOUDEST_DB: Final = -15.0  # at or above this, it shows full
+_METER_SPAN_DB: Final = METER_LOUDEST_DB - METER_QUIETEST_DB
+# How a level bar moves. The scale is the meter's own: 0 to 1 spans the meter's window.
 BODY_RELEASE_PER_S: Final = 1.5  # a bar falls from full to empty in about two thirds of a second
 PEAK_HOLD_S: Final = 1.2  # the cap above a bar stays put this long after a peak
-PEAK_RELEASE_PER_S: Final = 25.0 / -_QUIETEST_DB  # then falls at 25 dB per second
+PEAK_RELEASE_PER_S: Final = 25.0 / _METER_SPAN_DB  # then falls at 25 dB per second
 # The speaker is scaled against the reply's own loudest recent moment, not a fixed scale.
 SPEAKER_SPAN_DB: Final = 24.0  # a bar is empty this far below that moment
 SPEAKER_START_DB: Final = -30.0  # what "loud" is assumed to be until the reply shows otherwise
@@ -116,22 +124,25 @@ def level_fraction(rms: float) -> float:
     Returns
     -------
     float
-        0 at 60 dB below full scale or quieter, 1 at full scale, in between on a
-        decibel scale, which is how loudness is heard. A raw linear bar would look
-        empty for ordinary speech, which sits at a few hundred out of 32768.
+        0 at ``METER_QUIETEST_DB`` (54 dB below full scale) or quieter, 1 at
+        ``METER_LOUDEST_DB`` (15 dB below) or louder, in between on a decibel scale, which is
+        how loudness is heard. A raw linear bar would look empty for ordinary speech,
+        which sits at a few hundred out of 32768.
 
     Examples
     --------
     >>> level_fraction(0.0), level_fraction(32768.0)
     (0.0, 1.0)
-    >>> round(level_fraction(1000.0), 2)
-    0.49
+    >>> round(level_fraction(1000.0), 2)  # -30 dB, a normal speaking level into a mic
+    0.61
+    >>> round(level_fraction(4000.0), 2)  # a loud syllable
+    0.92
     """
     ratio = rms / _FULL_SCALE  # a tiny rms can underflow to zero here, so test the ratio
     if not ratio > 0:
         return 0.0
     decibels = 20 * math.log10(ratio)
-    return min(1.0, max(0.0, (decibels - _QUIETEST_DB) / -_QUIETEST_DB))
+    return min(1.0, max(0.0, (decibels - METER_QUIETEST_DB) / _METER_SPAN_DB))
 
 
 def wave_dots(
