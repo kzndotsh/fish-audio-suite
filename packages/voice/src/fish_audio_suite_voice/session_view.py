@@ -28,14 +28,14 @@ __all__ = [
     "reduce_view",
     "split_cells",
     "turn_timings",
-    "wave_column",
+    "wave_dots",
 ]
 
 _FULL_SCALE: Final = 32768.0  # the peak of 16-bit audio
 _QUIETEST_DB: Final = -60.0  # at or below this, a meter shows empty
-_BLOCKS: Final = (
-    " \u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588"  # nothing up to a full cell, in eighths
-)
+_BRAILLE: Final = 0x2800  # the first Braille pattern, which has no dots
+# The bit that raises each dot of a Braille cell, by dot row (top to bottom) and column.
+_DOT_BITS: Final = ((0x01, 0x08), (0x02, 0x10), (0x04, 0x20), (0x40, 0x80))
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,38 +113,44 @@ def level_fraction(rms: float) -> float:
     return min(1.0, max(0.0, (decibels - _QUIETEST_DB) / -_QUIETEST_DB))
 
 
-def wave_column(level: float, half: int) -> list[tuple[str, bool]]:
-    """Draw one bar of a mirrored waveform: it grows from the middle both up and down.
+def wave_dots(levels: Sequence[float], rows: int) -> list[str]:
+    """Draw a mirrored, dot-matrix waveform: one bar per level, two bars to a character.
 
     Parameters
     ----------
-    level : float
-        How loud, from 0 to 1, as ``level_fraction`` gives it. Even silence draws a thin
-        line at the middle, so a quiet mic still looks alive.
-    half : int
-        How many rows tall each half is. At least 1.
+    levels : Sequence[float]
+        How loud each bar is, from 0 to 1, as ``level_fraction`` gives it, left to right.
+        Even silence draws one dot above and one below the middle, so a quiet mic still
+        shows a thin dotted line.
+    rows : int
+        How many lines tall the drawing is. Each line has four dot rows, so the middle
+        splits ``rows * 4`` dot rows into two equal halves. At least 1.
 
     Returns
     -------
-    list[tuple[str, bool]]
-        ``2 * half`` cells from top to bottom, each a character and whether to draw it
-        reversed. The top half is lower-block characters growing upward. The bottom half
-        needs blocks that hang from the top, which Unicode only has as a few shapes, so it
-        uses the complementary lower block, reversed.
+    list[str]
+        ``rows`` strings of Braille characters, each ``ceil(len(levels) / 2)`` long, top to
+        bottom. Braille draws with dots in the foreground colour only, so a cell needs no
+        background and no reversed colours.
 
     Examples
     --------
-    >>> wave_column(0.0, 1)
-    [('\u2581', False), ('\u2587', True)]
-    >>> wave_column(1.0, 1)
-    [('\u2588', False), (' ', True)]
+    >>> wave_dots([0.0, 0.0], 1)
+    ['\u2836']
+    >>> wave_dots([1.0, 1.0], 1)
+    ['\u28ff']
     """
-    half = max(1, half)
-    eighths = max(1, round(min(1.0, max(0.0, level)) * half * 8))
-    rows = [min(8, max(0, eighths - 8 * row)) for row in range(half)]  # middle outwards
-    top = [(_BLOCKS[filled], False) for filled in reversed(rows)]
-    bottom = [(_BLOCKS[8 - filled], True) for filled in rows]
-    return top + bottom
+    rows = max(1, rows)
+    half = rows * 2  # dot rows above, and below, the middle
+    cells = (len(levels) + 1) // 2
+    grid = [[0] * cells for _ in range(rows)]
+    for x, level in enumerate(levels):
+        reach = max(1, round(min(1.0, max(0.0, level)) * half))
+        column = x % 2
+        for step in range(reach):
+            for dot_row in (half - 1 - step, half + step):
+                grid[dot_row // 4][x // 2] |= _DOT_BITS[dot_row % 4][column]
+    return ["".join(chr(_BRAILLE + bits) for bits in row) for row in grid]
 
 
 def reduce_view(view: SessionView, event: Event) -> SessionView:

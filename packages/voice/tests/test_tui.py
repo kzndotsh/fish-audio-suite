@@ -85,6 +85,11 @@ class _Harness:
         return list(self.app.query_one("#log", Log).lines)
 
 
+def _dots(char: str) -> int:
+    """How many dots a Braille character raises."""
+    return (ord(char) - 0x2800).bit_count()
+
+
 def _timings_text(harness: _Harness) -> str:
     panel = harness.app.query_one(Timings)
     return "\n".join(strip.text for strip in panel.render_lines(Region(0, 0, panel.size.width, 3)))
@@ -160,7 +165,7 @@ def test_the_mic_meter_and_the_log_follow_the_events() -> None:
         wave = harness.app.query_one(Waveform)
         assert wave.size.height == 4
         lines = [strip.text for strip in wave.render_lines(Region(0, 0, wave.size.width, 4))]
-        assert any("█" in line or "▇" in line for line in lines)  # the loud bar is drawn
+        assert max(_dots(ch) for line in lines for ch in line) >= 4  # the loud bar is drawn
         assert harness.log_lines() == ["D tts    start voice=abc"]
         assert "[llm 429, retrying in 4s]" in harness.messages()
         assert "(interrupted)" in harness.messages()
@@ -468,7 +473,7 @@ def test_the_conversation_widget_keeps_notes_in_order_and_titles_itself() -> Non
     asyncio.run(asyncio.wait_for(main(), 20))
 
 
-def test_the_waveform_scrolls_newest_right_dims_below_the_threshold_and_decays() -> None:
+def test_the_waveform_scrolls_newest_right_and_decays_in_dots() -> None:
     class Host(App[None]):
         def compose(self) -> ComposeResult:
             yield Waveform()
@@ -480,19 +485,24 @@ def test_the_waveform_scrolls_newest_right_dims_below_the_threshold_and_decays()
             await pilot.pause()
             width = wave.size.width
             assert width > 0
-            wave.push(0.0, 0.3)  # quiet: a thin line only, so no full cells
-            wave.push(1.0, 0.3)  # loud and above the threshold
-            wave.push(0.0, 0.3)  # silence again, but the bar falls instead of snapping
+            for level in (
+                0.0,
+                1.0,
+                0.0,
+            ):  # quiet, loud, then silence that falls instead of snapping
+                wave.push(level, 0.3)
             await pilot.pause()
             lines = [s.text for s in wave.render_lines(Region(0, 0, width, 4))]
             assert all(len(line) == width for line in lines)
+            assert all(0x2800 <= ord(ch) <= 0x28FF for line in lines for ch in line)  # all dots
             top = lines[0]
-            assert top[-4] == " "  # nothing before the first push
-            assert top[-3] == " "  # the quiet bar reaches only the middle rows
-            assert top[-2] == "█"  # the loud bar, newest but one
-            assert top[-1] not in (" ", "█")  # the silence after it is still falling
-            # Mirrored: the bottom row is the same bar hanging down, so its loud cell is a filled one.
-            assert lines[3][-2] == " "
+            assert top[0] == "\u2800"  # nothing drawn that high before any speech
+            assert _dots(top[-1]) > 0  # the newest characters hold the loud bar and its fall
+            assert _dots(top[-1]) > _dots(top[-3])
+            # Mirrored: each line has as many dots as the one at the same distance below.
+            for row in range(2):
+                for above, below in zip(lines[row], lines[3 - row], strict=True):
+                    assert _dots(above) == _dots(below)
 
     asyncio.run(main())
 
@@ -509,7 +519,7 @@ def test_a_pulsing_you_line_appears_when_speech_starts_and_becomes_the_transcrip
         await pilot.pause(0.35)  # long enough to animate
         (pending,) = harness.messages()
         assert pending.startswith("you ▸ ")
-        assert any(bar in pending for bar in "▁▂▃▄▅▆▇█")
+        assert any(0x2800 < ord(ch) <= 0x28FF for ch in pending)  # dots, not blocks
         frames = {pending}
         await pilot.pause(0.35)
         frames.add(harness.messages()[0])
@@ -640,7 +650,7 @@ def test_the_pulse_holds_still_when_animations_are_turned_off() -> None:
     assert _drive(harness, scenario) == 0
 
 
-def test_a_silent_waveform_is_drawn_in_exact_theme_colours_not_blended_into_grey() -> None:
+def test_the_waveform_draws_dots_in_the_foreground_only_with_no_cell_background() -> None:
     class Host(App[None]):
         def compose(self) -> ComposeResult:
             yield Waveform()
@@ -649,18 +659,18 @@ def test_a_silent_waveform_is_drawn_in_exact_theme_colours_not_blended_into_grey
         host = Host()
         async with host.run_test(size=(40, 10)) as pilot:
             wave = host.query_one(Waveform)
-            wave.push(0.0, 0.3)
+            for level in (0.0, 0.8, 0.05, 0.9):
+                wave.push(level, 0.3)
             await pilot.pause()
-            surface = Color.parse(host.get_css_variables()["background"]).rgb
+            screen = Color.parse(host.get_css_variables()["background"]).rgb
             strips = wave.render_lines(Region(0, 0, wave.size.width, 4))
-            # The outer bottom row of a silent bar is a full cell of the screen colour. A
-            # `dim` blend would turn it into a mid grey, which is the bug this guards.
-            colours = {
-                tuple(segment.style.color.get_truecolor())
-                for segment in strips[3]
-                if segment.style is not None and segment.style.color is not None
+            backgrounds = {
+                tuple(segment.style.bgcolor.get_truecolor())
+                for strip in strips
+                for segment in strip
+                if segment.style is not None and segment.style.bgcolor is not None
             }
-            assert colours == {surface}
+            assert backgrounds <= {screen}  # dots sit on the screen, nothing is filled behind them
 
     asyncio.run(main())
 
@@ -757,7 +767,7 @@ def test_the_timings_panel_shows_the_wait_a_split_bar_and_a_legend() -> None:
     assert head.rstrip().endswith("total 6.47s")
     assert len(head) == 26  # the total sits at the right edge
     assert len(bar) == 26
-    assert set(bar) == {"█"}  # the whole width is the wait, split into parts by colour
+    assert set(bar) == {"⠶"}  # the whole width is the wait, as dots, split into parts by colour
     assert legend.split() == ["asr", "0.27", "llm", "0.67", "tts", "0.59"]
 
 

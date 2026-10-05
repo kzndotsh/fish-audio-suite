@@ -32,7 +32,7 @@ from fish_audio_suite_voice.session_view import (
     reduce_view,
     split_cells,
     turn_timings,
-    wave_column,
+    wave_dots,
 )
 
 
@@ -147,26 +147,34 @@ def test_a_view_gives_the_meter_and_its_threshold_marker() -> None:
     assert SessionView().mic_fraction == 0.0
 
 
-def test_a_wave_column_is_mirrored_never_empty_and_grows_with_the_level() -> None:
-    for half in (1, 2, 3):
-        silent = wave_column(0.0, half)
-        assert len(silent) == 2 * half
-        assert silent[half - 1] == ("\u2581", False)  # a thin line at the middle, even in silence
-        assert silent[half] == ("\u2587", True)
-        loud = wave_column(1.0, half)
-        assert loud[0] == ("\u2588", False)  # full to the top
-        assert loud[-1] == (" ", True)  # and, reversed, full to the bottom
+def _dots(char: str) -> int:
+    return (ord(char) - 0x2800).bit_count()
 
-    def filled(column: list[tuple[str, bool]]) -> int:
-        blocks = " \u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588"
-        return sum(blocks.index(c) if not rev else 8 - blocks.index(c) for c, rev in column)
 
-    levels = [wave_column(level / 20, 3) for level in range(21)]
-    amounts = [filled(column) for column in levels]
-    assert amounts == sorted(amounts)  # louder never draws less
-    assert wave_column(-5.0, 2) == wave_column(0.0, 2)  # out of range is clamped
-    assert wave_column(9.0, 2) == wave_column(1.0, 2)
-    assert len(wave_column(0.5, 0)) == 2  # a height under 1 still draws
+def test_wave_dots_are_mirrored_never_empty_and_grow_with_the_level() -> None:
+    assert wave_dots([0.0, 0.0], 1) == ["\u2836"]  # a thin dotted line through the middle
+    assert wave_dots([1.0, 1.0], 1) == ["\u28ff"]  # every dot
+    for rows in (1, 2, 4):
+        silent = wave_dots([0.0] * 6, rows)
+        assert len(silent) == rows
+        assert all(len(line) == 3 for line in silent)  # two bars to a character
+        # Silence is two dots tall per bar: one above the middle and one below it.
+        assert sum(_dots(ch) for line in silent for ch in line) == 6 * 2
+        totals = [
+            sum(_dots(ch) for line in wave_dots([level / 20] * 4, rows) for ch in line)
+            for level in range(21)
+        ]
+        assert totals == sorted(totals)  # louder never draws fewer dots
+        loud = wave_dots([0.5, 1.0, 0.2, 0.9], rows)
+        for line, mirror in zip(loud, reversed(loud), strict=True):
+            assert [_dots(a) for a in line] == [_dots(b) for b in mirror]
+
+
+def test_wave_dots_clamps_levels_and_copes_with_odd_and_empty_input() -> None:
+    assert wave_dots([-5.0, 9.0], 2) == wave_dots([0.0, 1.0], 2)  # out of range is clamped
+    assert wave_dots([0.5], 1) == ["\u2806"]  # an odd bar fills only the left dots of its character
+    assert wave_dots([], 3) == ["", "", ""]
+    assert len(wave_dots([0.5, 0.5, 0.5], 0)) == 1  # a height under 1 still draws
 
 
 def test_a_turns_wait_is_split_into_asr_llm_and_the_rest_and_adds_up() -> None:

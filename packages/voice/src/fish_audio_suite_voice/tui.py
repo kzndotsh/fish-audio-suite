@@ -53,7 +53,7 @@ from fish_audio_suite_voice.session_view import (
     reduce_view,
     split_cells,
     turn_timings,
-    wave_column,
+    wave_dots,
 )
 from fish_audio_suite_voice.signals import DuplexSession
 
@@ -61,8 +61,8 @@ __all__ = [
     "VoiceApp",
 ]
 
-_WAVE_HALF = 2  # rows above, and below, the middle line
-_WAVE_HISTORY = 240  # bars kept, so a wide terminal is filled
+_WAVE_ROWS = 4  # lines tall; each line is four dot rows
+_WAVE_HISTORY = 480  # bars kept (two to a character), so a wide terminal is filled
 _WAVE_DECAY = 0.82  # how much of the last bar a quieter one keeps, so bars fall smoothly
 _QUIT_GRACE_S = 3.0
 _NARROW_BELOW = 72  # columns: under this the side column keeps only the state and the mic
@@ -70,7 +70,7 @@ _SHORT_BELOW = 22  # rows: under this the timings panel goes too
 _MIN_SIZE = (50, 14)  # under this nothing fits, so the app says so and keeps quit working
 _HEARING_HOLD_S = 3.0  # how long "you" keeps pulsing after the last loud moment, with no transcript
 _HEARING_TICK_S = 0.1
-_PULSE_BARS = "\u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588"
+_PULSE_CELLS = 5  # characters wide, two bars each
 _NO_TURNS = "no turns yet"
 
 
@@ -126,19 +126,15 @@ class Waveform(Widget):
     def render(self) -> RenderResult:
         """Draw the newest bars that fit, the oldest cut off on the left."""
         width = self.size.width
-        bars = list(self._bars)[-width:] if width else []
-        bars = [(0.0, False)] * (width - len(bars)) + bars
-        columns = [(wave_column(level, _WAVE_HALF), heard) for level, heard in bars]
-        lines: list[Content] = []
-        for row in range(_WAVE_HALF * 2):
-            cells: list[tuple[str, str] | str] = []
-            for column, heard in columns:
-                char, reverse = column[row]
-                # No bold or dim here: dim blends the cell's foreground into its background,
-                # which turns the reversed bottom half into grey blocks.
-                tone = "$text-success" if heard else "$foreground 30%"
-                cells.append((char, f"$background on {tone}" if reverse else tone))
-            lines.append(Content.assemble(*cells))
+        want = width * 2  # two bars to a character
+        bars = list(self._bars)[-want:] if width else []
+        bars = [(0.0, False)] * (want - len(bars)) + bars
+        rows = wave_dots([level for level, _ in bars], _WAVE_ROWS)
+        tones = [
+            "$text-success" if bars[2 * i][1] or bars[2 * i + 1][1] else "$foreground 30%"
+            for i in range(width)
+        ]
+        lines = [Content.assemble(*zip(row, tones, strict=True)) for row in rows]
         return Content("\n").join(lines)
 
 
@@ -184,7 +180,7 @@ class Timings(Widget):
         cells = split_cells([ms for _, ms in timings.stages], width)
         bar = Content.assemble(
             *(
-                (("█" * count), _STAGE_TONES[name])
+                (("⠶" * count), _STAGE_TONES[name])
                 for (name, _), count in zip(timings.stages, cells, strict=True)
             )
         )
@@ -243,12 +239,9 @@ class Conversation(VerticalScroll):
         self._expiry = self.set_timer(_HEARING_HOLD_S, self._drop_pending)
 
     def _pulse_content(self) -> Content:
-        top = len(_PULSE_BARS) - 1
-        bars = "".join(
-            _PULSE_BARS[round((math.sin(self._phase * 0.7 + i * 0.9) + 1) / 2 * top)]
-            for i in range(5)
-        )
-        return Content.assemble(("you ▸ ", "bold $text-primary"), (bars, "$text-success"))
+        levels = [(math.sin(self._phase * 0.7 + i * 0.6) + 1) / 2 for i in range(_PULSE_CELLS * 2)]
+        (dots,) = wave_dots(levels, 1)
+        return Content.assemble(("you ▸ ", "bold $text-primary"), (dots, "$text-success"))
 
     def _advance_pulse(self) -> None:
         if self._pending is not None:
