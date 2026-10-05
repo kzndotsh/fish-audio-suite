@@ -139,14 +139,18 @@ class Waveform(Widget):
 
 
 _STAGE_TONES = {"asr": "$text-secondary", "llm": "$text-primary", "tts": "$text-accent"}
+# Each stage has its own pattern as well as its own colour, so the bar reads without colour:
+# dots in the top half, in every row, and in the bottom half.
+_STAGE_DOTS = {"asr": "\u281b", "llm": "\u28ff", "tts": "\u28e4"}
 
 
 class Timings(Widget):
     """The last turn: the wait before you heard audio, and where it went.
 
     Three lines: the wait beside the whole turn's length, one bar split into recognising
-    (asr), thinking (llm) and speaking (tts), and the number behind each part. Each name
-    is coloured like its part of the bar, and the numbers are always shown.
+    (asr), thinking (llm) and speaking (tts), and the number behind each part. The parts
+    differ by pattern as well as colour, with a gap between them, and come in the same order
+    as the legend, so the bar reads without colour. The numbers are always shown.
     """
 
     DEFAULT_CSS: ClassVar[str] = """
@@ -177,13 +181,14 @@ class Timings(Widget):
         total = f"total {timings.total_ms / 1000:.2f}s" if timings.total_ms is not None else ""
         gap = " " * max(1, width - len(wait) - len(" wait") - len(total))
         head = Content.assemble((wait, "bold"), " wait", gap, (total, "dim"))
-        cells = split_cells([ms for _, ms in timings.stages], width)
-        bar = Content.assemble(
-            *(
-                (("⠶" * count), _STAGE_TONES[name])
-                for (name, _), count in zip(timings.stages, cells, strict=True)
-            )
-        )
+        gaps = max(0, len(timings.stages) - 1)  # a blank cell between parts marks each edge
+        cells = split_cells([ms for _, ms in timings.stages], max(1, width - gaps))
+        parts: list[tuple[str, str] | str] = []
+        for position, ((name, _), count) in enumerate(zip(timings.stages, cells, strict=True)):
+            if position and width > gaps:
+                parts.append(" ")
+            parts.append((_STAGE_DOTS[name] * count, _STAGE_TONES[name]))
+        bar = Content.assemble(*parts)
         decimals = 2 if len(_legend(timings.stages, 2)) <= width else 1
         legend = Content.assemble(*_legend_parts(timings.stages, decimals))
         return Content("\n").join([head, bar, legend])

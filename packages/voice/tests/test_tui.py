@@ -767,7 +767,12 @@ def test_the_timings_panel_shows_the_wait_a_split_bar_and_a_legend() -> None:
     assert head.rstrip().endswith("total 6.47s")
     assert len(head) == 26  # the total sits at the right edge
     assert len(bar) == 26
-    assert set(bar) == {"⠶"}  # the whole width is the wait, as dots, split into parts by colour
+    # One pattern per stage, in legend order, with a blank cell between parts: it reads
+    # without colour.
+    parts = bar.split()
+    assert [part[0] for part in parts] == ["⠛", "⣿", "⣤"]
+    assert all(len(set(part)) == 1 for part in parts)
+    assert bar.count(" ") == 2
     assert legend.split() == ["asr", "0.27", "llm", "0.67", "tts", "0.59"]
 
 
@@ -787,3 +792,14 @@ def test_the_timings_panel_copes_with_no_turn_no_asr_a_narrow_width_and_no_wait(
     assert len(legend.rstrip()) <= 26  # drops to one decimal rather than overflow
     fallback = _timings_widget_text(LatencySnapshot(asr_ms=120.0), 40)
     assert "asr 0.12s" in fallback[0]  # no wait to split, so the one-line summary
+
+
+def test_the_timings_bar_keeps_its_parts_distinct_even_when_one_is_tiny_or_the_panel_is_small() -> (
+    None
+):
+    tiny_asr = LatencySnapshot(asr_ms=5.0, llm_first_token_ms=900.0, first_audio_ms=1500.0)
+    bar = _timings_widget_text(tiny_asr, 26)[1]
+    assert len(bar) == 26
+    assert [part[0] for part in bar.split()] == ["⠛", "⣿", "⣤"]  # the short one still shows
+    narrow = _timings_widget_text(tiny_asr, 4)[1]
+    assert len(narrow) == 4  # never wider than the panel
