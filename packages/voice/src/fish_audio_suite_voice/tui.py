@@ -19,6 +19,7 @@ from textual.app import App, ComposeResult, RenderResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalGroup, VerticalScroll
 from textual.content import Content
+from textual.events import Resize
 from textual.message import Message
 from textual.timer import Timer
 from textual.types import CSSPathType
@@ -58,6 +59,9 @@ _WAVE_HALF = 2  # rows above, and below, the middle line
 _WAVE_HISTORY = 240  # bars kept, so a wide terminal is filled
 _WAVE_DECAY = 0.82  # how much of the last bar a quieter one keeps, so bars fall smoothly
 _QUIT_GRACE_S = 3.0
+_NARROW_BELOW = 72  # columns: under this the side column keeps only the state and the mic
+_SHORT_BELOW = 22  # rows: under this the timings panel goes too
+_MIN_SIZE = (50, 14)  # under this nothing fits, so the app says so and keeps quit working
 _HEARING_HOLD_S = 3.0  # how long "you" keeps pulsing after the last loud moment, with no transcript
 _HEARING_TICK_S = 0.1
 _PULSE_BARS = "\u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588"
@@ -300,8 +304,20 @@ class VoiceApp(App[int]):
                 log = Log(id="log", max_lines=1000)
                 log.border_title = "log"
                 yield log
+        yield Static(
+            f"Terminal too small. Make it at least {_MIN_SIZE[0]}x{_MIN_SIZE[1]}, or Ctrl+Q to quit.",
+            id="too-small",
+        )
         yield Input(placeholder="type a line and press Enter", id="line")
         yield Footer()
+
+    def on_resize(self, event: Resize) -> None:
+        """Drop the secondary panels as the terminal shrinks, and say so when nothing fits."""
+        width, height = event.size
+        screen = self.screen
+        screen.set_class(width < _NARROW_BELOW, "narrow")
+        screen.set_class(height < _SHORT_BELOW, "short")
+        screen.set_class(width < _MIN_SIZE[0] or height < _MIN_SIZE[1], "tiny")
 
     def on_mount(self) -> None:
         """Show the first view, start the session as a worker and focus the input line."""
@@ -326,6 +342,9 @@ class VoiceApp(App[int]):
         self._apply(self._queue.drain())
 
     def _apply(self, events: list[Event]) -> None:
+        conversation = next(iter(self.query(Conversation)), None)
+        if conversation is None or not conversation.is_attached:
+            return  # the screen is already gone: a wake that arrived while the app was closing
         for event in events:
             self._view = reduce_view(self._view, event)
             self._side_effects(event)

@@ -71,3 +71,38 @@ Screen {
 .message.pending {
     opacity: 70%;
 }
+
+/* Responsive: the screen carries .narrow, .short or .tiny (see VoiceApp.on_resize). */
+#too-small {
+    display: none;
+    height: 1fr;
+    content-align: center middle;
+    text-align: center;
+    color: $text-warning;
+}
+
+Screen.narrow {
+    #side {
+        width: 24;
+        min-width: 24;
+    }
+
+    #latency-box,
+    #log {
+        display: none;
+    }
+}
+
+Screen.short #latency-box {
+    display: none;
+}
+
+Screen.tiny {
+    #body {
+        display: none;
+    }
+
+    #too-small {
+        display: block;
+    }
+}

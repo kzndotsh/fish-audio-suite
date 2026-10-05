@@ -569,3 +569,47 @@ def test_control_characters_in_untrusted_text_never_reach_the_screen() -> None:
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
+
+
+@pytest.mark.parametrize(
+    ("size", "shown", "hidden"),
+    [
+        ((120, 40), ["#log", "#latency-box", "#mic-box", "#status-box"], ["#too-small"]),
+        ((80, 24), ["#log", "#latency-box", "#mic-box", "#status-box"], ["#too-small"]),
+        ((60, 24), ["#mic-box", "#status-box"], ["#log", "#latency-box", "#too-small"]),
+        ((100, 18), ["#log", "#mic-box", "#status-box"], ["#latency-box", "#too-small"]),
+        ((40, 12), ["#too-small", "#line"], ["#body", "#conversation", "#mic-box"]),
+    ],
+)
+def test_the_layout_gives_up_secondary_panels_as_the_terminal_shrinks(
+    size: tuple[int, int], shown: list[str], hidden: list[str]
+) -> None:
+    harness = _Harness()
+
+    async def main() -> None:
+        async with harness.app.run_test(size=size) as pilot:
+            await pilot.pause(0.1)
+            for selector in shown:
+                assert harness.app.query_one(selector).display, f"{selector} should show"
+                assert harness.app.query_one(selector).region.height > 0
+            for selector in hidden:
+                widget = harness.app.query_one(selector)
+                assert not widget.display or widget.region.height == 0, f"{selector} should hide"
+            width = harness.app.query_one("#conversation").region.width
+            assert width == 0 or width >= 36  # either hidden with its body, or room to read
+            await pilot.press("ctrl+q")  # quit still works at every size
+
+    asyncio.run(asyncio.wait_for(main(), 20))
+    assert harness.app.return_value == 0
+
+
+def test_an_event_that_arrives_as_the_app_closes_is_ignored() -> None:
+    harness = _Harness()
+
+    async def main() -> None:
+        async with harness.app.run_test() as pilot:
+            await pilot.pause(0.05)
+            harness.app.exit(0)
+        harness.app._apply([Heard("too late", 1.0)])  # the screen is gone by now
+
+    asyncio.run(asyncio.wait_for(main(), 20))
