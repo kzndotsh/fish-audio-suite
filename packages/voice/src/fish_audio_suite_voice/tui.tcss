@@ -41,6 +41,7 @@ Screen {
 
     #log {
         height: 1fr;
+        background: $background;
         border: round $panel;
         border-title-color: $text-muted;
     }
@@ -66,6 +67,7 @@ Screen {
 
 #line {
     height: auto;
+    background: $background;
     border: round $secondary;
 
     &:focus {
@@ -118,9 +120,9 @@ Log,
 Conversation {
     overflow: auto auto;
     scrollbar-size: 1 1;
-    scrollbar-background: $surface;
-    scrollbar-background-hover: $surface;
-    scrollbar-background-active: $surface;
+    scrollbar-background: $background;
+    scrollbar-background-hover: $background;
+    scrollbar-background-active: $background;
     scrollbar-color: $secondary-muted;
     scrollbar-color-hover: $secondary;
     scrollbar-color-active: $primary;

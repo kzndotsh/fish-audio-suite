@@ -692,3 +692,15 @@ def test_the_log_shows_scrollbars_only_when_there_is_something_to_scroll() -> No
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
+
+
+def test_bordered_widgets_share_the_screens_background_so_none_shows_past_its_border() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        screen = Color.parse(harness.app.get_css_variables()["background"]).rgb
+        for selector in ("#log", "#line"):
+            assert harness.app.query_one(selector).styles.background.rgb == screen, selector
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
