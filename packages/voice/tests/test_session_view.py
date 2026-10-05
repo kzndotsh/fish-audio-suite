@@ -305,3 +305,19 @@ def test_a_speech_scale_always_answers_between_empty_and_full(
     for rms, step in blocks:
         clock += step
         assert 0.0 <= scale.update(rms, clock) <= 1.0
+
+
+def test_a_scale_keeps_the_noise_floor_it_measured_through_a_gap_in_the_audio() -> None:
+    room = 32768.0 * 10 ** (-45.0 / 20)  # a noisy room
+    speech = 32768.0 * 10 ** (-25.0 / 20)
+    scale = SpeechScale()
+    for step in range(130):
+        scale.update(speech if step % 8 < 4 else room, step * BLOCK_S)
+    # Twenty seconds with no audio at all (the model thinking and speaking), then the room again.
+    first_blocks = [scale.update(room, 40.0 + step * BLOCK_S) for step in range(3)]
+    assert max(first_blocks) < 0.15  # not a blip while it relearns the room
+    fresh = SpeechScale()
+    for step in range(130):
+        fresh.update(speech if step % 8 < 4 else room, step * BLOCK_S)
+    forgetful = SpeechScale()  # the same, but it was started again after the gap
+    assert forgetful.update(room, 40.0) > max(first_blocks)  # what it did before this fix

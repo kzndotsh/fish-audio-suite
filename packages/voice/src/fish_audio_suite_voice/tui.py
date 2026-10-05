@@ -208,12 +208,19 @@ class Waveform(Widget):
         if mood == self._mood:
             return
         if self._mood == "thinking":
-            self._bars.clear()  # the made-up wave is not mic history, so do not leave it behind
+            # The made-up wave is over. Keep it as history, in the quiet colour, so the
+            # strip does not blank in one go, and let it scroll away.
+            self._bars = deque(
+                ((level, "quiet" if kind == "thinking" else kind) for level, kind in self._bars),
+                maxlen=_WAVE_HISTORY,
+            )
         self._mood = mood
         if self._timer is not None:
             self._timer.stop()
             self._timer = None
-        self._reset_meters()
+        # The scales keep what they have learnt about the room and the voice across turns.
+        self._mic_ease = Ballistics()
+        self._speaker_ease = Ballistics()
         self._last_push = None
         self._cursor_on = True
         moving = self.app.animation_level != "none"
@@ -240,12 +247,13 @@ class Waveform(Widget):
         """Draw the newest bars that fit, the oldest cut off on the left."""
         width = self.size.width
         want = width * 2  # two bars to a character
-        cursor = self._mood == "listening"
-        room = max(0, want - 2) if cursor else want  # the last character is kept for the cursor
+        # The last character is always kept for the cursor, so the bars do not shift sideways
+        # when the strip starts or stops listening.
+        room = max(0, want - 2)
         bars = list(self._bars)[-room:] if room else []
         bars = [(0.0, "quiet")] * (room - len(bars)) + bars
-        if cursor:
-            bars += [(0.3, "cursor") if self._cursor_on else (0.0, "quiet")] * (want - len(bars))
+        blinking = self._mood == "listening" and self._cursor_on
+        bars += [(0.3, "cursor") if blinking else (0.0, "quiet")] * (want - len(bars))
         rows = wave_dots([level for level, _ in bars], _WAVE_ROWS)
         tones = [_bar_tone(bars[2 * i], bars[2 * i + 1]) for i in range(width)]
         lines = [Content.assemble(*zip(row, tones, strict=True)) for row in rows]

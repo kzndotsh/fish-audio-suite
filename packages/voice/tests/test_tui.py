@@ -508,8 +508,8 @@ def test_the_waveform_scrolls_newest_right_and_decays_in_dots() -> None:
             assert all(0x2800 <= ord(ch) <= 0x28FF for line in lines for ch in line)  # all dots
             top = lines[0]
             assert top[0] == "\u2800"  # nothing drawn that high before any speech
-            assert _dots(top[-1]) > 0  # the newest characters hold the loud bar and its fall
-            assert _dots(top[-1]) > _dots(top[-3])
+            assert _dots(top[-2]) > 0  # the newest characters hold the loud bar and its fall
+            assert _dots(top[-2]) > _dots(top[-4])  # (the last one is kept for the cursor)
             # Mirrored: each line has as many dots as the one at the same distance below.
             for row in range(2):
                 for above, below in zip(lines[row], lines[3 - row], strict=True):
@@ -877,9 +877,7 @@ def test_while_thinking_a_wave_scrolls_by_itself_and_stops_when_the_state_change
         held = _wave_lines(wave)
         await pilot.pause(0.3)
         assert _wave_lines(wave) == held  # the timer stopped
-        assert (
-            max(_dots(ch) for line in held for ch in line) <= 2
-        )  # the wave is gone, a thin line is left
+        assert max(_dots(ch) for line in held for ch in line) >= 4  # kept as history, not blanked
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
@@ -993,7 +991,7 @@ def test_brightness_follows_loudness_and_colour_follows_what_the_bar_is() -> Non
                 wave.push(_mic_rms(level), 1.0, now=0.0)
             await pilot.pause()
             colours = _wave_colours(wave, 1)
-            soft, medium, loud = colours[-3], colours[-2], colours[-1]
+            soft, medium, loud = colours[-4], colours[-3], colours[-2]
             assert None not in (soft, medium, loud)
             assert sum(soft) < sum(medium) < sum(loud)  # type: ignore[arg-type]  # brighter as it gets louder
 
@@ -1047,7 +1045,7 @@ def test_speaker_bars_are_the_accent_colour_and_the_mics_are_not() -> None:
                 wave.push(_mic_rms(0.9), 1.0, now=0.0)  # a loud mic bar, heard
             await pilot.pause()
             colours = _wave_colours(wave, 1)
-            speaker, mic = colours[-2], colours[-1]
+            speaker, mic = colours[-3], colours[-2]
             assert speaker is not None
             assert mic is not None
             assert speaker != mic
@@ -1072,7 +1070,7 @@ def test_speaker_bars_follow_the_voices_own_ups_and_downs() -> None:
                 wave.push_speaker(rms, now=clock)
                 clock += 0.25
             await pilot.pause()
-            loud, pause, loud_again, stressed = (_column_dots(wave, i) for i in (-4, -3, -2, -1))
+            loud, pause, loud_again, stressed = (_column_dots(wave, i) for i in (-5, -4, -3, -2))
             assert pause < loud  # a pause really is lower
             assert loud_again == pytest.approx(loud, rel=0.2)  # the same loudness, the same height
             assert stressed < loud  # and a softer syllable sits between
@@ -1091,13 +1089,13 @@ def test_a_reply_after_a_pause_is_scaled_afresh_not_against_the_last_reply() -> 
             wave.push_speaker(1500.0, now=5.0)  # much later: the next reply, much quieter
             wave.push_speaker(1500.0, now=5.06)
             await pilot.pause()
-            same_reply = _column_dots(wave, -1)
+            same_reply = _column_dots(wave, -2)
             wave.push_speaker(30000.0, now=6.0)
             wave.push_speaker(30000.0, now=6.06)
             wave.push_speaker(1500.0, now=6.1)  # soon after a loud one: the same reply
             wave.push_speaker(1500.0, now=6.16)
             await pilot.pause()
-            assert _column_dots(wave, -1) < same_reply  # judged against the loud moment just before
+            assert _column_dots(wave, -2) < same_reply  # judged against the loud moment just before
 
     asyncio.run(main())
 
@@ -1119,3 +1117,67 @@ def test_one_loud_transient_does_not_shrink_the_speech_that_follows_it() -> None
         return sum(_dots(ch) for line in lines for ch in line[-4:])  # the speech's own cells
 
     assert height(bumped) >= 0.85 * height(clean)  # a bump costs it almost nothing
+
+
+def test_the_bars_do_not_shift_sideways_when_the_mood_changes() -> None:
+    async def main() -> None:
+        host = _WaveHost()
+        async with host.run_test(size=(30, 10)) as pilot:
+            wave = host.query_one(Waveform)
+            await pilot.pause()
+            for step in range(60):
+                wave.push(_mic_rms(0.8 if step % 6 < 3 else 0.1), 1.0, now=step * 0.09)
+            await pilot.pause()
+
+            def without_cursor() -> list[str]:
+                return [line[:-1] for line in _wave_lines(wave)]  # the last character is the cursor
+
+            still = without_cursor()
+            wave.set_mood("listening")
+            await pilot.pause()
+            assert without_cursor() == still  # starting to listen moves nothing
+            wave.set_mood("still")
+            await pilot.pause()
+            assert without_cursor() == still
+
+    asyncio.run(main())
+
+
+def test_the_strip_is_not_blanked_when_thinking_ends_and_the_wave_goes_quiet() -> None:
+    async def main() -> None:
+        host = _WaveHost()
+        async with host.run_test(size=(30, 10)) as pilot:
+            wave = host.query_one(Waveform)
+            await pilot.pause()
+            wave.set_mood("thinking")
+            await pilot.pause(0.5)
+            amber = _wave_colours(wave, 1)
+            wave.set_mood("still")
+            await pilot.pause()
+            lines = _wave_lines(wave)
+            assert max(_dots(ch) for line in lines for ch in line) >= 4  # still there
+            grey = _wave_colours(wave, 1)
+            assert grey[-5] != amber[-5]  # but no longer amber: the thinking is over
+
+    asyncio.run(main())
+
+
+def test_the_scale_keeps_what_it_learnt_about_the_room_across_turns() -> None:
+    async def main() -> None:
+        host = _WaveHost()
+        async with host.run_test(size=(30, 10)) as pilot:
+            wave = host.query_one(Waveform)
+            await pilot.pause()
+            room = 32768.0 * 10 ** (-45.0 / 20)  # a noisy room, well above the usual -60 dB guess
+            speech = 32768.0 * 10 ** (-25.0 / 20)
+            for step in range(130):  # twelve seconds of someone talking in it
+                wave.push(speech if step % 8 < 4 else room, 1e9, now=step * 0.09)
+            for mood in ("thinking", "still", "listening"):  # a turn: thinking, speaking, listening
+                wave.set_mood(mood)
+                await pilot.pause(0.05)
+            wave.push(room, 1e9, now=40.0)  # the first blocks of the next turn, much later
+            wave.push(room, 1e9, now=40.09)
+            await pilot.pause()
+            assert _column_dots(wave, -2) <= 4  # a thin line: it still knows the room
+
+    asyncio.run(main())

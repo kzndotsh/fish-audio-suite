@@ -456,17 +456,20 @@ class SpeechScale:
     start_speech_db : float
         The speech level to assume until enough speech has been heard.
     start_noise_db : float
-        The noise floor to assume until enough has been heard to measure it.
+        The noise floor to assume until enough has been heard to measure it. Once measured it
+        is kept, so the scale is not back at this guess after a pause in the audio.
     """
 
     start_speech_db: float = -35.0
     start_noise_db: float = -60.0
     _history: deque[tuple[float, float]] = field(default_factory=deque, init=False, repr=False)
     _speech_db: float = field(default=0.0, init=False, repr=False)
+    _noise_db: float = field(default=0.0, init=False, repr=False)
 
     def __post_init__(self) -> None:
-        """Start from the assumed speech level."""
+        """Start from the assumed speech level and noise floor."""
         self._speech_db = self.start_speech_db
+        self._noise_db = self.start_noise_db
 
     @property
     def speech_db(self) -> float:
@@ -502,11 +505,9 @@ class SpeechScale:
         while self._history and self._history[0][0] < now - SCALE_WINDOW_S:
             self._history.popleft()
         levels = [level for _, level in self._history]
-        noise = (
-            max(_percentile(levels, 0.1), SCALE_NOISE_FLOOR_DB)
-            if len(levels) >= SCALE_MIN_BLOCKS
-            else self.start_noise_db
-        )
+        if len(levels) >= SCALE_MIN_BLOCKS:
+            self._noise_db = max(_percentile(levels, 0.1), SCALE_NOISE_FLOOR_DB)
+        noise = self._noise_db  # kept through a gap, so a turn that starts afresh keeps the room
         speech = [level for level in levels if level > noise + SCALE_SPEECH_MARGIN_DB]
         if len(speech) >= SCALE_MIN_SPEECH_BLOCKS:
             self._speech_db = _percentile(speech, SCALE_SPEECH_PERCENTILE)
