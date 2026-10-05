@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import collections.abc
+import dataclasses
 import threading
 import time
+import typing
 from collections.abc import Iterator
 from typing import Any
 
@@ -23,6 +25,7 @@ from test_duplex_turns import (
 from voice_fakes import install_audio, install_vad, make_result, set_tts
 
 from fish_audio_suite_kit import LatencySnapshot
+from fish_audio_suite_voice import events as events_module
 from fish_audio_suite_voice.barge import FRAME_BYTES, MIC_LEVEL_EVERY_FRAMES, BargeGate
 from fish_audio_suite_voice.cli import _quit_line  # pyright: ignore[reportPrivateUsage]
 from fish_audio_suite_voice.debug import configure_voice_logging
@@ -399,3 +402,36 @@ def test_bye_is_sent_when_the_session_crashes(
 def test_a_second_ctrl_c_still_prints_the_quit_line(capsys: pytest.CaptureFixture[str]) -> None:
     assert _quit_line() == 0
     assert capsys.readouterr().out == "\nbye\n"
+
+
+def _event_classes() -> tuple[type, ...]:
+    return typing.get_args(Event.__value__)
+
+
+def test_every_event_is_an_immutable_timestamped_record_that_is_exported() -> None:
+    """A display receives events on another thread, so each must be a frozen record."""
+    classes = _event_classes()
+    assert len(classes) == len({c.__name__ for c in classes}) > 0
+    for cls in classes:
+        name = cls.__name__
+        assert dataclasses.is_dataclass(cls), f"{name} must be a dataclass"
+        params = getattr(cls, "__dataclass_params__")  # noqa: B009 - not in the stubs
+        assert params.frozen, f"{name} must be frozen"
+        fields = {f.name: f for f in dataclasses.fields(cls)}
+        assert "at" in fields, f"{name} needs a timestamp"
+        assert fields["at"].compare is False, f"{name}.at must not affect equality"
+        assert name in events_module.__all__, f"export {name} from events"
+
+
+def test_the_events_that_may_be_dropped_are_real_event_names() -> None:
+    names = {c.__name__ for c in _event_classes()}
+    dropped = set(events_module._DROPPABLE)  # pyright: ignore[reportPrivateUsage]
+    assert dropped <= names, f"unknown event names in _DROPPABLE: {dropped - names}"
+    assert "ReplyToken" not in dropped
+    assert "Heard" not in dropped
+
+
+def test_an_event_cannot_be_changed_after_it_is_sent() -> None:
+    event = Heard("hi", 1.0)
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        event.text = "changed"  # type: ignore[misc]

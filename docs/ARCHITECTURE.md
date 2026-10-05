@@ -283,7 +283,7 @@ The rules most easily broken, each with its reason. A test or a lint rule enforc
 ### Events
 
 - **The loop reports; displays follow.** Each step of a session is an event on `events.EVENTS`, and the plain terminal output is one subscriber (`console_sink.ConsoleSink`), so a screen of its own sees the same facts the console prints. New output goes through an event, not a direct print, or a full-screen display would miss it or be corrupted by it. A test (`test_repo_rules`) fails when session code calls `print` or touches `sys.stdout` or `sys.stderr`; only the plain display, `cli` startup and the raw stdout audio sink may.
-- **A subscriber runs on the thread that emitted the event**, which can be the event loop or an audio thread. It has to return quickly. A consumer that works at its own pace uses `EventQueue`, which drops only mic levels and log lines when it falls behind. A subscriber that raises is reported and cannot stop the session.
+- **A subscriber runs on the thread that emitted the event**, which can be the event loop or an audio thread. It has to return quickly. A consumer that works at its own pace uses `EventQueue`, which drops only mic levels and log lines when it falls behind. A subscriber that raises is reported and cannot stop the session. Every event is a frozen, timestamped dataclass, exported from `events`, so it is safe to hand to another thread or wrap in a UI message; a test checks that for each event type, including new ones.
 
 ### Text rules
 
