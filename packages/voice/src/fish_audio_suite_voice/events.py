@@ -34,11 +34,13 @@ __all__ = [
     "Notice",
     "ReplyEnd",
     "ReplyToken",
+    "SessionAction",
     "SessionState",
     "Speaking",
     "StateChanged",
     "StateTracker",
     "TurnEnded",
+    "available_actions",
     "forward_logs",
     "next_state",
     "notice",
@@ -245,6 +247,16 @@ class SessionState(StrEnum):
     SPEAKING = "speaking"
 
 
+class SessionAction(StrEnum):
+    """Something a person can ask a session to do."""
+
+    SEND = "send"
+    INTERRUPT = "interrupt"
+    MUTE = "mute"
+    UNMUTE = "unmute"
+    QUIT = "quit"
+
+
 @dataclass(frozen=True, slots=True)
 class StateChanged:
     """The session moved to a new state. Made by a ``StateTracker``.
@@ -305,6 +317,30 @@ def next_state(state: SessionState, event: Event) -> SessionState:
             return SessionState.IDLE
         case _:
             return state
+
+
+def available_actions(state: SessionState, *, muted: bool) -> frozenset[SessionAction]:
+    """Return the actions that make sense now, so a display shows only those keys.
+
+    Parameters
+    ----------
+    state : SessionState
+        What the session is doing.
+    muted : bool
+        Whether the mic is held closed.
+
+    Returns
+    -------
+    frozenset of SessionAction
+        Sending a line and quitting always apply. Interrupting only applies while the
+        model is thinking or the reply is playing, and muting offers the opposite of
+        the current setting.
+    """
+    actions = {SessionAction.SEND, SessionAction.QUIT}
+    if state in (SessionState.THINKING, SessionState.SPEAKING):
+        actions.add(SessionAction.INTERRUPT)
+    actions.add(SessionAction.UNMUTE if muted else SessionAction.MUTE)
+    return frozenset(actions)
 
 
 class _Subscription:

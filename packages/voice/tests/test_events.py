@@ -48,6 +48,7 @@ from fish_audio_suite_voice.events import (
     StateChanged,
     StateTracker,
     TurnEnded,
+    available_actions,
     forward_logs,
     next_state,
     notice,
@@ -435,3 +436,19 @@ def test_an_event_cannot_be_changed_after_it_is_sent() -> None:
     event = Heard("hi", 1.0)
     with pytest.raises(dataclasses.FrozenInstanceError):
         event.text = "changed"  # type: ignore[misc]
+
+
+@pytest.mark.parametrize(
+    ("state", "muted", "expected"),
+    [
+        (SessionState.IDLE, False, {"send", "quit", "mute"}),
+        (SessionState.LISTENING, False, {"send", "quit", "mute"}),
+        (SessionState.LISTENING, True, {"send", "quit", "unmute"}),
+        (SessionState.THINKING, False, {"send", "quit", "mute", "interrupt"}),
+        (SessionState.SPEAKING, True, {"send", "quit", "unmute", "interrupt"}),
+    ],
+)
+def test_only_the_actions_that_make_sense_now_are_offered(
+    state: SessionState, muted: bool, expected: set[str]
+) -> None:
+    assert {str(a) for a in available_actions(state, muted=muted)} == expected

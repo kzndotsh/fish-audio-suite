@@ -100,9 +100,8 @@ class LiveInput:
             self._typed.append(text)
         self._interrupt.set()
         self._changed.set()
-        session = self._session
-        if interrupt and session is not None:
-            session.turn.fire()
+        if interrupt:
+            self.stop_reply()
 
     def mute(self) -> None:
         """Close the mic between turns, and stop a recording in progress."""
@@ -114,6 +113,17 @@ class LiveInput:
         """Open the mic again."""
         self._muted = False
         self._changed.set()
+
+    def stop_reply(self) -> None:
+        """Stop the reply that is being written or played, like speaking over it.
+
+        Notes
+        -----
+        Does nothing before the first turn or between turns.
+        """
+        session = self._session
+        if session is not None:
+            session.turn.fire()
 
     def toggle_mute(self) -> bool:
         """Flip the mute switch, for a single key binding.

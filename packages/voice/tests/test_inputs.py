@@ -210,3 +210,20 @@ def test_toggling_mute_flips_the_switch_and_reports_the_new_state() -> None:
     assert source.muted
     assert source.toggle_mute() is False
     assert not source.muted
+
+
+def test_stopping_the_reply_cancels_the_turn_and_does_nothing_before_a_session() -> None:
+    LiveInput().stop_reply()  # no session seen yet: nothing to stop, and no error
+    ctx = _ctx()
+    source = LiveInput()
+    source.submit("first")
+    _turn(source, ctx)
+    cancel, llm_cancel = _bound_turn(ctx)
+    source.stop_reply()
+    assert cancel.is_set()
+    assert asyncio.run(_llm_cancel_is_set(llm_cancel))
+
+
+async def _llm_cancel_is_set(event: asyncio.Event) -> bool:
+    await asyncio.sleep(0)  # the cancel crosses threads through the loop
+    return event.is_set()
