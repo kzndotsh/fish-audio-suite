@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import collections
 import io
-import threading
 from typing import Any, Final
 
 from fish_audio_suite_voice.aec import EchoCanceller, pcm_rms
@@ -13,11 +12,14 @@ from fish_audio_suite_voice.barge import (
     FRAME_BYTES,
     FRAME_MS,
     LISTEN_HEARTBEAT_FRAMES,
+    MIC_LEVEL_EVERY_FRAMES,
     SAMPLE_RATE,
+    StopFlag,
     frame_is_speech,
     mic_frames,
 )
 from fish_audio_suite_voice.debug import debug, heartbeat_due, trace
+from fish_audio_suite_voice.events import EVENTS, MicLevel
 from fish_audio_suite_voice.floor import AdaptiveFloor
 from fish_audio_suite_voice.playback import write_mono_wav
 from fish_audio_suite_voice.tune import (
@@ -160,6 +162,8 @@ class _Listen:
         self.min_speech_now = self.floor.value()
         self.window_peak = max(self.window_peak, rms)
         self.clip_peak = max(self.clip_peak, rms)
+        if idle_frames % MIC_LEVEL_EVERY_FRAMES == 0:
+            EVENTS.emit(MicLevel(rms, self.min_speech_now, "listen"))
         self._heartbeat(idle_frames, rms, vad_speech)
         if not self.triggered:
             # A frame already at the floor is not room hiss. Counting it raises
@@ -300,7 +304,7 @@ def _prime_listen(heard: _Listen, pcm: bytes) -> None:
 
 def record_utterance(
     device: str | int | None = None,
-    quit_requested: threading.Event | None = None,
+    quit_requested: StopFlag | None = None,
     *,
     prefix: bytes = b"",
     tune: ListenTune | None = None,
@@ -312,8 +316,8 @@ def record_utterance(
     ----------
     device : str or int or None, optional
         PortAudio input. None uses the host default.
-    quit_requested : threading.Event or None, optional
-        The session's quit flag (Ctrl+C). When set, return None.
+    quit_requested : StopFlag or None, optional
+        Ends the listen when set, such as the session's quit flag (Ctrl+C). Returns None.
     prefix : bytes, optional
         PCM kept from the barge-in that interrupted the previous reply.
         The next listen starts from this clip instead of a cooldown.

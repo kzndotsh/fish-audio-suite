@@ -21,10 +21,9 @@ from fish_audio_suite_kit import (
     trace_id_of,
 )
 from fish_audio_suite_voice.asr import fish_asr
-from fish_audio_suite_voice.console import console_print
+from fish_audio_suite_voice.barge import StopFlag
 from fish_audio_suite_voice.debug import (
     clear_turn,
-    conversation,
     debug,
     debug_enabled,
     mark_turn,
@@ -32,6 +31,7 @@ from fish_audio_suite_voice.debug import (
     warn,
 )
 from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexContext
+from fish_audio_suite_voice.events import EVENTS, Heard, Listening
 from fish_audio_suite_voice.listen import record_utterance
 from fish_audio_suite_voice.playback import PortAudioMissingError
 
@@ -153,7 +153,7 @@ async def recognize(
         return HeardLine("bye")
     if decision == "skip":
         return HeardLine("noise")
-    conversation("you", text)
+    EVENTS.emit(Heard(text, asr_ms))
     return HeardLine(
         "line",
         text=text,
@@ -163,12 +163,29 @@ async def recognize(
     )
 
 
-async def hear_line(ctx: DuplexContext, last_user: str) -> HeardLine:
-    """Open the mic, record one utterance, and return what was heard."""
+async def hear_line(
+    ctx: DuplexContext, last_user: str, *, stop: StopFlag | None = None
+) -> HeardLine:
+    """Open the mic, record one utterance, and return what was heard.
+
+    Parameters
+    ----------
+    ctx : DuplexContext
+        The session.
+    last_user : str
+        The previous line, used to drop an echo of it.
+    stop : StopFlag or None, optional
+        Ends the recording when set, in place of the session's quit flag. Pass one
+        that is set on quit too, or Ctrl+C will not stop the mic.
+
+    Returns
+    -------
+    HeardLine
+        What the loop should do next.
+    """
     if debug_enabled():
         debug("listen.waiting for you")
-    else:
-        console_print("listening…")
+    EVENTS.emit(Listening())
     clear_turn()
     trace("listen.waiting device={}", ctx.device)
     try:
@@ -178,7 +195,7 @@ async def hear_line(ctx: DuplexContext, last_user: str) -> HeardLine:
         wav = await asyncio.to_thread(
             record_utterance,
             ctx.device,
-            ctx.session.quit_requested,
+            ctx.session.quit_requested if stop is None else stop,
             prefix=prefix,
             tune=ctx.config.listen,
             aec=ctx.session.aec,

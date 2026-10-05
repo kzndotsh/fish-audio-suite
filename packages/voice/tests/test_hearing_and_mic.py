@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 import pytest
-from test_duplex import _ctx  # pyright: ignore[reportPrivateUsage]
+from session_fakes import make_ctx
 
 from fish_audio_suite_kit import FishHttpError
 from fish_audio_suite_voice import barge, console
@@ -48,7 +48,7 @@ def test_an_asr_failure_is_fatal_only_for_a_bad_key(
     monkeypatch: pytest.MonkeyPatch, error: BaseException, kind: str
 ) -> None:
     _asr_returns(monkeypatch, error)
-    assert _recognize(_ctx()) == kind
+    assert _recognize(make_ctx()) == kind
 
 
 @pytest.mark.parametrize(
@@ -57,7 +57,7 @@ def test_an_asr_failure_is_fatal_only_for_a_bad_key(
 def test_a_failure_after_quit_is_just_a_bye(
     monkeypatch: pytest.MonkeyPatch, error: BaseException
 ) -> None:
-    ctx = _ctx()
+    ctx = make_ctx()
     ctx.session.quit_requested.set()
     _asr_returns(monkeypatch, error)
     assert _recognize(ctx) == "bye"
@@ -65,12 +65,12 @@ def test_a_failure_after_quit_is_just_a_bye(
 
 def test_a_transcript_that_says_goodbye_ends_the_session(monkeypatch: pytest.MonkeyPatch) -> None:
     _asr_returns(monkeypatch, "goodbye")
-    assert _recognize(_ctx()) == "bye"
+    assert _recognize(make_ctx()) == "bye"
 
 
 def test_a_transcript_that_repeats_the_last_line_is_noise(monkeypatch: pytest.MonkeyPatch) -> None:
     _asr_returns(monkeypatch, "Tell me a story")
-    assert _recognize(_ctx(), "tell me a story") == "noise"
+    assert _recognize(make_ctx(), "tell me a story") == "noise"
 
 
 def test_hear_line_exits_when_the_mic_cannot_open(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -78,7 +78,7 @@ def test_hear_line_exits_when_the_mic_cannot_open(monkeypatch: pytest.MonkeyPatc
         raise PortAudioMissingError("missing")
 
     monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", no_audio)
-    heard = asyncio.run(hear_line(_ctx(), ""))
+    heard = asyncio.run(hear_line(make_ctx(), ""))
     assert (heard.kind, heard.code) == ("fatal", EXIT_FATAL)
 
 
@@ -86,7 +86,7 @@ def test_hear_line_exits_when_the_mic_cannot_open(monkeypatch: pytest.MonkeyPatc
 def test_hear_line_reports_a_dropped_clip_and_quit(
     monkeypatch: pytest.MonkeyPatch, clip: bytes, quit_set: bool, kind: str
 ) -> None:
-    ctx = _ctx()
+    ctx = make_ctx()
 
     def record(*_args: object, **_kwargs: object) -> bytes:
         if quit_set:
@@ -98,7 +98,7 @@ def test_hear_line_reports_a_dropped_clip_and_quit(
 
 
 def test_a_barge_in_clip_is_never_a_stale_copy(monkeypatch: pytest.MonkeyPatch) -> None:
-    ctx = _ctx()
+    ctx = make_ctx()
     ctx.barge_prefix = b"clip"
     seen: dict[str, Any] = {}
 
@@ -253,5 +253,5 @@ def test_hear_line_logs_instead_of_printing_listening_in_debug_mode(
 ) -> None:
     monkeypatch.setattr("fish_audio_suite_voice.hearing.debug_enabled", lambda: True)
     monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", lambda *_a, **_k: b"")
-    assert asyncio.run(hear_line(_ctx(), "")).kind == "noise"
+    assert asyncio.run(hear_line(make_ctx(), "")).kind == "noise"
     assert "listening" not in capsys.readouterr().out

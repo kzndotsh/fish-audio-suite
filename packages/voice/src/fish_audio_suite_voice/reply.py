@@ -23,9 +23,10 @@ from fish_audio_suite_kit import (
 )
 from fish_audio_suite_voice.barge import BargeGate
 from fish_audio_suite_voice.cancel import is_cancel_noise, is_own_cancel
-from fish_audio_suite_voice.console import console_print, end_reply_line, write_reply_token
-from fish_audio_suite_voice.debug import conversation, debug, debug_enabled, warn
+from fish_audio_suite_voice.console import end_reply_line
+from fish_audio_suite_voice.debug import debug, warn
 from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexContext
+from fish_audio_suite_voice.events import EVENTS, ReplyEnd, ReplyToken, Speaking, notice
 from fish_audio_suite_voice.hearing import HeardLine
 from fish_audio_suite_voice.playback import PortAudioMissingError, make_sink
 from fish_audio_suite_voice.spoken import unspoken_text
@@ -110,19 +111,13 @@ async def collect_reply(
     """Stream the model's reply into one string, timing its first token."""
     parts: list[str] = []
     ttft_ms: float | None = None
-    # Debug lines print while the reply streams. Buffering the reply keeps it
-    # on one line instead of split around them.
-    live = not debug_enabled()
     try:
         async for tok in ctx.backend.stream(ctx.history, cancel=llm_cancel, trace_id=trace_id):
             if ttft_ms is None:
                 ttft_ms = elapsed_ms(started)
                 debug("llm.first_token {:.0f}ms", ttft_ms)
-                if live:
-                    write_reply_token("llm \u25b8 ")
             parts.append(tok)
-            if live:
-                write_reply_token(tok)
+            EVENTS.emit(ReplyToken(tok))
             if on_token is not None:
                 on_token(tok)
     except asyncio.CancelledError:
@@ -136,9 +131,13 @@ async def collect_reply(
     finally:
         end_reply_line()
     reply = "".join(parts).strip()
-    if reply and not live:
-        conversation("llm", reply)
+    EVENTS.emit(ReplyEnd(reply))
     return reply, ttft_ms
+
+
+def _first_audio(into: list[float]) -> None:
+    into.append(time.perf_counter())
+    EVENTS.emit(Speaking())
 
 
 def after_speech(
@@ -169,12 +168,9 @@ def after_speech(
     if isinstance(result.error, FishAuthError):
         return snapshot, EXIT_FATAL
     if not result.got_audio and result.cancelled:
-        console_print("  [tts cancelled before audio]", flush=True)
+        notice("  [tts cancelled before audio]")
     elif not result.got_audio and result.error_status is None and not result.error_message:
-        console_print(
-            f"  [tts silent] voice={c.fish_voice_id} model={c.tts_model}",
-            flush=True,
-        )
+        notice(f"  [tts silent] voice={c.fish_voice_id} model={c.tts_model}")
     spoken = result.spoken_so_far
     # The last history row is the user line this reply answers. Saving an
     # exact copy teaches the next turn to repeat them again.
@@ -227,7 +223,7 @@ async def speak_reply(
     c = ctx.config
     scrubbed = ensure_lead_cue(normalize_cues(scrub_tts(reply), lead=c.mood_lead))
     if is_tts_junk(scrubbed, drop_narration=c.drop_narration):
-        console_print("  (skip junk TTS)", flush=True)
+        notice("  (skip junk TTS)")
         return snapshot, None
     barge = BargeGate(device=ctx.device, tune=c.barge, aec=ctx.session.aec)
     thread = barge.start_after_bleed(cancel)
@@ -248,7 +244,7 @@ async def speak_reply(
                 scrubbed,
                 sink,
                 cancel=cancel,
-                on_first_audio=lambda: first_audio.append(time.perf_counter()),
+                on_first_audio=lambda: _first_audio(first_audio),
             )
         except PortAudioMissingError as exc:
             warn(str(exc))
@@ -320,7 +316,7 @@ async def stream_turn(
     first_audio: list[float] = []
 
     def on_first_audio() -> None:
-        first_audio.append(time.perf_counter())
+        _first_audio(first_audio)
         barge_threads.append(barge.start_after_bleed(cancel))
 
     sink = make_sink(

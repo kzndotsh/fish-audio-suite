@@ -1,0 +1,138 @@
+"""Folding events into a snapshot a display can show."""
+
+from __future__ import annotations
+
+import dataclasses
+from functools import reduce
+
+import pytest
+
+from fish_audio_suite_kit import LatencySnapshot
+from fish_audio_suite_voice.events import (
+    BargedIn,
+    Bye,
+    Event,
+    Heard,
+    Listening,
+    LogLine,
+    MicLevel,
+    Notice,
+    ReplyEnd,
+    ReplyToken,
+    SessionState,
+    Speaking,
+    StateChanged,
+    TurnEnded,
+)
+from fish_audio_suite_voice.session_view import SessionView, level_fraction, reduce_view
+
+
+def _fold(*events: Event, start: SessionView | None = None) -> SessionView:
+    return reduce(reduce_view, events, start or SessionView())
+
+
+def test_a_whole_turn_folds_into_the_view_a_screen_shows() -> None:
+    snapshot = LatencySnapshot(asr_ms=120.0, first_audio_ms=900.0)
+    view = _fold(
+        Listening(),
+        MicLevel(300.0, 200.0, "listen"),
+        Heard("tell me a story", 120.0),
+        ReplyToken("Once "),
+        ReplyToken("upon a time."),
+        ReplyEnd("Once upon a time."),
+        Speaking(),
+        TurnEnded(snapshot),
+    )
+    assert view == SessionView(
+        state=SessionState.IDLE,
+        heard="tell me a story",
+        reply="Once upon a time.",
+        last_turn=snapshot,
+        turns=1,
+        mic_rms=300.0,
+        mic_need=200.0,
+    )
+
+
+def test_the_view_follows_the_state_through_a_turn() -> None:
+    states = [
+        _fold(*events).state
+        for events in (
+            (Listening(),),
+            (Listening(), Heard("hi", 1.0)),
+            (Listening(), Heard("hi", 1.0), Speaking()),
+            (Listening(), Heard("hi", 1.0), Speaking(), BargedIn()),
+        )
+    ]
+    assert states == [
+        SessionState.LISTENING,
+        SessionState.THINKING,
+        SessionState.SPEAKING,
+        SessionState.LISTENING,
+    ]
+
+
+def test_the_reply_grows_token_by_token_and_a_new_line_starts_it_over() -> None:
+    view = _fold(Heard("one", 1.0), ReplyToken("Hel"), ReplyToken("lo"))
+    assert view.reply == "Hello"
+    assert _fold(Heard("two", 1.0), start=view).reply == ""
+
+
+def test_the_end_of_the_reply_replaces_what_was_streamed() -> None:
+    view = _fold(ReplyToken("[calm] Hi"), ReplyEnd("[calm] Hi there"))
+    assert view.reply == "[calm] Hi there"
+
+
+def test_notices_and_the_end_of_the_session_are_kept() -> None:
+    view = _fold(Notice("[llm 429, retrying in 4s]"), Bye(2))
+    assert view.last_notice == "[llm 429, retrying in 4s]"
+    assert view.exit_code == 2
+    assert view.state is SessionState.IDLE
+    assert SessionView().exit_code is None
+
+
+@pytest.mark.parametrize(
+    "event", [LogLine("DEBUG", "tts", "start"), StateChanged(SessionState.IDLE)]
+)
+def test_log_lines_and_announced_state_changes_do_not_change_the_view(event: Event) -> None:
+    view = _fold(Listening())
+    assert reduce_view(view, event) == view
+
+
+def test_reducing_never_changes_the_view_it_was_given() -> None:
+    before = SessionView(reply="so far")
+    after = reduce_view(before, ReplyToken(" more"))
+    assert before.reply == "so far"
+    assert after.reply == "so far more"
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        before.reply = "changed"  # type: ignore[misc]
+
+
+def test_the_same_mic_level_twice_gives_an_equal_view_so_a_screen_need_not_refresh() -> None:
+    first = _fold(MicLevel(250.0, 200.0, "listen"))
+    assert _fold(MicLevel(250.0, 200.0, "listen"), start=first) == first
+
+
+def test_the_meter_is_empty_when_silent_full_at_the_peak_and_never_outside_zero_to_one() -> None:
+    assert level_fraction(0.0) == 0.0
+    assert level_fraction(-5.0) == 0.0
+    assert level_fraction(0.5) == 0.0  # far below the quietest level shown
+    assert level_fraction(32768.0) == 1.0
+    assert level_fraction(1e9) == 1.0
+
+
+def test_the_meter_rises_with_loudness_and_shows_speech_well_above_empty() -> None:
+    levels = [level_fraction(r) for r in (10, 50, 200, 800, 3000, 12000)]
+    assert levels == sorted(levels)
+    assert len(set(levels)) == len(levels)
+    # Ordinary speech, a few hundred out of 32768, would be invisible on a linear bar.
+    assert level_fraction(300.0) > 0.3  # about a third of the bar
+    assert level_fraction(300.0) > 30 * (300.0 / 32768.0)  # a linear bar would show under 1%
+
+
+def test_a_view_gives_the_meter_and_its_threshold_marker() -> None:
+    view = _fold(MicLevel(1000.0, 200.0, "listen"))
+    assert view.mic_fraction == pytest.approx(level_fraction(1000.0))
+    assert view.mic_need_fraction == pytest.approx(level_fraction(200.0))
+    assert view.mic_fraction > view.mic_need_fraction
+    assert SessionView().mic_fraction == 0.0

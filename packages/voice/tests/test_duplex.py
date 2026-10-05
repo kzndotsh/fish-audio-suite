@@ -8,15 +8,17 @@ from collections.abc import AsyncIterator, Callable
 
 import httpx
 import pytest
+from session_fakes import FakeBackend, make_config, make_ctx
 from voice_fakes import FakeGate, FakeSink, install_audio, make_result, set_tts
 
 from fish_audio_suite_kit import ChatMessage, FishHttpError, LatencySnapshot
-from fish_audio_suite_voice.config import VoiceCliConfig
+from fish_audio_suite_voice.console_sink import ConsoleSink
 from fish_audio_suite_voice.duplex import duplex_turns
 from fish_audio_suite_voice.duplex_state import DuplexContext
+from fish_audio_suite_voice.events import EVENTS
 from fish_audio_suite_voice.hearing import HeardLine, classify_transcript, hear_line, recognize
 from fish_audio_suite_voice.history import opening_history, remember_user, trim_history
-from fish_audio_suite_voice.llm_tune import DEFAULT_HISTORY_TURNS, LlmTune
+from fish_audio_suite_voice.llm_tune import DEFAULT_HISTORY_TURNS
 from fish_audio_suite_voice.playback import PortAudioMissingError
 from fish_audio_suite_voice.reply import (
     _TokenPipe,
@@ -30,67 +32,6 @@ from fish_audio_suite_voice.speaker import FishSpeaker
 from fish_audio_suite_voice.wire import TtsResult
 
 HISTORY_TURNS = DEFAULT_HISTORY_TURNS
-
-
-def _config() -> VoiceCliConfig:
-    return VoiceCliConfig(
-        fish_api_key="k",
-        fish_base="https://api.fish.audio",
-        fish_voice_id="voice",
-        fish_asr_language="",
-        tts_model="s2.1-pro",
-        latency="balanced",
-        speed=1.0,
-        temperature=0.7,
-        top_p=0.7,
-        repetition_penalty=1.2,
-        chunk_length=200,
-        min_chunk_length=50,
-        volume=0.0,
-        sample_rate=44100,
-        playback="stdout",
-        system_prompt="be brief",
-        device=None,
-        llm=LlmTune(backend="openai", base="https://example.test/v1", api_key="lk", model="m"),
-    )
-
-
-class _FakeBackend:
-    def __init__(self, tokens: Callable[..., AsyncIterator[str]] | None = None) -> None:
-        self._tokens = tokens
-
-    def stream(
-        self,
-        messages: list[ChatMessage],
-        *,
-        cancel: asyncio.Event | None = None,
-        trace_id: str | None = None,
-    ) -> AsyncIterator[str]:
-        if self._tokens is not None:
-            return self._tokens(messages, cancel=cancel, trace_id=trace_id)
-        return self._empty()
-
-    async def _empty(self) -> AsyncIterator[str]:
-        if False:
-            yield ""
-
-    async def aclose(self) -> None:
-        return None
-
-
-def _ctx(
-    tokens: Callable[..., AsyncIterator[str]] | None = None,
-    session: DuplexSession | None = None,
-) -> DuplexContext:
-    return DuplexContext(
-        config=_config(),
-        tts=FishSpeaker(api_key="k", voice_id="voice"),
-        device=None,
-        backend=_FakeBackend(tokens),
-        session=session or DuplexSession(),
-        asr_http=httpx.AsyncClient(),
-        history=[{"role": "system", "content": "be brief"}],
-    )
 
 
 def test_classify_transcript_drops_echoes_and_keeps_a_real_line() -> None:
@@ -141,7 +82,7 @@ def test_history_drops_a_whole_turn_so_roles_stay_paired() -> None:
 
 
 def test_after_speech_records_only_audio_that_was_played() -> None:
-    ctx = _ctx()
+    ctx = make_ctx()
     snapshot = LatencySnapshot()
     fatal, code = after_speech(
         ctx,
@@ -153,7 +94,7 @@ def test_after_speech_records_only_audio_that_was_played() -> None:
     assert len(ctx.history) == 1
     assert fatal.tts_first_audio_ms is None
 
-    ctx = _ctx()
+    ctx = make_ctx()
     after_speech(
         ctx,
         snapshot,
@@ -162,7 +103,7 @@ def test_after_speech_records_only_audio_that_was_played() -> None:
     )
     assert len(ctx.history) == 1
 
-    ctx = _ctx()
+    ctx = make_ctx()
     updated, code = after_speech(
         ctx,
         snapshot,
@@ -180,7 +121,7 @@ def test_after_speech_records_only_audio_that_was_played() -> None:
     assert ctx.history[-1] == {"role": "assistant", "content": "hello"}
     assert updated.tts_first_audio_ms == 12.0
 
-    ctx = _ctx()
+    ctx = make_ctx()
     ctx.history.append({"role": "user", "content": "Hey! Can you hear me?"})
     after_speech(
         ctx,
@@ -211,7 +152,7 @@ def test_after_speech_records_only_audio_that_was_played() -> None:
 
 
 def test_recognize_fatal_again_and_quit(monkeypatch: pytest.MonkeyPatch) -> None:
-    ctx = _ctx()
+    ctx = make_ctx()
 
     async def denied(*_args: object, **_kwargs: object) -> str:
         raise FishHttpError.from_status(401, "nope")
@@ -258,10 +199,10 @@ def test_quit_during_asr_does_not_ask_the_llm(
     code = asyncio.run(
         asyncio.wait_for(
             duplex_turns(
-                _config(),
+                make_config(),
                 FishSpeaker(api_key="k", voice_id="voice"),
                 None,
-                _FakeBackend(tokens),
+                FakeBackend(tokens),
                 session,
             ),
             1,
@@ -286,11 +227,15 @@ def test_collect_reply_survives_a_closed_stdout(
     async def tokens(*_args: object, **_kwargs: object) -> AsyncIterator[str]:
         yield "Open the door today friend."
 
-    ctx = _ctx(tokens)
+    ctx = make_ctx(tokens)
     monkeypatch.setattr(sys, "stdout", _ClosedStdout())
-    reply, ttft = asyncio.run(
-        collect_reply(ctx, llm_cancel=asyncio.Event(), trace_id=None, started=0.0)
-    )
+    printer = ConsoleSink(EVENTS)  # the display that writes the tokens to the closed stdout
+    try:
+        reply, ttft = asyncio.run(
+            collect_reply(ctx, llm_cancel=asyncio.Event(), trace_id=None, started=0.0)
+        )
+    finally:
+        printer.close()
     assert reply == "Open the door today friend."
     assert ttft is not None
 
@@ -307,7 +252,7 @@ def test_collect_reply_keeps_partial_text_on_cancel(
         cancel.set()
         raise asyncio.CancelledError
 
-    ctx = _ctx(tokens)
+    ctx = make_ctx(tokens)
     reply, ttft = asyncio.run(collect_reply(ctx, llm_cancel=cancel, trace_id=None, started=0.0))
     assert reply == "Hi"
     assert ttft is not None
@@ -319,7 +264,7 @@ def test_collect_reply_lets_an_outside_cancel_propagate() -> None:
         yield "Hi"
         await asyncio.sleep(30)
 
-    ctx = _ctx(tokens)
+    ctx = make_ctx(tokens)
 
     async def run() -> None:
         task = asyncio.create_task(
@@ -339,7 +284,7 @@ def test_collect_reply_lets_asyncio_timeout_fire() -> None:
         yield "Hi"
         await asyncio.sleep(30)
 
-    ctx = _ctx(tokens)
+    ctx = make_ctx(tokens)
 
     async def run() -> None:
         async with asyncio.timeout(0.1):
@@ -352,7 +297,7 @@ def test_collect_reply_lets_asyncio_timeout_fire() -> None:
 def test_speak_reply_exits_when_playback_cannot_open(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ctx = _ctx()
+    ctx = make_ctx()
     install_audio(monkeypatch)
 
     def speak(*_args: object, **_kwargs: object) -> TtsResult:
@@ -376,7 +321,7 @@ def test_speak_reply_exits_when_playback_cannot_open(
 def test_cancelled_speak_keeps_the_audio_that_tripped_barge(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ctx = _ctx()
+    ctx = make_ctx()
 
     install_audio(monkeypatch, gate=FakeGate(captured=b"clip"))
 
@@ -415,7 +360,7 @@ def test_cancelled_speak_keeps_the_audio_that_tripped_barge(
 def test_speak_reply_releases_the_mic_before_returning(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ctx = _ctx()
+    ctx = make_ctx()
     gate, _sink = install_audio(monkeypatch, gate=FakeGate(hold=True), sink=FakeSink(played=8))
 
     def speak(*_args: object, **_kwargs: object) -> TtsResult:
@@ -510,7 +455,7 @@ async def _two_tokens(*_args: object, **_kwargs: object) -> AsyncIterator[str]:
 def test_stream_turn_feeds_tokens_to_tts_and_arms_barge_at_first_audio(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ctx = _ctx(_two_tokens)
+    ctx = make_ctx(_two_tokens)
     gate, _sink = install_audio(monkeypatch)
     heard_tokens: list[str] = []
     armed_before_audio: list[int] = []
@@ -557,7 +502,7 @@ def test_stream_turn_feeds_tokens_to_tts_and_arms_barge_at_first_audio(
 def test_stream_turn_speaks_the_finished_reply_when_fish_fails_before_audio(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ctx = _ctx(_two_tokens)
+    ctx = make_ctx(_two_tokens)
     install_audio(monkeypatch)
     spoken: list[str] = []
 
@@ -662,7 +607,7 @@ def test_stream_turn_with_an_empty_reply_speaks_nothing_and_reports_nothing(
         if False:
             yield ""
 
-    ctx = _ctx(no_tokens)
+    ctx = make_ctx(no_tokens)
     install_audio(monkeypatch)
     seen_cancel: list[bool] = []
 
@@ -702,7 +647,7 @@ def test_stream_turn_with_an_empty_reply_speaks_nothing_and_reports_nothing(
 def test_quit_during_the_stream_fallback_rebind_does_not_speak(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ctx = _ctx(_two_tokens)
+    ctx = make_ctx(_two_tokens)
     install_audio(monkeypatch)
 
     def speak_stream(
@@ -744,7 +689,7 @@ def test_quit_during_the_stream_fallback_rebind_does_not_speak(
 
 
 def test_recognize_listens_again_after_a_network_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    ctx = _ctx()
+    ctx = make_ctx()
 
     async def unreachable(*_args: object, **_kwargs: object) -> str:
         raise httpx.ConnectError("down")
@@ -757,7 +702,7 @@ def test_recognize_listens_again_after_a_network_error(monkeypatch: pytest.Monke
 def test_recognize_does_not_hide_a_programming_error(
     monkeypatch: pytest.MonkeyPatch, bug: Exception
 ) -> None:
-    ctx = _ctx()
+    ctx = make_ctx()
 
     async def broken(*_args: object, **_kwargs: object) -> str:
         raise bug
@@ -799,7 +744,7 @@ def test_a_long_run_of_unanswered_lines_keeps_only_the_latest() -> None:
 
 
 def _cut_off_ctx(monkeypatch: pytest.MonkeyPatch, spoken: str) -> tuple[DuplexContext, list[str]]:
-    ctx = _ctx()
+    ctx = make_ctx()
     install_audio(monkeypatch, gate=FakeGate(captured=b"clip"))
     said: list[str] = []
 
@@ -870,7 +815,7 @@ def test_noise_after_a_barge_in_speaks_the_rest_and_joins_history(
 def test_hear_line_answers_a_yeah_unless_it_was_said_over_the_reply(
     monkeypatch: pytest.MonkeyPatch, barge_prefix: bytes, kind: str
 ) -> None:
-    ctx = _ctx()
+    ctx = make_ctx()
     ctx.barge_prefix = barge_prefix
 
     def wav(*_args: object, **_kwargs: object) -> bytes:

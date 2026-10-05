@@ -11,13 +11,15 @@ from fish_audio_suite_kit import LatencySnapshot
 from fish_audio_suite_voice.aec import EchoCanceller
 from fish_audio_suite_voice.asr import asr_client
 from fish_audio_suite_voice.config import VoiceCliConfig
-from fish_audio_suite_voice.console import console_print
-from fish_audio_suite_voice.debug import debug, debug_enabled, trace
-from fish_audio_suite_voice.duplex_state import EXIT_FATAL, EXIT_OK, DuplexContext
+from fish_audio_suite_voice.console_sink import ConsoleSink
+from fish_audio_suite_voice.debug import debug
+from fish_audio_suite_voice.duplex_state import EXIT_CRASH, EXIT_FATAL, EXIT_OK, DuplexContext
+from fish_audio_suite_voice.events import EVENTS, Bye, TurnEnded
 from fish_audio_suite_voice.hearing import HeardLine, hear_line
 from fish_audio_suite_voice.history import opening_history, remember_user
+from fish_audio_suite_voice.inputs import TurnSource
 from fish_audio_suite_voice.llm import ChatBackend
-from fish_audio_suite_voice.reply import collect_reply, speak_reply, stream_turn, turn_summary
+from fish_audio_suite_voice.reply import collect_reply, speak_reply, stream_turn
 from fish_audio_suite_voice.signals import DuplexSession
 from fish_audio_suite_voice.speaker import FishSpeaker
 
@@ -30,14 +32,13 @@ __all__ = [
 
 
 def bye() -> int:
-    """Print the quit line and return success.
+    """Return the exit code of a normal quit.
 
     Returns
     -------
     int
         ``EXIT_OK`` (0). Fatal Fish and PortAudio failures use 2 instead.
     """
-    console_print("\nbye")
     return EXIT_OK
 
 
@@ -72,12 +73,7 @@ async def _answer_line(ctx: DuplexContext, heard: HeardLine) -> int | None:
             )
             if fatal is not None:
                 return fatal
-    summary = turn_summary(snapshot)
-    if debug_enabled():
-        debug("turn.summary {}", summary.strip().removeprefix("\u21b3 "))
-        trace("turn.timing {}", snapshot.log_line())
-    else:
-        console_print(summary, flush=True)
+    EVENTS.emit(TurnEnded(snapshot))
     return await _settle(ctx)
 
 
@@ -119,6 +115,9 @@ async def duplex_turns(
     device: str | int | None,
     backend: ChatBackend,
     session: DuplexSession | None = None,
+    *,
+    source: TurnSource | None = None,
+    console: bool = True,
 ) -> int:
     """Mic, Fish ASR, LLM, then one TTS turn on a private loop, until quit.
 
@@ -135,6 +134,11 @@ async def duplex_turns(
     session : DuplexSession or None, optional
         Cancel flags and the echo canceller. A new one is created when omitted.
         Pass your own to wire ``request_quit`` to a signal handler.
+    source : TurnSource or None, optional
+        Where each turn comes from. The mic when omitted.
+    console : bool, optional
+        Print the session to the terminal. A display that draws its own screen
+        passes False and follows ``EVENTS`` instead.
 
     Returns
     -------
@@ -147,9 +151,30 @@ async def duplex_turns(
     One sampled trace id is shared by ASR and the TTS websocket for that turn.
     Barge-in keeps the audio that tripped the gate and skips the post-speak
     cooldown. ``session.request_quit`` cancels the in-flight reply and ends
-    the loop.
+    the loop. A ``Bye`` event carrying the exit code is sent once however the
+    session ends: 0 for a quit, 2 for a fatal error, 1 when the session raises.
     """
     session = session or DuplexSession(aec=EchoCanceller(c.aec))
+    printer = ConsoleSink(EVENTS) if console else None
+    code = EXIT_CRASH  # replaced below unless the session raises
+    try:
+        code = await _session(c, tts, device, backend, session=session, source=source)
+        return code
+    finally:
+        EVENTS.emit(Bye(code))
+        if printer is not None:
+            printer.close()
+
+
+async def _session(
+    c: VoiceCliConfig,
+    tts: FishSpeaker,
+    device: str | int | None,
+    backend: ChatBackend,
+    *,
+    session: DuplexSession,
+    source: TurnSource | None,
+) -> int:
     async with AsyncExitStack() as stack:
         asr_http = await stack.enter_async_context(asr_client())
         history, pinned = opening_history(c.system_prompt, seed=c.pin_seed)
@@ -165,7 +190,9 @@ async def duplex_turns(
         )
         last_user = ""
         while True:
-            heard = await hear_line(ctx, last_user)
+            heard = await (
+                hear_line(ctx, last_user) if source is None else source.next_turn(ctx, last_user)
+            )
             if heard.kind == "bye":
                 return bye()
             if heard.kind == "fatal":

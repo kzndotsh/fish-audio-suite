@@ -15,6 +15,7 @@ from fish_audio_suite_voice.signals import DuplexSession
 from fish_audio_suite_voice.speaker import FishSpeaker
 
 __all__ = [
+    "EXIT_CRASH",
     "EXIT_FATAL",
     "EXIT_OK",
     "DuplexContext",
@@ -22,6 +23,8 @@ __all__ = [
 
 EXIT_OK: Final = 0
 EXIT_FATAL: Final = 2
+# What Python itself exits with after an uncaught exception.
+EXIT_CRASH: Final = 1
 
 
 @dataclass(slots=True)

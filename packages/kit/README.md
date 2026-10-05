@@ -39,7 +39,7 @@ Two roleplay helpers are opt-in. `normalize_cues(text, lead=True)` turns a sente
 
 | Group | Names | What they do |
 | --- | --- | --- |
-| Cues | `normalize_cues`, `ensure_lead_cue`, `strip_cue_tags` | Lowercase tags, rewrite S1 `(happy)` to `[happy]`, alias `laugh` / `sigh` / `whisper` / `pause`. `ensure_lead_cue` prepends a cue only when the caller passes a name and the reply has none. `strip_cue_tags` removes known cues and keeps what is spoken |
+| Cues | `normalize_cues`, `ensure_lead_cue`, `strip_cue_tags`, `split_cues` | Lowercase tags, rewrite S1 `(happy)` to `[happy]`, alias `laugh` / `sigh` / `whisper` / `pause`. `ensure_lead_cue` prepends a cue only when the caller passes a name and the reply has none. `strip_cue_tags` removes known cues and keeps what is spoken. `split_cues` splits text into its cues and the words around them, so a display can style cues without a markup parser |
 | TTS text | `scrub_tts`, `is_tts_junk`, `extract_quoted_speech` | Strip markdown, thoughts, and stage directions. Keep Fish cue tags. `is_tts_junk` means return silence instead of calling Fish |
 | ASR text | `scrub_asr`, `is_asr_hallucination`, `is_backchannel`, `is_quit_utterance`, `is_same_utterance` | Drop timestamps, speaker labels, nospeech, and caption boilerplate. Short answers (`no`, `ok`, `hi`) are kept. Quit and backchannel phrases are overridable with `phrases=`. `is_same_utterance` folds case and punctuation to spot a repeat |
 | Cuts | `next_tts_cut`, `split_tts_piece`, `tts_hold_at`, `is_empty_delta` | Flush index, or `(piece, tail)` for a stream. `tts_hold_at` is where a streamed buffer must keep an unfinished span, and `is_empty_delta` is true for a piece with nothing to say |
