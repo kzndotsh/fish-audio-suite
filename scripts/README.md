@@ -116,3 +116,15 @@ uv run python scripts/mic_levels.py --seconds 12
 Stay quiet for the first two seconds, then talk as you would to the assistant. On NixOS,
 set `LD_LIBRARY_PATH=$NIX_LD_LIBRARY_PATH` first.
 
+
+## deepgram_check.py
+
+Streams your mic to Deepgram's Flux the way `FISH_VOICE_STT=deepgram` does, and prints each
+turn: the words as they arrive, the final text, and the time from your last speech to the
+final text. Use it to try Deepgram, and to see what streaming saves, before turning it on.
+It calls the live Deepgram API and spends a little credit, but no Fish or language-model
+calls. It needs `DEEPGRAM_API_KEY` and the `deepgram` extra.
+
+```bash
+uv run python scripts/deepgram_check.py --turns 3
+```

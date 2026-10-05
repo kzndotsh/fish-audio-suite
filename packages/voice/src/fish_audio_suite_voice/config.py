@@ -38,6 +38,7 @@ from fish_audio_suite_voice.tune import (
     AecTune,
     BargeTune,
     ListenTune,
+    SttTune,
     read_flag,
     read_float,
     read_int,
@@ -63,7 +64,7 @@ class VoiceCliConfig:
     Notes
     -----
     ``fish_api_key`` and ``fish_voice_id`` are empty unless the env sets them.
-    The four tune objects are read once here and passed down, so nothing below
+    The five tune objects are read once here and passed down, so nothing below
     this layer reads the environment. Process env wins over ``--env-file``.
 
     Attributes
@@ -76,6 +77,8 @@ class VoiceCliConfig:
         Barge-in gate and the pauses around a reply.
     aec : AecTune
         Echo cancellation.
+    stt : SttTune
+        Which speech recognition hears the user.
     history_turns : int
         User and assistant pairs kept in the chat history.
     repeat_window_s : float
@@ -115,6 +118,7 @@ class VoiceCliConfig:
     listen: ListenTune = field(default_factory=ListenTune)
     barge: BargeTune = field(default_factory=BargeTune)
     aec: AecTune = field(default_factory=AecTune)
+    stt: SttTune = field(default_factory=SttTune)
     history_turns: int = DEFAULT_HISTORY_TURNS
     repeat_window_s: float = DEFAULT_REPEAT_WINDOW_S
     mood_lead: bool = False
@@ -241,6 +245,7 @@ def load_config() -> VoiceCliConfig:
         listen=ListenTune.from_env(),
         barge=BargeTune.from_env(),
         aec=AecTune.from_env(),
+        stt=SttTune.from_env(),
         history_turns=read_int(
             "FISH_VOICE_HISTORY_TURNS",
             DEFAULT_HISTORY_TURNS,

@@ -186,6 +186,21 @@ def _preflight(c: VoiceCliConfig) -> int | None:
     if playback_problem is not None:
         warn(f"BLOCKER: {playback_problem}")
         return EXIT_FATAL
+    return _require_deepgram(c)
+
+
+def _require_deepgram(c: VoiceCliConfig) -> int | None:
+    """Return an exit code when Deepgram is chosen but cannot be used."""
+    if c.stt.provider != "deepgram":
+        return None
+    if not c.stt.deepgram_key:
+        return _blocker("DEEPGRAM_API_KEY (FISH_VOICE_STT=deepgram)")
+    if importlib.util.find_spec("websockets") is None:
+        warn(
+            "BLOCKER: FISH_VOICE_STT=deepgram needs the deepgram extra: "
+            "pip install 'fish-audio-suite-voice[deepgram]' (or uv sync --extra deepgram)"
+        )
+        return EXIT_FATAL
     return None
 
 

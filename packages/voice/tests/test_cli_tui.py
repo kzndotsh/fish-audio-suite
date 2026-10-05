@@ -207,3 +207,22 @@ def test_a_screen_needs_both_ends_on_a_tty(
     monkeypatch.setattr("sys.stdin", _Stream(stdin_tty))
     monkeypatch.setattr("sys.stdout", _Stream(stdout_tty))
     assert _can_draw_a_screen() is expected
+
+
+def test_choosing_deepgram_needs_its_key_and_its_extra(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from fish_audio_suite_voice.cli import _preflight
+    from fish_audio_suite_voice.tune import SttTune
+
+    base = _configured(monkeypatch)
+    fish = replace(base, stt=SttTune(provider="fish"))
+    assert _preflight(fish) is None  # the default needs nothing from Deepgram
+    keyless = replace(base, stt=SttTune(provider="deepgram"))
+    assert _preflight(keyless) == EXIT_FATAL
+    assert "DEEPGRAM_API_KEY" in capsys.readouterr().err
+    ready = replace(base, stt=SttTune(provider="deepgram", deepgram_key="k"))
+    assert _preflight(ready) is None  # websockets is installed in the test environment
+    monkeypatch.setattr("importlib.util.find_spec", lambda name, *_a: None)
+    assert _preflight(ready) == EXIT_FATAL
+    assert "deepgram extra" in capsys.readouterr().err

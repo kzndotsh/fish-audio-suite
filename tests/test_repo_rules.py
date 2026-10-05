@@ -12,6 +12,8 @@ import tomllib
 from functools import cache
 from pathlib import Path
 
+import pytest
+
 from fish_audio_suite_proxy.settings import DEFAULT_GRACEFUL_S
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -206,14 +208,17 @@ def test_the_voice_session_reports_through_events_and_never_writes_to_the_termin
     )
 
 
-def test_the_textual_version_bound_is_the_same_in_the_extra_and_the_test_group() -> None:
-    """The ``tui`` extra and the root test group each name ``textual``; keep them equal."""
+@pytest.mark.parametrize(("package", "extra"), [("textual", "tui"), ("websockets", "deepgram")])
+def test_an_extras_version_bound_is_the_same_in_the_extra_and_the_test_group(
+    package: str, extra: str
+) -> None:
+    """An extra and the root test group each name its package; keep the bounds equal."""
 
     def bound(requirements: list[str]) -> str:
-        return next(r.replace(" ", "") for r in requirements if r.lower().startswith("textual"))
+        return next(r.replace(" ", "") for r in requirements if r.lower().startswith(package))
 
     root = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     voice = tomllib.loads((ROOT / "packages" / "voice" / "pyproject.toml").read_text("utf-8"))
     assert bound(root["dependency-groups"]["test"]) == bound(
-        voice["project"]["optional-dependencies"]["tui"]
-    ), "keep the textual bound in packages/voice/pyproject.toml and the root test group equal"
+        voice["project"]["optional-dependencies"][extra]
+    ), f"keep the {package} bound in packages/voice/pyproject.toml and the root test group equal"

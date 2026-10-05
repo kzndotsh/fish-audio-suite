@@ -34,9 +34,11 @@ from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexContext
 from fish_audio_suite_voice.events import EVENTS, Heard, Listening
 from fish_audio_suite_voice.listen import record_utterance
 from fish_audio_suite_voice.playback import PortAudioMissingError
+from fish_audio_suite_voice.streaming import StreamedTurn, stream_turn
 
 __all__ = [
     "HeardLine",
+    "accept_transcript",
     "classify_transcript",
     "hear_line",
     "recognize",
@@ -147,20 +149,59 @@ async def recognize(
         return HeardLine("again")
     if ctx.session.quit_requested.is_set():
         return HeardLine("bye")
-    asr_ms = elapsed_ms(started)
+    return accept_transcript(
+        text,
+        last_user,
+        asr_ms=elapsed_ms(started),
+        started=started,
+        trace_id=trace_id_of(asr_parent),
+        stale=stale,
+        over_reply=over_reply,
+    )
+
+
+def accept_transcript(
+    text: str,
+    last_user: str,
+    *,
+    asr_ms: float,
+    started: float,
+    trace_id: str | None,
+    stale: bool = True,
+    over_reply: bool = True,
+) -> HeardLine:
+    """Decide what a recognised transcript is, whichever recogniser made it.
+
+    Parameters
+    ----------
+    text : str
+        What was recognised.
+    last_user : str
+        The previous user line, to drop a stale copy of it.
+    asr_ms : float
+        How long recognition took after the speech ended.
+    started : float
+        ``time.perf_counter()`` when the speech ended, which the reply's timings count from.
+    trace_id : str or None
+        The trace id shared with the reply's TTS turn.
+    stale : bool, optional
+        See ``classify_transcript``.
+    over_reply : bool, optional
+        See ``classify_transcript``.
+
+    Returns
+    -------
+    HeardLine
+        ``bye`` for a quit word, ``noise`` for something to skip, otherwise the ``line``, which
+        is also announced with a ``Heard`` event.
+    """
     decision = classify_transcript(text, last_user, stale=stale, over_reply=over_reply)
     if decision == "quit":
         return HeardLine("bye")
     if decision == "skip":
         return HeardLine("noise")
     EVENTS.emit(Heard(text, asr_ms))
-    return HeardLine(
-        "line",
-        text=text,
-        asr_ms=asr_ms,
-        started=started,
-        trace_id=trace_id_of(asr_parent),
-    )
+    return HeardLine("line", text=text, asr_ms=asr_ms, started=started, trace_id=trace_id)
 
 
 async def hear_line(
@@ -188,6 +229,10 @@ async def hear_line(
     EVENTS.emit(Listening())
     clear_turn()
     trace("listen.waiting device={}", ctx.device)
+    if ctx.config.stt.provider == "deepgram" and (
+        streamed := await _hear_streaming(ctx, last_user, stop)
+    ):
+        return streamed
     try:
         prefix = ctx.barge_prefix
         ctx.barge_prefix = b""
@@ -218,3 +263,61 @@ async def hear_line(
     if ctx.session.quit_requested.is_set():
         return HeardLine("bye")
     return heard
+
+
+async def _hear_streaming(
+    ctx: DuplexContext, last_user: str, stop: StopFlag | None
+) -> HeardLine | None:
+    """Hear one turn through Deepgram, or return None to use the batch recogniser instead.
+
+    Parameters
+    ----------
+    ctx : DuplexContext
+        The session.
+    last_user : str
+        The previous line, used to drop an echo of it.
+    stop : StopFlag or None
+        Ends the turn early, in place of the session's quit flag.
+
+    Returns
+    -------
+    HeardLine or None
+        What the loop should do next, or None when Deepgram cannot be reached, so this
+        turn is heard the usual way.
+    """
+    quit_requested = ctx.session.quit_requested
+    prefix = ctx.barge_prefix
+    opened = time.monotonic()
+    outcome = await stream_turn(
+        stt=ctx.config.stt,
+        listen=ctx.config.listen,
+        device=ctx.device,
+        aec=ctx.session.aec,
+        quit_requested=quit_requested,
+        stop=quit_requested if stop is None else stop,
+        prefix=prefix,
+    )
+    if outcome == "fallback":
+        return None
+    ctx.barge_prefix = b""  # the stream had it
+    if quit_requested.is_set():
+        return HeardLine("bye")
+    if isinstance(outcome, StreamedTurn):
+        mark_turn()
+        stale = not prefix and time.monotonic() - opened < ctx.config.repeat_window_s
+        return accept_transcript(
+            outcome.text,
+            last_user,
+            asr_ms=outcome.asr_ms,
+            started=outcome.started,
+            trace_id=outcome.trace_id,
+            stale=stale,
+            over_reply=bool(prefix),
+        )
+    match outcome:
+        case "fatal":
+            return HeardLine("fatal", code=EXIT_FATAL)
+        case "again":
+            return HeardLine("again")
+        case _:  # "stopped" or "noise": a typed line or mute cut it short, or nothing was said
+            return HeardLine("noise")

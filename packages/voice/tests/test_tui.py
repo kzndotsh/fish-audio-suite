@@ -24,6 +24,7 @@ from fish_audio_suite_voice.events import (
     Bye,
     EventBus,
     Heard,
+    Interim,
     Listening,
     LogLine,
     MicLevel,
@@ -1259,3 +1260,45 @@ def test_the_strip_scrolls_at_one_speed_through_a_whole_turn() -> None:
     # About eleven bars a second, the mic's own rate, whatever is feeding the strip.
     for name, rate in rates.items():
         assert 7.0 <= rate <= 13.0, f"{name}: {rate:.1f} bars a second"
+
+
+def test_the_words_appear_on_the_you_line_as_they_are_recognised_then_become_the_transcript() -> (
+    None
+):
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        harness.bus.emit(Interim("hel"))
+        await pilot.pause(0.1)
+        (line,) = harness.messages()
+        assert line.startswith("you ▸ ")
+        assert line.endswith(" hel")
+        harness.bus.emit(Interim("hello there"))
+        harness.bus.emit(Interim("hello there friend\x1b[2J"))  # untrusted text, like any other
+        await pilot.pause(0.1)
+        (line,) = harness.messages()  # the same line, replaced, not a new one each time
+        assert line.endswith(" hello there friend[2J")
+        assert "\x1b" not in line
+        harness.bus.emit(Heard("hello there friend", 120.0))
+        await pilot.pause(0.1)
+        assert harness.messages() == ["you ▸ hello there friend"]  # the same line, now final
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+
+
+def test_words_that_are_never_confirmed_do_not_stay_on_screen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(tui_module, "_HEARING_HOLD_S", 0.2)
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        harness.bus.emit(Interim("uh"))
+        await pilot.pause(0.1)
+        assert len(harness.messages()) == 1
+        await pilot.pause(0.4)  # nothing more, and no final line: it was not speech
+        assert harness.messages() == []
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0

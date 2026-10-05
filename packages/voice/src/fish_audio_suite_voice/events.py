@@ -29,6 +29,7 @@ __all__ = [
     "EventBus",
     "EventQueue",
     "Heard",
+    "Interim",
     "Listening",
     "LogLine",
     "MicLevel",
@@ -50,7 +51,7 @@ __all__ = [
 
 # Events that may be dropped when a consumer falls behind. Everything else is
 # a fact about the conversation and is never dropped.
-_DROPPABLE: Final = ("MicLevel", "OutputLevel", "LogLine")
+_DROPPABLE: Final = ("MicLevel", "OutputLevel", "Interim", "LogLine")
 
 
 def _now() -> float:
@@ -86,6 +87,27 @@ class Heard:
 
     text: str
     asr_ms: float
+    at: float = field(default_factory=_now, compare=False, kw_only=True)
+
+
+@dataclass(frozen=True, slots=True)
+class Interim:
+    """The words of what the user is saying, so far, while they are still saying it.
+
+    Attributes
+    ----------
+    text : str
+        Everything recognised in this turn up to now. Each event replaces the one before.
+    at : float
+        ``time.monotonic()`` when the event was made. Not part of equality.
+
+    Notes
+    -----
+    Only a recogniser that streams makes these. ``Heard`` still ends the turn with the
+    final line.
+    """
+
+    text: str
     at: float = field(default_factory=_now, compare=False, kw_only=True)
 
 
@@ -312,6 +334,7 @@ class StateChanged:
 type Event = (
     Listening
     | Heard
+    | Interim
     | ReplyToken
     | ReplyEnd
     | Speaking
@@ -497,7 +520,7 @@ class EventQueue:
     bus : EventBus
         The bus to collect from.
     max_droppable : int, optional
-        How many ``MicLevel``, ``OutputLevel`` and ``LogLine`` events to keep while the consumer
+        How many ``MicLevel``, ``OutputLevel``, ``Interim`` and ``LogLine`` events to keep while the consumer
         is behind. The oldest go first. Every other event is always kept.
     wake : Callable or None, optional
         Called after each event is added, from the thread that emitted it, so it

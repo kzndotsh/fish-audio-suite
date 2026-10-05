@@ -93,6 +93,23 @@ sequenceDiagram
     You-)Out: talking over the reply cancels it (barge-in)
 ```
 
+With `FISH_VOICE_STT=deepgram` the first two arrows change: the speech is streamed to Deepgram's Flux while it is spoken, and Flux ends the turn, so there is no clip, no fixed silence to wait out and no upload and transcribe step.
+
+```mermaid
+sequenceDiagram
+    actor You
+    participant Mic as listen.stream_utterance
+    participant Flux as Deepgram Flux
+    participant Hear as hearing.py
+
+    Note over Mic,Flux: connected before the mic opens, nothing sent yet
+    You->>Mic: speech, in 30 ms frames
+    Mic->>Flux: pre-roll, then each frame, once speech has started
+    Flux-->>Hear: the words so far (Interim events)
+    Flux-->>Hear: EndOfTurn, or after the silence limit a ForceEndTurn asks for it
+    Hear->>Hear: judged exactly like a Fish transcript
+```
+
 Module by module:
 
 ```mermaid
@@ -121,6 +138,8 @@ flowchart LR
 | `aec` | AEC3 removes the bot's own voice from the mic, using what `playback` sends as the reference |
 | `listen` | webrtcvad and a loudness floor start and end the utterance |
 | `asr` | Sends the WAV clip to Fish ASR |
+| `deepgram` | Deepgram Flux's protocol and connection: the address, the turn messages, a connection a test can fake |
+| `streaming` | One turn streamed to Flux: the mic gate feeds frames to the connection, and Flux says when the turn is over |
 | `hearing` | Skips hallucinations, fillers and stale repeats; detects quit |
 | `history` | Appends the user line and trims to `FISH_VOICE_HISTORY_TURNS` |
 | `llm` / `transports` | Streams tokens from the chat model |
@@ -270,6 +289,12 @@ The rules most easily broken, each with its reason. A test or a lint rule enforc
 - **Three distributions only: `fish-audio-suite-kit`, `-proxy` and `-voice`.** The CLI stays in voice. There is no fourth package, no OpenTelemetry SDK (kit parses W3C trace headers itself) and no VAD package of our own (voice uses `webrtcvad-wheels`).
 - **Shared logic lives in kit.** Scrubbing, cues, sentence cuts, W3C parsing, the Fish error shape and captions are written once there. Proxy and voice must not copy those regexes, and they import kit only through its root, never a private module.
 - **Kit is pure text.** No network, no audio, no HTTP client, no `fishaudio`, no OpenTelemetry. `dependencies = []` keeps that honest, and a test checks that its sources import only the standard library.
+
+### Listening
+
+- **With a streaming recogniser, only speech leaves the machine.** Nothing is sent while the mic waits for speech to start. The same gate (`listen._Listen`) as the batch path decides when it starts, the pre-roll and any barge-in prefix go first, and every connection sets `mip_opt_out=true`. A recogniser that streamed all the time would send a room's worth of audio nobody meant to share. A test checks that nothing is sent before speech.
+- **The batch path stays the default and the fallback.** `FISH_VOICE_STT` is `fish` unless set, and a turn Deepgram cannot serve (an outage, not a bad key) is heard with Fish ASR, with the barge-in prefix intact. A bad or missing key is fatal at startup instead, because falling back would hide it.
+- **`DEEPGRAM_API_KEY` is read with the other settings, never at import, and `websockets` is imported when a connection opens.** The voice package imports without the `deepgram` extra.
 
 ### Speaking
 
