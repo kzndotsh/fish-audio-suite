@@ -28,6 +28,7 @@ __all__ = [
     "debug_enabled",
     "debug_level",
     "heartbeat_due",
+    "log_tag",
     "mark_turn",
     "short_model",
     "trace",
@@ -222,6 +223,27 @@ def _split_tag(message: str, level: str) -> tuple[str, str]:
     return ("warn" if level == "WARNING" else "log"), message
 
 
+def log_tag(message: str, level: str) -> tuple[str, str]:
+    """Split a log message into the tag a display shows and the rest.
+
+    Parameters
+    ----------
+    message : str
+        The logged message, such as ``tts.start voice=x``.
+    level : str
+        The log level name, such as ``WARNING``.
+
+    Returns
+    -------
+    tuple of str
+        The tag (``tts``, ``warn``, ``log``) and the text without it.
+    """
+    tag, body = _split_tag(message, level)
+    if level == "WARNING" and tag == "log":
+        tag = "warn"
+    return tag, body
+
+
 def _offset() -> str:
     t0 = _TURN.t0
     if t0 is None:
@@ -352,7 +374,7 @@ def _stderr_logger(level: str) -> None:
     )
 
 
-def configure_voice_logging(*, debug: bool | int | DebugLevel) -> None:
+def configure_voice_logging(*, debug: bool | int | DebugLevel, to_stderr: bool = True) -> None:
     """Idempotent stderr sink. DEBUG when on; otherwise WARNING. Call from the CLI only.
 
     Parameters
@@ -361,11 +383,17 @@ def configure_voice_logging(*, debug: bool | int | DebugLevel) -> None:
         ``False``, 0 or ``OFF`` logs warnings only. ``True``, 1 or ``EVENTS``
         adds events. 2 or ``TRACE`` adds the heartbeats, raw websocket audio and
         HTTP request lines. Larger numbers count as ``TRACE``.
+    to_stderr : bool, optional
+        False installs no stderr sink, for a display that owns the terminal. Log
+        lines then go only to sinks added afterwards, such as ``forward_logs``.
     """
     level = max(DebugLevel(min(max(int(debug), 0), DebugLevel.TRACE)), _env_level())
     _DEBUG.level = level
     _DEBUG.frozen = level
-    _stderr_logger("DEBUG" if level >= DebugLevel.EVENTS else "WARNING")
+    if to_stderr:
+        _stderr_logger("DEBUG" if level >= DebugLevel.EVENTS else "WARNING")
+    else:
+        logger.remove()
     _CONFIGURED.on = True
     _intercept_libraries(level=level)
     if level >= DebugLevel.EVENTS:

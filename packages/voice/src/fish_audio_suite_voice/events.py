@@ -8,47 +8,82 @@ reading its console output.
 from __future__ import annotations
 
 import threading
+from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from enum import StrEnum
+from time import monotonic
+from typing import Any, Final, Literal
+
+from loguru import logger
 
 from fish_audio_suite_kit import LatencySnapshot
 from fish_audio_suite_voice.console import console_print
-from fish_audio_suite_voice.debug import warn
+from fish_audio_suite_voice.debug import log_tag, warn
 
 __all__ = [
     "EVENTS",
+    "BargedIn",
     "Bye",
     "Event",
     "EventBus",
+    "EventQueue",
     "Heard",
     "Listening",
+    "LogLine",
+    "MicLevel",
     "Notice",
     "ReplyEnd",
     "ReplyToken",
+    "SessionState",
+    "Speaking",
+    "StateChanged",
+    "StateTracker",
     "TurnEnded",
+    "forward_logs",
+    "next_state",
     "notice",
 ]
+
+# Events that may be dropped when a consumer falls behind. Everything else is
+# a fact about the conversation and is never dropped.
+_DROPPABLE: Final = ("MicLevel", "LogLine")
+
+
+def _now() -> float:
+    return monotonic()
 
 
 @dataclass(frozen=True, slots=True)
 class Listening:
-    """The mic is open and waiting for the user."""
+    """The mic is open and waiting for the user.
+
+    Attributes
+    ----------
+    at : float
+        ``time.monotonic()`` when the event was made. Not part of equality.
+    """
+
+    at: float = field(default_factory=_now, compare=False, kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)
 class Heard:
-    """Fish ASR returned a line that will be answered.
+    """A line will be answered: Fish ASR returned it, or the user typed it.
 
     Attributes
     ----------
     text : str
-        The transcript.
+        The transcript, or the typed text.
     asr_ms : float
-        How long the ASR request took.
+        How long the ASR request took. 0 for typed text.
+    at : float
+        ``time.monotonic()`` when the event was made. Not part of equality.
     """
 
     text: str
     asr_ms: float
+    at: float = field(default_factory=_now, compare=False, kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,9 +94,12 @@ class ReplyToken:
     ----------
     text : str
         The piece. Joined in order, the pieces make the reply.
+    at : float
+        ``time.monotonic()`` when the event was made. Not part of equality.
     """
 
     text: str
+    at: float = field(default_factory=_now, compare=False, kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,9 +110,82 @@ class ReplyEnd:
     ----------
     text : str
         The whole reply as written, which may be empty.
+    at : float
+        ``time.monotonic()`` when the event was made. Not part of equality.
     """
 
     text: str
+    at: float = field(default_factory=_now, compare=False, kw_only=True)
+
+
+@dataclass(frozen=True, slots=True)
+class Speaking:
+    """The first audio of a reply reached the speaker.
+
+    Attributes
+    ----------
+    at : float
+        ``time.monotonic()`` when the event was made. Not part of equality.
+    """
+
+    at: float = field(default_factory=_now, compare=False, kw_only=True)
+
+
+@dataclass(frozen=True, slots=True)
+class BargedIn:
+    """The user spoke over the reply and the gate stopped it.
+
+    Attributes
+    ----------
+    at : float
+        ``time.monotonic()`` when the event was made. Not part of equality.
+    """
+
+    at: float = field(default_factory=_now, compare=False, kw_only=True)
+
+
+@dataclass(frozen=True, slots=True)
+class MicLevel:
+    """How loud the mic is, a few times a second while it is open.
+
+    Attributes
+    ----------
+    rms : float
+        RMS of the latest frame, after echo cancellation.
+    need : float
+        The level a frame has to reach to count as speech.
+    source : {"listen", "barge"}
+        Whether the mic is waiting for the user or watching for an interruption.
+    at : float
+        ``time.monotonic()`` when the event was made. Not part of equality.
+    """
+
+    rms: float
+    need: float
+    source: Literal["listen", "barge"]
+    at: float = field(default_factory=_now, compare=False, kw_only=True)
+
+
+@dataclass(frozen=True, slots=True)
+class LogLine:
+    """One log line, for a display that cannot share the terminal with stderr.
+
+    Attributes
+    ----------
+    level : str
+        ``DEBUG``, ``INFO``, ``WARNING`` or ``ERROR``.
+    tag : str
+        The part of the message before its first dot or space, such as ``tts``.
+    text : str
+        The message.
+    at : float
+        ``time.monotonic()`` when the event was made. Not part of equality.
+    """
+
+    level: str
+    tag: str
+    text: str
+    at: float = field(default_factory=_now, compare=False, kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,9 +196,12 @@ class Notice:
     ----------
     text : str
         The message, without padding.
+    at : float
+        ``time.monotonic()`` when the event was made. Not part of equality.
     """
 
     text: str
+    at: float = field(default_factory=_now, compare=False, kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,17 +212,96 @@ class TurnEnded:
     ----------
     snapshot : LatencySnapshot
         The timings of the turn.
+    at : float
+        ``time.monotonic()`` when the event was made. Not part of equality.
     """
 
     snapshot: LatencySnapshot
+    at: float = field(default_factory=_now, compare=False, kw_only=True)
 
 
 @dataclass(frozen=True, slots=True)
 class Bye:
-    """The session is ending."""
+    """The session is ending.
+
+    Attributes
+    ----------
+    at : float
+        ``time.monotonic()`` when the event was made. Not part of equality.
+    """
+
+    at: float = field(default_factory=_now, compare=False, kw_only=True)
 
 
-type Event = Listening | Heard | ReplyToken | ReplyEnd | Notice | TurnEnded | Bye
+class SessionState(StrEnum):
+    """What the session is doing, as a person would say it."""
+
+    IDLE = "idle"
+    LISTENING = "listening"
+    THINKING = "thinking"
+    SPEAKING = "speaking"
+
+
+@dataclass(frozen=True, slots=True)
+class StateChanged:
+    """The session moved to a new state. Made by a ``StateTracker``.
+
+    Attributes
+    ----------
+    state : SessionState
+        The new state.
+    at : float
+        ``time.monotonic()`` when the event was made. Not part of equality.
+    """
+
+    state: SessionState
+    at: float = field(default_factory=_now, compare=False, kw_only=True)
+
+
+type Event = (
+    Listening
+    | Heard
+    | ReplyToken
+    | ReplyEnd
+    | Speaking
+    | BargedIn
+    | MicLevel
+    | LogLine
+    | Notice
+    | TurnEnded
+    | Bye
+    | StateChanged
+)
+
+
+def next_state(state: SessionState, event: Event) -> SessionState:
+    """Return the state after ``event``.
+
+    Parameters
+    ----------
+    state : SessionState
+        The state before.
+    event : Event
+        What just happened.
+
+    Returns
+    -------
+    SessionState
+        The new state. Events that do not change it return ``state``.
+    """
+    match event:
+        case Listening():
+            return SessionState.LISTENING
+        case Heard():
+            return SessionState.THINKING
+        case Speaking():
+            return SessionState.SPEAKING
+        case BargedIn():
+            return SessionState.LISTENING
+        case TurnEnded() | Bye():
+            return SessionState.IDLE
+        case _:
+            return state
 
 
 class EventBus:
@@ -125,6 +318,9 @@ class EventBus:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._subscribers: list[Callable[[Event], None]] = []
+        # A failure is reported through the log, which a subscriber may itself
+        # be listening to. This stops that from going round in circles.
+        self._reporting = threading.local()
 
     def subscribe(self, callback: Callable[[Event], None]) -> Callable[[], None]:
         """Start sending events to ``callback``.
@@ -163,7 +359,152 @@ class EventBus:
             try:
                 callback(event)
             except Exception as e:  # noqa: BLE001 - a display must never break the session
-                warn(f"[events] a subscriber failed on {type(event).__name__}: {e!r}")
+                if getattr(self._reporting, "on", False):
+                    continue
+                self._reporting.on = True
+                try:
+                    warn(f"[events] a subscriber failed on {type(event).__name__}: {e!r}")
+                finally:
+                    self._reporting.on = False
+
+
+class StateTracker:
+    """Follows the events of a bus and announces each change of ``SessionState``.
+
+    Parameters
+    ----------
+    bus : EventBus
+        The bus to follow and to announce on.
+
+    Attributes
+    ----------
+    state : SessionState
+        The current state.
+    """
+
+    def __init__(self, bus: EventBus) -> None:
+        self._bus = bus
+        self._lock = threading.Lock()
+        self.state = SessionState.IDLE
+        self._unsubscribe = bus.subscribe(self._on_event)
+
+    def _on_event(self, event: Event) -> None:
+        if isinstance(event, StateChanged):
+            return
+        with self._lock:
+            new = next_state(self.state, event)
+            if new is self.state:
+                return
+            self.state = new
+        self._bus.emit(StateChanged(new))
+
+    def close(self) -> None:
+        """Stop following the bus."""
+        self._unsubscribe()
+
+
+class EventQueue:
+    """Collects the events of a bus for a consumer that runs at its own pace.
+
+    Parameters
+    ----------
+    bus : EventBus
+        The bus to collect from.
+    max_droppable : int, optional
+        How many ``MicLevel`` and ``LogLine`` events to keep while the consumer
+        is behind. The oldest go first. Every other event is always kept.
+    wake : Callable or None, optional
+        Called after each event is added, from the thread that emitted it.
+        Use it to wake an event loop, for example ``loop.call_soon_threadsafe``.
+
+    Attributes
+    ----------
+    dropped : int
+        How many events were dropped so far.
+    """
+
+    def __init__(
+        self,
+        bus: EventBus,
+        *,
+        max_droppable: int = 256,
+        wake: Callable[[], None] | None = None,
+    ) -> None:
+        self._items: deque[Event] = deque()
+        self._droppable = 0
+        self._max_droppable = max(1, max_droppable)
+        self._wake = wake
+        self._cond = threading.Condition()
+        self._closed = False
+        self.dropped = 0
+        self._unsubscribe = bus.subscribe(self._put)
+
+    def _put(self, event: Event) -> None:
+        with self._cond:
+            if self._closed:
+                return
+            self._items.append(event)
+            if type(event).__name__ in _DROPPABLE:
+                self._droppable += 1
+                if self._droppable > self._max_droppable:
+                    self._drop_oldest_droppable()
+            self._cond.notify()
+        if self._wake is not None:
+            self._wake()
+
+    def _drop_oldest_droppable(self) -> None:
+        for index, item in enumerate(self._items):
+            if type(item).__name__ in _DROPPABLE:
+                del self._items[index]
+                self._droppable -= 1
+                self.dropped += 1
+                return
+
+    def _took(self, event: Event) -> None:
+        if type(event).__name__ in _DROPPABLE:
+            self._droppable -= 1
+
+    def get(self, timeout: float | None = None) -> Event | None:
+        """Take the oldest event, waiting for one if there is none.
+
+        Parameters
+        ----------
+        timeout : float or None, optional
+            Seconds to wait. None waits until an event arrives or the queue is closed.
+
+        Returns
+        -------
+        Event or None
+            The event, or None when the wait timed out or the queue was closed.
+        """
+        with self._cond:
+            self._cond.wait_for(lambda: self._items or self._closed, timeout)
+            if not self._items:
+                return None
+            event = self._items.popleft()
+            self._took(event)
+            return event
+
+    def drain(self) -> list[Event]:
+        """Take every event waiting, without blocking.
+
+        Returns
+        -------
+        list of Event
+            The events, oldest first. Empty when there are none.
+        """
+        with self._cond:
+            events = list(self._items)
+            self._items.clear()
+            self._droppable = 0
+            return events
+
+    def close(self) -> None:
+        """Stop collecting and wake anyone waiting in ``get``."""
+        self._unsubscribe()
+        with self._cond:
+            self._closed = True
+            self._cond.notify_all()
 
 
 EVENTS = EventBus()
@@ -179,3 +520,43 @@ def notice(text: str) -> None:
     """
     console_print(text, flush=True)
     EVENTS.emit(Notice(text.strip()))
+
+
+def forward_logs(bus: EventBus | None = None, *, level: str = "DEBUG") -> Callable[[], None]:
+    """Send each log line to ``bus`` as a ``LogLine``.
+
+    Parameters
+    ----------
+    bus : EventBus or None, optional
+        Where to send them. The session's ``EVENTS`` when omitted.
+    level : str, optional
+        The lowest log level to forward.
+
+    Returns
+    -------
+    Callable
+        Call it to stop forwarding.
+
+    Notes
+    -----
+    Use it with ``configure_voice_logging(..., to_stderr=False)`` when a display
+    owns the terminal, so log lines reach it instead of corrupting the screen.
+    Call it after ``configure_voice_logging``, which removes every other sink.
+    """
+    target = bus if bus is not None else EVENTS
+
+    def sink(message: Any) -> None:
+        record = message.record
+        name = record["level"].name
+        tag, text = log_tag(str(record["message"]), name)
+        target.emit(LogLine(name, tag, text))
+
+    handler = logger.add(sink, level=level, format="{message}")
+
+    def stop() -> None:
+        try:
+            logger.remove(handler)
+        except ValueError:
+            return
+
+    return stop

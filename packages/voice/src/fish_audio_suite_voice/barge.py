@@ -17,6 +17,7 @@ from fish_audio_suite_voice.aec import (
     pcm_rms,
 )
 from fish_audio_suite_voice.debug import debug, heartbeat_due, trace, warn
+from fish_audio_suite_voice.events import EVENTS, BargedIn, MicLevel
 from fish_audio_suite_voice.floor import AdaptiveFloor
 from fish_audio_suite_voice.playback import load_sounddevice, pcm_stream_kwargs
 from fish_audio_suite_voice.tune import (
@@ -39,6 +40,7 @@ __all__ = [
     "FRAME_BYTES",
     "FRAME_MS",
     "LISTEN_HEARTBEAT_FRAMES",
+    "MIC_LEVEL_EVERY_FRAMES",
     "SAMPLE_RATE",
     "BargeGate",
     "barge_rms_need",
@@ -51,6 +53,8 @@ FRAME_MS: Final = 30
 FRAME_SAMPLES: Final = SAMPLE_RATE * FRAME_MS // MS_PER_S
 FRAME_BYTES: Final = FRAME_SAMPLES * SAMPLE_BYTES
 LISTEN_HEARTBEAT_FRAMES: Final = 20
+# One MicLevel event every this many frames (about 90 ms), so a display can draw a meter.
+MIC_LEVEL_EVERY_FRAMES: Final = 3
 BARGE_MISS_DECAY_FRAMES: Final = 3
 BARGE_LOOKBACK_FRAMES: Final = 20
 _BARGE_POLL_S: Final = 0.2
@@ -232,6 +236,8 @@ class BargeGate:
                 need = barge_rms_need(
                     base_need, far_playing=far, playing_gain=self.tune.playing_gain, aec_on=aec_on
                 )
+                if idle_frames % MIC_LEVEL_EVERY_FRAMES == 0:
+                    EVENTS.emit(MicLevel(rms, need, "barge"))
                 _barge_heartbeat(
                     idle_frames=idle_frames,
                     rms=rms,
@@ -260,6 +266,7 @@ class BargeGate:
                     self.captured = b"".join(self._heard)
                     self.aec.clear()
                     debug("barge.keep frames={} bytes={}", len(self._heard), len(self.captured))
+                    EVENTS.emit(BargedIn())
                     cancel.set()
                     return
         except Exception as e:  # noqa: BLE001 - daemon-thread boundary, kept in self.failure and reported

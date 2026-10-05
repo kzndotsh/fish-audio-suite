@@ -26,7 +26,7 @@ from fish_audio_suite_voice.cancel import is_cancel_noise, is_own_cancel
 from fish_audio_suite_voice.console import end_reply_line, write_reply_token
 from fish_audio_suite_voice.debug import conversation, debug, debug_enabled, warn
 from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexContext
-from fish_audio_suite_voice.events import EVENTS, ReplyEnd, ReplyToken, notice
+from fish_audio_suite_voice.events import EVENTS, ReplyEnd, ReplyToken, Speaking, notice
 from fish_audio_suite_voice.hearing import HeardLine
 from fish_audio_suite_voice.playback import PortAudioMissingError, make_sink
 from fish_audio_suite_voice.spoken import unspoken_text
@@ -144,6 +144,11 @@ async def collect_reply(
     return reply, ttft_ms
 
 
+def _first_audio(into: list[float]) -> None:
+    into.append(time.perf_counter())
+    EVENTS.emit(Speaking())
+
+
 def after_speech(
     ctx: DuplexContext,
     snapshot: LatencySnapshot,
@@ -248,7 +253,7 @@ async def speak_reply(
                 scrubbed,
                 sink,
                 cancel=cancel,
-                on_first_audio=lambda: first_audio.append(time.perf_counter()),
+                on_first_audio=lambda: _first_audio(first_audio),
             )
         except PortAudioMissingError as exc:
             warn(str(exc))
@@ -320,7 +325,7 @@ async def stream_turn(
     first_audio: list[float] = []
 
     def on_first_audio() -> None:
-        first_audio.append(time.perf_counter())
+        _first_audio(first_audio)
         barge_threads.append(barge.start_after_bleed(cancel))
 
     sink = make_sink(

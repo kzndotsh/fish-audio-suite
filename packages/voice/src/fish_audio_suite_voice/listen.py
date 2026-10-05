@@ -13,11 +13,13 @@ from fish_audio_suite_voice.barge import (
     FRAME_BYTES,
     FRAME_MS,
     LISTEN_HEARTBEAT_FRAMES,
+    MIC_LEVEL_EVERY_FRAMES,
     SAMPLE_RATE,
     frame_is_speech,
     mic_frames,
 )
 from fish_audio_suite_voice.debug import debug, heartbeat_due, trace
+from fish_audio_suite_voice.events import EVENTS, MicLevel
 from fish_audio_suite_voice.floor import AdaptiveFloor
 from fish_audio_suite_voice.playback import write_mono_wav
 from fish_audio_suite_voice.tune import (
@@ -160,6 +162,8 @@ class _Listen:
         self.min_speech_now = self.floor.value()
         self.window_peak = max(self.window_peak, rms)
         self.clip_peak = max(self.clip_peak, rms)
+        if idle_frames % MIC_LEVEL_EVERY_FRAMES == 0:
+            EVENTS.emit(MicLevel(rms, self.min_speech_now, "listen"))
         self._heartbeat(idle_frames, rms, vad_speech)
         if not self.triggered:
             # A frame already at the floor is not room hiss. Counting it raises

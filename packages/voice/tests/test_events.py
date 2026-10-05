@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import collections.abc
 import threading
+import time
 from collections.abc import Iterator
+from typing import Any
 
 import pytest
+from loguru import logger
 from test_duplex import _ctx  # pyright: ignore[reportPrivateUsage]
 from test_duplex_turns import (
     _hello,  # pyright: ignore[reportPrivateUsage]
@@ -16,23 +20,38 @@ from test_duplex_turns import (
     _run,  # pyright: ignore[reportPrivateUsage]
     _spoken_by,  # pyright: ignore[reportPrivateUsage]
 )
-from voice_fakes import install_audio
+from voice_fakes import install_audio, install_vad, make_result, set_tts
 
+from fish_audio_suite_kit import LatencySnapshot
+from fish_audio_suite_voice.barge import FRAME_BYTES, MIC_LEVEL_EVERY_FRAMES, BargeGate
+from fish_audio_suite_voice.debug import configure_voice_logging
 from fish_audio_suite_voice.events import (
     EVENTS,
+    BargedIn,
     Bye,
     Event,
     EventBus,
+    EventQueue,
     Heard,
     Listening,
+    LogLine,
+    MicLevel,
     Notice,
     ReplyEnd,
     ReplyToken,
+    SessionState,
+    Speaking,
+    StateChanged,
+    StateTracker,
     TurnEnded,
+    forward_logs,
+    next_state,
     notice,
 )
 from fish_audio_suite_voice.hearing import hear_line
+from fish_audio_suite_voice.listen import _Listen  # pyright: ignore[reportPrivateUsage]
 from fish_audio_suite_voice.speaker import FishSpeaker
+from fish_audio_suite_voice.tune import ListenTune
 
 
 @pytest.fixture
@@ -126,3 +145,208 @@ def test_a_turn_reports_the_reply_as_it_streams_then_the_timings_then_bye(
     assert ReplyEnd("Hello there friend.") in seen
     ended = next(e for e in seen if isinstance(e, TurnEnded))
     assert ended.snapshot.tts_first_audio_ms is not None
+
+
+def test_events_carry_a_timestamp_that_is_not_part_of_equality() -> None:
+    before = time.monotonic()
+    first = Heard("hi", 3.0)
+    time.sleep(0.01)
+    second = Heard("hi", 3.0)
+    assert before <= first.at < second.at
+    assert first == second
+
+
+@pytest.mark.parametrize(
+    ("state", "event", "expected"),
+    [
+        (SessionState.IDLE, Listening(), SessionState.LISTENING),
+        (SessionState.LISTENING, Heard("hi", 1.0), SessionState.THINKING),
+        (SessionState.THINKING, Speaking(), SessionState.SPEAKING),
+        (SessionState.SPEAKING, BargedIn(), SessionState.LISTENING),
+        (SessionState.SPEAKING, TurnEnded(LatencySnapshot()), SessionState.IDLE),
+        (SessionState.LISTENING, Bye(), SessionState.IDLE),
+        (SessionState.THINKING, ReplyToken("x"), SessionState.THINKING),
+        (SessionState.LISTENING, MicLevel(1.0, 2.0, "listen"), SessionState.LISTENING),
+    ],
+)
+def test_the_session_state_follows_the_events(
+    state: SessionState, event: Event, expected: SessionState
+) -> None:
+    assert next_state(state, event) is expected
+
+
+def test_a_state_tracker_announces_each_change_once() -> None:
+    bus = EventBus()
+    got: list[Event] = []
+    tracker = StateTracker(bus)
+    bus.subscribe(got.append)
+    for event in (
+        Listening(),
+        MicLevel(1.0, 2.0, "listen"),
+        Listening(),
+        Heard("hi", 1.0),
+        Speaking(),
+    ):
+        bus.emit(event)
+    changes = [e.state for e in got if isinstance(e, StateChanged)]
+    assert changes == [SessionState.LISTENING, SessionState.THINKING, SessionState.SPEAKING]
+    assert tracker.state is SessionState.SPEAKING
+    tracker.close()
+    bus.emit(TurnEnded(LatencySnapshot()))
+    assert tracker.state is SessionState.SPEAKING
+
+
+def test_a_queue_keeps_every_conversation_event_and_drops_old_mic_levels() -> None:
+    bus = EventBus()
+    queue = EventQueue(bus, max_droppable=3)
+    bus.emit(Heard("hi", 1.0))
+    for n in range(10):
+        bus.emit(MicLevel(float(n), 1.0, "listen"))
+        bus.emit(ReplyToken(str(n)))
+    events = queue.drain()
+    levels = [e.rms for e in events if isinstance(e, MicLevel)]
+    assert levels == [7.0, 8.0, 9.0]
+    assert [e.text for e in events if isinstance(e, ReplyToken)] == [str(n) for n in range(10)]
+    assert Heard("hi", 1.0) in events
+    assert queue.dropped == 7
+    assert queue.get(timeout=0) is None
+
+
+def test_a_queue_hands_events_to_a_waiting_thread_and_wakes_its_loop() -> None:
+    bus = EventBus()
+    woken: list[int] = []
+    queue = EventQueue(bus, wake=lambda: woken.append(1))
+    got: list[Event | None] = []
+    reader = threading.Thread(target=lambda: got.append(queue.get(timeout=5)))
+    reader.start()
+    bus.emit(Listening())
+    reader.join(timeout=5)
+    assert got == [Listening()]
+    assert woken == [1]
+    queue.close()
+    assert queue.get(timeout=5) is None  # closed, so it does not wait
+    bus.emit(Listening())
+    assert queue.drain() == []
+
+
+def test_closing_a_queue_wakes_a_blocked_reader() -> None:
+    queue = EventQueue(EventBus())
+    got: list[Event | None] = []
+    reader = threading.Thread(target=lambda: got.append(queue.get()))
+    reader.start()
+    time.sleep(0.05)
+    queue.close()
+    reader.join(timeout=5)
+    assert got == [None]
+
+
+def test_forwarded_logs_become_events_and_stay_off_stderr(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    bus = EventBus()
+    got: list[Event] = []
+    bus.subscribe(got.append)
+    configure_voice_logging(debug=1, to_stderr=False)
+    stop = forward_logs(bus)
+    try:
+        logger.debug("tts.start voice=abc")
+        logger.warning("something odd")
+    finally:
+        stop()
+        stop()  # twice is harmless
+        configure_voice_logging(debug=False)
+    assert got == [
+        LogLine("DEBUG", "tts", "start voice=abc"),
+        LogLine("WARNING", "warn", "something odd"),
+    ]
+    assert capsys.readouterr().err == ""
+
+
+def test_a_subscriber_that_fails_on_log_lines_cannot_loop_forever(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    bus = EventBus()
+    calls: list[Event] = []
+
+    def broken(event: Event) -> None:
+        calls.append(event)
+        raise RuntimeError("boom")
+
+    bus.subscribe(broken)
+    configure_voice_logging(debug=False, to_stderr=False)
+    stop = forward_logs(bus)
+    try:
+        bus.emit(Listening())
+    finally:
+        stop()
+        configure_voice_logging(debug=False)
+    # The failure is logged once; that log line reaches the subscriber, which
+    # fails again but is not reported a second time.
+    assert [type(e).__name__ for e in calls] == ["Listening", "LogLine"]
+
+
+def _loud(level: int = 500) -> bytes:
+    return level.to_bytes(2, "little", signed=True) * (FRAME_BYTES // 2)
+
+
+class _SpeechVad:
+    def __init__(self, mode: int = 0) -> None:
+        self.mode = mode
+
+    def is_speech(self, frame: bytes, rate: int) -> bool:
+        del frame, rate
+        return True
+
+
+def test_the_barge_gate_reports_the_mic_level_and_the_interruption(
+    monkeypatch: pytest.MonkeyPatch, seen: list[Event]
+) -> None:
+    def frames(
+        device: object,
+        stop: threading.Event | None,
+        *,
+        timeout: float,
+        aec: object = None,
+    ) -> collections.abc.Iterator[bytes]:
+        del device, stop, timeout, aec
+        for _ in range(10):
+            yield _loud()
+
+    install_vad(monkeypatch, _SpeechVad)
+    monkeypatch.setattr("fish_audio_suite_voice.barge.mic_frames", frames)
+    gate = BargeGate(hit_frames=MIC_LEVEL_EVERY_FRAMES + 2, min_rms=1.0, bleed_delay_s=0)
+    cancel = threading.Event()
+    gate.watch(cancel)
+    assert cancel.is_set()
+    kinds = [type(e) for e in seen]
+    assert kinds == [MicLevel, BargedIn]
+    level = seen[0]
+    assert isinstance(level, MicLevel)
+    assert (level.source, level.rms > level.need) == ("barge", True)
+
+
+def test_listening_reports_the_mic_level_every_few_frames(seen: list[Event]) -> None:
+    heard = _Listen(ListenTune(), _SpeechVad())
+    for idle in range(1, MIC_LEVEL_EVERY_FRAMES * 2 + 1):
+        heard.take(_loud(100), idle)
+    levels = [e for e in seen if isinstance(e, MicLevel)]
+    assert len(levels) == 2
+    assert all(e.source == "listen" for e in levels)
+
+
+def test_the_first_audio_of_a_reply_is_reported_as_speaking(
+    monkeypatch: pytest.MonkeyPatch, seen: list[Event]
+) -> None:
+    tts = FishSpeaker(api_key="k", voice_id="voice")
+    install_audio(monkeypatch)
+
+    def speak(text: str, sink: object, cancel: object = None, on_first_audio: Any = None) -> Any:
+        on_first_audio()
+        return make_result(text, bytes_played=4, got_audio=True, tts_first_audio_ms=3.0)
+
+    set_tts(monkeypatch, tts, speak=speak)
+    _Loop(monkeypatch, _line("hi there"))
+    assert _run(_quick(), tts, _hello) == 0
+    kinds = [type(e) for e in seen]
+    assert kinds.index(Speaking) > kinds.index(ReplyEnd)
+    assert kinds.index(Speaking) < kinds.index(TurnEnded)
