@@ -29,6 +29,7 @@ from fish_audio_suite_voice.events import (
 )
 from fish_audio_suite_voice.session_view import (
     BODY_RELEASE_PER_S,
+    MIC_PEAK_FLOOR_DB,
     PEAK_HOLD_S,
     PEAK_RELEASE_PER_S,
     SPEAKER_PEAK_FALL_DB_PER_S,
@@ -329,3 +330,19 @@ def test_auto_level_stays_between_empty_and_full(steps: list[tuple[float, float]
     auto = AutoLevel()
     for rms, dt in steps:
         assert 0.0 <= auto.update(rms, dt) <= 1.0
+
+
+def test_auto_level_with_a_floor_does_not_stretch_a_signal_that_is_always_quiet() -> None:
+    quiet = 32768.0 * 10 ** (-50.0 / 20)
+    free = AutoLevel(peak_db=-60.0)  # no floor: it settles on the quiet signal and fills the bar
+    floored = AutoLevel(peak_db=MIC_PEAK_FLOOR_DB, floor_peak_db=MIC_PEAK_FLOOR_DB)
+    free_level = floored_level = 1.0
+    for _ in range(100):
+        free_level = free.update(quiet, 0.06)
+        floored_level = floored.update(quiet, 0.06)
+    assert free_level > 0.9
+    assert floored_level == 0.0  # still empty: nobody is speaking
+    assert floored.peak_db == MIC_PEAK_FLOOR_DB
+    assert floored.update(32768.0 * 10 ** (-24.0 / 20), 0.06) == pytest.approx(
+        1.0
+    )  # speech fills it

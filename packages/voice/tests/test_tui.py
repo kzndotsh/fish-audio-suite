@@ -35,6 +35,7 @@ from fish_audio_suite_voice.events import (
     TurnEnded,
 )
 from fish_audio_suite_voice.inputs import LiveInput
+from fish_audio_suite_voice.session_view import MIC_PEAK_FLOOR_DB, SPEAKER_SPAN_DB
 from fish_audio_suite_voice.signals import DuplexSession
 from fish_audio_suite_voice.tui import Conversation, Timings, VoiceApp, Waveform
 
@@ -89,6 +90,14 @@ class _Harness:
 def _dots(char: str) -> int:
     """How many dots a Braille character raises."""
     return (ord(char) - 0x2800).bit_count()
+
+
+def _mic_rms(height: float) -> float:
+    """An RMS the mic strip draws at ``height`` (0 to 1) while its scale sits at the floor."""
+    if height <= 0:
+        return 0.0
+    db = MIC_PEAK_FLOOR_DB - SPEAKER_SPAN_DB * (1.0 - height)
+    return 32768.0 * 10 ** (db / 20)
 
 
 def _timings_text(harness: _Harness) -> str:
@@ -491,7 +500,7 @@ def test_the_waveform_scrolls_newest_right_and_decays_in_dots() -> None:
                 1.0,
                 0.0,
             ):  # quiet, loud, then silence that falls instead of snapping
-                wave.push(level, 0.3)
+                wave.push(_mic_rms(level), 1.0)
             await pilot.pause()
             lines = [s.text for s in wave.render_lines(Region(0, 0, width, 4))]
             assert all(len(line) == width for line in lines)
@@ -661,7 +670,7 @@ def test_the_waveform_draws_dots_in_the_foreground_only_with_no_cell_background(
         async with host.run_test(size=(40, 10)) as pilot:
             wave = host.query_one(Waveform)
             for level in (0.0, 0.8, 0.05, 0.9):
-                wave.push(level, 0.3)
+                wave.push(_mic_rms(level), 1.0)
             await pilot.pause()
             screen = Color.parse(host.get_css_variables()["background"]).rgb
             strips = wave.render_lines(Region(0, 0, wave.size.width, 4))
@@ -915,22 +924,54 @@ def test_with_animations_off_the_cursor_and_the_thinking_wave_hold_still() -> No
     assert _drive(harness, scenario) == 0
 
 
-def test_a_peak_cap_floats_above_a_falling_bar_holds_then_falls_away() -> None:
+def _strip_after(feed: Callable[[Waveform], None]) -> list[str]:
+    """Draw a fresh strip after ``feed`` has pushed bars to it, and return its lines."""
+    lines: list[str] = []
+
     async def main() -> None:
         host = _WaveHost()
         async with host.run_test(size=(40, 10)) as pilot:
             wave = host.query_one(Waveform)
             await pilot.pause()
-            wave.push(1.0, 0.3, now=0.0)
-            wave.push(0.0, 0.3, now=0.3)  # the bar falls; the cap holds
+            feed(wave)
             await pilot.pause()
-            assert _dots(_wave_lines(wave)[0][-1]) > 0  # the cap, up on the top line
-            for step in range(1, 20):  # silence for ten seconds: the hold ends and the cap falls
-                wave.push(0.0, 0.3, now=0.3 + 0.5 * step)
-            await pilot.pause()
-            assert _dots(_wave_lines(wave)[0][-1]) == 0  # bar and cap are both gone
+            lines.extend(_wave_lines(wave))
 
     asyncio.run(main())
+    return lines
+
+
+def test_the_mic_and_the_speaker_draw_the_same_shape_whatever_their_loudness() -> None:
+    # The same ups and downs, in dB below each source's loudest moment.
+    shape = (0.0, -3.0, -6.0, -12.0, -24.0, -9.0, -3.0, 0.0, -18.0, -6.0)
+
+    def rms(peak_db: float, below: float) -> float:
+        return 32768.0 * 10 ** ((peak_db + below) / 20)
+
+    def mic(wave: Waveform) -> None:
+        for step, below in enumerate(shape):  # a quiet mic: its loudest moment is -20 dB
+            wave.push(rms(-20.0, below), 1.0, now=step * 0.06)
+
+    def speaker(wave: Waveform) -> None:
+        for step, below in enumerate(shape):  # a much hotter voice: -6 dB
+            wave.push_speaker(rms(-6.0, below), now=step * 0.06)
+
+    assert _strip_after(mic) == _strip_after(speaker)
+
+
+def test_a_quiet_room_is_not_stretched_into_a_waveform_by_the_mic_scale() -> None:
+    def room(wave: Waveform) -> None:
+        for step in range(60):  # three and a half seconds of room noise at -50 dB
+            wave.push(32768.0 * 10 ** (-50.0 / 20), 1500.0, now=step * 0.06)
+
+    lines = _strip_after(room)
+    assert max(_dots(ch) for line in lines for ch in line) <= 2  # only the thin line
+
+    def speech(wave: Waveform) -> None:
+        room(wave)
+        wave.push(32768.0 * 10 ** (-24.0 / 20), 1500.0, now=4.0)  # then someone speaks
+
+    assert max(_dots(ch) for line in _strip_after(speech) for ch in line) >= 4
 
 
 def test_brightness_follows_loudness_and_colour_follows_what_the_bar_is() -> None:
@@ -940,7 +981,7 @@ def test_brightness_follows_loudness_and_colour_follows_what_the_bar_is() -> Non
             wave = host.query_one(Waveform)
             await pilot.pause()
             for level in (0.2, 0.2, 0.55, 0.55, 0.95, 0.95):  # soft, medium, loud, all heard
-                wave.push(level, 0.1, now=0.0)
+                wave.push(_mic_rms(level), 1.0, now=0.0)
             await pilot.pause()
             colours = _wave_colours(wave, 1)
             soft, medium, loud = colours[-3], colours[-2], colours[-1]
@@ -994,7 +1035,7 @@ def test_speaker_bars_are_the_accent_colour_and_the_mics_are_not() -> None:
             for _ in range(2):
                 wave.push_speaker(8000.0, now=0.0)
             for _ in range(2):
-                wave.push(0.9, 0.1, now=0.0)  # a loud mic bar, heard
+                wave.push(_mic_rms(0.9), 1.0, now=0.0)  # a loud mic bar, heard
             await pilot.pause()
             colours = _wave_colours(wave, 1)
             speaker, mic = colours[-2], colours[-1]
@@ -1010,7 +1051,7 @@ def _column_dots(wave: Waveform, cell: int) -> int:
     return sum(_dots(line[cell]) for line in lines)
 
 
-def test_speaker_bars_follow_the_voices_own_ups_and_downs_with_no_caps() -> None:
+def test_speaker_bars_follow_the_voices_own_ups_and_downs() -> None:
     async def main() -> None:
         host = _WaveHost()
         async with host.run_test(size=(40, 10)) as pilot:
@@ -1020,14 +1061,12 @@ def test_speaker_bars_follow_the_voices_own_ups_and_downs_with_no_caps() -> None
             # Two bars to a character: loud, loud | pause, pause | loud, loud | stressed, soft.
             for rms in (9000.0, 9000.0, 60.0, 60.0, 9000.0, 9000.0, 9000.0, 1800.0):
                 wave.push_speaker(rms, now=clock)
-                clock += 0.06
+                clock += 0.25
             await pilot.pause()
             loud, pause, loud_again, stressed = (_column_dots(wave, i) for i in (-4, -3, -2, -1))
             assert pause < loud  # a pause really is lower
             assert loud_again == loud  # the same loudness draws the same height
             assert stressed < loud  # and a softer syllable sits between
-            # No floating cap above the pause: a bar that fell does not leave a dot behind.
-            assert _dots(_wave_lines(wave)[0][-3]) == 0
 
     asyncio.run(main())
 

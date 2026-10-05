@@ -47,13 +47,18 @@ METER_QUIETEST_DB: Final = -54.0  # at or below this, a meter shows empty
 METER_LOUDEST_DB: Final = -9.0  # at or above this, it shows full
 _METER_SPAN_DB: Final = METER_LOUDEST_DB - METER_QUIETEST_DB
 # How a level bar moves. The scale is the meter's own: 0 to 1 spans the meter's window.
-BODY_RELEASE_PER_S: Final = 4.0  # a bar falls from full to empty in a quarter of a second
+BODY_RELEASE_PER_S: Final = 6.0  # a bar falls from full to empty in about a sixth of a second
 PEAK_HOLD_S: Final = 0.3  # the cap above a bar stays put this long after a peak
 PEAK_RELEASE_PER_S: Final = 60.0 / _METER_SPAN_DB  # then falls at 60 dB per second
 # The speaker is scaled against the reply's own loudest recent moment, not a fixed scale.
 SPEAKER_SPAN_DB: Final = 24.0  # a bar is empty this far below that moment
 SPEAKER_START_DB: Final = -30.0  # what "loud" is assumed to be until the reply shows otherwise
 SPEAKER_PEAK_FALL_DB_PER_S: Final = 1.5  # how fast that moment is forgotten
+SPEAKER_PEAK_FLOOR_DB: Final = -45.0  # a very quiet reply is not stretched past this
+# The mic uses the same scaling. Its reference peak never drops below this, so a quiet room
+# stays empty instead of being stretched up to look like speech, while speech still reaches
+# the top of the bar.
+MIC_PEAK_FLOOR_DB: Final = -24.0
 _BRAILLE: Final = 0x2800  # the first Braille pattern, which has no dots
 # The bit that raises each dot of a Braille cell, by dot row (top to bottom) and column.
 _DOT_BITS: Final = ((0x01, 0x08), (0x02, 0x10), (0x04, 0x20), (0x40, 0x80))
@@ -386,7 +391,7 @@ class Ballistics:
         (1.0, 1.0)
         >>> body, peak = b.update(0.0, 0.1)  # the body falls, the peak holds
         >>> round(body, 2), peak
-        (0.6, 1.0)
+        (0.4, 1.0)
         """
         level = min(1.0, max(0.0, level))
         dt = max(0.0, dt)
@@ -441,9 +446,13 @@ class AutoLevel:
     ----------
     peak_db : float
         The loudest recent block, in dB below full scale. Rises at once, falls slowly.
+    floor_peak_db : float
+        The peak never falls below this, so a signal that is quiet all the time (a room
+        with nobody speaking) is not stretched up to full height.
     """
 
     peak_db: float = SPEAKER_START_DB
+    floor_peak_db: float = -120.0
 
     def update(self, rms: float, dt: float) -> float:
         """Measure one block of audio.
@@ -472,5 +481,6 @@ class AutoLevel:
         """
         ratio = rms / _FULL_SCALE  # a tiny rms can underflow to zero here, so test the ratio
         db = max(_QUIETEST_DB, 20 * math.log10(ratio)) if ratio > 0 else _QUIETEST_DB
-        self.peak_db = max(db, self.peak_db - SPEAKER_PEAK_FALL_DB_PER_S * max(0.0, dt))
+        fallen = self.peak_db - SPEAKER_PEAK_FALL_DB_PER_S * max(0.0, dt)
+        self.peak_db = max(db, fallen, self.floor_peak_db)
         return min(1.0, max(0.0, (db - (self.peak_db - SPEAKER_SPAN_DB)) / SPEAKER_SPAN_DB))

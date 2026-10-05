@@ -51,10 +51,11 @@ from fish_audio_suite_voice.events import (
 from fish_audio_suite_voice.inputs import LiveInput
 from fish_audio_suite_voice.reply import turn_summary
 from fish_audio_suite_voice.session_view import (
+    MIC_PEAK_FLOOR_DB,
+    SPEAKER_PEAK_FLOOR_DB,
     AutoLevel,
     Ballistics,
     SessionView,
-    level_fraction,
     processing_level,
     reduce_view,
     split_cells,
@@ -103,14 +104,14 @@ def _cue_content(text: str) -> Content:
 
 
 class Waveform(Widget):
-    """The mic level as a mirrored, scrolling waveform of dots: newest on the right.
+    """The mic or the speaker as a mirrored, scrolling waveform of dots: newest on the right.
 
-    Bars grow from the middle and each has a cap that holds a moment above it. Colour says
-    what a bar is (green for speech the mic hears, grey for quiet, amber for the model
-    thinking, the accent colour for the reply being played) and its brightness says how
-    loud it is. What the strip does when nothing is
-    said depends on the mood: while listening a cursor blinks at the right edge, while
-    thinking a calm wave scrolls by on its own, and otherwise it holds still.
+    Both are drawn the same way, so they look alike: each level is scaled to that source's own
+    recent peak and eased down a little, with no caps. Colour says what a bar is (green for
+    speech the mic hears, grey for quiet, amber for the model thinking, the accent colour for
+    the reply being played) and its brightness says how loud it is. What the strip does when
+    nothing is said depends on the mood: while listening a cursor blinks at the right edge,
+    while thinking a calm wave scrolls by on its own, and otherwise it holds still.
     """
 
     DEFAULT_CSS: ClassVar[str] = """
@@ -121,9 +122,8 @@ class Waveform(Widget):
 
     def __init__(self, *, id: str | None = None) -> None:  # noqa: A002 - Textual's own name
         super().__init__(id=id)
-        self._bars: deque[tuple[float, float, str]] = deque(maxlen=_WAVE_HISTORY)
-        self._ballistics = Ballistics()
-        self._auto = AutoLevel()
+        self._bars: deque[tuple[float, str]] = deque(maxlen=_WAVE_HISTORY)
+        self._reset_meters()
         self._last_push: float | None = None
         self._last_speaker: float | None = None
         self._mood = "still"
@@ -131,29 +131,38 @@ class Waveform(Widget):
         self._since = 0.0
         self._cursor_on = True
 
+    def _reset_meters(self) -> None:
+        self._mic_auto = AutoLevel(peak_db=MIC_PEAK_FLOOR_DB, floor_peak_db=MIC_PEAK_FLOOR_DB)
+        self._speaker_auto = AutoLevel(floor_peak_db=SPEAKER_PEAK_FLOOR_DB)
+        self._mic_ease = Ballistics()
+        self._speaker_ease = Ballistics()
+
     @property
     def mood(self) -> str:
         """What the strip is doing besides drawing the mic: listening, thinking or still."""
         return self._mood
 
-    def push(self, level: float, threshold: float, *, now: float | None = None) -> None:
+    def _elapsed(self, now: float | None) -> float:
+        now = time.monotonic() if now is None else now
+        elapsed = 0.0 if self._last_push is None else min(0.5, max(0.0, now - self._last_push))
+        self._last_push = now
+        return elapsed
+
+    def push(self, rms: float, need: float, *, now: float | None = None) -> None:
         """Add the newest bar of mic level.
 
         Parameters
         ----------
-        level : float
-            The mic level, from 0 to 1.
-        threshold : float
-            Where speech starts to count, from 0 to 1.
+        rms : float
+            The mic's RMS level, on the int16 scale.
+        need : float
+            The RMS that counts as speech. A bar at or above it is drawn as heard.
         now : float, optional
             When the level was taken, in ``time.monotonic`` seconds. Now by default.
         """
-        now = time.monotonic() if now is None else now
-        elapsed = 0.0 if self._last_push is None else min(0.5, max(0.0, now - self._last_push))
-        self._last_push = now
-        body, peak = self._ballistics.update(level, elapsed)
-        kind = "heard" if level >= threshold > 0.0 else "quiet"
-        self._bars.append((body, peak, kind))
+        elapsed = self._elapsed(now)
+        level = self._mic_ease.update(self._mic_auto.update(rms, elapsed), elapsed)[0]
+        self._bars.append((level, "heard" if rms >= need > 0.0 else "quiet"))
         self.refresh()
 
     def push_speaker(self, rms: float, *, now: float | None = None) -> None:
@@ -168,17 +177,17 @@ class Waveform(Widget):
 
         Notes
         -----
-        It is drawn as it is: no easing and no caps, which would flatten a voice that is
-        loud from word to word, and scaled to the reply's own peak by ``AutoLevel``. A
-        reply that starts after a pause starts the scale afresh.
+        A reply that starts after a pause starts the scale afresh.
         """
         now = time.monotonic() if now is None else now
         gap = None if self._last_speaker is None else now - self._last_speaker
         if gap is None or gap > _SPEAKER_NEW_REPLY_S:
-            self._auto = AutoLevel()
+            self._speaker_auto = AutoLevel(floor_peak_db=SPEAKER_PEAK_FLOOR_DB)
+            self._speaker_ease = Ballistics()
         self._last_speaker = now
-        level = self._auto.update(rms, 0.0 if gap is None else min(gap, _SPEAKER_NEW_REPLY_S))
-        self._bars.append((level, level, "speaker"))
+        elapsed = 0.0 if gap is None else min(gap, _SPEAKER_NEW_REPLY_S)
+        level = self._speaker_ease.update(self._speaker_auto.update(rms, elapsed), elapsed)[0]
+        self._bars.append((level, "speaker"))
         self.refresh()
 
     def set_mood(self, mood: str) -> None:
@@ -199,7 +208,7 @@ class Waveform(Widget):
         if self._timer is not None:
             self._timer.stop()
             self._timer = None
-        self._ballistics = Ballistics()
+        self._reset_meters()
         self._last_push = None
         self._cursor_on = True
         moving = self.app.animation_level != "none"
@@ -209,15 +218,13 @@ class Waveform(Widget):
                 self._timer = self.set_interval(_THINK_TICK_S, self._think)
             else:
                 for step in range(_WAVE_STILL_BARS):
-                    level = processing_level(step * _THINK_TICK_S)
-                    self._bars.append((level, level, "thinking"))
+                    self._bars.append((processing_level(step * _THINK_TICK_S), "thinking"))
         elif mood == "listening" and moving:
             self._timer = self.set_interval(_BLINK_S, self._blink)
         self.refresh()
 
     def _think(self) -> None:
-        level = processing_level(time.monotonic() - self._since)
-        self._bars.append((level, level, "thinking"))
+        self._bars.append((processing_level(time.monotonic() - self._since), "thinking"))
         self.refresh()
 
     def _blink(self) -> None:
@@ -231,11 +238,10 @@ class Waveform(Widget):
         cursor = self._mood == "listening"
         room = max(0, want - 2) if cursor else want  # the last character is kept for the cursor
         bars = list(self._bars)[-room:] if room else []
-        bars = [(0.0, 0.0, "quiet")] * (room - len(bars)) + bars
+        bars = [(0.0, "quiet")] * (room - len(bars)) + bars
         if cursor:
-            height, kind = (0.3, "cursor") if self._cursor_on else (0.0, "quiet")
-            bars += [(height, height, kind)] * (want - len(bars))
-        rows = wave_dots([bar[0] for bar in bars], _WAVE_ROWS, [bar[1] for bar in bars])
+            bars += [(0.3, "cursor") if self._cursor_on else (0.0, "quiet")] * (want - len(bars))
+        rows = wave_dots([level for level, _ in bars], _WAVE_ROWS)
         tones = [_bar_tone(bars[2 * i], bars[2 * i + 1]) for i in range(width)]
         lines = [Content.assemble(*zip(row, tones, strict=True)) for row in rows]
         return Content("\n").join(lines)
@@ -251,9 +257,9 @@ _BAR_COLOURS = {
 }
 
 
-def _bar_tone(left: tuple[float, float, str], right: tuple[float, float, str]) -> str:
+def _bar_tone(left: tuple[float, str], right: tuple[float, str]) -> str:
     """Return the style of the character that holds two bars, from what and how loud they are."""
-    kinds = {left[2], right[2]}
+    kinds = {left[1], right[1]}
     kind = next(k for k in ("cursor", "heard", "speaker", "thinking", "quiet") if k in kinds)
     colour, steps = _BAR_COLOURS[kind]
     level = max(left[0], right[0])
@@ -552,9 +558,7 @@ class VoiceApp(App[int]):
         conversation = self.query_one(Conversation)
         speaking = self._view.state is SessionState.SPEAKING
         if isinstance(event, MicLevel) and not speaking:
-            self.query_one(Waveform).push(
-                0.0 if self._live.muted else level_fraction(event.rms), level_fraction(event.need)
-            )
+            self.query_one(Waveform).push(0.0 if self._live.muted else event.rms, event.need)
         elif isinstance(event, OutputLevel) and speaking:
             self.query_one(Waveform).push_speaker(event.rms)
         match event:
