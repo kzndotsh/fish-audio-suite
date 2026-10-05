@@ -28,6 +28,7 @@ from fish_audio_suite_voice.events import EVENTS, Event, Interim
 from fish_audio_suite_voice.streaming import StreamedTurn, StreamFallback, stream_turn
 from fish_audio_suite_voice.tune import ListenTune, SttTune
 
+CHUNK = streaming._SEND_BYTES  # 80 ms of audio: the size Deepgram recommends
 FRAME = b"\x01\x00" * (FRAME_BYTES // 2)
 STT = SttTune(provider="deepgram", deepgram_key="secret")
 # Most tests are about the stream, so one voiced frame is enough to open it.
@@ -156,11 +157,11 @@ def _events() -> tuple[list[Event], Callable[[], None]]:
 
 
 def test_a_turn_is_sent_as_it_is_spoken_and_ends_when_flux_says_so() -> None:
-    ninety_ms = FRAME_BYTES * 3
+    eighty_ms = CHUNK
     script = {
-        ninety_ms: [TurnStarted("hel")],
-        ninety_ms * 2: [TurnUpdate("hello there")],
-        ninety_ms * 3: [TurnEnded("hello there", 0.8, "model")],
+        eighty_ms: [TurnStarted("hel")],
+        eighty_ms * 2: [TurnUpdate("hello there")],
+        eighty_ms * 3: [TurnEnded("hello there", 0.8, "model")],
     }
     fake = _FakeFlux(lambda total: script.get(total, []))
     seen, stop = _events()
@@ -172,7 +173,7 @@ def test_a_turn_is_sent_as_it_is_spoken_and_ends_when_flux_says_so() -> None:
     assert result.text == "hello there"
     assert result.asr_ms >= 0.0
     assert result.trace_id
-    assert [len(chunk) for chunk in fake.sent] == [ninety_ms] * 3  # about 90 ms at a time
+    assert [len(chunk) for chunk in fake.sent] == [eighty_ms] * 3  # 80 ms at a time
     assert fake.forced == 0  # Flux decided; no need to ask
     assert fake.closed
     interim = [event.text for event in seen if isinstance(event, Interim)]
@@ -191,9 +192,7 @@ def test_nothing_is_sent_while_waiting_for_speech() -> None:
 
 def test_the_pre_roll_and_a_barge_prefix_are_handed_to_the_mic_side_first() -> None:
     seen: dict[str, Any] = {}
-    fake = _FakeFlux(
-        lambda total: [TurnEnded("go on", 0.9, "model")] if total >= FRAME_BYTES * 3 else []
-    )
+    fake = _FakeFlux(lambda total: [TurnEnded("go on", 0.9, "model")] if total >= CHUNK else [])
     result = _run(fake, _mic(3, seen=seen), prefix=b"\x07\x00" * 480)
     assert isinstance(result, StreamedTurn)
     assert seen["prefix"] == b"\x07\x00" * 480
@@ -202,7 +201,7 @@ def test_the_pre_roll_and_a_barge_prefix_are_handed_to_the_mic_side_first() -> N
 
 def test_when_the_silence_limit_comes_first_flux_is_asked_to_end_the_turn() -> None:
     fake = _FakeFlux(
-        lambda total: [TurnUpdate("what time is it")] if total >= FRAME_BYTES * 3 else [],
+        lambda total: [TurnUpdate("what time is it")] if total >= CHUNK else [],
         on_force=[TurnEnded("what time is it", 0.5, "manual")],
     )
     result = _run(fake, _mic(4, local_end=True))
@@ -216,9 +215,7 @@ def test_when_flux_never_answers_a_forced_end_the_words_so_far_are_used(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(streaming, "_FORCE_WAIT_S", 0.05)
-    fake = _FakeFlux(
-        lambda total: [TurnUpdate("tell me a joke")] if total >= FRAME_BYTES * 3 else []
-    )
+    fake = _FakeFlux(lambda total: [TurnUpdate("tell me a joke")] if total >= CHUNK else [])
     result = _run(fake, _mic(3, local_end=True))
     assert isinstance(result, StreamedTurn)
     assert result.text == "tell me a joke"
@@ -226,9 +223,7 @@ def test_when_flux_never_answers_a_forced_end_the_words_so_far_are_used(
 
 
 def test_a_turn_with_no_words_is_noise(monkeypatch: pytest.MonkeyPatch) -> None:
-    fake = _FakeFlux(
-        lambda total: [TurnEnded("  ", 0.9, "model")] if total >= FRAME_BYTES * 3 else []
-    )
+    fake = _FakeFlux(lambda total: [TurnEnded("  ", 0.9, "model")] if total >= CHUNK else [])
     assert _run(fake, _mic(3)) == "noise"
     monkeypatch.setattr(streaming, "_FORCE_WAIT_S", 0.05)
     assert _run(_FakeFlux(), _mic(3, local_end=True)) == "noise"  # nothing came back at all
@@ -257,9 +252,7 @@ def test_nothing_is_connected_until_speech_starts_and_then_it_is_connected_once(
         idle.opens == 0
     )  # an idle connection would be closed by Deepgram, and sends nothing anyway
 
-    spoken = _FakeFlux(
-        lambda total: [TurnEnded("hi", 0.9, "model")] if total >= FRAME_BYTES * 3 else []
-    )
+    spoken = _FakeFlux(lambda total: [TurnEnded("hi", 0.9, "model")] if total >= CHUNK else [])
     assert isinstance(_run(spoken, _mic(3)), StreamedTurn)
     assert spoken.opens == 1
 
@@ -278,20 +271,16 @@ def test_a_forced_end_with_no_turn_to_end_is_noise_straight_away_not_after_the_w
 
 def test_an_error_from_flux_or_a_dropped_connection_mid_turn_means_listen_again() -> None:
     erroring = _FakeFlux(
-        lambda total: (
-            [StreamError("INTERNAL_SERVER_ERROR", "oops")] if total >= FRAME_BYTES * 3 else []
-        )
+        lambda total: [StreamError("INTERNAL_SERVER_ERROR", "oops")] if total >= CHUNK else []
     )
     assert _run(erroring, _mic(3)) == "again"
-    closing = _FakeFlux(lambda total: [None] if total >= FRAME_BYTES * 3 else [])  # Flux hangs up
+    closing = _FakeFlux(lambda total: [None] if total >= CHUNK else [])  # Flux hangs up
     assert _run(closing, _mic(3)) == "again"
 
 
 def test_the_mic_thread_is_stopped_once_the_turn_is_decided() -> None:
     stopped = threading.Event()
-    fake = _FakeFlux(
-        lambda total: [TurnEnded("done", 0.9, "model")] if total >= FRAME_BYTES * 3 else []
-    )
+    fake = _FakeFlux(lambda total: [TurnEnded("done", 0.9, "model")] if total >= CHUNK else [])
 
     def listen(
         _device: object,
@@ -422,14 +411,14 @@ def test_stopping_while_the_first_frames_are_held_is_not_noise() -> None:
 
 
 def test_once_there_is_enough_voice_the_held_pre_roll_goes_first_and_in_order() -> None:
-    fake = _FakeFlux(
-        lambda total: [TurnEnded("hi", 0.9, "model")] if total >= FRAME_BYTES * 6 else []
-    )
+    fake = _FakeFlux(lambda total: [TurnEnded("hi", 0.9, "model")] if total >= CHUNK * 2 else [])
     pattern = [False, False, True, True, True, True]  # two quiet pre-roll frames, then speech
     result = _run(fake, _mic(6, voiced=pattern), listen=ListenTune(min_voiced_frames=3))
     assert isinstance(result, StreamedTurn)
     assert fake.opens == 1
-    assert b"".join(fake.sent) == FRAME * 6  # the pre-roll was not lost
+    sent = b"".join(fake.sent)
+    assert len(sent) >= CHUNK * 2
+    assert sent == (FRAME * 6)[: len(sent)]  # the pre-roll was not lost, and it is in order
 
 
 def test_the_audio_sent_is_saved_as_a_wav_only_when_a_folder_is_set(
@@ -437,16 +426,12 @@ def test_the_audio_sent_is_saved_as_a_wav_only_when_a_folder_is_set(
 ) -> None:
     from dataclasses import replace
 
-    fake = _FakeFlux(
-        lambda total: [TurnEnded("hi", 0.9, "model")] if total >= FRAME_BYTES * 3 else []
-    )
+    fake = _FakeFlux(lambda total: [TurnEnded("hi", 0.9, "model")] if total >= CHUNK else [])
     assert isinstance(_run(fake, _mic(3)), StreamedTurn)
     assert not list(tmp_path.iterdir())  # nothing is written unless asked
 
     folder = tmp_path / "heard"
-    fake = _FakeFlux(
-        lambda total: [TurnEnded("hi", 0.9, "model")] if total >= FRAME_BYTES * 3 else []
-    )
+    fake = _FakeFlux(lambda total: [TurnEnded("hi", 0.9, "model")] if total >= CHUNK else [])
     assert isinstance(_run(fake, _mic(3), stt=replace(STT, save_dir=str(folder))), StreamedTurn)
     (saved,) = folder.glob("stt-*.wav")
     with wave.open(str(saved)) as clip:
@@ -455,8 +440,6 @@ def test_the_audio_sent_is_saved_as_a_wav_only_when_a_folder_is_set(
 
     blocked = tmp_path / "a-file"
     blocked.write_text("x")  # a folder cannot be made under a file: it warns and the turn goes on
-    fake = _FakeFlux(
-        lambda total: [TurnEnded("hi", 0.9, "model")] if total >= FRAME_BYTES * 3 else []
-    )
+    fake = _FakeFlux(lambda total: [TurnEnded("hi", 0.9, "model")] if total >= CHUNK else [])
     result = _run(fake, _mic(3), stt=replace(STT, save_dir=str(blocked / "sub")))
     assert isinstance(result, StreamedTurn)

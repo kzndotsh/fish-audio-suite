@@ -23,7 +23,7 @@ from typing import Final, Literal
 
 from fish_audio_suite_kit import elapsed_ms, make_traceparent, trace_id_of
 from fish_audio_suite_voice.aec import EchoCanceller
-from fish_audio_suite_voice.barge import FRAME_BYTES, SAMPLE_RATE, StopFlag
+from fish_audio_suite_voice.barge import SAMPLE_RATE, StopFlag
 from fish_audio_suite_voice.debug import debug, trace, warn
 from fish_audio_suite_voice.deepgram import (
     DeepgramError,
@@ -47,8 +47,10 @@ __all__ = [
     "stream_turn",
 ]
 
-# Flux works best with about 80 ms of audio in each message. Three of our 30 ms frames is 90 ms.
-_SEND_BYTES: Final = FRAME_BYTES * 3
+# Deepgram strongly recommends about 80 ms of audio in each message for Flux. That is not a whole
+# number of our 30 ms frames, so the audio is re-cut into exact pieces of it as it is sent.
+_SEND_MS: Final = 80
+_SEND_BYTES: Final = SAMPLE_RATE * 2 * _SEND_MS // 1000
 # How long to wait for Flux to answer when it was asked to end the turn.
 _FORCE_WAIT_S: Final = 2.5
 
@@ -156,12 +158,13 @@ async def _send(
         if voiced:
             turn.last_voice = at
         pending += frame
-        if len(pending) >= _SEND_BYTES:
-            await stream.send_audio(bytes(pending))
-            turn.sent += len(pending)
+        while len(pending) >= _SEND_BYTES:
+            piece = bytes(pending[:_SEND_BYTES])
+            del pending[:_SEND_BYTES]
+            await stream.send_audio(piece)
+            turn.sent += len(piece)
             if turn.keep:
-                turn.audio += pending
-            pending.clear()
+                turn.audio += piece
         item = next(backlog, None) or await frames.get()
     if pending:
         await stream.send_audio(bytes(pending))
