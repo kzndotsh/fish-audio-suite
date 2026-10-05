@@ -101,3 +101,18 @@ uv run python scripts/eval_voices.py --dry-run             # list the files, mak
 
 The text goes through the same cleanup the voice app applies (`scrub_tts`, then
 `normalize_cues`) before it is sent to Fish. Your key comes from `.env` (`FISH_API_KEY`).
+
+## mic_levels.py
+
+Records your mic for a few seconds and prints its level about every 90 ms, then a
+summary: the noise floor, the average level while you talk, the loudest moment and how
+far a plosive or bump sits above your speech. It is for tuning how the waveform in
+`fish-voice --tui` scales a real mic. It calls no API, sends nothing and saves no audio.
+
+```bash
+uv run python scripts/mic_levels.py --seconds 12
+```
+
+Stay quiet for the first two seconds, then talk as you would to the assistant. On NixOS,
+set `LD_LIBRARY_PATH=$NIX_LD_LIBRARY_PATH` first.
+

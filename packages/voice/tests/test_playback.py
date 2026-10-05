@@ -4,6 +4,7 @@ import asyncio
 import io
 import threading
 import wave
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,9 @@ from voice_fakes import make_result
 from fish_audio_suite_kit import SuiteDefaults
 from fish_audio_suite_voice.cancel import is_cancel_noise
 from fish_audio_suite_voice.debug import configure_voice_logging
+from fish_audio_suite_voice.events import EVENTS, Event, OutputLevel
 from fish_audio_suite_voice.playback import (
+    OUTPUT_LEVEL_EVERY_S,
     FileSink,
     MpvSink,
     PlaybackKind,
@@ -21,6 +24,7 @@ from fish_audio_suite_voice.playback import (
     PortAudioMissingError,
     SounddeviceSink,
     StdoutSink,
+    _LevelTap,
     audio_format_for,
     duplex_playback_problem,
     make_sink,
@@ -388,3 +392,52 @@ def test_a_sink_finished_mid_write_stops_writing() -> None:
     sink._stream = Stream()
     sink.write(b"\x00\x00" * 8_000)
     assert len(written) == 1
+
+
+def _levels_while(run: Callable[[], None]) -> list[float]:
+    seen: list[Event] = []
+    stop = EVENTS.subscribe(seen.append)
+    try:
+        run()
+    finally:
+        stop()
+    return [event.rms for event in seen if isinstance(event, OutputLevel)]
+
+
+def test_the_level_tap_reports_one_level_per_block_of_audio_and_keeps_the_remainder() -> None:
+    rate = 16_000
+    block = round(rate * OUTPUT_LEVEL_EVERY_S) * 2  # bytes in one block
+    loud = (1000).to_bytes(2, "little", signed=True) * (block // 2)
+    tap = _LevelTap(rate)
+
+    def run() -> None:
+        tap.feed(loud[: block // 2])  # half a block: nothing yet
+        tap.feed(loud[block // 2 :] + loud)  # completes one, and holds a second as a whole block
+        tap.feed(loud[:10])  # a fragment of a third
+
+    levels = _levels_while(run)
+    assert len(levels) == 2
+    assert all(level == pytest.approx(1000.0, rel=0.01) for level in levels)
+    tap.clear()  # a new turn drops the fragment
+    assert _levels_while(lambda: tap.feed(loud[: block - 2])) == []
+
+
+def test_sounddevice_sink_reports_the_level_of_what_it_plays_and_never_of_what_it_dropped() -> None:
+    sink = SounddeviceSink(sample_rate=16_000)
+    played: list[bytes] = []
+
+    class Stream:
+        def write(self, chunk: bytes) -> bool:
+            played.append(chunk)
+            return False
+
+    sink._stream = Stream()
+    pcm = (2000).to_bytes(2, "little", signed=True) * 16_000  # one second of a steady tone
+    levels = _levels_while(lambda: sink.write(pcm))
+    assert len(levels) >= 10  # about one every 60 ms
+    assert all(level == pytest.approx(2000.0, rel=0.01) for level in levels)
+    cancel = threading.Event()
+    cancelled = SounddeviceSink(sample_rate=16_000, cancel=cancel)
+    cancelled._stream = Stream()
+    cancel.set()
+    assert _levels_while(lambda: cancelled.write(pcm)) == []

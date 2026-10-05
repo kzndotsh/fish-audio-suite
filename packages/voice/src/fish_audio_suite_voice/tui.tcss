@@ -1,0 +1,157 @@
+/* Stylesheet for the fish-voice terminal app. Layout: header, a body of the conversation
+   beside a column of panels, the input line, then the footer. */
+
+$panel-border: round $secondary;
+
+Screen {
+    layout: vertical;
+}
+
+#body {
+    height: 1fr;
+}
+
+#conversation {
+    width: 2fr;
+    border: round $primary;
+    border-title-color: $text-primary;
+    padding: 0 1;
+
+    .message {
+        margin-bottom: 1;
+    }
+
+    .note {
+        color: $text-muted;
+        text-style: italic;
+    }
+}
+
+#side {
+    width: 1fr;
+    min-width: 30;
+
+    #status-box,
+    #mic-box,
+    #latency-box {
+        border: $panel-border;
+        border-title-color: $text-secondary;
+        padding: 0 1;
+    }
+
+    #log {
+        height: 1fr;
+        background: $background;
+        border: round $panel;
+        border-title-color: $text-muted;
+    }
+}
+
+#status {
+    &.state-listening {
+        color: $text-success;
+    }
+
+    &.state-thinking {
+        color: $text-warning;
+    }
+
+    &.state-speaking {
+        color: $text-accent;
+    }
+
+    &.ended {
+        color: $text-error;
+    }
+}
+
+#line {
+    height: auto;
+    background: $background;
+    border: round $secondary;
+
+    &:focus {
+        border: round $primary;
+    }
+}
+
+.message.pending {
+    opacity: 70%;
+}
+
+/* Responsive: the screen carries .narrow, .short or .tiny (see VoiceApp.on_resize). */
+#too-small {
+    display: none;
+    height: 1fr;
+    content-align: center middle;
+    text-align: center;
+    color: $text-warning;
+}
+
+Screen.narrow {
+    #side {
+        width: 24;
+        min-width: 24;
+    }
+
+    #latency-box,
+    #log {
+        display: none;
+    }
+}
+
+Screen.short #latency-box {
+    display: none;
+}
+
+Screen.tiny {
+    #body {
+        display: none;
+    }
+
+    #too-small {
+        display: block;
+    }
+}
+
+/* Scrollbars only when there is something to scroll, one cell wide, in the theme's colours.
+   Log would otherwise always draw both tracks as black strips. */
+Log,
+Conversation {
+    overflow: auto auto;
+    scrollbar-size: 1 1;
+    scrollbar-background: $background;
+    scrollbar-background-hover: $background;
+    scrollbar-background-active: $background;
+    scrollbar-color: $secondary-muted;
+    scrollbar-color-hover: $secondary;
+    scrollbar-color-active: $primary;
+}
+
+/* A focused widget gets a lighter tint over its whole box by default, which includes the
+   border cells and reads as a halo past the border. The border colour marks focus instead. */
+#log,
+#line,
+#conversation {
+    background-tint: transparent;
+
+    &:focus {
+        background-tint: transparent;
+    }
+}
+
+#log:focus,
+#conversation:focus {
+    border: round $primary;
+}
+
+/* Minimal: the key hints sit on the screen colour, with no bar or key backgrounds. */
+Footer {
+    background: $background;
+
+    FooterKey,
+    FooterKey .footer-key--key,
+    FooterKey .footer-key--description {
+        background: transparent;
+    }
+}

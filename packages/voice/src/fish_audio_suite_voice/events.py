@@ -33,6 +33,7 @@ __all__ = [
     "LogLine",
     "MicLevel",
     "Notice",
+    "OutputLevel",
     "ReplyEnd",
     "ReplyToken",
     "SessionAction",
@@ -49,7 +50,7 @@ __all__ = [
 
 # Events that may be dropped when a consumer falls behind. Everything else is
 # a fact about the conversation and is never dropped.
-_DROPPABLE: Final = ("MicLevel", "LogLine")
+_DROPPABLE: Final = ("MicLevel", "OutputLevel", "LogLine")
 
 
 def _now() -> float:
@@ -165,6 +166,27 @@ class MicLevel:
     rms: float
     need: float
     source: Literal["listen", "barge"]
+    at: float = field(default_factory=_now, compare=False, kw_only=True)
+
+
+@dataclass(frozen=True, slots=True)
+class OutputLevel:
+    """How loud the reply being played is, a few times a second while it plays.
+
+    Attributes
+    ----------
+    rms : float
+        RMS of the latest slice of audio sent to the speaker.
+    at : float
+        ``time.monotonic()`` when the event was made. Not part of equality.
+
+    Notes
+    -----
+    It is taken as each slice goes to the device, so it leads what is heard by the
+    device's buffer, usually a few tens of milliseconds.
+    """
+
+    rms: float
     at: float = field(default_factory=_now, compare=False, kw_only=True)
 
 
@@ -295,6 +317,7 @@ type Event = (
     | Speaking
     | BargedIn
     | MicLevel
+    | OutputLevel
     | LogLine
     | Notice
     | TurnEnded
@@ -474,7 +497,7 @@ class EventQueue:
     bus : EventBus
         The bus to collect from.
     max_droppable : int, optional
-        How many ``MicLevel`` and ``LogLine`` events to keep while the consumer
+        How many ``MicLevel``, ``OutputLevel`` and ``LogLine`` events to keep while the consumer
         is behind. The oldest go first. Every other event is always kept.
     wake : Callable or None, optional
         Called after each event is added, from the thread that emitted it, so it

@@ -39,6 +39,8 @@ ENV_LINE = re.compile(r"^#?\s*([A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+)\s*=", re.MULTILINE
 # Documented on purpose but not read through the helpers above, with the reason.
 DOC_ONLY = {
     "LD_LIBRARY_PATH": "the loader variable the nix wrapper and dev.sh set for PortAudio",
+    "NO_COLOR": "the standard switch, honoured by Textual and by the stderr debug sink",
+    "TEXTUAL_ANIMATIONS": "Textual's own switch, which the app honours through animation_level",
 }
 # Variables read through a helper that .env.example leaves out on purpose, with the reason.
 # They are still documented in the README of the package that reads them.

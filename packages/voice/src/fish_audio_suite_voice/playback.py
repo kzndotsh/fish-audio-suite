@@ -14,8 +14,9 @@ from pathlib import Path
 from typing import Any, BinaryIO, Final, Protocol, runtime_checkable
 
 from fish_audio_suite_kit import MS_PER_S, AudioFormat, SuiteDefaults
-from fish_audio_suite_voice.aec import SAMPLE_BYTES, EchoCanceller, even_pcm
+from fish_audio_suite_voice.aec import SAMPLE_BYTES, EchoCanceller, even_pcm, pcm_rms
 from fish_audio_suite_voice.debug import debug
+from fish_audio_suite_voice.events import EVENTS, OutputLevel
 
 __all__ = [
     "DEFAULT_PLAYBACK",
@@ -131,6 +132,36 @@ class PlaybackSink(Protocol):
             ``spoken_so_far`` is estimated.
         """
         ...
+
+
+OUTPUT_LEVEL_EVERY_S: Final = (
+    0.09  # one level per this much audio: as often as the mic's, so a strip scrolls evenly
+)
+
+
+class _LevelTap:
+    """Reports how loud the audio being played is, a few times a second.
+
+    Parameters
+    ----------
+    sample_rate : int
+        Samples per second of the mono int16 audio fed in.
+    """
+
+    def __init__(self, sample_rate: int) -> None:
+        self._block = max(SAMPLE_BYTES, round(sample_rate * OUTPUT_LEVEL_EVERY_S) * SAMPLE_BYTES)
+        self._pending = b""
+
+    def feed(self, pcm: bytes) -> None:
+        """Add audio that is going to the speaker, and report each full block of it."""
+        self._pending += pcm
+        while len(self._pending) >= self._block:
+            block, self._pending = self._pending[: self._block], self._pending[self._block :]
+            EVENTS.emit(OutputLevel(pcm_rms(block)))
+
+    def clear(self) -> None:
+        """Forget a part-filled block, as at the start of a turn."""
+        self._pending = b""
 
 
 class _Played:
@@ -326,6 +357,7 @@ class SounddeviceSink(_Played):
         self._aec = aec
         self._stream: Any = None
         self._odd = b""
+        self._tap = _LevelTap(self.sample_rate)
 
     def start(self) -> None:
         """Open a PortAudio output stream and clear the far-end tap."""
@@ -333,6 +365,7 @@ class SounddeviceSink(_Played):
 
         self._reset_played()
         self._odd = b""
+        self._tap.clear()
         if self._aec is not None:
             self._aec.clear()
         self._stream = sd.RawOutputStream(**pcm_stream_kwargs(self.sample_rate, self.device))
@@ -366,6 +399,7 @@ class SounddeviceSink(_Played):
             if stream.write(piece):
                 debug("tts.underrun after {} kB played", self._played // 1000)
             self._count(piece)
+            self._tap.feed(piece)
 
     def finish(self, *, kill: bool = False) -> None:
         """Stop or abort the PortAudio stream and close it."""

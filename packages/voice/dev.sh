@@ -26,6 +26,10 @@ if [[ -z "${FISH_VOICE_PORTAUDIO_LIB:-}" && "$want_nix" == "1" ]] && command -v 
   [[ -n "$pulse" ]] && libs="${libs:+$libs:}$pulse/lib"
   FISH_VOICE_PORTAUDIO_LIB="$libs"
 fi
+# nix-ld (programs.nix-ld.libraries with portaudio) exports its library dir, but Python's find_library ignores it.
+if [[ -z "${FISH_VOICE_PORTAUDIO_LIB:-}" && -n "${NIX_LD_LIBRARY_PATH:-}" && "$(uname -s)" != "Darwin" ]]; then
+  FISH_VOICE_PORTAUDIO_LIB="$NIX_LD_LIBRARY_PATH"
+fi
 if [[ -n "${FISH_VOICE_PORTAUDIO_LIB:-}" ]]; then
   # Same split as flake.nix: the loader variable differs on macOS.
   if [[ "$(uname -s)" == "Darwin" ]]; then

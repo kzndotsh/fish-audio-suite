@@ -44,6 +44,7 @@ from fish_audio_suite_voice.events import (
     LogLine,
     MicLevel,
     Notice,
+    OutputLevel,
     ReplyEnd,
     ReplyToken,
     SessionAction,
@@ -176,6 +177,7 @@ def test_events_carry_a_timestamp_that_is_not_part_of_equality() -> None:
         (SessionState.LISTENING, Bye(), SessionState.IDLE),
         (SessionState.THINKING, ReplyToken("x"), SessionState.THINKING),
         (SessionState.LISTENING, MicLevel(1.0, 2.0, "listen"), SessionState.LISTENING),
+        (SessionState.SPEAKING, OutputLevel(1000.0), SessionState.SPEAKING),
     ],
 )
 def test_the_session_state_follows_the_events(
@@ -516,3 +518,17 @@ def test_default_keys_do_not_clash_except_the_mute_toggle() -> None:
     assert len(keys) == len(set(keys))
     # A printable key would be typed into the input line, so none is a plain letter.
     assert all(len(k) > 1 for k in keys)
+
+
+def test_a_queue_drops_old_output_levels_but_never_the_words() -> None:
+    bus = EventBus()
+    queue = EventQueue(bus, max_droppable=2)
+    bus.emit(Heard("hi", 1.0))
+    for n in range(6):
+        bus.emit(OutputLevel(float(n)))
+    bus.emit(ReplyToken("x"))
+    events = queue.drain()
+    assert [e.rms for e in events if isinstance(e, OutputLevel)] == [4.0, 5.0]
+    assert Heard("hi", 1.0) in events
+    assert ReplyToken("x") in events
+    assert queue.dropped == 4

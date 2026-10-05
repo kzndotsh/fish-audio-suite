@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib.util
 import sys
 import tempfile
 import traceback
@@ -33,6 +34,8 @@ from fish_audio_suite_voice.debug import (
 )
 from fish_audio_suite_voice.duplex import EXIT_FATAL, EXIT_OK, bye, duplex_turns
 from fish_audio_suite_voice.envfile import apply_cli_env_files
+from fish_audio_suite_voice.events import forward_logs
+from fish_audio_suite_voice.inputs import LiveInput
 from fish_audio_suite_voice.llm import open_chat_backend
 from fish_audio_suite_voice.llm_tune import LlmTune, provider_for_base
 from fish_audio_suite_voice.playback import (
@@ -169,6 +172,23 @@ async def smoke_test(c: VoiceCliConfig, out: Path | None = None) -> int:
     return EXIT_OK if ok else _SMOKE_FAIL
 
 
+def _preflight(c: VoiceCliConfig) -> int | None:
+    """Return an exit code when a key, the model or the playback sink is unusable."""
+    missing = _require_fish(c)
+    if missing is not None:
+        return missing
+    key_name, model_names = llm_setting_names(c.llm)
+    if not c.llm.api_key:
+        return _blocker(f"FISH_LLM_API_KEY / {key_name}")
+    if not c.llm.model:
+        return _blocker(f"FISH_LLM_MODEL / {model_names}")
+    playback_problem = duplex_playback_problem(c.playback)
+    if playback_problem is not None:
+        warn(f"BLOCKER: {playback_problem}")
+        return EXIT_FATAL
+    return None
+
+
 async def run_loop(c: VoiceCliConfig) -> int:
     """Run duplex until quit, after checking keys, model, and the playback sink.
 
@@ -188,18 +208,9 @@ async def run_loop(c: VoiceCliConfig) -> int:
     Ctrl+C is routed to ``DuplexSession.request_quit`` on the running loop. A
     second Ctrl+C uses the default handler.
     """
-    missing = _require_fish(c)
-    if missing is not None:
-        return missing
-    key_name, model_names = llm_setting_names(c.llm)
-    if not c.llm.api_key:
-        return _blocker(f"FISH_LLM_API_KEY / {key_name}")
-    if not c.llm.model:
-        return _blocker(f"FISH_LLM_MODEL / {model_names}")
-    playback_problem = duplex_playback_problem(c.playback)
-    if playback_problem is not None:
-        warn(f"BLOCKER: {playback_problem}")
-        return EXIT_FATAL
+    blocked = _preflight(c)
+    if blocked is not None:
+        return blocked
 
     device = _parse_device(c.device)
     playback = c.playback
@@ -222,6 +233,59 @@ async def run_loop(c: VoiceCliConfig) -> int:
     session.install_sigint(asyncio.get_running_loop(), before=_before_quit)
     async with open_chat_backend(c.llm, session_id=uuid.uuid4().hex) as backend:
         return await duplex_turns(c, tts, device, backend, session)
+
+
+async def run_tui(c: VoiceCliConfig, *, debug: DebugLevel) -> int:
+    """Run the same session inside the full-screen app, until it ends.
+
+    Parameters
+    ----------
+    c : VoiceCliConfig
+        Environment snapshot.
+    debug : DebugLevel
+        The log level chosen on the command line, kept when logging moves into the app.
+
+    Returns
+    -------
+    int
+        2 when a key, the LLM model, or the playback sink is unusable. Otherwise the
+        exit code of the session, which the app reports.
+
+    Notes
+    -----
+    Needs the ``tui`` extra. Log lines go to the app's log pane, not to stderr, which
+    the screen owns. Quit is Ctrl+Q, since Ctrl+C is copy inside the app.
+    """
+    blocked = _preflight(c)
+    if blocked is not None:
+        return blocked
+    # Imported here because Textual is an optional extra, checked for in ``main``.
+    from fish_audio_suite_voice.tui import VoiceApp  # noqa: PLC0415 - optional extra
+
+    live = LiveInput()
+    session = DuplexSession(aec=EchoCanceller(c.aec))
+    tts = _fish_tts(c, audio_format_for(c.playback))
+    device = _parse_device(c.device)
+    # From here the screen owns the terminal, so logging moves into the log pane.
+    configure_voice_logging(debug=debug, to_stderr=False)
+    stop_forwarding = forward_logs()
+    try:
+        async with open_chat_backend(c.llm, session_id=uuid.uuid4().hex) as backend:
+
+            async def runner() -> int:
+                return await duplex_turns(
+                    c, tts, device, backend, session, source=live, console=False
+                )
+
+            info = (
+                f"{c.llm.provider}:{short_model(c.llm.model)} | tts {c.tts_model} | "
+                f"voice {c.fish_voice_id[:8]}"
+            )
+            app = VoiceApp(runner, live=live, session=session, info=info)
+            code = await app.run_async()
+    finally:
+        stop_forwarding()
+    return code or EXIT_OK
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -256,6 +320,12 @@ def _parser() -> argparse.ArgumentParser:
         help="dotenv to load (repeatable). Default: ./.env if it exists. Process env wins",
     )
     p.add_argument(
+        "--tui",
+        action="store_true",
+        help="full-screen app: conversation, mic meter, timings and log, with typed lines "
+        "(needs the tui extra)",
+    )
+    p.add_argument(
         "--debug",
         action="store_true",
         help="stderr event log: listen, ASR, LLM, TTS and barge-in steps (or FISH_VOICE_DEBUG=1)",
@@ -272,6 +342,11 @@ def _quit_line() -> int:
     # A second Ctrl+C lands here, after the session and its display are gone.
     console_print("\nbye")
     return bye()
+
+
+def _can_draw_a_screen() -> bool:
+    """Say whether the full-screen app has a terminal to draw on."""
+    return sys.stdin.isatty() and sys.stdout.isatty()
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -295,6 +370,19 @@ def main(argv: list[str] | None = None) -> int:
     Logging is configured here, not at import.
     """
     args = _parser().parse_args(argv)
+    if args.tui and importlib.util.find_spec("textual") is None:
+        # Checked first, while stderr still reaches the user.
+        sys.stderr.write(
+            "fish-voice --tui needs the tui extra: "
+            "pip install 'fish-audio-suite-voice[tui]' (or uv sync --extra tui)\n"
+        )
+        return EXIT_FATAL
+    if args.tui and not _can_draw_a_screen():
+        sys.stderr.write(
+            "fish-voice --tui needs a terminal (stdin and stdout on a TTY): "
+            "running the plain loop instead\n"
+        )
+        args.tui = False
     if args.env_file:
         loaded = apply_cli_env_files(args.env_file, required=True)
     else:
@@ -323,6 +411,8 @@ def main(argv: list[str] | None = None) -> int:
         except KeyboardInterrupt:
             return _quit_line()
     try:
+        if args.tui:
+            return asyncio.run(run_tui(c, debug=level))
         return asyncio.run(run_loop(c))
     except KeyboardInterrupt:
         return _quit_line()

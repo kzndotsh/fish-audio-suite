@@ -97,7 +97,10 @@
             fish-audio-suite-proxy = [ ];
           };
           voiceEnv = pythonSet.mkVirtualEnv "fish-audio-suite-voice" {
-            fish-audio-suite-voice = [ "cli" ];
+            fish-audio-suite-voice = [
+              "cli"
+              "tui"
+            ];
           };
         in
         {

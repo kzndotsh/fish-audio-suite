@@ -198,6 +198,23 @@ FISH_LLM_REASONING_EFFORT=none
 
 Both are off by default because they also change ordinary English. `FISH_TTS_MOOD_LEAD=1` rewrites a sentence-leading mood word (`Excited, hello`) into a `[cue]`. `FISH_TTS_DROP_NARRATION=1` drops lines that are only stage directions (`She smiles.`).
 
+### The full-screen app
+
+```bash
+uv run --package fish-audio-suite-voice --extra cli --extra tui fish-voice --tui
+```
+
+`--tui` runs the same session in a full-screen terminal app (built on [Textual](https://textual.textualize.io)). It shows the conversation as it streams, with each `[cue]` styled and never read as markup, the state (listening, thinking, speaking), a live waveform drawn in dots (bars grow from the middle and scroll left; green and brighter the louder you are, grey when quiet; a cursor blinks at the right edge while it listens, and an amber wave scrolls by while the model thinks; while the reply plays the strip shows its level in the accent colour and its title changes from `mic` to `speaker`, for the default PortAudio playback only). The mic and the speaker are scaled the same way, from the last few seconds of the signal itself (its noise floor and its speech level), so they look alike whatever their volume, a quiet room stays flat and one loud bump does not shrink the speech after it, a pulsing "you" line while you talk that turns into your words once they are transcribed, the last turn as a bar showing where the wait before you heard audio went (asr, llm, tts), and the log. You can also type a line instead of speaking, mute the mic, and stop a reply that is playing.
+
+| Key | Does |
+| --- | --- |
+| Enter | Send the typed line |
+| Escape | Stop the reply (only while the model is thinking or the reply is playing) |
+| F2 | Mute or unmute the mic |
+| Ctrl+Q | Quit |
+
+Ctrl+C is not quit here, because the app uses it to copy. Without the `tui` extra, `fish-voice --tui` says how to install it and exits 2. The panels shrink with the terminal: under 72 columns the timings and the log go, under 22 rows the timings go, and under 50x14 it asks for a bigger window (typing and Ctrl+Q still work). With no terminal on stdin or stdout, `--tui` falls back to the plain loop. `NO_COLOR` is honoured, and `TEXTUAL_ANIMATIONS=none` stops the pulsing "you" line, the listening cursor and the thinking wave from moving. A modern terminal works best; macOS's Terminal.app is limited to 256 colors, so use iTerm2, Kitty, WezTerm or Ghostty there.
+
 ## Extras
 
 | Extra | Pulls in |
@@ -206,6 +223,7 @@ Both are off by default because they also change ordinary English. `FISH_TTS_MOO
 | `vad` | `webrtcvad-wheels` |
 | `aec` | `pywebrtc-audio` |
 | `cli` | the three above, plus `openrouter` |
+| `tui` | `textual`, for `fish-voice --tui` |
 
 `import fish_audio_suite_voice` works without them. The heavy imports happen inside the functions that need them.
 
