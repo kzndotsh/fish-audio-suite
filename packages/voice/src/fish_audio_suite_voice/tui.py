@@ -68,7 +68,7 @@ class Conversation(VerticalScroll):
     widget is the reply being written, so the app holds no widget state for it.
     """
 
-    BORDER_TITLE = "conversation"
+    BORDER_TITLE: ClassVar[str] = "conversation"
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
