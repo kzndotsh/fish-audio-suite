@@ -168,3 +168,45 @@ def test_the_loop_answers_a_typed_line_through_a_source(monkeypatch: pytest.Monk
     _Mic(monkeypatch, HeardLine("bye"))
     assert _run_with(_quick(), tts, _hello, source) == 0
     assert said == ["Hello there friend."]
+
+
+def _bound_turn(ctx: DuplexContext) -> tuple[threading.Event, asyncio.Event]:
+    cancel, llm_cancel = threading.Event(), asyncio.Event()
+    ctx.session.turn.bind(cancel, llm_cancel)
+    return cancel, llm_cancel
+
+
+def test_a_typed_line_stops_the_reply_that_is_playing() -> None:
+    ctx = _ctx()
+    source = LiveInput()
+    source.submit("first")
+    _turn(source, ctx)  # the source now knows the session
+    cancel, _ = _bound_turn(ctx)
+    source.submit("over the reply")
+    assert cancel.is_set()
+    assert _turn(source, ctx).text == "over the reply"
+
+
+def test_a_typed_line_can_wait_for_the_reply_to_finish() -> None:
+    ctx = _ctx()
+    source = LiveInput()
+    source.submit("first")
+    _turn(source, ctx)
+    cancel, _ = _bound_turn(ctx)
+    source.submit("after the reply", interrupt=False)
+    assert not cancel.is_set()
+    assert _turn(source, ctx).text == "after the reply"
+
+
+def test_a_line_typed_before_the_first_turn_has_nothing_to_stop() -> None:
+    source = LiveInput()
+    source.submit("early")  # no session seen yet: must not fail
+    assert _turn(source, _ctx()).text == "early"
+
+
+def test_toggling_mute_flips_the_switch_and_reports_the_new_state() -> None:
+    source = LiveInput()
+    assert source.toggle_mute() is True
+    assert source.muted
+    assert source.toggle_mute() is False
+    assert not source.muted

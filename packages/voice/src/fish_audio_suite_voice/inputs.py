@@ -13,6 +13,7 @@ from fish_audio_suite_voice.debug import mark_turn
 from fish_audio_suite_voice.duplex_state import DuplexContext
 from fish_audio_suite_voice.events import EVENTS, Heard
 from fish_audio_suite_voice.hearing import HeardLine, hear_line
+from fish_audio_suite_voice.signals import DuplexSession
 
 __all__ = [
     "LiveInput",
@@ -61,7 +62,8 @@ class LiveInput:
     typed line stops the mic at once and is answered like a spoken one. While
     muted, the mic stays closed between turns and the session waits for a typed
     line, ``unmute`` or quit. Mute does not change the barge-in watch during a
-    reply, and a line typed during a reply waits for the next turn.
+    reply. A line typed while a reply is playing stops that reply, like speaking
+    over it, unless ``submit`` is told not to.
     """
 
     def __init__(self) -> None:
@@ -70,6 +72,8 @@ class LiveInput:
         self._muted = False
         # Set to stop a recording in progress: a typed line, or a change of mute.
         self._interrupt = threading.Event()
+        # Seen on the first turn, so a typed line can stop the reply in flight.
+        self._session: DuplexSession | None = None
         # Set whenever anything changes, so a muted wait notices at once.
         self._changed = threading.Event()
 
@@ -78,13 +82,16 @@ class LiveInput:
         """Whether the mic is held closed between turns."""
         return self._muted
 
-    def submit(self, text: str) -> None:
+    def submit(self, text: str, *, interrupt: bool = True) -> None:
         """Queue a line as if the user had said it.
 
         Parameters
         ----------
         text : str
             The line. Blank text is ignored.
+        interrupt : bool, optional
+            Stop the reply that is playing, like a barge-in. False lets it finish and
+            takes the line on the next turn.
         """
         text = text.strip()
         if not text:
@@ -93,6 +100,9 @@ class LiveInput:
             self._typed.append(text)
         self._interrupt.set()
         self._changed.set()
+        session = self._session
+        if interrupt and session is not None:
+            session.turn.fire()
 
     def mute(self) -> None:
         """Close the mic between turns, and stop a recording in progress."""
@@ -104,6 +114,22 @@ class LiveInput:
         """Open the mic again."""
         self._muted = False
         self._changed.set()
+
+    def toggle_mute(self) -> bool:
+        """Flip the mute switch, for a single key binding.
+
+        Returns
+        -------
+        bool
+            True when the mic is now muted.
+        """
+        with self._lock:
+            muted = not self._muted
+            self._muted = muted
+        self._changed.set()
+        if muted:
+            self._interrupt.set()
+        return muted
 
     def _take_typed(self) -> str | None:
         with self._lock:
@@ -128,6 +154,7 @@ class LiveInput:
         HeardLine
             The typed line or the heard one, ``bye`` on quit.
         """
+        self._session = ctx.session
         quit_requested = ctx.session.quit_requested
         while True:
             typed = self._take_typed()
