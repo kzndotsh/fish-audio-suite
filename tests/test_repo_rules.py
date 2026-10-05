@@ -164,3 +164,43 @@ def test_voice_reads_the_environment_only_in_its_settings_layer() -> None:
     assert not offenders, "read settings in config/tune and pass them down:\n" + "\n".join(
         offenders
     )
+
+
+def _writes_to_the_terminal(path: Path) -> list[int]:
+    """Return the lines that call ``print`` or touch ``sys.stdout`` or ``sys.stderr``."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    lines: list[int] = []
+    for node in ast.walk(tree):
+        is_print = (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "print"
+        )
+        is_stream = (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "sys"
+            and node.attr in {"stdout", "stderr"}
+        )
+        if is_print or is_stream:
+            lines.append(node.lineno)
+    return sorted(lines)
+
+
+def test_the_voice_session_reports_through_events_and_never_writes_to_the_terminal() -> None:
+    """A full-screen display owns the terminal, so session code reports through ``events``.
+
+    Only the modules that make up the plain display, the startup in ``cli`` and the raw
+    stdout audio sink may write to a stream.
+    """
+    allowed = {"console.py", "console_sink.py", "debug.py", "cli.py", "playback.py"}
+    offenders = [
+        f"{path.relative_to(ROOT)}:{line}"
+        for path in _modules(VOICE_SRC)
+        if path.name not in allowed
+        for line in _writes_to_the_terminal(path)
+    ]
+    assert not offenders, (
+        "emit an event (events.notice, or a new event) instead of writing to the terminal; "
+        "console_sink prints it:\n" + "\n".join(offenders)
+    )

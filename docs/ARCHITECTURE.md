@@ -282,7 +282,7 @@ The rules most easily broken, each with its reason. A test or a lint rule enforc
 
 ### Events
 
-- **The loop reports; displays follow.** Each step of a session is an event on `events.EVENTS`, and the plain terminal output is one subscriber (`console_sink.ConsoleSink`), so a screen of its own sees the same facts the console prints. New output goes through an event, not a direct print, or a full-screen display would miss it or be corrupted by it.
+- **The loop reports; displays follow.** Each step of a session is an event on `events.EVENTS`, and the plain terminal output is one subscriber (`console_sink.ConsoleSink`), so a screen of its own sees the same facts the console prints. New output goes through an event, not a direct print, or a full-screen display would miss it or be corrupted by it. A test (`test_repo_rules`) fails when session code calls `print` or touches `sys.stdout` or `sys.stderr`; only the plain display, `cli` startup and the raw stdout audio sink may.
 - **A subscriber runs on the thread that emitted the event**, which can be the event loop or an audio thread. It has to return quickly. A consumer that works at its own pace uses `EventQueue`, which drops only mic levels and log lines when it falls behind. A subscriber that raises is reported and cannot stop the session.
 
 ### Text rules
@@ -309,7 +309,7 @@ The rules most easily broken, each with its reason. A test or a lint rule enforc
 
 Known architectural debt and likely changes, roughly in order of value:
 
-- **A full-screen terminal app.** Everything it needs to follow a session is on the event bus (`events.EVENTS`): the conversation, state changes, the mic level, barge-in, log lines (`forward_logs`, with `configure_voice_logging(to_stderr=False)`), and timings. `duplex_turns(console=False, source=LiveInput())` lets it draw its own screen and take typed lines and mute. A Textual app would sit behind an optional extra in the voice package, and has to hand each event to its own thread (`EventQueue`) because a subscriber runs on the thread that emitted it.
+- **A full-screen terminal app.** Everything it needs to follow a session is on the event bus (`events.EVENTS`): the conversation, state changes, the mic level, barge-in, log lines (`forward_logs`, with `configure_voice_logging(to_stderr=False)`), and timings. `duplex_turns(console=False, source=LiveInput())` lets it draw its own screen and take typed lines and mute. A Textual app would sit behind an optional extra in the voice package, and has to hand each event to its own thread (`EventQueue`) because a subscriber runs on the thread that emitted it. While building it, `textual run --dev` reloads its CSS on save and `textual console` shows its prints and logs, which stdout cannot while the app owns the terminal.
 - **A mic that stays open.** The mic closes during each reply and reopens afterwards, so speech in the post-reply cooldown, and about 50 to 300 ms after a barge-in, is lost. A persistent capture stream that is gated, not closed, would fix both.
 - **Turn detection beyond silence.** A small end-of-turn model (for example Pipecat's Smart Turn) would allow a shorter end-of-speech wait without cutting off pauses.
 - **Trimming trailing silence** from ASR clips.
