@@ -9,15 +9,17 @@ thread.
 from __future__ import annotations
 
 import threading
+from collections import deque
 from collections.abc import Awaitable, Callable
 from typing import Any, ClassVar
 
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, RenderResult
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalGroup, VerticalScroll
 from textual.content import Content
 from textual.message import Message
 from textual.types import CSSPathType
+from textual.widget import Widget
 from textual.widgets import Footer, Header, Input, Log, Static
 from textual.worker import Worker, WorkerState
 
@@ -41,14 +43,16 @@ from fish_audio_suite_voice.events import (
 )
 from fish_audio_suite_voice.inputs import LiveInput
 from fish_audio_suite_voice.reply import turn_summary
-from fish_audio_suite_voice.session_view import SessionView, meter_bar, reduce_view
+from fish_audio_suite_voice.session_view import SessionView, reduce_view, wave_column
 from fish_audio_suite_voice.signals import DuplexSession
 
 __all__ = [
     "VoiceApp",
 ]
 
-_METER_WIDTH = 24
+_WAVE_HALF = 2  # rows above, and below, the middle line
+_WAVE_HISTORY = 240  # bars kept, so a wide terminal is filled
+_WAVE_DECAY = 0.82  # how much of the last bar a quieter one keeps, so bars fall smoothly
 _QUIT_GRACE_S = 3.0
 _NO_TURNS = "no turns yet"
 
@@ -59,6 +63,55 @@ def _cue_content(text: str) -> Content:
         (piece, "italic $text-accent") if is_cue else piece for piece, is_cue in split_cues(text)
     ]
     return Content.assemble(*parts)
+
+
+class Waveform(Widget):
+    """The mic level as a mirrored, scrolling waveform: newest on the right, bars grow from the middle.
+
+    A bar is bright while the mic hears speech (above the threshold) and dim otherwise, and
+    a dropped level falls over a few bars instead of snapping.
+    """
+
+    DEFAULT_CSS: ClassVar[str] = """
+    Waveform {
+        height: 4;
+        background: $surface;
+    }
+    """
+
+    def __init__(self, *, id: str | None = None) -> None:  # noqa: A002 - Textual's own name
+        super().__init__(id=id)
+        self._bars: deque[tuple[float, bool]] = deque(maxlen=_WAVE_HISTORY)
+
+    def push(self, level: float, threshold: float) -> None:
+        """Add the newest bar.
+
+        Parameters
+        ----------
+        level : float
+            The mic level, from 0 to 1.
+        threshold : float
+            Where speech starts to count, from 0 to 1.
+        """
+        previous = self._bars[-1][0] if self._bars else 0.0
+        self._bars.append((max(level, previous * _WAVE_DECAY), level >= threshold > 0.0))
+        self.refresh()
+
+    def render(self) -> RenderResult:
+        """Draw the newest bars that fit, the oldest cut off on the left."""
+        width = self.size.width
+        bars = list(self._bars)[-width:] if width else []
+        bars = [(0.0, False)] * (width - len(bars)) + bars
+        columns = [(wave_column(level, _WAVE_HALF), heard) for level, heard in bars]
+        lines: list[Content] = []
+        for row in range(_WAVE_HALF * 2):
+            cells: list[tuple[str, str] | str] = []
+            for column, heard in columns:
+                char, reverse = column[row]
+                color = "$text-success" if heard else "$text-muted"
+                cells.append((char, f"$surface on {color}" if reverse else color))
+            lines.append(Content.assemble(*cells))
+        return Content("\n").join(lines)
 
 
 class Conversation(VerticalScroll):
@@ -165,11 +218,11 @@ class VoiceApp(App[int]):
                     yield Static("idle", id="status")
                 with VerticalGroup(id="mic-box") as mic_box:
                     mic_box.border_title = "mic"
-                    meter = Static("", id="meter")
-                    meter.tooltip = (
-                        "The bar is the mic level. A bar past the | means it hears speech."
+                    wave = Waveform(id="meter")
+                    wave.tooltip = (
+                        "The mic level, newest on the right. Bright means it hears speech."
                     )
-                    yield meter
+                    yield wave
                 with VerticalGroup(id="latency-box") as latency_box:
                     latency_box.border_title = "last turn"
                     yield Static(_NO_TURNS, id="latency")
@@ -244,9 +297,10 @@ class VoiceApp(App[int]):
             label = f"ended (code {self._exit_code})"
         status.update(Content(label))
         status.set_classes("ended" if self._ended else f"state-{view.state.value}")
-        self.query_one("#meter", Static).update(
-            Content(meter_bar(view.mic_fraction, view.mic_need_fraction, _METER_WIDTH))
-        )
+        if not self._ended:
+            self.query_one(Waveform).push(
+                0.0 if self._live.muted else view.mic_fraction, view.mic_need_fraction
+            )
         latency = _NO_TURNS
         if view.last_turn is not None:
             latency = turn_summary(view.last_turn).strip().removeprefix("↳ ") or _NO_TURNS

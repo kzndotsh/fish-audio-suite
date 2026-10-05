@@ -24,7 +24,12 @@ from fish_audio_suite_voice.events import (
     StateChanged,
     TurnEnded,
 )
-from fish_audio_suite_voice.session_view import SessionView, level_fraction, reduce_view
+from fish_audio_suite_voice.session_view import (
+    SessionView,
+    level_fraction,
+    reduce_view,
+    wave_column,
+)
 
 
 def _fold(*events: Event, start: SessionView | None = None) -> SessionView:
@@ -136,3 +141,25 @@ def test_a_view_gives_the_meter_and_its_threshold_marker() -> None:
     assert view.mic_need_fraction == pytest.approx(level_fraction(200.0))
     assert view.mic_fraction > view.mic_need_fraction
     assert SessionView().mic_fraction == 0.0
+
+
+def test_a_wave_column_is_mirrored_never_empty_and_grows_with_the_level() -> None:
+    for half in (1, 2, 3):
+        silent = wave_column(0.0, half)
+        assert len(silent) == 2 * half
+        assert silent[half - 1] == ("\u2581", False)  # a thin line at the middle, even in silence
+        assert silent[half] == ("\u2587", True)
+        loud = wave_column(1.0, half)
+        assert loud[0] == ("\u2588", False)  # full to the top
+        assert loud[-1] == (" ", True)  # and, reversed, full to the bottom
+
+    def filled(column: list[tuple[str, bool]]) -> int:
+        blocks = " \u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588"
+        return sum(blocks.index(c) if not rev else 8 - blocks.index(c) for c, rev in column)
+
+    levels = [wave_column(level / 20, 3) for level in range(21)]
+    amounts = [filled(column) for column in levels]
+    assert amounts == sorted(amounts)  # louder never draws less
+    assert wave_column(-5.0, 2) == wave_column(0.0, 2)  # out of range is clamped
+    assert wave_column(9.0, 2) == wave_column(1.0, 2)
+    assert len(wave_column(0.5, 0)) == 2  # a height under 1 still draws

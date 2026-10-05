@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.geometry import Region
 from textual.pilot import Pilot
 from textual.widgets import Input, Log, Static
 
@@ -33,7 +34,7 @@ from fish_audio_suite_voice.events import (
 )
 from fish_audio_suite_voice.inputs import LiveInput
 from fish_audio_suite_voice.signals import DuplexSession
-from fish_audio_suite_voice.tui import Conversation, VoiceApp
+from fish_audio_suite_voice.tui import Conversation, VoiceApp, Waveform
 
 
 class _SpyInput(LiveInput):
@@ -150,10 +151,10 @@ def test_the_mic_meter_and_the_log_follow_the_events() -> None:
         harness.bus.emit(Notice("[llm 429, retrying in 4s]"))
         harness.bus.emit(BargedIn())
         await pilot.pause(0.1)
-        meter = harness.text("#meter")
-        assert len(meter) == 24
-        assert "█" in meter
-        assert "|" in meter
+        wave = harness.app.query_one(Waveform)
+        assert wave.size.height == 4
+        lines = [strip.text for strip in wave.render_lines(Region(0, 0, wave.size.width, 4))]
+        assert any("█" in line or "▇" in line for line in lines)  # the loud bar is drawn
         assert harness.log_lines() == ["D tts    start voice=abc"]
         assert "[llm 429, retrying in 4s]" in harness.messages()
         assert "(interrupted)" in harness.messages()
@@ -459,3 +460,32 @@ def test_the_conversation_widget_keeps_notes_in_order_and_titles_itself() -> Non
             assert conversation.border_title == "conversation"
 
     asyncio.run(asyncio.wait_for(main(), 20))
+
+
+def test_the_waveform_scrolls_newest_right_dims_below_the_threshold_and_decays() -> None:
+    class Host(App[None]):
+        def compose(self) -> ComposeResult:
+            yield Waveform()
+
+    async def main() -> None:
+        host = Host()
+        async with host.run_test(size=(40, 10)) as pilot:
+            wave = host.query_one(Waveform)
+            await pilot.pause()
+            width = wave.size.width
+            assert width > 0
+            wave.push(0.0, 0.3)  # quiet: a thin line only, so no full cells
+            wave.push(1.0, 0.3)  # loud and above the threshold
+            wave.push(0.0, 0.3)  # silence again, but the bar falls instead of snapping
+            await pilot.pause()
+            lines = [s.text for s in wave.render_lines(Region(0, 0, width, 4))]
+            assert all(len(line) == width for line in lines)
+            top = lines[0]
+            assert top[-4] == " "  # nothing before the first push
+            assert top[-3] == " "  # the quiet bar reaches only the middle rows
+            assert top[-2] == "█"  # the loud bar, newest but one
+            assert top[-1] not in (" ", "█")  # the silence after it is still falling
+            # Mirrored: the bottom row is the same bar hanging down, so its loud cell is a filled one.
+            assert lines[3][-2] == " "
+
+    asyncio.run(main())
