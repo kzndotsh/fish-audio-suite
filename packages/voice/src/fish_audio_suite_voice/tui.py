@@ -129,11 +129,10 @@ class Waveform(Widget):
             cells: list[tuple[str, str] | str] = []
             for column, heard in columns:
                 char, reverse = column[row]
-                # Bold against dim says "heard" even when colour is off (NO_COLOR).
-                tone, weight = ("$text-success", "bold") if heard else ("$text-muted", "dim")
-                cells.append(
-                    (char, f"{weight} $surface on {tone}" if reverse else f"{weight} {tone}")
-                )
+                # No bold or dim here: dim blends the cell's foreground into its background,
+                # which turns the reversed bottom half into grey blocks.
+                tone = "$text-success" if heard else "$text-muted"
+                cells.append((char, f"$surface on {tone}" if reverse else tone))
             lines.append(Content.assemble(*cells))
         return Content("\n").join(lines)
 

@@ -66,6 +66,11 @@ Screen {
 
 #line {
     height: auto;
+    border: round $secondary;
+
+    &:focus {
+        border: round $primary;
+    }
 }
 
 .message.pending {
@@ -105,4 +110,18 @@ Screen.tiny {
     #too-small {
         display: block;
     }
+}
+
+/* Scrollbars only when there is something to scroll, one cell wide, in the theme's colours.
+   Log would otherwise always draw both tracks as black strips. */
+Log,
+Conversation {
+    overflow: auto auto;
+    scrollbar-size: 1 1;
+    scrollbar-background: $surface;
+    scrollbar-background-hover: $surface;
+    scrollbar-background-active: $surface;
+    scrollbar-color: $secondary-muted;
+    scrollbar-color-hover: $secondary;
+    scrollbar-color-active: $primary;
 }

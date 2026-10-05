@@ -11,6 +11,7 @@ from typing import Any
 import pytest
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual.color import Color
 from textual.geometry import Region
 from textual.pilot import Pilot
 from textual.widgets import Input, Log, Static
@@ -629,6 +630,65 @@ def test_the_pulse_holds_still_when_animations_are_turned_off() -> None:
         harness.bus.emit(Heard("hi", 1.0))
         await pilot.pause(0.1)
         assert harness.messages() == ["you ▸ hi"]
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+
+
+def test_a_silent_waveform_is_drawn_in_exact_theme_colours_not_blended_into_grey() -> None:
+    class Host(App[None]):
+        def compose(self) -> ComposeResult:
+            yield Waveform()
+
+    async def main() -> None:
+        host = Host()
+        async with host.run_test(size=(40, 10)) as pilot:
+            wave = host.query_one(Waveform)
+            wave.push(0.0, 0.3)
+            await pilot.pause()
+            surface = Color.parse(host.get_css_variables()["surface"]).rgb
+            strips = wave.render_lines(Region(0, 0, wave.size.width, 4))
+            # The outer bottom row of a silent bar is a full cell of the panel colour. A
+            # `dim` blend would turn it into a mid grey, which is the bug this guards.
+            colours = {
+                tuple(segment.style.color.get_truecolor())
+                for segment in strips[3]
+                if segment.style is not None and segment.style.color is not None
+            }
+            assert colours == {surface}
+
+    asyncio.run(main())
+
+
+def test_the_input_line_has_the_same_rounded_border_as_the_panels() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        line = harness.app.query_one("#line")
+        assert line.has_focus
+        top = line.render_lines(Region(0, 0, line.region.width, line.region.height))[0].text
+        assert top.startswith("╭")
+        assert top.endswith("╮")  # no half-block edges of the default "tall" border
+        assert line.region.height == 3
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+
+
+def test_the_log_shows_scrollbars_only_when_there_is_something_to_scroll() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        log = harness.app.query_one("#log", Log)
+        harness.bus.emit(LogLine("INFO", "llm", "one short line"))
+        await pilot.pause(0.1)
+        assert not log.show_vertical_scrollbar
+        assert not log.show_horizontal_scrollbar
+        for number in range(200):
+            harness.bus.emit(LogLine("INFO", "llm", f"line {number}"))
+        await pilot.pause(0.2)
+        assert log.show_vertical_scrollbar
+        assert log.scrollbar_size_vertical == 1
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
