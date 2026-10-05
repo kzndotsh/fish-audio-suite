@@ -187,7 +187,7 @@ There is no frontend. The user-facing parts are an HTTP API (the proxy) and a te
 | Audio in | `listen`, `barge`, `floor`, `aec` |
 | Speech out | `speaker` (`FishSpeaker`), `tts_turn` (one turn with retry), `wire` (websocket pump, `TtsResult`), `declick` (fades the start and end of each sentence that meets silence), `stream_scrub`, `playback`, `spoken` |
 | LLM | `llm` (`ChatBackend`, retry, stats), `transports` (OpenRouter SDK or httpx SSE) |
-| Events | `events` (`EVENTS`, the typed events a display can follow, and `notice`) |
+| Events | `events` (`EVENTS`, the typed events a display follows, `StateTracker`, `EventQueue`, `forward_logs`), `console_sink` (the plain terminal display, one subscriber), `inputs` (`TurnSource`, and `LiveInput` for typed lines and mute) |
 | Support | `asr`, `cancel`, `pause`, `debug`, `console`, `ws_tap`, `envfile`, `cli` |
 
 ## 4. Data stores
@@ -280,6 +280,11 @@ The rules most easily broken, each with its reason. A test or a lint rule enforc
 - **Playback never blocks the TTS loop.** Each chunk is written on a worker thread, and cancel and tokens wake the loop instead of being polled. A blocked loop stalls text going to Fish and audio coming back.
 - **`CancelledError` ends a stream quietly only when `is_own_cancel(flag)` is true.** Anything else (`asyncio.timeout`, an outer `task.cancel()`) must propagate. Reap a cancelled child with `reap(task)`, never `suppress(BaseException)`, so Ctrl+C and `SystemExit` are not swallowed. Ctrl+C must cancel the TTS turn (`session.turn`), not only the mic.
 
+### Events
+
+- **The loop reports; displays follow.** Each step of a session is an event on `events.EVENTS`, and the plain terminal output is one subscriber (`console_sink.ConsoleSink`), so a screen of its own sees the same facts the console prints. New output goes through an event, not a direct print, or a full-screen display would miss it or be corrupted by it.
+- **A subscriber runs on the thread that emitted the event**, which can be the event loop or an audio thread. It has to return quickly. A consumer that works at its own pace uses `EventQueue`, which drops only mic levels and log lines when it falls behind. A subscriber that raises is reported and cannot stop the session.
+
 ### Text rules
 
 - **Roleplay helpers are opt-in.** `normalize_cues(lead=True)`, `tts_hold_at(lead=True)` and `is_tts_junk(drop_narration=True)` rewrite or drop ordinary-looking English, so nothing in the default path may match it.
@@ -304,7 +309,7 @@ The rules most easily broken, each with its reason. A test or a lint rule enforc
 
 Known architectural debt and likely changes, roughly in order of value:
 
-- **A full-screen terminal app.** The loop now reports each step as an event (`events.EVENTS`), so a Textual app could follow a session without reading console output. It would sit behind an optional extra in the voice package, and it would need the console output and log lines muted while it runs. The barge-in, mic-level and speaking events it would show are not emitted yet.
+- **A full-screen terminal app.** Everything it needs to follow a session is on the event bus (`events.EVENTS`): the conversation, state changes, the mic level, barge-in, log lines (`forward_logs`, with `configure_voice_logging(to_stderr=False)`), and timings. `duplex_turns(console=False, source=LiveInput())` lets it draw its own screen and take typed lines and mute. A Textual app would sit behind an optional extra in the voice package, and has to hand each event to its own thread (`EventQueue`) because a subscriber runs on the thread that emitted it.
 - **A mic that stays open.** The mic closes during each reply and reopens afterwards, so speech in the post-reply cooldown, and about 50 to 300 ms after a barge-in, is lost. A persistent capture stream that is gated, not closed, would fix both.
 - **Turn detection beyond silence.** A small end-of-turn model (for example Pipecat's Smart Turn) would allow a shorter end-of-speech wait without cutting off pauses.
 - **Trimming trailing silence** from ASR clips.

@@ -23,8 +23,8 @@ from fish_audio_suite_kit import (
 )
 from fish_audio_suite_voice.barge import BargeGate
 from fish_audio_suite_voice.cancel import is_cancel_noise, is_own_cancel
-from fish_audio_suite_voice.console import end_reply_line, write_reply_token
-from fish_audio_suite_voice.debug import conversation, debug, debug_enabled, warn
+from fish_audio_suite_voice.console import end_reply_line
+from fish_audio_suite_voice.debug import debug, warn
 from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexContext
 from fish_audio_suite_voice.events import EVENTS, ReplyEnd, ReplyToken, Speaking, notice
 from fish_audio_suite_voice.hearing import HeardLine
@@ -111,19 +111,12 @@ async def collect_reply(
     """Stream the model's reply into one string, timing its first token."""
     parts: list[str] = []
     ttft_ms: float | None = None
-    # Debug lines print while the reply streams. Buffering the reply keeps it
-    # on one line instead of split around them.
-    live = not debug_enabled()
     try:
         async for tok in ctx.backend.stream(ctx.history, cancel=llm_cancel, trace_id=trace_id):
             if ttft_ms is None:
                 ttft_ms = elapsed_ms(started)
                 debug("llm.first_token {:.0f}ms", ttft_ms)
-                if live:
-                    write_reply_token("llm \u25b8 ")
             parts.append(tok)
-            if live:
-                write_reply_token(tok)
             EVENTS.emit(ReplyToken(tok))
             if on_token is not None:
                 on_token(tok)
@@ -138,8 +131,6 @@ async def collect_reply(
     finally:
         end_reply_line()
     reply = "".join(parts).strip()
-    if reply and not live:
-        conversation("llm", reply)
     EVENTS.emit(ReplyEnd(reply))
     return reply, ttft_ms
 

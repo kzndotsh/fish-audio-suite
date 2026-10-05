@@ -22,10 +22,8 @@ from fish_audio_suite_kit import (
 )
 from fish_audio_suite_voice.asr import fish_asr
 from fish_audio_suite_voice.barge import StopFlag
-from fish_audio_suite_voice.console import console_print
 from fish_audio_suite_voice.debug import (
     clear_turn,
-    conversation,
     debug,
     debug_enabled,
     mark_turn,
@@ -155,7 +153,6 @@ async def recognize(
         return HeardLine("bye")
     if decision == "skip":
         return HeardLine("noise")
-    conversation("you", text)
     EVENTS.emit(Heard(text, asr_ms))
     return HeardLine(
         "line",
@@ -188,8 +185,6 @@ async def hear_line(
     """
     if debug_enabled():
         debug("listen.waiting for you")
-    else:
-        console_print("listening…")
     EVENTS.emit(Listening())
     clear_turn()
     trace("listen.waiting device={}", ctx.device)

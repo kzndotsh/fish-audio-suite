@@ -250,7 +250,7 @@ def test_debug_mode_logs_the_turn_summary_instead_of_printing_it(
     tts = FishSpeaker(api_key="k", voice_id="voice")
     install_audio(monkeypatch)
     _spoken_by(monkeypatch, tts)
-    monkeypatch.setattr("fish_audio_suite_voice.duplex.debug_enabled", lambda: True)
+    monkeypatch.setattr("fish_audio_suite_voice.console_sink.debug_enabled", lambda: True)
     _Loop(monkeypatch, _line())
     assert _run(_quick(), tts) == 0
     assert "first audio" not in capsys.readouterr().out

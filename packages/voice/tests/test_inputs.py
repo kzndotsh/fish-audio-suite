@@ -51,7 +51,7 @@ def _turn(source: LiveInput, ctx: DuplexContext) -> HeardLine:
     return asyncio.run(asyncio.wait_for(source.next_turn(ctx, ""), 5))
 
 
-def test_a_typed_line_is_answered_like_a_spoken_one(capsys: pytest.CaptureFixture[str]) -> None:
+def test_a_typed_line_is_answered_like_a_spoken_one() -> None:
     ctx = _ctx()
     ctx.barge_prefix = b"clip"
     seen: list[Event] = []
@@ -65,7 +65,6 @@ def test_a_typed_line_is_answered_like_a_spoken_one(capsys: pytest.CaptureFixtur
     assert (heard.kind, heard.text) == ("line", "hello there")
     assert ctx.barge_prefix == b""
     assert seen == [Heard("hello there", 0.0)]
-    assert "you ▸ hello there" in capsys.readouterr().out
 
 
 def test_blank_lines_are_ignored_and_lines_keep_their_order() -> None:

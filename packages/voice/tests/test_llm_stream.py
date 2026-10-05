@@ -829,7 +829,6 @@ def _events_once_429(wait: float | None, then: list[str]):
 def test_429_within_cap_retries_once(monkeypatch: pytest.MonkeyPatch) -> None:
     calls, events = _events_once_429(4.0, ["back"])
     waits: list[float] = []
-    printed: list[str] = []
 
     async def pause(_cancel: asyncio.Event | None, seconds: float) -> bool:
         waits.append(seconds)
@@ -838,10 +837,6 @@ def test_429_within_cap_retries_once(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", events)
     monkeypatch.setattr("fish_audio_suite_voice.llm._pause_for_retry", pause)
 
-    def record_print(*args: object, **_kwargs: object) -> None:
-        printed.append(" ".join(str(arg) for arg in args))
-
-    monkeypatch.setattr("fish_audio_suite_voice.events.console_print", record_print)
     seen: list[Event] = []
     unsubscribe = EVENTS.subscribe(seen.append)
 
@@ -862,7 +857,6 @@ def test_429_within_cap_retries_once(monkeypatch: pytest.MonkeyPatch) -> None:
         unsubscribe()
     assert calls["n"] == 2
     assert waits == [4.0]
-    assert printed == ["  [llm 429, retrying in 4s]"]
     assert seen == [Notice("[llm 429, retrying in 4s]")]
 
 

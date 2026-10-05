@@ -108,11 +108,11 @@ def test_events_can_be_emitted_from_other_threads() -> None:
     assert len(got) == 200
 
 
-def test_a_notice_prints_its_line_and_reports_it_trimmed(
+def test_a_notice_is_reported_trimmed_and_printed_by_nothing_itself(
     seen: list[Event], capsys: pytest.CaptureFixture[str]
 ) -> None:
     notice("  [llm cut off, continuing]")
-    assert capsys.readouterr().out == "  [llm cut off, continuing]\n"
+    assert capsys.readouterr().out == ""
     assert seen == [Notice("[llm cut off, continuing]")]
 
 

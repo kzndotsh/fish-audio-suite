@@ -9,7 +9,7 @@ from collections import deque
 from typing import Protocol
 
 from fish_audio_suite_voice.barge import StopFlag
-from fish_audio_suite_voice.debug import conversation, mark_turn
+from fish_audio_suite_voice.debug import mark_turn
 from fish_audio_suite_voice.duplex_state import DuplexContext
 from fish_audio_suite_voice.events import EVENTS, Heard
 from fish_audio_suite_voice.hearing import HeardLine, hear_line
@@ -154,6 +154,5 @@ class LiveInput:
     def _typed_line(self, ctx: DuplexContext, text: str) -> HeardLine:
         ctx.barge_prefix = b""
         mark_turn()
-        conversation("you", text)
         EVENTS.emit(Heard(text, 0.0))
         return HeardLine("line", text=text, started=time.perf_counter())

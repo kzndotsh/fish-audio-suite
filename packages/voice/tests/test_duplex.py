@@ -12,8 +12,10 @@ from voice_fakes import FakeGate, FakeSink, install_audio, make_result, set_tts
 
 from fish_audio_suite_kit import ChatMessage, FishHttpError, LatencySnapshot
 from fish_audio_suite_voice.config import VoiceCliConfig
+from fish_audio_suite_voice.console_sink import ConsoleSink
 from fish_audio_suite_voice.duplex import duplex_turns
 from fish_audio_suite_voice.duplex_state import DuplexContext
+from fish_audio_suite_voice.events import EVENTS
 from fish_audio_suite_voice.hearing import HeardLine, classify_transcript, hear_line, recognize
 from fish_audio_suite_voice.history import opening_history, remember_user, trim_history
 from fish_audio_suite_voice.llm_tune import DEFAULT_HISTORY_TURNS, LlmTune
@@ -288,9 +290,13 @@ def test_collect_reply_survives_a_closed_stdout(
 
     ctx = _ctx(tokens)
     monkeypatch.setattr(sys, "stdout", _ClosedStdout())
-    reply, ttft = asyncio.run(
-        collect_reply(ctx, llm_cancel=asyncio.Event(), trace_id=None, started=0.0)
-    )
+    printer = ConsoleSink(EVENTS)  # the display that writes the tokens to the closed stdout
+    try:
+        reply, ttft = asyncio.run(
+            collect_reply(ctx, llm_cancel=asyncio.Event(), trace_id=None, started=0.0)
+        )
+    finally:
+        printer.close()
     assert reply == "Open the door today friend."
     assert ttft is not None
 

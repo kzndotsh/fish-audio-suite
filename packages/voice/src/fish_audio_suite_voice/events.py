@@ -18,7 +18,6 @@ from typing import Any, Final, Literal
 from loguru import logger
 
 from fish_audio_suite_kit import LatencySnapshot
-from fish_audio_suite_voice.console import console_print
 from fish_audio_suite_voice.debug import log_tag, warn
 
 __all__ = [
@@ -385,7 +384,7 @@ class StateTracker:
     def __init__(self, bus: EventBus) -> None:
         self._bus = bus
         self._lock = threading.Lock()
-        self.state = SessionState.IDLE
+        self.state: SessionState = SessionState.IDLE
         self._unsubscribe = bus.subscribe(self._on_event)
 
     def _on_event(self, event: Event) -> None:
@@ -436,7 +435,7 @@ class EventQueue:
         self._wake = wake
         self._cond = threading.Condition()
         self._closed = False
-        self.dropped = 0
+        self.dropped: int = 0
         self._unsubscribe = bus.subscribe(self._put)
 
     def _put(self, event: Event) -> None:
@@ -511,14 +510,14 @@ EVENTS = EventBus()
 
 
 def notice(text: str) -> None:
-    """Print a status line and report it as a ``Notice``.
+    """Report a status line as a ``Notice``.
 
     Parameters
     ----------
     text : str
-        The line as printed, including any leading padding or brackets.
+        The line, such as ``[llm 429, retrying in 4s]``. The console display
+        indents it by two spaces.
     """
-    console_print(text, flush=True)
     EVENTS.emit(Notice(text.strip()))
 
 
