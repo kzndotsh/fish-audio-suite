@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
@@ -100,10 +101,12 @@ class _FakeApp:
         self.info = info
         self.code: int | None = 0
         self.switch_interval = 0.0
+        self.gc_threshold = (0, 0, 0)
         _FakeApp.instances.append(self)
 
     async def run_async(self) -> int | None:
         self.switch_interval = sys.getswitchinterval()
+        self.gc_threshold = gc.get_threshold()
         await self.runner()
         return self.code
 
@@ -170,6 +173,17 @@ def test_the_screen_hands_the_gil_over_sooner_while_it_runs_and_puts_it_back(
     assert asyncio.run(run_tui(c, debug=DebugLevel.OFF)) == 0
     assert _FakeApp.instances[0].switch_interval < before  # so the audio thread is not kept waiting
     assert sys.getswitchinterval() == before
+
+
+def test_the_garbage_collector_runs_less_often_while_the_screen_runs_and_is_put_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    c = _configured(monkeypatch)
+    _patch_session(monkeypatch, {})
+    before = gc.get_threshold()
+    assert asyncio.run(run_tui(c, debug=DebugLevel.OFF)) == 0
+    assert _FakeApp.instances[0].gc_threshold[0] > before[0]  # fewer stop-the-world passes
+    assert gc.get_threshold() == before
 
 
 def test_run_tui_returns_the_code_the_app_reports(monkeypatch: pytest.MonkeyPatch) -> None:

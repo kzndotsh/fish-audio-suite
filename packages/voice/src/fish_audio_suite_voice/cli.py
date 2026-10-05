@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import gc
 import importlib.util
 import sys
 import tempfile
@@ -62,6 +63,9 @@ _SMOKE_MIN_BYTES: Final = 1000
 # screen's drawing keep the playback thread waiting longer than the sound card's buffer lasts,
 # which is heard as clicks and drop-outs. Shorter hands over sooner, at a small cost in speed.
 _TUI_SWITCH_INTERVAL_S: Final = 0.0005
+# The garbage collector stops every thread while it runs, and a big full-screen app has plenty to
+# scan. Collecting less often, and not scanning what was built at startup, keeps those stops rare.
+_TUI_GC_THRESHOLD: Final = (20_000, 50, 100)
 _SMOKE_FAIL: Final = 1
 
 
@@ -294,6 +298,10 @@ async def run_tui(c: VoiceCliConfig, *, debug: DebugLevel) -> int:
     stop_forwarding = forward_logs()
     switch_interval = sys.getswitchinterval()
     sys.setswitchinterval(_TUI_SWITCH_INTERVAL_S)
+    gc_threshold = gc.get_threshold()
+    gc.collect()
+    gc.freeze()
+    gc.set_threshold(*_TUI_GC_THRESHOLD)
     try:
         async with open_chat_backend(c.llm, session_id=uuid.uuid4().hex) as backend:
 
@@ -310,6 +318,8 @@ async def run_tui(c: VoiceCliConfig, *, debug: DebugLevel) -> int:
             code = await app.run_async()
     finally:
         sys.setswitchinterval(switch_interval)
+        gc.set_threshold(*gc_threshold)
+        gc.unfreeze()
         stop_forwarding()
     return code or EXIT_OK
 

@@ -413,15 +413,19 @@ class SounddeviceSink(_Played):
             # PortAudio reports True when the device ran dry before this write,
             # which plays as a click or a gap.
             before = time.perf_counter()
-            if stream.write(piece):
-                # chunk_wait is how long since the last slice when this chunk came in, and
-                # in_python how long this thread spent between two writes: a late chunk or
-                # a stalled thread.
+            underflowed = stream.write(piece)
+            took_ms = (time.perf_counter() - before) * 1000
+            if underflowed:
+                # chunk_wait is how long since the last slice when this chunk came in, in_python
+                # how long this thread spent between two writes, and write how long this write
+                # call took, which includes waiting to get the GIL back after it.
                 debug(
-                    "tts.underrun after {} kB played (chunk_wait {:.0f} ms, in_python {:.0f} ms)",
+                    "tts.underrun after {} kB played "
+                    "(chunk_wait {:.0f} ms, in_python {:.0f} ms, write {:.0f} ms)",
                     self._played // 1000,
                     self._chunk_idle_ms,
                     (before - self._wrote_at) * 1000 if self._wrote_at else 0.0,
+                    took_ms,
                 )
             self._wrote_at = time.perf_counter()
             self._count(piece)

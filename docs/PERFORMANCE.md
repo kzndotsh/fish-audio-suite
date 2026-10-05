@@ -179,7 +179,7 @@ Lines worth watching:
 
 | Line | Meaning |
 | --- | --- |
-| `tts underrun after N kB played (chunk_wait X ms, in_python Y ms)` | The speaker ran dry between chunks, heard as a click or gap. A large `chunk_wait` means the audio arrived late (Fish was slow to deliver it). A large `in_python` means the playback thread itself was stalled. Should not happen with current code |
+| `tts underrun after N kB played (chunk_wait X ms, in_python Y ms, write Z ms)` | The speaker ran dry between chunks, heard as a click or gap. A large `chunk_wait` means the audio arrived late (Fish was slow to deliver it). A large `in_python` means the playback thread itself was stalled before the write. A `write` far above the length of a slice (about 30 ms) means the call itself waited, usually to get Python's lock back from a busy thread. Should not happen with current code |
 | `barge hit 3/10 ...` then `barge decay` | Something loud nearly interrupted the bot. Frequent near-misses with no one talking mean echo is leaking |
 | `listen reject too_little_voice` | A sound too short to be a turn. If real words show up here, lower `FISH_VOICE_MIN_VOICED_FRAMES` |
 | `listen speech_start` right after `listen open`, with no one talking | Echo after the reply. Raise `FISH_VOICE_COOLDOWN` |
