@@ -1,0 +1,385 @@
+"""The full-screen app, driven headless: events in, widgets and exit codes out."""
+
+from __future__ import annotations
+
+import asyncio
+import threading
+from collections.abc import Awaitable, Callable
+from pathlib import Path
+from typing import Any
+
+import pytest
+from textual.binding import Binding
+from textual.pilot import Pilot
+from textual.widgets import Input, Log, Static
+
+from fish_audio_suite_kit import LatencySnapshot
+from fish_audio_suite_voice import tui as tui_module
+from fish_audio_suite_voice.events import (
+    BargedIn,
+    Bye,
+    EventBus,
+    Heard,
+    Listening,
+    LogLine,
+    MicLevel,
+    Notice,
+    ReplyEnd,
+    ReplyToken,
+    SessionState,
+    Speaking,
+    TurnEnded,
+)
+from fish_audio_suite_voice.inputs import LiveInput
+from fish_audio_suite_voice.signals import DuplexSession
+from fish_audio_suite_voice.tui import VoiceApp
+
+
+class _SpyInput(LiveInput):
+    """A ``LiveInput`` that remembers what the app asked of it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.lines: list[str] = []
+        self.stops = 0
+
+    def submit(self, text: str, *, interrupt: bool = True) -> None:
+        self.lines.append(text)
+        super().submit(text, interrupt=interrupt)
+
+    def stop_reply(self) -> None:
+        self.stops += 1
+        super().stop_reply()
+
+
+class _Harness:
+    def __init__(self, runner: Callable[[_Harness], Awaitable[int]] | None = None) -> None:
+        self.bus = EventBus()
+        self.session = DuplexSession()
+        self.live = _SpyInput()
+        self.runner = runner or _Harness._until_quit
+        self.app = VoiceApp(
+            self._run, live=self.live, session=self.session, bus=self.bus, info="model / voice"
+        )
+
+    async def _run(self) -> int:
+        return await self.runner(self)
+
+    async def _until_quit(self) -> int:
+        """Like ``duplex_turns``: runs until asked to quit, then says bye."""
+        await asyncio.to_thread(self.session.quit_requested.wait, 15)
+        self.bus.emit(Bye(0))
+        return 0
+
+    def messages(self) -> list[str]:
+        conversation = self.app.query_one("#conversation")
+        return [str(child.content) for child in conversation.children if isinstance(child, Static)]
+
+    def text(self, selector: str) -> str:
+        return str(self.app.query_one(selector, Static).content)
+
+    def log_lines(self) -> list[str]:
+        return list(self.app.query_one("#log", Log).lines)
+
+
+def _drive(harness: _Harness, scenario: Callable[[Pilot[int]], Awaitable[None]]) -> int | None:
+    async def main() -> None:
+        async with harness.app.run_test() as pilot:
+            await scenario(pilot)
+
+    asyncio.run(asyncio.wait_for(main(), 20))
+    return harness.app.return_value
+
+
+def test_a_turn_is_shown_as_it_happens() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        for event in (
+            Listening(),
+            Heard("tell me something fun", 120.0),
+            ReplyToken("[calm] Once "),
+            ReplyToken("upon a time."),
+        ):
+            harness.bus.emit(event)
+        await pilot.pause(0.1)
+        assert harness.messages() == [
+            "you ▸ tell me something fun",
+            "llm ▸ [calm] Once upon a time.",
+        ]
+        assert harness.text("#status") == "thinking"
+        harness.bus.emit(ReplyEnd("[calm] Once upon a time."))
+        harness.bus.emit(Speaking())
+        await pilot.pause(0.1)
+        assert harness.text("#status") == "speaking"
+        snapshot = LatencySnapshot(asr_ms=120.0, first_audio_ms=900.0)
+        harness.bus.emit(TurnEnded(snapshot))
+        await pilot.pause(0.1)
+        assert harness.text("#status") == "idle"
+        assert "first audio" in harness.text("#latency")
+        assert harness.messages().count("llm ▸ [calm] Once upon a time.") == 1
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+    assert harness.app.view.turns == 1
+
+
+def test_square_brackets_in_a_reply_are_shown_as_they_are_not_read_as_markup() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        harness.bus.emit(Heard("[bold]hi[/bold] $name", 1.0))
+        harness.bus.emit(ReplyEnd("[soft encouragement] a[0] [/] [[x]] done"))
+        await pilot.pause(0.1)
+        assert harness.messages() == [
+            "you ▸ [bold]hi[/bold] $name",
+            "llm ▸ [soft encouragement] a[0] [/] [[x]] done",
+        ]
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+
+
+def test_the_mic_meter_and_the_log_follow_the_events() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        harness.bus.emit(MicLevel(1000.0, 200.0, "listen"))
+        harness.bus.emit(LogLine("DEBUG", "tts", "start voice=abc"))
+        harness.bus.emit(Notice("[llm 429, retrying in 4s]"))
+        harness.bus.emit(BargedIn())
+        await pilot.pause(0.1)
+        meter = harness.text("#meter")
+        assert len(meter) == 24
+        assert "█" in meter
+        assert "|" in meter
+        assert harness.log_lines() == ["D tts    start voice=abc"]
+        assert "[llm 429, retrying in 4s]" in harness.messages()
+        assert "(interrupted)" in harness.messages()
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+
+
+def test_events_from_another_thread_reach_the_screen_without_flooding_it() -> None:
+    harness = _Harness()
+    wakes: list[int] = []
+    original = harness.app.post_message
+
+    def counting(message: Any) -> bool:
+        wakes.append(1)
+        return original(message)
+
+    harness.app.post_message = counting  # type: ignore[method-assign]
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        def audio_thread() -> None:
+            for n in range(500):
+                harness.bus.emit(MicLevel(float(n), 200.0, "listen"))
+            harness.bus.emit(Notice("done"))
+
+        thread = threading.Thread(target=audio_thread)
+        thread.start()
+        await asyncio.to_thread(thread.join)
+        await pilot.pause(0.2)
+        assert "done" in harness.messages()
+        assert harness.app.view.mic_rms == 499.0
+        # 501 events, but the app is woken far fewer times than that.
+        assert len(wakes) < 100
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+
+
+def test_a_typed_line_goes_to_the_session_and_the_box_is_cleared() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        await pilot.press(*"hello", "enter")
+        await pilot.pause(0.1)
+        assert harness.live.lines == ["hello"]
+        assert harness.app.query_one(Input).value == ""
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+
+
+def test_the_mute_key_toggles_the_mic_and_says_so() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        await pilot.press("f2")
+        await pilot.pause(0.05)
+        assert harness.live.muted
+        assert harness.text("#status") == "idle · muted"
+        await pilot.press("f2")
+        await pilot.pause(0.05)
+        assert not harness.live.muted
+        assert harness.text("#status") == "idle"
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+
+
+def test_stop_only_works_while_the_model_is_thinking_or_the_reply_is_playing() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        await pilot.press("escape")
+        await pilot.pause(0.05)
+        assert harness.live.stops == 0  # idle: nothing to stop
+        harness.bus.emit(Heard("hi", 1.0))
+        harness.bus.emit(Speaking())
+        await pilot.pause(0.1)
+        assert harness.app.state is SessionState.SPEAKING
+        await pilot.press("escape")
+        await pilot.pause(0.05)
+        assert harness.live.stops == 1
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+
+
+def test_quit_asks_the_session_to_end_and_the_app_leaves_when_it_has() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        await pilot.press("ctrl+q")
+        await pilot.pause(0.5)
+
+    assert _drive(harness, scenario) == 0
+    assert harness.session.quit_requested.is_set()
+
+
+def test_a_session_that_says_goodbye_on_its_own_closes_the_app() -> None:
+    async def says_bye(harness: _Harness) -> int:
+        await asyncio.sleep(0.05)
+        harness.bus.emit(Bye(0))
+        return 0
+
+    harness = _Harness(says_bye)
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        await pilot.pause(0.5)
+
+    assert _drive(harness, scenario) == 0
+    assert not harness.session.quit_requested.is_set()
+
+
+def test_a_fatal_end_stays_on_screen_until_the_user_quits_and_keeps_its_code() -> None:
+    async def fails(harness: _Harness) -> int:
+        await asyncio.sleep(0.05)
+        harness.bus.emit(Notice("[tts] 401 unauthorized"))
+        harness.bus.emit(Bye(2))
+        return 2
+
+    harness = _Harness(fails)
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        await pilot.pause(0.3)
+        assert harness.app.is_running  # still open so the reason can be read
+        assert harness.text("#status") == "ended (code 2)"
+        assert "[tts] 401 unauthorized" in harness.messages()
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 2
+
+
+def test_a_session_that_raises_is_reported_and_leaves_code_1() -> None:
+    async def crashes(harness: _Harness) -> int:
+        del harness
+        raise RuntimeError("boom")
+
+    harness = _Harness(crashes)
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        await pilot.pause(0.3)
+        assert any("the session stopped" in m and "boom" in m for m in harness.messages())
+        assert harness.text("#status") == "ended (code 1)"
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 1
+
+
+def test_events_sent_before_the_screen_is_up_are_not_lost() -> None:
+    harness = _Harness()
+    harness.bus.emit(Heard("early", 1.0))
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        await pilot.pause(0.2)
+        assert harness.messages() == ["you ▸ early"]
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+
+
+def test_the_title_shows_what_the_session_uses() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        assert harness.app.sub_title == "model / voice"
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+
+
+def test_the_app_stops_collecting_events_when_it_closes() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        await pilot.press("ctrl+q")
+        await pilot.pause(0.4)
+
+    _drive(harness, scenario)
+    harness.bus.emit(Heard("after", 1.0))  # nobody is listening, and nothing fails
+    assert harness.app.view.heard != "after"
+
+
+@pytest.mark.parametrize("key", ["f2", "escape", "ctrl+q"])
+def test_the_default_keys_are_the_ones_bound(key: str) -> None:
+    bound = {binding.key for binding in VoiceApp.BINDINGS if isinstance(binding, Binding)}
+    assert key in bound
+
+
+@pytest.mark.parametrize("size", [(80, 24), (60, 20), (120, 40)])
+def test_the_layout_fits_the_screen_and_nothing_overlaps(size: tuple[int, int]) -> None:
+    harness = _Harness()
+
+    async def main() -> None:
+        async with harness.app.run_test(size=size) as pilot:
+            await pilot.pause(0.1)
+            screen = harness.app.screen.region
+            conversation = harness.app.query_one("#conversation").region
+            side = harness.app.query_one("#side").region
+            line = harness.app.query_one("#line").region
+            footer = harness.app.query_one("Footer").region
+            header = harness.app.query_one("Header").region
+            for name, region in {
+                "conversation": conversation,
+                "side": side,
+                "line": line,
+                "footer": footer,
+                "header": header,
+            }.items():
+                assert region.width > 0, f"{name} has no width"
+                assert region.height > 0, f"{name} has no height"
+                assert screen.contains_region(region), f"{name} is off the screen"
+            # The input line sits directly above the footer, below the panes, and
+            # the panes do not run into each other.
+            assert line.bottom <= footer.y
+            assert conversation.bottom <= line.y
+            assert side.bottom <= line.y
+            assert header.bottom <= conversation.y
+            assert conversation.right <= side.x
+            await pilot.press("ctrl+q")
+
+    asyncio.run(asyncio.wait_for(main(), 20))
+
+
+def test_the_stylesheet_ships_inside_the_package_next_to_the_app() -> None:
+    sheet = Path(tui_module.__file__).with_name("tui.tcss")
+    assert sheet.is_file()
+    assert VoiceApp.CSS_PATH == "tui.tcss"
+    # Hatchling includes every file under the package directory in the wheel.
+    config = (Path(tui_module.__file__).parents[2] / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'packages = ["src/fish_audio_suite_voice"]' in config

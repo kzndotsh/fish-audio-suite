@@ -33,6 +33,9 @@ speakers = ["sounddevice>=0.5"]
 # webrtcvad-wheels, not PyPI webrtcvad: the original has no wheel for Python 3.12.
 vad = ["webrtcvad-wheels>=2.0.14"]
 aec = ["pywebrtc-audio>=0.2"]
+# The full-screen terminal app (fish-voice --tui). Keep the bound equal to the one in the
+# root test group, which a test checks.
+tui = ["textual>=8.2.8"]
 cli = [
     "sounddevice>=0.5",
     "webrtcvad-wheels>=2.0.14",

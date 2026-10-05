@@ -1,0 +1,69 @@
+/* Stylesheet for the fish-voice terminal app. Layout: header, a body of the conversation
+   beside a column of panels, the input line, then the footer. */
+
+$panel-border: round $secondary;
+
+Screen {
+    layout: vertical;
+}
+
+#body {
+    height: 1fr;
+}
+
+#conversation {
+    width: 2fr;
+    border: round $primary;
+    border-title-color: $primary;
+    padding: 0 1;
+
+    .message {
+        margin-bottom: 1;
+    }
+
+    .note {
+        color: $text-muted;
+        text-style: italic;
+    }
+}
+
+#side {
+    width: 1fr;
+    min-width: 28;
+
+    #status-box,
+    #mic-box,
+    #latency-box {
+        border: $panel-border;
+        border-title-color: $secondary;
+        padding: 0 1;
+    }
+
+    #log {
+        height: 1fr;
+        border: round $panel;
+        border-title-color: $text-muted;
+    }
+}
+
+#status {
+    &.state-listening {
+        color: $success;
+    }
+
+    &.state-thinking {
+        color: $warning;
+    }
+
+    &.state-speaking {
+        color: $accent;
+    }
+
+    &.ended {
+        color: $error;
+    }
+}
+
+#line {
+    height: auto;
+}

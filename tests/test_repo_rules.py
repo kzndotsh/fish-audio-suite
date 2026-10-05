@@ -8,6 +8,7 @@ from __future__ import annotations
 import ast
 import re
 import sys
+import tomllib
 from functools import cache
 from pathlib import Path
 
@@ -203,3 +204,16 @@ def test_the_voice_session_reports_through_events_and_never_writes_to_the_termin
         "emit an event (events.notice, or a new event) instead of writing to the terminal; "
         "console_sink prints it:\n" + "\n".join(offenders)
     )
+
+
+def test_the_textual_version_bound_is_the_same_in_the_extra_and_the_test_group() -> None:
+    """The ``tui`` extra and the root test group each name ``textual``; keep them equal."""
+
+    def bound(requirements: list[str]) -> str:
+        return next(r.replace(" ", "") for r in requirements if r.lower().startswith("textual"))
+
+    root = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    voice = tomllib.loads((ROOT / "packages" / "voice" / "pyproject.toml").read_text("utf-8"))
+    assert bound(root["dependency-groups"]["test"]) == bound(
+        voice["project"]["optional-dependencies"]["tui"]
+    ), "keep the textual bound in packages/voice/pyproject.toml and the root test group equal"

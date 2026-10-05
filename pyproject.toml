@@ -19,6 +19,7 @@ dev = [
     "pydoclint>=0.7.3",
 ]
 test = [
+    "textual>=8.2.8",
     "hypothesis>=6.140",
     "pytest-cov>=7",
     "pytest-randomly>=3.16",

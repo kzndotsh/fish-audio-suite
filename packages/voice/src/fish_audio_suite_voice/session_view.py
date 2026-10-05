@@ -23,6 +23,7 @@ from fish_audio_suite_voice.events import (
 __all__ = [
     "SessionView",
     "level_fraction",
+    "meter_bar",
     "reduce_view",
 ]
 
@@ -103,6 +104,39 @@ def level_fraction(rms: float) -> float:
         return 0.0
     decibels = 20 * math.log10(rms / _FULL_SCALE)
     return min(1.0, max(0.0, (decibels - _QUIETEST_DB) / -_QUIETEST_DB))
+
+
+def meter_bar(fraction: float, threshold: float, width: int) -> str:
+    """Draw a level meter as text, with a marker where speech starts to count.
+
+    Parameters
+    ----------
+    fraction : float
+        How full the meter is, from 0 to 1, as ``level_fraction`` gives it.
+    threshold : float
+        Where the speech threshold sits, from 0 to 1.
+    width : int
+        How many characters wide the meter is. At least 1.
+
+    Returns
+    -------
+    str
+        ``width`` characters: filled blocks up to the level, light blocks after, and a
+        ``|`` at the threshold, so a bar above the marker means the mic hears speech.
+
+    Examples
+    --------
+    >>> meter_bar(0.5, 0.25, 8)
+    '██|█░░░░'
+    >>> meter_bar(0.0, 0.0, 4)
+    '|░░░'
+    """
+    width = max(1, width)
+    filled = round(min(1.0, max(0.0, fraction)) * width)
+    marker = min(width - 1, round(min(1.0, max(0.0, threshold)) * width))
+    cells = ["█" if i < filled else "░" for i in range(width)]
+    cells[marker] = "|"
+    return "".join(cells)
 
 
 def reduce_view(view: SessionView, event: Event) -> SessionView:

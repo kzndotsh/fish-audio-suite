@@ -187,7 +187,7 @@ There is no frontend. The user-facing parts are an HTTP API (the proxy) and a te
 | Audio in | `listen`, `barge`, `floor`, `aec` |
 | Speech out | `speaker` (`FishSpeaker`), `tts_turn` (one turn with retry), `wire` (websocket pump, `TtsResult`), `declick` (fades the start and end of each sentence that meets silence), `stream_scrub`, `playback`, `spoken` |
 | LLM | `llm` (`ChatBackend`, retry, stats), `transports` (OpenRouter SDK or httpx SSE) |
-| Events | `events` (`EVENTS`, the typed events a display follows, `StateTracker`, `EventQueue`, `forward_logs`), `console_sink` (the plain terminal display, one subscriber), `inputs` (`TurnSource`, and `LiveInput` for typed lines and mute), `session_view` (`reduce_view` folds events into one immutable `SessionView`) |
+| Events | `events` (`EVENTS`, the typed events a display follows, `StateTracker`, `EventQueue`, `forward_logs`), `console_sink` (the plain terminal display, one subscriber), `inputs` (`TurnSource`, and `LiveInput` for typed lines and mute), `session_view` (`reduce_view` folds events into one immutable `SessionView`), `tui` (the Textual app, `fish-voice --tui`, needs the `tui` extra) |
 | Support | `asr`, `cancel`, `pause`, `debug`, `console`, `ws_tap`, `envfile`, `cli` |
 
 ## 4. Data stores

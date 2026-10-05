@@ -173,6 +173,7 @@
     "scrub_asr": "def(text: str, *, strip_speakers: bool = True, strip_cues: bool = False) -> str",
     "scrub_tts": "def(text: str, *, line_start: bool = True, continued: bool = False, before: str = , after: str = ) -> str",
     "should_retry_fish_status": "def(status: int) -> bool",
+    "split_cues": "def(text: str) -> list[tuple[str, bool]]",
     "split_tts_piece": "def(buf: str, partial_chars: int, *, flush_rest: bool) -> tuple[str, str] | None",
     "strip_base": "def(url: str) -> str",
     "strip_cue_tags": "def(text: str) -> str",

@@ -198,6 +198,23 @@ FISH_LLM_REASONING_EFFORT=none
 
 Both are off by default because they also change ordinary English. `FISH_TTS_MOOD_LEAD=1` rewrites a sentence-leading mood word (`Excited, hello`) into a `[cue]`. `FISH_TTS_DROP_NARRATION=1` drops lines that are only stage directions (`She smiles.`).
 
+### The full-screen app
+
+```bash
+uv run --package fish-audio-suite-voice --extra cli --extra tui fish-voice --tui
+```
+
+`--tui` runs the same session in a full-screen terminal app (built on [Textual](https://textual.textualize.io)). It shows the conversation as it streams, with each `[cue]` styled and never read as markup, the state (listening, thinking, speaking), a mic level meter with the speech threshold marked, the timings of the last turn, and the log. You can also type a line instead of speaking, mute the mic, and stop a reply that is playing.
+
+| Key | Does |
+| --- | --- |
+| Enter | Send the typed line |
+| Escape | Stop the reply (only while the model is thinking or the reply is playing) |
+| F2 | Mute or unmute the mic |
+| Ctrl+Q | Quit |
+
+Ctrl+C is not quit here, because the app uses it to copy. Without the `tui` extra, `fish-voice --tui` says how to install it and exits 2. A modern terminal works best; macOS's Terminal.app is limited to 256 colors, so use iTerm2, Kitty, WezTerm or Ghostty there.
+
 ## Extras
 
 | Extra | Pulls in |
@@ -206,6 +223,7 @@ Both are off by default because they also change ordinary English. `FISH_TTS_MOO
 | `vad` | `webrtcvad-wheels` |
 | `aec` | `pywebrtc-audio` |
 | `cli` | the three above, plus `openrouter` |
+| `tui` | `textual`, for `fish-voice --tui` |
 
 `import fish_audio_suite_voice` works without them. The heavy imports happen inside the functions that need them.
 
