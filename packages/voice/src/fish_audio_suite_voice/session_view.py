@@ -40,15 +40,16 @@ __all__ = [
 _FULL_SCALE: Final = 32768.0  # the peak of 16-bit audio
 _QUIETEST_DB: Final = -60.0  # the floor for measuring a level at all (silence reads as this)
 # The mic meter's window. Speech into a mic sits around -35 to -20 dB, so a window that ends
-# at 0 dB leaves it at half height. This one ends where the loud syllables of ordinary speech
-# do, so they reach the top and a normal speaking level sits at about three fifths.
+# at 0 dB leaves it at half height. This one ends a little above the loud syllables of a hot
+# mic (up to about -11 dB), so they reach the top without a run of bars all being full: that
+# draws a flat block, and a normal speaking level sits at about half to three fifths.
 METER_QUIETEST_DB: Final = -54.0  # at or below this, a meter shows empty
-METER_LOUDEST_DB: Final = -15.0  # at or above this, it shows full
+METER_LOUDEST_DB: Final = -9.0  # at or above this, it shows full
 _METER_SPAN_DB: Final = METER_LOUDEST_DB - METER_QUIETEST_DB
 # How a level bar moves. The scale is the meter's own: 0 to 1 spans the meter's window.
-BODY_RELEASE_PER_S: Final = 1.5  # a bar falls from full to empty in about two thirds of a second
-PEAK_HOLD_S: Final = 1.2  # the cap above a bar stays put this long after a peak
-PEAK_RELEASE_PER_S: Final = 25.0 / _METER_SPAN_DB  # then falls at 25 dB per second
+BODY_RELEASE_PER_S: Final = 4.0  # a bar falls from full to empty in a quarter of a second
+PEAK_HOLD_S: Final = 0.3  # the cap above a bar stays put this long after a peak
+PEAK_RELEASE_PER_S: Final = 60.0 / _METER_SPAN_DB  # then falls at 60 dB per second
 # The speaker is scaled against the reply's own loudest recent moment, not a fixed scale.
 SPEAKER_SPAN_DB: Final = 24.0  # a bar is empty this far below that moment
 SPEAKER_START_DB: Final = -30.0  # what "loud" is assumed to be until the reply shows otherwise
@@ -125,7 +126,7 @@ def level_fraction(rms: float) -> float:
     -------
     float
         0 at ``METER_QUIETEST_DB`` (54 dB below full scale) or quieter, 1 at
-        ``METER_LOUDEST_DB`` (15 dB below) or louder, in between on a decibel scale, which is
+        ``METER_LOUDEST_DB`` (9 dB below) or louder, in between on a decibel scale, which is
         how loudness is heard. A raw linear bar would look empty for ordinary speech,
         which sits at a few hundred out of 32768.
 
@@ -134,9 +135,9 @@ def level_fraction(rms: float) -> float:
     >>> level_fraction(0.0), level_fraction(32768.0)
     (0.0, 1.0)
     >>> round(level_fraction(1000.0), 2)  # -30 dB, a normal speaking level into a mic
-    0.61
-    >>> round(level_fraction(4000.0), 2)  # a loud syllable
-    0.92
+    0.53
+    >>> round(level_fraction(6000.0), 2)  # a loud syllable on a hot mic
+    0.87
     """
     ratio = rms / _FULL_SCALE  # a tiny rms can underflow to zero here, so test the ratio
     if not ratio > 0:
@@ -347,7 +348,7 @@ class Ballistics:
     The body of a bar jumps to a louder level straight away and falls at
     ``BODY_RELEASE_PER_S`` otherwise, so a syllable is seen whole and then fades. The peak
     is the loudest recent level: it stays for ``PEAK_HOLD_S`` and then falls at
-    ``PEAK_RELEASE_PER_S``, slowly enough to read.
+    ``PEAK_RELEASE_PER_S``, fast enough not to trail a shelf behind a loud word.
 
     Attributes
     ----------
@@ -385,7 +386,7 @@ class Ballistics:
         (1.0, 1.0)
         >>> body, peak = b.update(0.0, 0.1)  # the body falls, the peak holds
         >>> round(body, 2), peak
-        (0.85, 1.0)
+        (0.6, 1.0)
         """
         level = min(1.0, max(0.0, level))
         dt = max(0.0, dt)

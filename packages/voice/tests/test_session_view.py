@@ -146,9 +146,9 @@ def test_the_meter_rises_with_loudness_and_shows_speech_well_above_empty() -> No
     assert levels == sorted(levels)
     assert len(set(levels)) == len(levels)
     # Ordinary speech, a few hundred out of 32768, would be invisible on a linear bar.
-    assert level_fraction(300.0) > 0.3  # about a third of the bar
-    assert level_fraction(1000.0) > 0.55  # a normal speaking level is over half
-    assert level_fraction(4000.0) < 1.0  # and a loud syllable still has some headroom
+    assert level_fraction(300.0) > 0.25  # quiet speech is a quarter of the bar
+    assert level_fraction(1000.0) > 0.5  # a normal speaking level is over half
+    assert level_fraction(9000.0) < 1.0  # and a loud syllable on a hot mic keeps its shape
     assert level_fraction(300.0) > 30 * (300.0 / 32768.0)  # a linear bar would show under 1%
 
 
