@@ -803,3 +803,147 @@ def test_the_timings_bar_keeps_its_parts_distinct_even_when_one_is_tiny_or_the_p
     assert [part[0] for part in bar.split()] == ["⠛", "⣿", "⣤"]  # the short one still shows
     narrow = _timings_widget_text(tiny_asr, 4)[1]
     assert len(narrow) == 4  # never wider than the panel
+
+
+class _WaveHost(App[None]):
+    def compose(self) -> ComposeResult:
+        yield Waveform()
+
+
+def _wave_lines(wave: Waveform) -> list[str]:
+    return [strip.text for strip in wave.render_lines(Region(0, 0, wave.size.width, 4))]
+
+
+def _wave_colours(wave: Waveform, row: int) -> list[tuple[int, int, int] | None]:
+    strip = wave.render_lines(Region(0, 0, wave.size.width, 4))[row]
+    colours: list[tuple[int, int, int] | None] = []
+    for segment in strip:
+        colour = segment.style.color if segment.style is not None else None
+        triplet = tuple(colour.get_truecolor()) if colour is not None else None
+        colours.extend([triplet] * len(segment.text))  # type: ignore[list-item]
+    return colours
+
+
+def test_the_waveform_moves_to_a_mood_for_each_state_and_goes_still_when_muted_or_over() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        wave = harness.app.query_one(Waveform)
+        assert wave.mood == "still"
+        harness.bus.emit(Listening())
+        await pilot.pause(0.1)
+        assert wave.mood == "listening"
+        harness.bus.emit(Heard("hi", 1.0))
+        await pilot.pause(0.1)
+        assert wave.mood == "thinking"
+        harness.bus.emit(Speaking())
+        await pilot.pause(0.1)
+        assert wave.mood == "still"
+        harness.bus.emit(Listening())
+        await pilot.pause(0.1)
+        await pilot.press("f2")  # muted: it is not listening, so no cursor
+        await pilot.pause(0.1)
+        assert wave.mood == "still"
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+
+
+def test_while_thinking_a_wave_scrolls_by_itself_and_stops_when_the_state_changes() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        wave = harness.app.query_one(Waveform)
+        harness.bus.emit(Heard("hi", 1.0))
+        await pilot.pause(0.3)
+        first = _wave_lines(wave)
+        await pilot.pause(0.3)
+        second = _wave_lines(wave)
+        assert first != second  # it moves with no mic input at all
+        assert max(_dots(ch) for line in second for ch in line) >= 4  # and is a real wave
+        harness.bus.emit(Speaking())
+        await pilot.pause(0.2)
+        held = _wave_lines(wave)
+        await pilot.pause(0.3)
+        assert _wave_lines(wave) == held  # the timer stopped
+        assert (
+            max(_dots(ch) for line in held for ch in line) <= 2
+        )  # the wave is gone, a thin line is left
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+
+
+def test_while_listening_a_cursor_blinks_at_the_right_edge() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        wave = harness.app.query_one(Waveform)
+        harness.bus.emit(Listening())
+        await pilot.pause(0.1)
+        seen: set[str] = set()
+        for _ in range(8):
+            seen.add(_wave_lines(wave)[1][-1])  # the cursor's character, near the middle
+            await pilot.pause(0.2)
+        assert len(seen) == 2  # on and off
+        assert all(_dots(ch) > 0 for ch in seen)  # even "off" keeps the thin baseline
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+
+
+def test_with_animations_off_the_cursor_and_the_thinking_wave_hold_still() -> None:
+    harness = _Harness()
+    harness.app.animation_level = "none"  # what TEXTUAL_ANIMATIONS=none sets
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        wave = harness.app.query_one(Waveform)
+        harness.bus.emit(Listening())
+        await pilot.pause(0.1)
+        cursor = _wave_lines(wave)
+        await pilot.pause(0.7)
+        assert _wave_lines(wave) == cursor  # no blinking
+        harness.bus.emit(Heard("hi", 1.0))
+        await pilot.pause(0.1)
+        frozen = _wave_lines(wave)
+        assert max(_dots(ch) for line in frozen for ch in line) >= 4  # a picture, not a blank
+        await pilot.pause(0.4)
+        assert _wave_lines(wave) == frozen  # and it does not move
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+
+
+def test_a_peak_cap_floats_above_a_falling_bar_holds_then_falls_away() -> None:
+    async def main() -> None:
+        host = _WaveHost()
+        async with host.run_test(size=(40, 10)) as pilot:
+            wave = host.query_one(Waveform)
+            await pilot.pause()
+            wave.push(1.0, 0.3, now=0.0)
+            wave.push(0.0, 0.3, now=0.3)  # the bar falls; the cap holds
+            await pilot.pause()
+            assert _dots(_wave_lines(wave)[0][-1]) > 0  # the cap, up on the top line
+            for step in range(1, 20):  # silence for ten seconds: the hold ends and the cap falls
+                wave.push(0.0, 0.3, now=0.3 + 0.5 * step)
+            await pilot.pause()
+            assert _dots(_wave_lines(wave)[0][-1]) == 0  # bar and cap are both gone
+
+    asyncio.run(main())
+
+
+def test_brightness_follows_loudness_and_colour_follows_what_the_bar_is() -> None:
+    async def main() -> None:
+        host = _WaveHost()
+        async with host.run_test(size=(40, 10)) as pilot:
+            wave = host.query_one(Waveform)
+            await pilot.pause()
+            for level in (0.2, 0.2, 0.55, 0.55, 0.95, 0.95):  # soft, medium, loud, all heard
+                wave.push(level, 0.1, now=0.0)
+            await pilot.pause()
+            colours = _wave_colours(wave, 1)
+            soft, medium, loud = colours[-3], colours[-2], colours[-1]
+            assert None not in (soft, medium, loud)
+            assert sum(soft) < sum(medium) < sum(loud)  # type: ignore[arg-type]  # brighter as it gets louder
+
+    asyncio.run(main())

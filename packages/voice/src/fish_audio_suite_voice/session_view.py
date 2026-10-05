@@ -22,9 +22,11 @@ from fish_audio_suite_voice.events import (
 )
 
 __all__ = [
+    "Ballistics",
     "SessionView",
     "TurnTimings",
     "level_fraction",
+    "processing_level",
     "reduce_view",
     "split_cells",
     "turn_timings",
@@ -33,6 +35,10 @@ __all__ = [
 
 _FULL_SCALE: Final = 32768.0  # the peak of 16-bit audio
 _QUIETEST_DB: Final = -60.0  # at or below this, a meter shows empty
+# How a level bar moves. The scale is the meter's own: 0 to 1 spans _QUIETEST_DB to 0 dB.
+BODY_RELEASE_PER_S: Final = 1.5  # a bar falls from full to empty in about two thirds of a second
+PEAK_HOLD_S: Final = 1.2  # the cap above a bar stays put this long after a peak
+PEAK_RELEASE_PER_S: Final = 25.0 / -_QUIETEST_DB  # then falls at 25 dB per second
 _BRAILLE: Final = 0x2800  # the first Braille pattern, which has no dots
 # The bit that raises each dot of a Braille cell, by dot row (top to bottom) and column.
 _DOT_BITS: Final = ((0x01, 0x08), (0x02, 0x10), (0x04, 0x20), (0x40, 0x80))
@@ -113,7 +119,9 @@ def level_fraction(rms: float) -> float:
     return min(1.0, max(0.0, (decibels - _QUIETEST_DB) / -_QUIETEST_DB))
 
 
-def wave_dots(levels: Sequence[float], rows: int) -> list[str]:
+def wave_dots(
+    levels: Sequence[float], rows: int, peaks: Sequence[float] | None = None
+) -> list[str]:
     """Draw a mirrored, dot-matrix waveform: one bar per level, two bars to a character.
 
     Parameters
@@ -125,6 +133,9 @@ def wave_dots(levels: Sequence[float], rows: int) -> list[str]:
     rows : int
         How many lines tall the drawing is. Each line has four dot rows, so the middle
         splits ``rows * 4`` dot rows into two equal halves. At least 1.
+    peaks : Sequence[float], optional
+        A held peak for each bar, from 0 to 1. A peak above its bar, with room to spare,
+        is drawn as one dot (a cap) at that height, both above and below the middle.
 
     Returns
     -------
@@ -147,7 +158,12 @@ def wave_dots(levels: Sequence[float], rows: int) -> list[str]:
     for x, level in enumerate(levels):
         reach = max(1, round(min(1.0, max(0.0, level)) * half))
         column = x % 2
-        for step in range(reach):
+        steps = list(range(reach))
+        if peaks is not None and x < len(peaks):
+            cap = round(min(1.0, max(0.0, peaks[x])) * half) - 1
+            if cap > reach:  # a cap right above the bar would only make it look taller
+                steps.append(cap)
+        for step in steps:
             for dot_row in (half - 1 - step, half + step):
                 grid[dot_row // 4][x // 2] |= _DOT_BITS[dot_row % 4][column]
     return ["".join(chr(_BRAILLE + bits) for bits in row) for row in grid]
@@ -294,3 +310,91 @@ def split_cells(parts: Sequence[float], width: int) -> list[int]:
                 cells[donor] -= 1
                 cells[i] = 1
     return cells
+
+
+@dataclass(slots=True)
+class Ballistics:
+    """How a level bar moves: up at once, down at a steady pace, with a cap that holds.
+
+    The body of a bar jumps to a louder level straight away and falls at
+    ``BODY_RELEASE_PER_S`` otherwise, so a syllable is seen whole and then fades. The peak
+    is the loudest recent level: it stays for ``PEAK_HOLD_S`` and then falls at
+    ``PEAK_RELEASE_PER_S``, slowly enough to read.
+
+    Attributes
+    ----------
+    body : float
+        Where the bar is, from 0 to 1.
+    peak : float
+        Where the cap is, from 0 to 1. Never below ``body``.
+    hold_left : float
+        Seconds the peak still stays where it is.
+    """
+
+    body: float = 0.0
+    peak: float = 0.0
+    hold_left: float = 0.0
+
+    def update(self, level: float, dt: float) -> tuple[float, float]:
+        """Move on by ``dt`` seconds towards ``level``.
+
+        Parameters
+        ----------
+        level : float
+            The newest level, from 0 to 1.
+        dt : float
+            Seconds since the last update. Negative counts as zero.
+
+        Returns
+        -------
+        tuple[float, float]
+            The body and the peak to draw.
+
+        Examples
+        --------
+        >>> b = Ballistics()
+        >>> b.update(1.0, 0.06)
+        (1.0, 1.0)
+        >>> body, peak = b.update(0.0, 0.1)  # the body falls, the peak holds
+        >>> round(body, 2), peak
+        (0.85, 1.0)
+        """
+        level = min(1.0, max(0.0, level))
+        dt = max(0.0, dt)
+        self.body = level if level >= self.body else max(level, self.body - BODY_RELEASE_PER_S * dt)
+        if level >= self.peak:
+            self.peak, self.hold_left = level, PEAK_HOLD_S
+        elif self.hold_left > dt:
+            self.hold_left -= dt
+        else:
+            fall = dt - self.hold_left
+            self.hold_left = 0.0
+            self.peak = max(self.body, level, self.peak - PEAK_RELEASE_PER_S * fall)
+        return self.body, self.peak
+
+
+def processing_level(seconds: float) -> float:
+    """Return how tall a bar is at ``seconds`` into the "thinking" animation.
+
+    Parameters
+    ----------
+    seconds : float
+        Time since thinking began.
+
+    Returns
+    -------
+    float
+        From 0.05 to 1: three slow sine waves of different speeds added together, so the
+        pattern keeps changing and never repeats exactly, with no audio behind it.
+
+    Examples
+    --------
+    >>> 0.05 <= processing_level(1.234) <= 1.0
+    True
+    """
+    waves = (
+        0.25 * math.sin(seconds * 1.5)
+        + 0.2 * math.sin(seconds * 0.8)
+        + 0.15 * math.cos(seconds * 2.0)
+    )
+    return min(1.0, max(0.05, 0.2 + waves))

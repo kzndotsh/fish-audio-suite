@@ -27,8 +27,13 @@ from fish_audio_suite_voice.events import (
     TurnEnded,
 )
 from fish_audio_suite_voice.session_view import (
+    BODY_RELEASE_PER_S,
+    PEAK_HOLD_S,
+    PEAK_RELEASE_PER_S,
+    Ballistics,
     SessionView,
     level_fraction,
+    processing_level,
     reduce_view,
     split_cells,
     turn_timings,
@@ -219,3 +224,54 @@ def test_split_cells_always_adds_up_and_never_goes_negative(parts: list[float], 
             assert all(count >= 1 for part, count in zip(parts, cells, strict=True) if part > 0)
     else:
         assert sum(cells) == 0
+
+
+def test_a_held_peak_above_a_bar_is_drawn_as_a_cap_both_above_and_below_the_middle() -> None:
+    plain = wave_dots([0.0, 0.0], 2)
+    capped = wave_dots([0.0, 0.0], 2, peaks=[1.0, 1.0])
+    assert sum(_dots(ch) for line in plain for ch in line) == 2 * 2  # a thin line only
+    assert sum(_dots(ch) for line in capped for ch in line) == 2 * 4  # plus a cap above and below
+    assert wave_dots([0.5, 0.5], 2, peaks=[0.5, 0.5]) == wave_dots([0.5, 0.5], 2)  # not above it
+    assert wave_dots([0.9, 0.9], 2, peaks=[1.0, 1.0]) == wave_dots([0.9, 0.9], 2)  # no gap to show
+    assert wave_dots([0.2], 1, peaks=[]) == wave_dots([0.2], 1)  # missing peaks are ignored
+
+
+def test_a_bar_rises_at_once_falls_at_a_steady_pace_and_its_peak_holds_then_falls_slowly() -> None:
+    ballistics = Ballistics()
+    assert ballistics.update(0.8, 0.06) == (0.8, 0.8)  # up at once, and the peak with it
+    body, peak = ballistics.update(0.0, 0.1)
+    assert body == pytest.approx(0.8 - BODY_RELEASE_PER_S * 0.1)
+    assert peak == 0.8  # held
+    body, peak = ballistics.update(0.0, PEAK_HOLD_S)  # the hold runs out during this step
+    assert body == 0.0
+    assert peak == pytest.approx(
+        max(0.0, 0.8 - PEAK_RELEASE_PER_S * (0.1 + PEAK_HOLD_S - PEAK_HOLD_S))
+    )
+    assert 0.0 < peak < 0.8  # falling, not gone
+    seconds = 0.8 / PEAK_RELEASE_PER_S
+    assert ballistics.update(0.0, seconds + 1.0)[1] == 0.0  # eventually it is gone
+
+
+@given(
+    st.lists(
+        st.tuples(
+            st.floats(min_value=-1.0, max_value=2.0), st.floats(min_value=-1.0, max_value=3.0)
+        ),
+        max_size=40,
+    )
+)
+def test_ballistics_stay_in_range_and_the_peak_never_sits_below_the_bar(
+    steps: list[tuple[float, float]],
+) -> None:
+    ballistics = Ballistics()
+    for level, dt in steps:
+        body, peak = ballistics.update(level, dt)
+        assert 0.0 <= body <= 1.0
+        assert body <= peak <= 1.0
+
+
+def test_the_thinking_wave_stays_in_range_keeps_changing_and_is_repeatable() -> None:
+    values = [processing_level(step * 0.05) for step in range(400)]
+    assert all(0.05 <= value <= 1.0 for value in values)
+    assert len({round(value, 3) for value in values}) > 100  # always moving
+    assert processing_level(3.3) == processing_level(3.3)  # no randomness
