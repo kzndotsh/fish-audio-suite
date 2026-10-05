@@ -169,9 +169,7 @@ class Conversation(VerticalScroll):
             _PULSE_BARS[round((math.sin(self._phase * 0.7 + i * 0.9) + 1) / 2 * top)]
             for i in range(5)
         )
-        return Content.assemble(
-            ("you ▸ ", "bold $text-primary"), (bars, "$text-success"), (" \u2026", "dim")
-        )
+        return Content.assemble(("you ▸ ", "bold $text-primary"), (bars, "$text-success"))
 
     def _advance_pulse(self) -> None:
         if self._pending is not None:
