@@ -19,8 +19,8 @@ Python 3.12 or newer. Use uv for everything; there is no pip or requirements fil
 `just check` runs every Python gate that CI runs. Without `just`, the commands are:
 
 ```sh
-uv run ruff check packages .github/scripts
-uv run ruff format --check packages .github/scripts
+uv run ruff check packages .github/scripts scripts
+uv run ruff format --check packages .github/scripts scripts
 uv run pydoclint --config=pyproject.toml packages
 uv run basedpyright
 uv run python .github/scripts/verifytypes.py
@@ -31,7 +31,7 @@ uv run pytest
 under the floors in `.github/verifytypes-floors.json` (`just types-public`).
 `pytest` also runs the `>>>` examples in kit's docstrings as doctests.
 
-`just fmt` (or `uv run ruff format packages .github/scripts`) rewrites the formatting. `uvx pre-commit install`
+`just fmt` (or `uv run ruff format packages .github/scripts scripts`) rewrites the formatting. `uvx pre-commit install`
 runs the fast checks on every commit.
 
 CI also checks that the wheels build, `nix flake check`, the Docker image, the

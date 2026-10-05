@@ -34,6 +34,7 @@ from fish_audio_suite_kit import (
 )
 from fish_audio_suite_voice.cancel import is_cancel_noise, reap
 from fish_audio_suite_voice.debug import debug, warn, with_detail
+from fish_audio_suite_voice.declick import EdgeFade
 from fish_audio_suite_voice.playback import PlaybackSink
 from fish_audio_suite_voice.spoken import spoken_prefix
 
@@ -127,6 +128,7 @@ class TurnSpec:
     partial_chars: int
     trace_headers: Mapping[str, str]
     config: TTSConfig
+    fade_ms: float = 0.0
 
 
 @dataclass(slots=True)
@@ -325,6 +327,12 @@ async def _pump_ws_audio(
     # rest of a long reply in memory.
     queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=1)
     reader = asyncio.create_task(_read_stream(aiter(stream), queue))
+    # Fish can start or stop a sentence on a loud sample next to silence, which clicks.
+    fade = (
+        EdgeFade(run.spec.sample_rate, run.spec.fade_ms)
+        if run.spec.audio_format == "pcm" and run.spec.fade_ms > 0
+        else None
+    )
     cancelled, stop_watching = _watch_cancel(run.cancel)
     cancel_wait = asyncio.ensure_future(cancelled.wait())
     get: asyncio.Future[Any] | None = None
@@ -350,6 +358,9 @@ async def _pump_ws_audio(
             item = get.result()
             get = None
             if item is _STREAM_END:
+                tail = fade.finish() if fade is not None else b""
+                if tail:
+                    await _play(run.sink, tail)
                 return
             if isinstance(item, BaseException):
                 raise item
@@ -359,7 +370,9 @@ async def _pump_ws_audio(
             if run.cancel.is_set():
                 await close_client()
                 return
-            await _play(run.sink, item)
+            chunk = item if fade is None else fade.process(item)
+            if chunk:
+                await _play(run.sink, chunk)
     finally:
         stop_watching.set()
         for waiter in (get, cancel_wait):

@@ -12,10 +12,10 @@ runs:
       run: uv sync --frozen --all-packages --extra cli --group dev --group test
     - name: Ruff check
       shell: bash
-      run: uv run ruff check packages .github/scripts
+      run: uv run ruff check packages .github/scripts scripts
     - name: Ruff format
       shell: bash
-      run: uv run ruff format --check packages .github/scripts
+      run: uv run ruff format --check packages .github/scripts scripts
     - name: Docstrings
       shell: bash
       run: uv run pydoclint --config=pyproject.toml packages

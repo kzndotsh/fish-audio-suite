@@ -130,7 +130,7 @@ curl -s -H "Authorization: Bearer $OPENROUTER_API_KEY" \
   | jq '.data.endpoints[] | {provider_name, latency_last_30m, throughput_last_30m}'
 ```
 
-A snapshot of models (October 2026, last 30 minutes, fastest provider). The first five are roleplay-tuned; the last three are general-purpose and widely used:
+A snapshot of roleplay-capable models (October 2026, last 30 minutes, fastest provider):
 
 > [!NOTE]
 > These numbers move from hour to hour. Run the `curl` above before you pick.
@@ -142,9 +142,6 @@ A snapshot of models (October 2026, last 30 minutes, fastest provider). The firs
 | `mistralai/mistral-small-3.2-24b-instruct` | 4 | 290 / 424 ms | The base model Cydonia is tuned from |
 | `sao10k/l3-lunaris-8b` | 3 | 140 / 295 ms | Fastest, but small |
 | `thedrummer/cydonia-24b-v4.1` | 1 | 691 / 2049 ms | Single provider; measured live anywhere from 0.4 to 2.6 s |
-| `z-ai/glm-5.3` | 40 | 309 / 2129 ms | General purpose, no thinking phase. Measured live at 0.34 to 0.47 s, the steadiest of the newer models |
-| `z-ai/glm-5.3-flash` | 35 | 447 / 1932 ms | Cheap and widely used. Thinks briefly before it answers. Measured live at 0.23 to 0.81 s |
-| `deepseek/deepseek-v4.1-flash` | 30 | 268 / 886 ms | One of the most used models on OpenRouter. Thinks briefly first. Measured live at 0.44 to 0.60 s |
 
 With `--debug`, the `llm stream_end` line shows which provider served each reply (`provider=DeepInfra`).
 

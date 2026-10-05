@@ -109,6 +109,7 @@ DEFAULTS = {
         "DEFAULT_BARGE_PLAYING_GAIN",
         "voice",
     ),
+    "FISH_VOICE_FADE_MS": ("fish_audio_suite_voice.tune", "DEFAULT_FADE_MS", "voice"),
     "FISH_VOICE_COOLDOWN": (
         "fish_audio_suite_voice.tune",
         "DEFAULT_POST_SPEAK_COOLDOWN_S",

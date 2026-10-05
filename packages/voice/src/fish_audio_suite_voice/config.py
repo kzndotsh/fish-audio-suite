@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
@@ -33,6 +34,7 @@ from fish_audio_suite_voice.debug import warn
 from fish_audio_suite_voice.llm_tune import DEFAULT_HISTORY_TURNS, OPENROUTER_API_BASE, LlmTune
 from fish_audio_suite_voice.playback import DEFAULT_PLAYBACK, playback_key
 from fish_audio_suite_voice.tune import (
+    DEFAULT_FADE_MS,
     AecTune,
     BargeTune,
     ListenTune,
@@ -83,6 +85,9 @@ class VoiceCliConfig:
         Rewrite a sentence-leading mood word into a ``[cue]``.
     stream_tts : bool
         Speak the reply while the model is still writing it. Off by default.
+    fade_ms : float
+        Fade-in at each sound that starts out of silence, so a sentence does not
+        click when it begins. 0 turns it off.
     drop_narration : bool
         Drop stage-direction lines such as ``She smiles.`` before TTS.
     """
@@ -115,6 +120,7 @@ class VoiceCliConfig:
     mood_lead: bool = False
     drop_narration: bool = False
     stream_tts: bool = False
+    fade_ms: float = DEFAULT_FADE_MS
 
 
 def _asr_model(default: str) -> str:
@@ -245,6 +251,7 @@ def load_config() -> VoiceCliConfig:
             DEFAULT_REPEAT_WINDOW_S,
             lo=0.0,
         ),
+        fade_ms=read_float("FISH_VOICE_FADE_MS", DEFAULT_FADE_MS, lo=0.0, hi=_FADE_MAX_MS),
         mood_lead=read_flag("FISH_TTS_MOOD_LEAD", default=False),
         drop_narration=read_flag(
             "FISH_TTS_DROP_NARRATION",
@@ -269,10 +276,15 @@ class _Prompt:
 # A character card is a few KB. This stops a wrong path (a log, a binary) from
 # becoming the system prompt.
 _PROMPT_FILE_MAX_BYTES: Final = 64 * 1024
+# A fade-in longer than this would blur the start of every word.
+_FADE_MAX_MS: Final = 50.0
+# Where a character file asks for the default voice rules. ``{{default_prompt}}``, with
+# optional spaces inside the braces.
+_DEFAULT_SLOT: Final = re.compile(r"\{\{\s*default_prompt\s*\}\}")
 
 
 def system_prompt_from_file(path: str, default: str) -> str | None:
-    """Read a character file and put the voice rules after it.
+    """Read a character file and combine it with the voice rules.
 
     Parameters
     ----------
@@ -280,14 +292,16 @@ def system_prompt_from_file(path: str, default: str) -> str | None:
         File with the character or scene, in UTF-8. ``~`` is expanded and a
         relative path is read from the working directory.
     default : str
-        The voice rules (cue tags, short spoken replies) that follow the file.
+        The voice rules (cue tags, short spoken replies).
 
     Returns
     -------
     str or None
-        The file text, a blank line, then ``default``. None, after a warning,
-        when the file is missing, too large, not UTF-8 or empty, so the caller
-        can fall back to the default prompt.
+        When the file holds ``{{default_prompt}}``, the file text with every
+        such slot replaced by ``default``, so the file decides where the voice
+        rules go. Otherwise the file text, a blank line, then ``default``. None,
+        after a warning, when the file is missing, too large, not UTF-8 or
+        empty, so the caller can fall back to the default prompt.
     """
     file = Path(path).expanduser()
     if file.exists() and not file.is_file():
@@ -311,6 +325,9 @@ def system_prompt_from_file(path: str, default: str) -> str | None:
     if not card:
         warn(f"fish-voice: prompt file {file} is empty, ignoring it")
         return None
+    if _DEFAULT_SLOT.search(card):
+        # A function, not a string: a backslash in ``default`` is not an escape.
+        return _DEFAULT_SLOT.sub(lambda _: default, card)
     return f"{card}\n\n{default}"
 
 

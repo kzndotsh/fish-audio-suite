@@ -35,6 +35,7 @@ from fish_audio_suite_voice.debug import warn
 from fish_audio_suite_voice.playback import PlaybackSink
 from fish_audio_suite_voice.stream_scrub import delta_events
 from fish_audio_suite_voice.tts_turn import TurnSpec, run_isolated, run_turn, text_events
+from fish_audio_suite_voice.tune import DEFAULT_FADE_MS
 from fish_audio_suite_voice.wire import TtsResult
 
 __all__ = [
@@ -156,6 +157,7 @@ class FishSpeaker:
     volume: float = _STOCK.volume
     mood_lead: bool = False
     partial_chars: int = _STOCK.tts_partial_chars
+    fade_ms: float = DEFAULT_FADE_MS
     base_url: str = _STOCK.fish_base
     trace_headers: dict[str, str] = field(default_factory=dict)
 
@@ -403,6 +405,7 @@ class FishSpeaker:
             partial_chars=self.partial_chars,
             trace_headers=MappingProxyType(dict(self.trace_headers)),
             config=self._tts_config(),
+            fade_ms=self.fade_ms,
         )
 
     def _tts_config(self) -> TTSConfig:

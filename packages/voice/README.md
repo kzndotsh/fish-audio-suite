@@ -97,6 +97,20 @@ rules (spoken replies, `[cue]` tags), and the opening cue example is pinned as u
 has to describe who is talking. If the file is missing, empty, too large or not UTF-8, fish-voice warns
 and uses the default prompt. The flag beats the variable, and the file beats `FISH_VOICE_SYSTEM_PROMPT`.
 
+**Choose where the voice rules go.** Put `{{default_prompt}}` in the file and the default voice rules
+are inserted right there, instead of after the file. Use it to put the rules first and the character
+after them, or between two parts of the character:
+
+```text
+{{default_prompt}}
+
+You are Mira, a dry-witted ship's engineer. Stay in character.
+```
+
+The slot may have spaces inside the braces (`{{ default_prompt }}`), and every slot in the file is
+replaced. A file without the slot keeps the old behavior: the rules come after it. A file that holds
+only the slot is the default prompt.
+
 To write the whole prompt yourself, set `FISH_VOICE_SYSTEM_PROMPT` instead. It is used as written, with
 no voice rules and no cue example, so ask for `[emotion]` cue tags in it if you want an expressive voice.
 
@@ -242,7 +256,7 @@ LLM:
 | `FISH_LLM_REFERER`, `FISH_LLM_TITLE`, `FISH_LLM_CATEGORIES` | this project's | OpenRouter attribution. Empty disables |
 | `FISH_LLM_CONTINUE` | off | Send one more request when a reply stops mid-sentence |
 | `FISH_VOICE_SYSTEM_PROMPT` | the kit default | System prompt text, used as written. Set but blank sends no system prompt |
-| `FISH_VOICE_SYSTEM_PROMPT_FILE` | none | A character file. The voice rules follow it. Beats `FISH_VOICE_SYSTEM_PROMPT`. See characters above |
+| `FISH_VOICE_SYSTEM_PROMPT_FILE` | none | A character file. The voice rules follow it, or go where `{{default_prompt}}` is in the file. Beats `FISH_VOICE_SYSTEM_PROMPT`. See characters above |
 | `FISH_VOICE_HISTORY_TURNS` | `20` | User and assistant pairs kept |
 | `FISH_VOICE_STREAM_TTS` | off | Speak the reply while the model is still writing it. See streaming above |
 | `FISH_VOICE_REPEAT_WINDOW` | `1.5` | Seconds. A line equal to the previous one is dropped only if it ends this soon after the mic opens. 0 never drops a repeat |
@@ -259,6 +273,7 @@ Listen and interrupt. Times are approximate at 30 ms frames.
 | `FISH_VOICE_SILENCE_FRAMES` | `40` | About 1.2 s of quiet ends the turn |
 | `FISH_VOICE_VAD` | `1` | WebRTC VAD mode, 0–3. Higher is pickier |
 | `FISH_VOICE_COOLDOWN` | `0.8` | Seconds after playback |
+| `FISH_VOICE_FADE_MS` | `4` | Milliseconds of fade at each sentence start and end (a sound next to silence), so it does not click. 0 turns it off. Up to 50 |
 | `FISH_VOICE_BLEED_DELAY` | `0.9` | Used when AEC is off or missing |
 | `FISH_VOICE_AEC` | on | `0` disables in-process echo cancellation |
 | `FISH_VOICE_AEC_WET` | `0.85` | Mix of cleaned mic into the raw mic, 0 to 1 |
