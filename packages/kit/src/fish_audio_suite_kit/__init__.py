@@ -18,6 +18,7 @@ from fish_audio_suite_kit.cues import (
     ensure_lead_cue,
     mood_lead_hold_at,
     normalize_cues,
+    split_cues,
     strip_cue_tags,
 )
 from fish_audio_suite_kit.cuts import ends_sentence, next_tts_cut, split_tts_piece
@@ -205,6 +206,7 @@ __all__ = [
     "scrub_tts",
     "sentence_closer_hold_at",
     "should_retry_fish_status",
+    "split_cues",
     "split_tts_piece",
     "strip_base",
     "strip_cue_tags",

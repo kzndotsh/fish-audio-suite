@@ -7,6 +7,7 @@ from fish_audio_suite_kit import (
     ensure_lead_cue,
     normalize_cues,
     scrub_tts,
+    split_cues,
     strip_cue_tags,
     tts_hold_at,
 )
@@ -293,3 +294,29 @@ def test_a_cue_or_whisper_longer_than_the_cap_is_left_as_text() -> None:
     assert normalize_cues(long_cue) == long_cue
     assert normalize_cues("<whisper>hush</whisper>") == "[whispering] hush"
     assert normalize_cues("[happy] hi") == "[happy] hi"
+
+
+def test_split_cues_marks_each_cue_and_loses_nothing() -> None:
+    text = "[calm] Hello [soft encouragement] there. a[i] done\n[sigh]"
+    pieces = split_cues(text)
+    assert "".join(piece for piece, _ in pieces) == text
+    assert [piece for piece, is_cue in pieces if is_cue] == [
+        "[calm]",
+        "[soft encouragement]",
+        "[i]",
+        "[sigh]",
+    ]
+    assert all(piece for piece, _ in pieces)
+
+
+def test_split_cues_leaves_a_too_long_or_broken_bracket_as_text() -> None:
+    long_cue = "[" + "x" * 250 + "]"
+    assert split_cues(long_cue) == [(long_cue, False)]
+    assert split_cues("[open\nclose]") == [("[open\nclose]", False)]
+    assert split_cues("") == []
+
+
+@pytest.mark.perf
+def test_split_cues_is_linear_on_hostile_input() -> None:
+    for text in ("[" * 20_000, "[ " * 10_000, "[a" * 10_000, "]" * 20_000):
+        assert_linear_time(split_cues, text)

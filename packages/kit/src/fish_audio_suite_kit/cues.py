@@ -13,6 +13,7 @@ __all__ = [
     "normalize_cues",
     "paren_cue_names",
     "rewrite_s1_parens",
+    "split_cues",
     "spoken_mood_span",
     "strip_cue_tags",
 ]
@@ -197,6 +198,47 @@ _KNOWN_CUE_TAG_RE = re.compile(
     + r")\](?!\])",
     re.IGNORECASE,
 )
+
+
+def split_cues(text: str) -> list[tuple[str, bool]]:
+    """Split text into its ``[cue]`` tags and the words around them.
+
+    Parameters
+    ----------
+    text : str
+        Text that may contain bracketed cues such as ``[calm]`` or
+        ``[smothering affection]``.
+
+    Returns
+    -------
+    list of tuple of str and bool
+        Pieces in order, each with ``True`` when it is a cue (brackets included).
+        Joined back together they are exactly ``text``, so nothing is lost.
+        Empty pieces are left out. A bracket longer than a cue can be, or one
+        that spans a line break, is plain text.
+
+    Notes
+    -----
+    A display uses this to style cues without passing the text through a markup
+    parser, which would read the brackets as tags.
+
+    Examples
+    --------
+    >>> split_cues("[calm] Hello [soft encouragement] there.")
+    [('[calm]', True), (' Hello ', False), ('[soft encouragement]', True), (' there.', False)]
+    >>> split_cues("no cues")
+    [('no cues', False)]
+    """
+    pieces: list[tuple[str, bool]] = []
+    last = 0
+    for match in _CUE_RE.finditer(text):
+        if match.start() > last:
+            pieces.append((text[last : match.start()], False))
+        pieces.append((match.group(0), True))
+        last = match.end()
+    if last < len(text):
+        pieces.append((text[last:], False))
+    return pieces
 
 
 def paren_cue_names() -> frozenset[str]:

@@ -94,6 +94,7 @@
     "scrub_tts",
     "sentence_closer_hold_at",
     "should_retry_fish_status",
+    "split_cues",
     "split_tts_piece",
     "strip_base",
     "strip_cue_tags",
