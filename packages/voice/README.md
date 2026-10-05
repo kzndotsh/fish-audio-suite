@@ -293,6 +293,7 @@ Speech:
 | `FISH_ASR_MODEL` | `transcribe-1-pro` (or `transcribe-1`) |
 | `FISH_VOICE_PLAYBACK` | `sounddevice` |
 | `FISH_VOICE_DEVICE` | host default. A PortAudio index or name |
+| `FISH_VOICE_OUTPUT_LATENCY` | `auto`, or `low` / `high`. A bigger playback buffer (`high`) stops clicks when the machine is busy, and starts the sound a little later. `auto` is `high` in `--tui` and `low` otherwise |
 
 LLM:
 

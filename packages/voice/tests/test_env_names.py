@@ -22,6 +22,7 @@ class EnvCase(NamedTuple):
 
 _CASES: list[EnvCase] = [
     EnvCase("FISH_VOICE_PLAYBACK", "file", "file", attrgetter("playback")),
+    EnvCase("FISH_VOICE_OUTPUT_LATENCY", " HIGH ", "high", attrgetter("output_latency")),
     EnvCase("FISH_VOICE_HISTORY_TURNS", "7", 7, attrgetter("history_turns")),
     EnvCase("FISH_VOICE_SYSTEM_PROMPT", "a prompt", "a prompt", attrgetter("system_prompt")),
     EnvCase("FISH_VOICE_STREAM_TTS", "1", True, attrgetter("stream_tts")),
@@ -61,3 +62,13 @@ def test_unset_keeps_the_defaults() -> None:
     c = load_config()
     assert c.history_turns == DEFAULT_HISTORY_TURNS
     assert c.system_prompt == SuiteDefaults().system_prompt
+
+
+def test_an_unknown_output_latency_is_ignored_and_auto_means_low_outside_the_screen(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert load_config().sink_latency == "low"  # auto
+    monkeypatch.setenv("FISH_VOICE_OUTPUT_LATENCY", "enormous")
+    config = load_config()
+    assert config.output_latency == "auto"
+    assert config.sink_latency == "low"

@@ -234,6 +234,7 @@ async def speak_reply(
         device=ctx.device,
         cancel=cancel,
         aec=ctx.session.aec,
+        latency=c.sink_latency,
     )
     ctx.tts.trace_headers = {"traceparent": make_traceparent(trace_id=trace_id)}
     try:
@@ -326,6 +327,7 @@ async def stream_turn(
         device=ctx.device,
         cancel=cancel,
         aec=ctx.session.aec,
+        latency=c.sink_latency,
     )
     ctx.tts.trace_headers = {"traceparent": make_traceparent(trace_id=heard.trace_id)}
     snapshot = LatencySnapshot(asr_ms=heard.asr_ms, trace_id=heard.trace_id)

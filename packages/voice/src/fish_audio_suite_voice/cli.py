@@ -278,6 +278,10 @@ async def run_tui(c: VoiceCliConfig, *, debug: DebugLevel) -> int:
     blocked = _preflight(c)
     if blocked is not None:
         return blocked
+    if c.output_latency == "auto":
+        c = replace(
+            c, output_latency="high"
+        )  # the screen is busy drawing: a bigger buffer rides it out
     # Imported here because Textual is an optional extra, checked for in ``main``.
     from fish_audio_suite_voice.tui import VoiceApp  # noqa: PLC0415 - optional extra
 

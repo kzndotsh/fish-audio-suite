@@ -61,14 +61,19 @@ _MONO: Final = 1
 _DEFAULT_RATE: Final = SuiteDefaults().sample_rate
 
 
-def pcm_stream_kwargs(sample_rate: int, device: str | int | None) -> dict[str, Any]:
-    """Return RawStream kwargs for mono int16 PCM."""
-    return {
+def pcm_stream_kwargs(
+    sample_rate: int, device: str | int | None, *, latency: str | None = None
+) -> dict[str, Any]:
+    """Return RawStream kwargs for mono int16 PCM, with a buffer size when ``latency`` is given."""
+    kwargs: dict[str, Any] = {
         "samplerate": sample_rate,
         "channels": _MONO,
         "dtype": "int16",
         "device": device,
     }
+    if latency is not None:
+        kwargs["latency"] = latency
+    return kwargs
 
 
 def load_sounddevice() -> Any:
@@ -349,8 +354,10 @@ class SounddeviceSink(_Played):
         device: str | int | None = None,
         cancel: threading.Event | None = None,
         aec: EchoCanceller | None = None,
+        latency: str = "low",
     ) -> None:
         super().__init__()
+        self.latency = latency
         self.sample_rate: int = _positive_rate(sample_rate)
         self.device: str | int | None = device
         self._cancel = cancel
@@ -368,7 +375,9 @@ class SounddeviceSink(_Played):
         self._tap.clear()
         if self._aec is not None:
             self._aec.clear()
-        self._stream = sd.RawOutputStream(**pcm_stream_kwargs(self.sample_rate, self.device))
+        self._stream = sd.RawOutputStream(
+            **pcm_stream_kwargs(self.sample_rate, self.device, latency=self.latency)
+        )
         self._stream.start()
         self.output_latency_s = _stream_latency_s(self._stream)
         if self._aec is not None:
@@ -578,6 +587,7 @@ def make_sink(
     device: str | int | None = None,
     cancel: threading.Event | None = None,
     aec: EchoCanceller | None = None,
+    latency: str = "low",
 ) -> PlaybackSink:
     """Build the sink named by ``FISH_VOICE_PLAYBACK`` or ``--playback``.
 
@@ -595,6 +605,8 @@ def make_sink(
         Passed to the sounddevice sink so a barge-in can stop the stream.
     aec : EchoCanceller or None, optional
         Far-end tap filled by the sounddevice sink.
+    latency : str, optional
+        ``low`` or ``high``: the sounddevice sink's buffer size.
 
     Returns
     -------
@@ -616,5 +628,7 @@ def make_sink(
     if kind is PlaybackKind.MPV:
         return MpvSink()
     if kind is not None and kind.is_speaker:
-        return SounddeviceSink(sample_rate=sample_rate, device=device, cancel=cancel, aec=aec)
+        return SounddeviceSink(
+            sample_rate=sample_rate, device=device, cancel=cancel, aec=aec, latency=latency
+        )
     raise ValueError(f"unknown playback sink {name!r}")

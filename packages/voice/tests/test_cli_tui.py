@@ -151,7 +151,8 @@ def test_run_tui_gives_the_session_to_the_app_with_the_console_off(
     assert "voice123" in app.info
     assert "model" in app.info
     args, kwargs = calls["duplex"]
-    assert args[0] is c
+    assert args[0] == replace(c, output_latency="high")  # the screen asks for a bigger buffer
+    assert c.sink_latency == "low"
     assert args[4] is app.session
     assert kwargs["source"] is app.live
     assert kwargs["console"] is False

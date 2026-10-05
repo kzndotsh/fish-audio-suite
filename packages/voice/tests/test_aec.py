@@ -5,7 +5,12 @@ import pytest
 
 from fish_audio_suite_voice.aec import EchoCanceller, FarEndTap, resample_int16
 from fish_audio_suite_voice.floor import AdaptiveFloor
-from fish_audio_suite_voice.playback import SounddeviceSink, dac_slice_bytes, iter_pcm_slices
+from fish_audio_suite_voice.playback import (
+    SounddeviceSink,
+    dac_slice_bytes,
+    iter_pcm_slices,
+    make_sink,
+)
 from fish_audio_suite_voice.tune import DEFAULT_AEC_BLEED_DELAY_S, AecTune
 
 
@@ -232,3 +237,28 @@ def test_sounddevice_sink_records_output_latency(monkeypatch: pytest.MonkeyPatch
     sink = SounddeviceSink(aec=aec)
     sink.start()
     assert aec.output_latency_s == 0.04
+
+
+def test_the_sounddevice_sink_asks_for_the_buffer_size_it_was_given(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asked: list[dict[str, object]] = []
+
+    class Stream:
+        latency = 0.2
+
+        def start(self) -> None:
+            return None
+
+    class Sd:
+        @staticmethod
+        def RawOutputStream(**kwargs: object) -> Stream:  # noqa: N802
+            asked.append(kwargs)
+            return Stream()
+
+    monkeypatch.setattr("fish_audio_suite_voice.playback.load_sounddevice", lambda: Sd)
+    for latency in ("low", "high"):
+        sink = make_sink("sounddevice", latency=latency)
+        assert isinstance(sink, SounddeviceSink)
+        sink.start()
+    assert [call["latency"] for call in asked] == ["low", "high"]
