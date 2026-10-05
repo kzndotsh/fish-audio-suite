@@ -58,6 +58,10 @@ __all__ = [
 
 DEFAULT_ENV_FILE: Final = Path(".env")
 _SMOKE_MIN_BYTES: Final = 1000
+# Seconds a Python thread may hold the GIL before another is let in. The default of 5 ms lets the
+# screen's drawing keep the playback thread waiting longer than the sound card's buffer lasts,
+# which is heard as clicks and drop-outs. Shorter hands over sooner, at a small cost in speed.
+_TUI_SWITCH_INTERVAL_S: Final = 0.0005
 _SMOKE_FAIL: Final = 1
 
 
@@ -284,6 +288,8 @@ async def run_tui(c: VoiceCliConfig, *, debug: DebugLevel) -> int:
     # From here the screen owns the terminal, so logging moves into the log pane.
     configure_voice_logging(debug=debug, to_stderr=False)
     stop_forwarding = forward_logs()
+    switch_interval = sys.getswitchinterval()
+    sys.setswitchinterval(_TUI_SWITCH_INTERVAL_S)
     try:
         async with open_chat_backend(c.llm, session_id=uuid.uuid4().hex) as backend:
 
@@ -299,6 +305,7 @@ async def run_tui(c: VoiceCliConfig, *, debug: DebugLevel) -> int:
             app = VoiceApp(runner, live=live, session=session, info=info)
             code = await app.run_async()
     finally:
+        sys.setswitchinterval(switch_interval)
         stop_forwarding()
     return code or EXIT_OK
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import Any
@@ -98,9 +99,11 @@ class _FakeApp:
         self.session = session
         self.info = info
         self.code: int | None = 0
+        self.switch_interval = 0.0
         _FakeApp.instances.append(self)
 
     async def run_async(self) -> int | None:
+        self.switch_interval = sys.getswitchinterval()
         await self.runner()
         return self.code
 
@@ -155,6 +158,17 @@ def test_run_tui_gives_the_session_to_the_app_with_the_console_off(
     # Logging moves off stderr, which the screen owns, and the forwarding is undone.
     assert calls["logging"] == {"debug": DebugLevel.EVENTS, "to_stderr": False}
     assert calls["stopped"] is True
+
+
+def test_the_screen_hands_the_gil_over_sooner_while_it_runs_and_puts_it_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    c = _configured(monkeypatch)
+    _patch_session(monkeypatch, {})
+    before = sys.getswitchinterval()
+    assert asyncio.run(run_tui(c, debug=DebugLevel.OFF)) == 0
+    assert _FakeApp.instances[0].switch_interval < before  # so the audio thread is not kept waiting
+    assert sys.getswitchinterval() == before
 
 
 def test_run_tui_returns_the_code_the_app_reports(monkeypatch: pytest.MonkeyPatch) -> None:
