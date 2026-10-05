@@ -204,7 +204,7 @@ Both are off by default because they also change ordinary English. `FISH_TTS_MOO
 uv run --package fish-audio-suite-voice --extra cli --extra tui fish-voice --tui
 ```
 
-`--tui` runs the same session in a full-screen terminal app (built on [Textual](https://textual.textualize.io)). It shows the conversation as it streams, with each `[cue]` styled and never read as markup, the state (listening, thinking, speaking), a live mic waveform (bars grow from the middle and scroll left, bright while the mic hears speech), a pulsing "you" line while you talk that turns into your words once they are transcribed, the timings of the last turn, and the log. You can also type a line instead of speaking, mute the mic, and stop a reply that is playing.
+`--tui` runs the same session in a full-screen terminal app (built on [Textual](https://textual.textualize.io)). It shows the conversation as it streams, with each `[cue]` styled and never read as markup, the state (listening, thinking, speaking), a live mic waveform (bars grow from the middle and scroll left, bright while the mic hears speech), a pulsing "you" line while you talk that turns into your words once they are transcribed, the last turn as a bar showing where the wait before you heard audio went (asr, llm, tts), and the log. You can also type a line instead of speaking, mute the mic, and stop a reply that is playing.
 
 | Key | Does |
 | --- | --- |

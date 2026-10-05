@@ -27,7 +27,7 @@ from textual.widget import Widget
 from textual.widgets import Footer, Header, Input, Log, Static
 from textual.worker import Worker, WorkerState
 
-from fish_audio_suite_kit import split_cues
+from fish_audio_suite_kit import LatencySnapshot, split_cues
 from fish_audio_suite_voice.events import (
     DEFAULT_KEYS,
     EVENTS,
@@ -48,7 +48,13 @@ from fish_audio_suite_voice.events import (
 )
 from fish_audio_suite_voice.inputs import LiveInput
 from fish_audio_suite_voice.reply import turn_summary
-from fish_audio_suite_voice.session_view import SessionView, reduce_view, wave_column
+from fish_audio_suite_voice.session_view import (
+    SessionView,
+    reduce_view,
+    split_cells,
+    turn_timings,
+    wave_column,
+)
 from fish_audio_suite_voice.signals import DuplexSession
 
 __all__ = [
@@ -134,6 +140,73 @@ class Waveform(Widget):
                 cells.append((char, f"$background on {tone}" if reverse else tone))
             lines.append(Content.assemble(*cells))
         return Content("\n").join(lines)
+
+
+_STAGE_TONES = {"asr": "$text-secondary", "llm": "$text-primary", "tts": "$text-accent"}
+
+
+class Timings(Widget):
+    """The last turn: the wait before you heard audio, and where it went.
+
+    Three lines: the wait beside the whole turn's length, one bar split into recognising
+    (asr), thinking (llm) and speaking (tts), and the number behind each part. Each name
+    is coloured like its part of the bar, and the numbers are always shown.
+    """
+
+    DEFAULT_CSS: ClassVar[str] = """
+    Timings {
+        height: 3;
+    }
+    """
+
+    def __init__(self, *, id: str | None = None) -> None:  # noqa: A002 - Textual's own name
+        super().__init__(id=id)
+        self._snapshot: LatencySnapshot | None = None
+
+    def show(self, snapshot: LatencySnapshot | None) -> None:
+        """Show a finished turn, or the empty state for ``None``."""
+        self._snapshot = snapshot
+        self.refresh()
+
+    def render(self) -> RenderResult:
+        """Draw the wait, the split bar and the legend, fitted to the width."""
+        snapshot = self._snapshot
+        if snapshot is None:
+            return Content.assemble((_NO_TURNS, "dim"))
+        timings = turn_timings(snapshot)
+        if timings is None:
+            return Content(turn_summary(snapshot).strip().removeprefix("↳ ") or _NO_TURNS)
+        width = max(1, self.size.width)
+        wait = f"{timings.wait_ms / 1000:.2f}s"
+        total = f"total {timings.total_ms / 1000:.2f}s" if timings.total_ms is not None else ""
+        gap = " " * max(1, width - len(wait) - len(" wait") - len(total))
+        head = Content.assemble((wait, "bold"), " wait", gap, (total, "dim"))
+        cells = split_cells([ms for _, ms in timings.stages], width)
+        bar = Content.assemble(
+            *(
+                (("█" * count), _STAGE_TONES[name])
+                for (name, _), count in zip(timings.stages, cells, strict=True)
+            )
+        )
+        decimals = 2 if len(_legend(timings.stages, 2)) <= width else 1
+        legend = Content.assemble(*_legend_parts(timings.stages, decimals))
+        return Content("\n").join([head, bar, legend])
+
+
+def _legend(stages: tuple[tuple[str, float], ...], decimals: int) -> str:
+    return " ".join(f"{name} {ms / 1000:.{decimals}f}" for name, ms in stages)
+
+
+def _legend_parts(
+    stages: tuple[tuple[str, float], ...], decimals: int
+) -> list[tuple[str, str] | str]:
+    parts: list[tuple[str, str] | str] = []
+    for position, (name, ms) in enumerate(stages):
+        if position:
+            parts.append(" ")
+        parts.append((name, _STAGE_TONES[name]))
+        parts.append(f" {ms / 1000:.{decimals}f}")
+    return parts
 
 
 class Conversation(VerticalScroll):
@@ -302,7 +375,7 @@ class VoiceApp(App[int]):
                     yield wave
                 with VerticalGroup(id="latency-box") as latency_box:
                     latency_box.border_title = "last turn"
-                    yield Static(_NO_TURNS, id="latency")
+                    yield Timings(id="latency")
                 log = Log(id="log", max_lines=1000)
                 log.border_title = "log"
                 yield log
@@ -395,10 +468,7 @@ class VoiceApp(App[int]):
             self.query_one(Waveform).push(
                 0.0 if self._live.muted else view.mic_fraction, view.mic_need_fraction
             )
-        latency = _NO_TURNS
-        if view.last_turn is not None:
-            latency = turn_summary(view.last_turn).strip().removeprefix("↳ ") or _NO_TURNS
-        self.query_one("#latency", Static).update(Content(latency))
+        self.query_one(Timings).show(view.last_turn)
         self.refresh_bindings()
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:

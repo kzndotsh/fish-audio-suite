@@ -6,6 +6,8 @@ import dataclasses
 from functools import reduce
 
 import pytest
+from hypothesis import given
+from hypothesis import strategies as st
 
 from fish_audio_suite_kit import LatencySnapshot
 from fish_audio_suite_voice.events import (
@@ -28,6 +30,8 @@ from fish_audio_suite_voice.session_view import (
     SessionView,
     level_fraction,
     reduce_view,
+    split_cells,
+    turn_timings,
     wave_column,
 )
 
@@ -163,3 +167,47 @@ def test_a_wave_column_is_mirrored_never_empty_and_grows_with_the_level() -> Non
     assert wave_column(-5.0, 2) == wave_column(0.0, 2)  # out of range is clamped
     assert wave_column(9.0, 2) == wave_column(1.0, 2)
     assert len(wave_column(0.5, 0)) == 2  # a height under 1 still draws
+
+
+def test_a_turns_wait_is_split_into_asr_llm_and_the_rest_and_adds_up() -> None:
+    timings = turn_timings(
+        LatencySnapshot(
+            asr_ms=300.0, llm_first_token_ms=700.0, first_audio_ms=1500.0, voice_to_voice_ms=6000.0
+        )
+    )
+    assert timings is not None
+    assert timings.wait_ms == 1500.0
+    assert timings.total_ms == 6000.0
+    assert timings.stages == (("asr", 300.0), ("llm", 700.0), ("tts", 500.0))
+    assert sum(ms for _, ms in timings.stages) == timings.wait_ms
+
+
+def test_a_turn_without_asr_or_without_a_wait_is_handled() -> None:
+    typed = turn_timings(LatencySnapshot(llm_first_token_ms=400.0, first_audio_ms=900.0))
+    assert typed is not None
+    assert [name for name, _ in typed.stages] == ["llm", "tts"]  # a typed line has no asr
+    assert turn_timings(LatencySnapshot(asr_ms=100.0)) is None  # nothing to break down
+    # Stages that overlap the wait entirely leave nothing for tts, never a negative bar.
+    over = turn_timings(
+        LatencySnapshot(asr_ms=500.0, llm_first_token_ms=600.0, first_audio_ms=900.0)
+    )
+    assert over is not None
+    assert all(ms > 0 for _, ms in over.stages)
+    assert "tts" not in dict(over.stages)
+
+
+@given(
+    st.lists(st.floats(min_value=-5.0, max_value=1e6, allow_nan=False), max_size=6),
+    st.integers(min_value=-3, max_value=80),
+)
+def test_split_cells_always_adds_up_and_never_goes_negative(parts: list[float], width: int) -> None:
+    cells = split_cells(parts, width)
+    assert len(cells) == len(parts)
+    assert all(count >= 0 for count in cells)
+    positive = [part for part in parts if part > 0]
+    if positive and width > 0:
+        assert sum(cells) == width
+        if width >= len(positive):
+            assert all(count >= 1 for part, count in zip(parts, cells, strict=True) if part > 0)
+    else:
+        assert sum(cells) == 0

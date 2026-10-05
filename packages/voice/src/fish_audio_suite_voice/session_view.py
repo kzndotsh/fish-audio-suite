@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from typing import Final
 
@@ -22,8 +23,11 @@ from fish_audio_suite_voice.events import (
 
 __all__ = [
     "SessionView",
+    "TurnTimings",
     "level_fraction",
     "reduce_view",
+    "split_cells",
+    "turn_timings",
     "wave_column",
 ]
 
@@ -184,3 +188,103 @@ def reduce_view(view: SessionView, event: Event) -> SessionView:
             return replace(moved, exit_code=code)
         case _:
             return moved
+
+
+@dataclass(frozen=True, slots=True)
+class TurnTimings:
+    """Where the wait before a reply was heard went, for a display to draw.
+
+    Attributes
+    ----------
+    wait_ms : float
+        From the end of the utterance until the first audio played.
+    total_ms : float or None
+        From the end of the utterance until the reply finished playing, when known.
+    stages : tuple[tuple[str, float], ...]
+        What the wait was spent on, in order, as ``(name, milliseconds)``. They add up to
+        ``wait_ms``. Stages that took no time are left out.
+    """
+
+    wait_ms: float
+    total_ms: float | None
+    stages: tuple[tuple[str, float], ...]
+
+
+def turn_timings(snapshot: LatencySnapshot) -> TurnTimings | None:
+    """Break a turn's wait into recognising, thinking and speaking.
+
+    Parameters
+    ----------
+    snapshot : LatencySnapshot
+        The finished turn.
+
+    Returns
+    -------
+    TurnTimings or None
+        ``None`` when the turn has no wait to break down (no ``first_audio_ms``).
+
+    Notes
+    -----
+    ``tts`` is what is left of the wait after ``asr`` and ``llm``: the time from the model's
+    first token to audio playing. It is not ``tts_first_audio_ms``, which is measured from
+    the start of the TTS turn and so includes the wait for the model.
+
+    Examples
+    --------
+    >>> t = turn_timings(LatencySnapshot(asr_ms=300, llm_first_token_ms=700, first_audio_ms=1500))
+    >>> t.stages
+    (('asr', 300), ('llm', 700), ('tts', 500))
+    >>> turn_timings(LatencySnapshot(asr_ms=300)) is None
+    True
+    """
+    wait = snapshot.first_audio_ms
+    if wait is None:
+        return None
+    known = [("asr", snapshot.asr_ms), ("llm", snapshot.llm_first_token_ms)]
+    stages = [(name, ms) for name, ms in known if ms is not None and ms > 0]
+    rest = wait - sum(ms for _, ms in stages)
+    if rest > 0:
+        stages.append(("tts", rest))
+    return TurnTimings(wait, snapshot.voice_to_voice_ms, tuple(stages))
+
+
+def split_cells(parts: Sequence[float], width: int) -> list[int]:
+    """Share ``width`` cells between ``parts`` in proportion, so a bar adds up exactly.
+
+    Parameters
+    ----------
+    parts : Sequence[float]
+        The sizes to draw. Negative sizes count as zero.
+    width : int
+        How many cells in all.
+
+    Returns
+    -------
+    list[int]
+        One count per part, adding up to ``width`` (all zeros when there is nothing to
+        draw). A part that is not zero gets at least one cell when ``width`` allows it, so
+        a short stage does not vanish.
+
+    Examples
+    --------
+    >>> split_cells([300, 700, 500], 15)
+    [3, 7, 5]
+    >>> split_cells([1, 1000], 10)
+    [1, 9]
+    """
+    sizes = [max(0.0, part) for part in parts]
+    total = sum(sizes)
+    if total <= 0 or width <= 0:
+        return [0] * len(sizes)
+    exact = [size / total * width for size in sizes]
+    cells = [int(value) for value in exact]
+    by_remainder = sorted(range(len(sizes)), key=lambda i: exact[i] - cells[i], reverse=True)
+    for i in by_remainder[: width - sum(cells)]:
+        cells[i] += 1
+    for i, size in enumerate(sizes):
+        if size > 0 and cells[i] == 0:
+            donor = max(range(len(cells)), key=lambda j: cells[j])
+            if cells[donor] > 1:
+                cells[donor] -= 1
+                cells[i] = 1
+    return cells

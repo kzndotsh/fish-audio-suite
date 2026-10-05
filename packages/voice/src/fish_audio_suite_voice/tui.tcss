@@ -29,7 +29,7 @@ Screen {
 
 #side {
     width: 1fr;
-    min-width: 28;
+    min-width: 30;
 
     #status-box,
     #mic-box,

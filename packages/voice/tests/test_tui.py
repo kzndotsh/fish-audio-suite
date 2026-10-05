@@ -35,7 +35,7 @@ from fish_audio_suite_voice.events import (
 )
 from fish_audio_suite_voice.inputs import LiveInput
 from fish_audio_suite_voice.signals import DuplexSession
-from fish_audio_suite_voice.tui import Conversation, VoiceApp, Waveform
+from fish_audio_suite_voice.tui import Conversation, Timings, VoiceApp, Waveform
 
 
 class _SpyInput(LiveInput):
@@ -85,6 +85,11 @@ class _Harness:
         return list(self.app.query_one("#log", Log).lines)
 
 
+def _timings_text(harness: _Harness) -> str:
+    panel = harness.app.query_one(Timings)
+    return "\n".join(strip.text for strip in panel.render_lines(Region(0, 0, panel.size.width, 3)))
+
+
 def _drive(harness: _Harness, scenario: Callable[[Pilot[int]], Awaitable[None]]) -> int | None:
     async def main() -> None:
         async with harness.app.run_test() as pilot:
@@ -119,7 +124,7 @@ def test_a_turn_is_shown_as_it_happens() -> None:
         harness.bus.emit(TurnEnded(snapshot))
         await pilot.pause(0.1)
         assert harness.text("#status") == "idle"
-        assert "first audio" in harness.text("#latency")
+        assert "0.90s wait" in _timings_text(harness)
         assert harness.messages().count("llm ▸ [calm] Once upon a time.") == 1
         await pilot.press("ctrl+q")
 
@@ -720,3 +725,55 @@ def test_focus_does_not_tint_past_the_border_of_the_log_conversation_or_input() 
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
+
+
+def _timings_widget_text(snapshot: LatencySnapshot | None, width: int) -> list[str]:
+    class Host(App[None]):
+        def compose(self) -> ComposeResult:
+            yield Timings()
+
+    lines: list[str] = []
+
+    async def main() -> None:
+        host = Host()
+        async with host.run_test(size=(width, 10)) as pilot:
+            panel = host.query_one(Timings)
+            panel.show(snapshot)
+            await pilot.pause()
+            lines.extend(
+                strip.text for strip in panel.render_lines(Region(0, 0, panel.size.width, 3))
+            )
+
+    asyncio.run(main())
+    return lines
+
+
+def test_the_timings_panel_shows_the_wait_a_split_bar_and_a_legend() -> None:
+    snapshot = LatencySnapshot(
+        asr_ms=270.0, llm_first_token_ms=670.0, first_audio_ms=1530.0, voice_to_voice_ms=6470.0
+    )
+    head, bar, legend = _timings_widget_text(snapshot, 26)
+    assert head.startswith("1.53s wait")
+    assert head.rstrip().endswith("total 6.47s")
+    assert len(head) == 26  # the total sits at the right edge
+    assert len(bar) == 26
+    assert set(bar) == {"█"}  # the whole width is the wait, split into parts by colour
+    assert legend.split() == ["asr", "0.27", "llm", "0.67", "tts", "0.59"]
+
+
+def test_the_timings_panel_copes_with_no_turn_no_asr_a_narrow_width_and_no_wait() -> None:
+    assert _timings_widget_text(None, 26)[0].strip() == "no turns yet"
+    typed = _timings_widget_text(
+        LatencySnapshot(llm_first_token_ms=400.0, first_audio_ms=900.0), 26
+    )
+    assert typed[2].split() == ["llm", "0.40", "tts", "0.50"]
+    wide_values = LatencySnapshot(
+        asr_ms=12000.0,
+        llm_first_token_ms=13000.0,
+        first_audio_ms=40000.0,
+        voice_to_voice_ms=90000.0,
+    )
+    legend = _timings_widget_text(wide_values, 26)[2]
+    assert len(legend.rstrip()) <= 26  # drops to one decimal rather than overflow
+    fallback = _timings_widget_text(LatencySnapshot(asr_ms=120.0), 40)
+    assert "asr 0.12s" in fallback[0]  # no wait to split, so the one-line summary
