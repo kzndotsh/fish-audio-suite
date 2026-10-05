@@ -36,7 +36,7 @@ from fish_audio_suite_voice.events import (
 )
 from fish_audio_suite_voice.inputs import LiveInput
 from fish_audio_suite_voice.signals import DuplexSession
-from fish_audio_suite_voice.tui import Conversation, Timings, VoiceApp, Waveform
+from fish_audio_suite_voice.tui import _BAR_COLOURS, Conversation, Timings, VoiceApp, Waveform
 
 
 class _SpyInput(LiveInput):
@@ -1181,3 +1181,40 @@ def test_the_scale_keeps_what_it_learnt_about_the_room_across_turns() -> None:
             assert _column_dots(wave, -2) <= 4  # a thin line: it still knows the room
 
     asyncio.run(main())
+
+
+def _luminance(colour: Color) -> float:
+    def channel(value: int) -> float:
+        unit = value / 255
+        return unit / 12.92 if unit <= 0.03928 else ((unit + 0.055) / 1.055) ** 2.4
+
+    red, green, blue = colour.rgb
+    return 0.2126 * channel(red) + 0.7152 * channel(green) + 0.0722 * channel(blue)
+
+
+def _contrast(first: Color, second: Color) -> float:
+    lighter, darker = sorted((_luminance(first), _luminance(second)), reverse=True)
+    return (lighter + 0.05) / (darker + 0.05)
+
+
+def test_every_bar_colour_stays_visible_against_the_background_in_every_builtin_theme() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        for theme in sorted(harness.app.available_themes):
+            if theme.startswith("ansi"):
+                continue  # these use the terminal's own colours, which cannot be measured here
+            harness.app.theme = theme
+            await pilot.pause(0.02)
+            variables = harness.app.get_css_variables()
+            background = Color.parse(variables["background"])
+            for kind, (name, strengths) in _BAR_COLOURS.items():
+                base = Color.parse(variables[name.removeprefix("$")])
+                weakest = _contrast(background.blend(base, strengths[0] / 100), background)
+                # Braille dots are small, so they need more than text does. A faint "quiet" line
+                # is meant to be quiet, but it must still be there.
+                minimum = 2.2 if kind == "quiet" else 2.6
+                assert weakest >= minimum, f"{kind} in {theme}: contrast {weakest:.1f}"
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0

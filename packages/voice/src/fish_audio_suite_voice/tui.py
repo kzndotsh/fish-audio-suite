@@ -260,13 +260,16 @@ class Waveform(Widget):
         return Content("\n").join(lines)
 
 
-# What a bar is, as a colour, and how bright it is at each of three loudness steps.
+# What a bar is, as a colour, and how strong it is at each of three loudness steps. The steps
+# are close together because a Braille dot is small: a faded one is hard to see, so the height
+# of the bar says how loud it is and the strength only adds to it. test_tui checks the
+# contrast against every built-in theme.
 _BAR_COLOURS = {
     "cursor": ("$text-accent", (100, 100, 100)),
-    "speaker": ("$text-accent", (60, 80, 100)),
-    "heard": ("$text-success", (60, 80, 100)),
-    "thinking": ("$text-warning", (50, 70, 90)),
-    "quiet": ("$foreground", (20, 30, 42)),
+    "speaker": ("$text-accent", (85, 93, 100)),
+    "heard": ("$text-success", (85, 93, 100)),
+    "thinking": ("$text-warning", (85, 93, 100)),
+    "quiet": ("$foreground", (58, 68, 78)),
 }
 
 
