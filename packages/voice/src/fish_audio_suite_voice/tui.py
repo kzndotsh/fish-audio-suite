@@ -96,7 +96,6 @@ class Waveform(Widget):
     DEFAULT_CSS: ClassVar[str] = """
     Waveform {
         height: 4;
-        background: $surface;
     }
     """
 
@@ -131,8 +130,8 @@ class Waveform(Widget):
                 char, reverse = column[row]
                 # No bold or dim here: dim blends the cell's foreground into its background,
                 # which turns the reversed bottom half into grey blocks.
-                tone = "$text-success" if heard else "$text-muted"
-                cells.append((char, f"$surface on {tone}" if reverse else tone))
+                tone = "$text-success" if heard else "$foreground 30%"
+                cells.append((char, f"$background on {tone}" if reverse else tone))
             lines.append(Content.assemble(*cells))
         return Content("\n").join(lines)
 

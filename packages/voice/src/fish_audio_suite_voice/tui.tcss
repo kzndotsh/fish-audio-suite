@@ -144,3 +144,14 @@ Conversation {
 #conversation:focus {
     border: round $primary;
 }
+
+/* Minimal: the key hints sit on the screen colour, with no bar or key backgrounds. */
+Footer {
+    background: $background;
+
+    FooterKey,
+    FooterKey .footer-key--key,
+    FooterKey .footer-key--description {
+        background: transparent;
+    }
+}

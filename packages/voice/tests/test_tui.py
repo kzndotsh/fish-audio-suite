@@ -646,9 +646,9 @@ def test_a_silent_waveform_is_drawn_in_exact_theme_colours_not_blended_into_grey
             wave = host.query_one(Waveform)
             wave.push(0.0, 0.3)
             await pilot.pause()
-            surface = Color.parse(host.get_css_variables()["surface"]).rgb
+            surface = Color.parse(host.get_css_variables()["background"]).rgb
             strips = wave.render_lines(Region(0, 0, wave.size.width, 4))
-            # The outer bottom row of a silent bar is a full cell of the panel colour. A
+            # The outer bottom row of a silent bar is a full cell of the screen colour. A
             # `dim` blend would turn it into a mid grey, which is the bug this guards.
             colours = {
                 tuple(segment.style.color.get_truecolor())
@@ -699,8 +699,9 @@ def test_bordered_widgets_share_the_screens_background_so_none_shows_past_its_bo
 
     async def scenario(pilot: Pilot[int]) -> None:
         screen = Color.parse(harness.app.get_css_variables()["background"]).rgb
-        for selector in ("#log", "#line"):
+        for selector in ("#log", "#line", "Footer"):
             assert harness.app.query_one(selector).styles.background.rgb == screen, selector
+        assert harness.app.query_one(Waveform).styles.background.a == 0  # draws on the screen
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
