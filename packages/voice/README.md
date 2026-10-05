@@ -324,6 +324,7 @@ Speech recognition. See [Streaming speech recognition](#streaming-speech-recogni
 | `FISH_VOICE_DEEPGRAM_MODEL` | `flux-general-en` | `flux-general-multi` for ten languages |
 | `FISH_VOICE_DEEPGRAM_REGION` | `global` | `eu`, `au` or `in` to have Deepgram process the audio inside the European Union, Australia or India. A regional request fails instead of going elsewhere |
 | `FISH_VOICE_EOT_THRESHOLD` | `0.7` | How sure Flux must be that you have finished, 0.5 to 1. Higher waits a little longer and cuts in less often |
+| `FISH_VOICE_STT_SAVE_DIR` | unset | A folder. Each streamed turn's audio, as Deepgram was sent it, is saved there as a 16 kHz WAV, to find out why it heard nothing. Only for debugging: it writes your voice to disk |
 
 Listen and interrupt. Times are approximate at 30 ms frames.
 

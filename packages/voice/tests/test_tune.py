@@ -17,6 +17,7 @@ _KEYS = (
     "FISH_VOICE_DEEPGRAM_MODEL",
     "FISH_VOICE_DEEPGRAM_REGION",
     "FISH_VOICE_EOT_THRESHOLD",
+    "FISH_VOICE_STT_SAVE_DIR",
 )
 
 
@@ -45,12 +46,14 @@ def test_deepgram_is_chosen_by_name_in_any_case_with_its_key_and_settings(
     monkeypatch.setenv("FISH_VOICE_DEEPGRAM_MODEL", "flux-general-multi")
     monkeypatch.setenv("FISH_VOICE_EOT_THRESHOLD", "0.85")
     monkeypatch.setenv("FISH_VOICE_DEEPGRAM_REGION", " EU ")
+    monkeypatch.setenv("FISH_VOICE_STT_SAVE_DIR", " tmp/stt ")
     tune = SttTune.from_env()
     assert tune.provider == "deepgram"
     assert tune.deepgram_key == "dg-secret"
     assert tune.deepgram_model == "flux-general-multi"
     assert tune.eot_threshold == 0.85
     assert tune.deepgram_region == "eu"
+    assert tune.save_dir == "tmp/stt"
 
 
 def test_the_key_is_never_shown_when_the_settings_are_printed(

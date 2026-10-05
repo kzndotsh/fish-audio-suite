@@ -18,6 +18,7 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Final, Literal
 
 from fish_audio_suite_kit import elapsed_ms, make_traceparent, trace_id_of
@@ -37,6 +38,7 @@ from fish_audio_suite_voice.deepgram import (
 )
 from fish_audio_suite_voice.events import EVENTS, Interim
 from fish_audio_suite_voice.listen import stream_utterance
+from fish_audio_suite_voice.playback import write_mono_wav
 from fish_audio_suite_voice.tune import ListenTune, SttTune
 
 __all__ = [
@@ -110,6 +112,8 @@ class _Turn:
         self.error = ""
         self.last_voice = 0.0
         self.sent = 0  # bytes of audio sent to Flux
+        self.audio = bytearray()  # the same audio, kept only when it is to be saved
+        self.keep = False
 
     def hear(self, text: str) -> None:
         if text and text != self.text:
@@ -155,11 +159,15 @@ async def _send(
         if len(pending) >= _SEND_BYTES:
             await stream.send_audio(bytes(pending))
             turn.sent += len(pending)
+            if turn.keep:
+                turn.audio += pending
             pending.clear()
         item = next(backlog, None) or await frames.get()
     if pending:
         await stream.send_audio(bytes(pending))
         turn.sent += len(pending)
+        if turn.keep:
+            turn.audio += pending
 
 
 class _Capture:
@@ -211,6 +219,21 @@ class _Capture:
             if item is not None:
                 pieces.append(item[0])
         return b"".join(pieces)
+
+
+def _save(folder: str, pcm: bytes | bytearray) -> None:
+    """Write what was sent to Flux as a WAV, so it can be listened to. Never raises."""
+    path = (
+        Path(folder).expanduser()
+        / f"stt-{time.strftime('%Y%m%d-%H%M%S')}-{int(time.time() * 1000) % 1000:03d}.wav"
+    )
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_mono_wav(path, bytes(pcm), SAMPLE_RATE)
+    except OSError as exc:
+        warn(f"[stt] could not save the audio to {path}: {exc}")
+        return
+    debug("stt.saved {} ({:.1f} s)", path, len(pcm) / (SAMPLE_RATE * 2))
 
 
 async def _hold_until_voiced(capture: _Capture, need: int) -> Stopped | None:
@@ -379,6 +402,7 @@ async def stream_turn(
         aec=aec,
     )
     turn = _Turn()
+    turn.keep = bool(stt.save_dir)
     tasks: list[asyncio.Task[None]] = []
     try:
         # Nothing is connected or sent until the gate has opened and there is enough voice.
@@ -398,3 +422,5 @@ async def stream_turn(
         with contextlib.suppress(Exception):
             await capture.pump
         await stream.close()
+        if turn.audio:
+            _save(stt.save_dir, turn.audio)

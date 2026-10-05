@@ -404,6 +404,9 @@ class SttTune:
         ``"global"``, or ``"eu"``, ``"au"`` or ``"in"`` to have the audio processed within the
         European Union, Australia or India. Deepgram fails a regional request rather than
         send it elsewhere.
+    save_dir : str
+        A folder to write each streamed turn's audio to, as a 16 kHz WAV, to hear what Deepgram
+        was sent. Empty (the default) saves nothing.
     """
 
     provider: str = DEFAULT_STT
@@ -411,6 +414,7 @@ class SttTune:
     deepgram_model: str = DEFAULT_DEEPGRAM_MODEL
     eot_threshold: float = DEFAULT_EOT_THRESHOLD
     deepgram_region: str = DEFAULT_DEEPGRAM_REGION
+    save_dir: str = ""
 
     @classmethod
     def from_env(cls) -> Self:
@@ -450,4 +454,5 @@ class SttTune:
                 hi=EOT_THRESHOLD_HI,
             ),
             deepgram_region=region,
+            save_dir=read_text("FISH_VOICE_STT_SAVE_DIR"),
         )

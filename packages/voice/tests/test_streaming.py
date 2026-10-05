@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+import wave
 from collections.abc import AsyncIterator, Callable, Sequence
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -428,3 +430,33 @@ def test_once_there_is_enough_voice_the_held_pre_roll_goes_first_and_in_order() 
     assert isinstance(result, StreamedTurn)
     assert fake.opens == 1
     assert b"".join(fake.sent) == FRAME * 6  # the pre-roll was not lost
+
+
+def test_the_audio_sent_is_saved_as_a_wav_only_when_a_folder_is_set(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+
+    fake = _FakeFlux(
+        lambda total: [TurnEnded("hi", 0.9, "model")] if total >= FRAME_BYTES * 3 else []
+    )
+    assert isinstance(_run(fake, _mic(3)), StreamedTurn)
+    assert not list(tmp_path.iterdir())  # nothing is written unless asked
+
+    folder = tmp_path / "heard"
+    fake = _FakeFlux(
+        lambda total: [TurnEnded("hi", 0.9, "model")] if total >= FRAME_BYTES * 3 else []
+    )
+    assert isinstance(_run(fake, _mic(3), stt=replace(STT, save_dir=str(folder))), StreamedTurn)
+    (saved,) = folder.glob("stt-*.wav")
+    with wave.open(str(saved)) as clip:
+        assert clip.getframerate() == 16000
+        assert clip.readframes(clip.getnframes()) == b"".join(fake.sent)
+
+    blocked = tmp_path / "a-file"
+    blocked.write_text("x")  # a folder cannot be made under a file: it warns and the turn goes on
+    fake = _FakeFlux(
+        lambda total: [TurnEnded("hi", 0.9, "model")] if total >= FRAME_BYTES * 3 else []
+    )
+    result = _run(fake, _mic(3), stt=replace(STT, save_dir=str(blocked / "sub")))
+    assert isinstance(result, StreamedTurn)
