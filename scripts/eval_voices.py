@@ -45,9 +45,7 @@ from fish_audio_suite_voice.envfile import load_dotenv
 # ---------------------------------------------------------------------------
 # Fish voice ids (the long hex id on a voice's page). A label after the id is only a
 # note for you. Leave it empty to use FISH_VOICE_ID from .env. `--find` lists voices.
-VOICES: tuple[str, ...] = (
-
-)
+VOICES: tuple[str, ...] = ()
 
 # Fish TTS models to try with each voice.
 TTS_MODELS: tuple[str, ...] = ("s2.1-pro",)

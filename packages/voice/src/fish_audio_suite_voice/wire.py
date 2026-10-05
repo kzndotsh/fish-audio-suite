@@ -370,7 +370,9 @@ async def _pump_ws_audio(
             if run.cancel.is_set():
                 await close_client()
                 return
-            await _play(run.sink, item if fade is None else fade.process(item))
+            chunk = item if fade is None else fade.process(item)
+            if chunk:
+                await _play(run.sink, chunk)
     finally:
         stop_watching.set()
         for waiter in (get, cancel_wait):

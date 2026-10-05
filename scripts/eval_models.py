@@ -729,6 +729,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not models:
         print("No models to run. Fill in MODELS at the top of the script.", file=sys.stderr)
         return 2
+    if args.runs < 1:
+        print("--runs must be at least 1.", file=sys.stderr)
+        return 2
     prompts = read_prompts(args.prompt, args.prompts_file)
     system_prompt = DEFAULT_SYSTEM_PROMPT
     seed: bool | None = None

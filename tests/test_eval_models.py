@@ -191,6 +191,7 @@ def test_main_needs_models_and_a_key(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     monkeypatch.setattr(eval_models, "MODELS", ("a/b",))
     assert eval_models.main(nothing) == 2  # a model, but no key
     assert eval_models.main(["--dry-run", *nothing]) == 0
+    assert eval_models.main(["--runs", "0", *nothing]) == 2
 
 
 def test_the_prompts_file_setting_at_the_top_replaces_the_list(
