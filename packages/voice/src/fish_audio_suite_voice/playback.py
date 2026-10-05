@@ -134,7 +134,9 @@ class PlaybackSink(Protocol):
         ...
 
 
-OUTPUT_LEVEL_EVERY_S: Final = 0.06  # one level per this much audio, about as often as the mic's
+OUTPUT_LEVEL_EVERY_S: Final = (
+    0.09  # one level per this much audio: as often as the mic's, so a strip scrolls evenly
+)
 
 
 class _LevelTap:

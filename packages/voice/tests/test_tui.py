@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
@@ -849,7 +850,7 @@ def test_the_waveform_moves_to_a_mood_for_each_state_and_goes_still_when_muted_o
         assert wave.mood == "thinking"
         harness.bus.emit(Speaking())
         await pilot.pause(0.1)
-        assert wave.mood == "still"
+        assert wave.mood == "speaking"
         harness.bus.emit(Listening())
         await pilot.pause(0.1)
         await pilot.press("f2")  # muted: it is not listening, so no cursor
@@ -874,10 +875,13 @@ def test_while_thinking_a_wave_scrolls_by_itself_and_stops_when_the_state_change
         assert max(_dots(ch) for line in second for ch in line) >= 4  # and is a real wave
         harness.bus.emit(Speaking())
         await pilot.pause(0.2)
-        held = _wave_lines(wave)
+        after = _wave_lines(wave)
+        assert max(_dots(ch) for line in after for ch in line) >= 4  # kept as history, not blanked
         await pilot.pause(0.3)
-        assert _wave_lines(wave) == held  # the timer stopped
-        assert max(_dots(ch) for line in held for ch in line) >= 4  # kept as history, not blanked
+        # The strip does not freeze while the reply's audio is on its way: it keeps scrolling,
+        # with a flat line coming in, but the thinking wave itself is no longer being drawn.
+        assert _wave_lines(wave) != after
+        assert harness.app.query_one(Waveform).mood == "speaking"
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
@@ -1150,14 +1154,14 @@ def test_the_strip_is_not_blanked_when_thinking_ends_and_the_wave_goes_quiet() -
             wave = host.query_one(Waveform)
             await pilot.pause()
             wave.set_mood("thinking")
-            await pilot.pause(0.5)
+            await pilot.pause(1.0)
             amber = _wave_colours(wave, 1)
             wave.set_mood("still")
             await pilot.pause()
             lines = _wave_lines(wave)
             assert max(_dots(ch) for line in lines for ch in line) >= 4  # still there
             grey = _wave_colours(wave, 1)
-            assert grey[-5] != amber[-5]  # but no longer amber: the thinking is over
+            assert grey[-3] != amber[-3]  # but no longer amber: the thinking is over
 
     asyncio.run(main())
 
@@ -1218,3 +1222,40 @@ def test_every_bar_colour_stays_visible_against_the_background_in_every_builtin_
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
+
+
+def test_the_strip_scrolls_at_one_speed_through_a_whole_turn() -> None:
+    """Each source used to add bars at its own rate (10, 19, none, 15 a second), which felt like
+    the strip speeding up, stopping and catching up at every handover."""
+    harness = _Harness()
+    rates: dict[str, float] = {}
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        wave = harness.app.query_one(Waveform)
+
+        async def phase(name: str, seconds: float, emit: Callable[[], None] | None = None) -> None:
+            before, started = len(wave._bars), time.monotonic()
+            while time.monotonic() - started < seconds:
+                if emit is not None:
+                    emit()
+                await pilot.pause(0.09)
+            rates[name] = (len(wave._bars) - before) / (time.monotonic() - started)
+
+        harness.bus.emit(Listening())
+        await phase("listening", 1.3, lambda: harness.bus.emit(MicLevel(500.0, 200.0, "listen")))
+        harness.bus.emit(Heard("hi", 1.0))
+        await phase("thinking", 1.3)
+        harness.bus.emit(Speaking())
+        await phase("before audio", 1.3)  # no audio levels yet: the strip must not stop
+        await phase("speaking", 1.3, lambda: harness.bus.emit(OutputLevel(8000.0)))
+        await phase("a pause", 1.3)
+        harness.bus.emit(BargedIn())
+        await phase(
+            "listening again", 1.3, lambda: harness.bus.emit(MicLevel(500.0, 200.0, "listen"))
+        )
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+    # About eleven bars a second, the mic's own rate, whatever is feeding the strip.
+    for name, rate in rates.items():
+        assert 7.0 <= rate <= 13.0, f"{name}: {rate:.1f} bars a second"

@@ -69,7 +69,11 @@ __all__ = [
 _WAVE_ROWS = 4  # lines tall; each line is four dot rows
 _WAVE_HISTORY = 480  # bars kept (two to a character), so a wide terminal is filled
 _WAVE_STILL_BARS = 60  # bars of the frozen thinking wave when animations are off
-_THINK_TICK_S = 0.05  # one new bar of the thinking wave
+_BAR_S = (
+    0.09  # one bar: the mic's own rate, which every other source keeps to so the scroll is even
+)
+_THINK_TICK_S = _BAR_S  # one new bar of the thinking wave
+_AUDIO_GAP_S = 0.25  # no audio level for this long inside a reply: a pause, so fill it in
 _BLINK_S = 0.45  # the listening cursor's half cycle
 _SPEAKER_NEW_REPLY_S = 1.5  # a pause this long means the next audio is a new reply
 
@@ -135,6 +139,9 @@ class Waveform(Widget):
         self._timer: Timer | None = None
         self._since = 0.0
         self._cursor_on = True
+        self._last_bar = 0.0
+        self._audio_seen = False
+        self._filling = False
 
     def _reset_meters(self) -> None:
         self._mic_scale = SpeechScale()
@@ -144,8 +151,13 @@ class Waveform(Widget):
 
     @property
     def mood(self) -> str:
-        """What the strip is doing besides drawing the mic: listening, thinking or still."""
+        """What the strip is doing besides drawing the mic: listening, thinking, speaking or still."""
         return self._mood
+
+    def _add(self, level: float, kind: str) -> None:
+        self._bars.append((level, kind))
+        self._last_bar = time.monotonic()
+        self.refresh()
 
     def _elapsed(self, now: float) -> float:
         elapsed = 0.0 if self._last_push is None else min(0.5, max(0.0, now - self._last_push))
@@ -167,8 +179,7 @@ class Waveform(Widget):
         now = time.monotonic() if now is None else now
         elapsed = self._elapsed(now)
         level = self._mic_ease.update(self._mic_scale.update(rms, now), elapsed)[0]
-        self._bars.append((level, "heard" if rms >= need > 0.0 else "quiet"))
-        self.refresh()
+        self._add(level, "heard" if rms >= need > 0.0 else "quiet")
 
     def push_speaker(self, rms: float, *, now: float | None = None) -> None:
         """Add the newest bar of the reply being played.
@@ -190,10 +201,11 @@ class Waveform(Widget):
             self._speaker_scale = _speaker_scale()
             self._speaker_ease = Ballistics()
         self._last_speaker = now
+        self._audio_seen = True
+        self._filling = False
         elapsed = 0.0 if gap is None else min(gap, _SPEAKER_NEW_REPLY_S)
         level = self._speaker_ease.update(self._speaker_scale.update(rms, now), elapsed)[0]
-        self._bars.append((level, "speaker"))
-        self.refresh()
+        self._add(level, "speaker")
 
     def set_mood(self, mood: str) -> None:
         """Choose what the strip does besides drawing the mic.
@@ -202,8 +214,10 @@ class Waveform(Widget):
         ----------
         mood : str
             ``"listening"`` (a blinking cursor at the right edge), ``"thinking"`` (a calm
-            wave scrolls by) or ``"still"``. Textual's reduced-motion setting turns the
-            blinking and the scrolling into a fixed picture.
+            wave scrolls by), ``"speaking"`` (the reply's bars, with a flat line scrolling
+            until the first audio level arrives) or ``"still"``. Every source adds bars at
+            the same rate, so the scroll keeps one speed through a turn. Textual's
+            reduced-motion setting turns the blinking and the scrolling into a fixed picture.
         """
         if mood == self._mood:
             return
@@ -233,11 +247,23 @@ class Waveform(Widget):
                     self._bars.append((processing_level(step * _THINK_TICK_S), "thinking"))
         elif mood == "listening" and moving:
             self._timer = self.set_interval(_BLINK_S, self._blink)
+        elif mood == "speaking" and moving:
+            self._audio_seen = False
+            self._timer = self.set_interval(_BAR_S / 4, self._fill)
         self.refresh()
 
     def _think(self) -> None:
-        self._bars.append((processing_level(time.monotonic() - self._since), "thinking"))
-        self.refresh()
+        self._add(processing_level(time.monotonic() - self._since), "thinking")
+
+    def _fill(self) -> None:
+        # The reply's first audio takes a moment to arrive, and a reply pauses between
+        # sentences. A flat bar at the usual rate in those gaps keeps the strip scrolling at
+        # the same speed instead of stopping and then catching up. Once audio levels are
+        # coming it waits longer, so it never cuts in between two real ones.
+        patient = self._audio_seen and not self._filling
+        if time.monotonic() - self._last_bar > (_AUDIO_GAP_S if patient else _BAR_S * 1.05):
+            self._add(0.0, "speaker")
+            self._filling = True  # in a gap now, so carry on at the usual rate until audio is back
 
     def _blink(self) -> None:
         self._cursor_on = not self._cursor_on
@@ -623,6 +649,8 @@ class VoiceApp(App[int]):
             return "still"
         if view.state is SessionState.THINKING:
             return "thinking"
+        if view.state is SessionState.SPEAKING:
+            return "speaking"
         if view.state is SessionState.LISTENING and not self._live.muted:
             return "listening"
         return "still"
