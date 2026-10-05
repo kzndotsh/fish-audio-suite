@@ -268,6 +268,12 @@ def _parser() -> argparse.ArgumentParser:
     return p
 
 
+def _quit_line() -> int:
+    # A second Ctrl+C lands here, after the session and its display are gone.
+    console_print("\nbye")
+    return bye()
+
+
 def main(argv: list[str] | None = None) -> int:
     """``fish-voice`` entry. Load dotenv, then smoke or duplex.
 
@@ -315,11 +321,11 @@ def main(argv: list[str] | None = None) -> int:
         try:
             return asyncio.run(smoke_test(c, args.out))
         except KeyboardInterrupt:
-            return bye()
+            return _quit_line()
     try:
         return asyncio.run(run_loop(c))
     except KeyboardInterrupt:
-        return bye()
+        return _quit_line()
     except asyncio.CancelledError:
         # run_loop returns on quit. A cancel that gets here is a bug, so say
         # so instead of restarting with the same state.

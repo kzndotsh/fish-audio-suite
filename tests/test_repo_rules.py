@@ -166,25 +166,24 @@ def test_voice_reads_the_environment_only_in_its_settings_layer() -> None:
     )
 
 
+def _is_terminal_write(node: ast.Call | ast.Attribute) -> bool:
+    if isinstance(node, ast.Call):
+        return isinstance(node.func, ast.Name) and node.func.id == "print"
+    return (
+        isinstance(node.value, ast.Name)
+        and node.value.id == "sys"
+        and node.attr in {"stdout", "stderr"}
+    )
+
+
 def _writes_to_the_terminal(path: Path) -> list[int]:
     """Return the lines that call ``print`` or touch ``sys.stdout`` or ``sys.stderr``."""
     tree = ast.parse(path.read_text(encoding="utf-8"))
-    lines: list[int] = []
-    for node in ast.walk(tree):
-        is_print = (
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "print"
-        )
-        is_stream = (
-            isinstance(node, ast.Attribute)
-            and isinstance(node.value, ast.Name)
-            and node.value.id == "sys"
-            and node.attr in {"stdout", "stderr"}
-        )
-        if is_print or is_stream:
-            lines.append(node.lineno)
-    return sorted(lines)
+    return sorted(
+        node.lineno
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call | ast.Attribute) and _is_terminal_write(node)
+    )
 
 
 def test_the_voice_session_reports_through_events_and_never_writes_to_the_terminal() -> None:

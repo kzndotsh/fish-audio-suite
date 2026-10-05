@@ -13,7 +13,7 @@ from fish_audio_suite_voice.asr import asr_client
 from fish_audio_suite_voice.config import VoiceCliConfig
 from fish_audio_suite_voice.console_sink import ConsoleSink
 from fish_audio_suite_voice.debug import debug
-from fish_audio_suite_voice.duplex_state import EXIT_FATAL, EXIT_OK, DuplexContext
+from fish_audio_suite_voice.duplex_state import EXIT_CRASH, EXIT_FATAL, EXIT_OK, DuplexContext
 from fish_audio_suite_voice.events import EVENTS, Bye, TurnEnded
 from fish_audio_suite_voice.hearing import HeardLine, hear_line
 from fish_audio_suite_voice.history import opening_history, remember_user
@@ -152,11 +152,11 @@ async def duplex_turns(
     Barge-in keeps the audio that tripped the gate and skips the post-speak
     cooldown. ``session.request_quit`` cancels the in-flight reply and ends
     the loop. A ``Bye`` event carrying the exit code is sent once however the
-    session ends, including a fatal error or a crash.
+    session ends: 0 for a quit, 2 for a fatal error, 1 when the session raises.
     """
     session = session or DuplexSession(aec=EchoCanceller(c.aec))
     printer = ConsoleSink(EVENTS) if console else None
-    code = EXIT_FATAL  # a crash ends the session like a fatal error
+    code = EXIT_CRASH  # replaced below unless the session raises
     try:
         code = await _session(c, tts, device, backend, session=session, source=source)
         return code

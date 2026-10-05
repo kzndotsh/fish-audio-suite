@@ -24,6 +24,7 @@ from voice_fakes import install_audio, install_vad, make_result, set_tts
 
 from fish_audio_suite_kit import LatencySnapshot
 from fish_audio_suite_voice.barge import FRAME_BYTES, MIC_LEVEL_EVERY_FRAMES, BargeGate
+from fish_audio_suite_voice.cli import _quit_line  # pyright: ignore[reportPrivateUsage]
 from fish_audio_suite_voice.debug import configure_voice_logging
 from fish_audio_suite_voice.events import (
     EVENTS,
@@ -392,4 +393,9 @@ def test_bye_is_sent_when_the_session_crashes(
     monkeypatch.setattr("fish_audio_suite_voice.duplex.hear_line", broken)
     with pytest.raises(RuntimeError, match="boom"):
         _run(_quick(), FishSpeaker(api_key="k", voice_id="voice"), _hello)
-    assert [e for e in seen if isinstance(e, Bye)] == [Bye(2)]
+    assert [e for e in seen if isinstance(e, Bye)] == [Bye(1)]
+
+
+def test_a_second_ctrl_c_still_prints_the_quit_line(capsys: pytest.CaptureFixture[str]) -> None:
+    assert _quit_line() == 0
+    assert capsys.readouterr().out == "\nbye\n"

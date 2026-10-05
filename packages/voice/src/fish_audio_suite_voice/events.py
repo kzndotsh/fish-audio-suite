@@ -226,7 +226,8 @@ class Bye:
     Attributes
     ----------
     code : int
-        The exit code: 0 for a normal quit, 2 for a fatal error or a crash.
+        The exit code: 0 for a normal quit, 2 for a fatal error such as a bad key or
+        missing PortAudio, 1 when the session raised an unexpected exception.
     at : float
         ``time.monotonic()`` when the event was made. Not part of equality.
     """
