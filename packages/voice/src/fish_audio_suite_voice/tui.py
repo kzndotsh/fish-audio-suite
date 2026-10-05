@@ -164,7 +164,8 @@ class Conversation(VerticalScroll):
         if self._pending is None:
             self._phase = 0
             self._pending = self._add("you pending", self._pulse_content())
-            self._pulse = self.set_interval(_HEARING_TICK_S, self._advance_pulse)
+            if self.app.animation_level != "none":  # Textual's reduced-motion setting
+                self._pulse = self.set_interval(_HEARING_TICK_S, self._advance_pulse)
             self.scroll_end(animate=False)
         if self._expiry is not None:
             self._expiry.stop()

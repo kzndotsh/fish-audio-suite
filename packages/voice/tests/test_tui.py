@@ -613,3 +613,22 @@ def test_an_event_that_arrives_as_the_app_closes_is_ignored() -> None:
         harness.app._apply([Heard("too late", 1.0)])  # the screen is gone by now
 
     asyncio.run(asyncio.wait_for(main(), 20))
+
+
+def test_the_pulse_holds_still_when_animations_are_turned_off() -> None:
+    harness = _Harness()
+    harness.app.animation_level = "none"  # what TEXTUAL_ANIMATIONS=none sets
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        harness.bus.emit(MicLevel(1000.0, 200.0, "listen"))
+        await pilot.pause(0.1)
+        (first,) = harness.messages()
+        await pilot.pause(0.4)
+        assert harness.messages() == [first]  # still there, and not moving
+        assert first.startswith("you ▸ ")
+        harness.bus.emit(Heard("hi", 1.0))
+        await pilot.pause(0.1)
+        assert harness.messages() == ["you ▸ hi"]
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
