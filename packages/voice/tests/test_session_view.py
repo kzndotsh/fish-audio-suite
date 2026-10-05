@@ -24,7 +24,7 @@ from fish_audio_suite_voice.events import (
     StateChanged,
     TurnEnded,
 )
-from fish_audio_suite_voice.session_view import SessionView, reduce_view
+from fish_audio_suite_voice.session_view import SessionView, level_fraction, reduce_view
 
 
 def _fold(*events: Event, start: SessionView | None = None) -> SessionView:
@@ -111,3 +111,28 @@ def test_reducing_never_changes_the_view_it_was_given() -> None:
 def test_the_same_mic_level_twice_gives_an_equal_view_so_a_screen_need_not_refresh() -> None:
     first = _fold(MicLevel(250.0, 200.0, "listen"))
     assert _fold(MicLevel(250.0, 200.0, "listen"), start=first) == first
+
+
+def test_the_meter_is_empty_when_silent_full_at_the_peak_and_never_outside_zero_to_one() -> None:
+    assert level_fraction(0.0) == 0.0
+    assert level_fraction(-5.0) == 0.0
+    assert level_fraction(0.5) == 0.0  # far below the quietest level shown
+    assert level_fraction(32768.0) == 1.0
+    assert level_fraction(1e9) == 1.0
+
+
+def test_the_meter_rises_with_loudness_and_shows_speech_well_above_empty() -> None:
+    levels = [level_fraction(r) for r in (10, 50, 200, 800, 3000, 12000)]
+    assert levels == sorted(levels)
+    assert len(set(levels)) == len(levels)
+    # Ordinary speech, a few hundred out of 32768, would be invisible on a linear bar.
+    assert level_fraction(300.0) > 0.3  # about a third of the bar
+    assert level_fraction(300.0) > 30 * (300.0 / 32768.0)  # a linear bar would show under 1%
+
+
+def test_a_view_gives_the_meter_and_its_threshold_marker() -> None:
+    view = _fold(MicLevel(1000.0, 200.0, "listen"))
+    assert view.mic_fraction == pytest.approx(level_fraction(1000.0))
+    assert view.mic_need_fraction == pytest.approx(level_fraction(200.0))
+    assert view.mic_fraction > view.mic_need_fraction
+    assert SessionView().mic_fraction == 0.0

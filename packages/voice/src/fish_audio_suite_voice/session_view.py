@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, replace
+from typing import Final
 
 from fish_audio_suite_kit import LatencySnapshot
 from fish_audio_suite_voice.events import (
@@ -20,8 +22,12 @@ from fish_audio_suite_voice.events import (
 
 __all__ = [
     "SessionView",
+    "level_fraction",
     "reduce_view",
 ]
+
+_FULL_SCALE: Final = 32768.0  # the peak of 16-bit audio
+_QUIETEST_DB: Final = -60.0  # at or below this, a meter shows empty
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +65,44 @@ class SessionView:
     mic_need: float = 0.0
     last_notice: str = ""
     exit_code: int | None = None
+
+    @property
+    def mic_fraction(self) -> float:
+        """How full the mic meter is, from 0 to 1."""
+        return level_fraction(self.mic_rms)
+
+    @property
+    def mic_need_fraction(self) -> float:
+        """Where the speech threshold sits on the meter, from 0 to 1."""
+        return level_fraction(self.mic_need)
+
+
+def level_fraction(rms: float) -> float:
+    """Map a mic RMS level to how full a meter should be, from 0 to 1.
+
+    Parameters
+    ----------
+    rms : float
+        An RMS level of 16-bit audio, such as ``MicLevel.rms``.
+
+    Returns
+    -------
+    float
+        0 at 60 dB below full scale or quieter, 1 at full scale, in between on a
+        decibel scale, which is how loudness is heard. A raw linear bar would look
+        empty for ordinary speech, which sits at a few hundred out of 32768.
+
+    Examples
+    --------
+    >>> level_fraction(0.0), level_fraction(32768.0)
+    (0.0, 1.0)
+    >>> round(level_fraction(1000.0), 2)
+    0.5
+    """
+    if rms <= 0:
+        return 0.0
+    decibels = 20 * math.log10(rms / _FULL_SCALE)
+    return min(1.0, max(0.0, (decibels - _QUIETEST_DB) / -_QUIETEST_DB))
 
 
 def reduce_view(view: SessionView, event: Event) -> SessionView:
