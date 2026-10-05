@@ -489,3 +489,61 @@ def test_the_waveform_scrolls_newest_right_dims_below_the_threshold_and_decays()
             assert lines[3][-2] == " "
 
     asyncio.run(main())
+
+
+def test_a_pulsing_you_line_appears_when_speech_starts_and_becomes_the_transcript() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        harness.bus.emit(MicLevel(100.0, 200.0, "listen"))  # quiet: nothing yet
+        await pilot.pause(0.1)
+        assert harness.messages() == []
+        harness.bus.emit(MicLevel(1000.0, 200.0, "listen"))
+        harness.bus.emit(MicLevel(1200.0, 200.0, "listen"))  # more speech: still one line
+        await pilot.pause(0.35)  # long enough to animate
+        (pending,) = harness.messages()
+        assert pending.startswith("you ▸ ")
+        assert any(bar in pending for bar in "▁▂▃▄▅▆▇█")
+        frames = {pending}
+        await pilot.pause(0.35)
+        frames.add(harness.messages()[0])
+        assert len(frames) == 2  # it moves
+        harness.bus.emit(Heard("hello there", 120.0))
+        await pilot.pause(0.1)
+        assert harness.messages() == ["you ▸ hello there"]  # the same line, now with words
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+
+
+def test_the_pulsing_line_goes_away_when_no_words_follow(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(tui_module, "_HEARING_HOLD_S", 0.2)
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        harness.bus.emit(MicLevel(1000.0, 200.0, "listen"))
+        await pilot.pause(0.1)
+        assert len(harness.messages()) == 1
+        await pilot.pause(0.4)  # a cough: nothing was heard
+        assert harness.messages() == []
+        harness.bus.emit(MicLevel(1000.0, 200.0, "listen"))  # and it comes back for real speech
+        await pilot.pause(0.1)
+        assert len(harness.messages()) == 1
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+
+
+def test_a_typed_line_and_barge_in_levels_do_not_start_the_pulse() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        harness.bus.emit(MicLevel(5000.0, 200.0, "barge"))  # the mic hearing the speakers
+        await pilot.pause(0.1)
+        assert harness.messages() == []
+        harness.bus.emit(Heard("typed", 0.0))
+        await pilot.pause(0.1)
+        assert harness.messages() == ["you ▸ typed"]
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0

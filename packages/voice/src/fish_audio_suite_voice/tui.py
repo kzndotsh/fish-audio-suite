@@ -8,6 +8,7 @@ thread.
 
 from __future__ import annotations
 
+import math
 import threading
 from collections import deque
 from collections.abc import Awaitable, Callable
@@ -18,6 +19,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import Horizontal, Vertical, VerticalGroup, VerticalScroll
 from textual.content import Content
 from textual.message import Message
+from textual.timer import Timer
 from textual.types import CSSPathType
 from textual.widget import Widget
 from textual.widgets import Footer, Header, Input, Log, Static
@@ -34,6 +36,7 @@ from fish_audio_suite_voice.events import (
     EventQueue,
     Heard,
     LogLine,
+    MicLevel,
     Notice,
     ReplyEnd,
     ReplyToken,
@@ -54,6 +57,9 @@ _WAVE_HALF = 2  # rows above, and below, the middle line
 _WAVE_HISTORY = 240  # bars kept, so a wide terminal is filled
 _WAVE_DECAY = 0.82  # how much of the last bar a quieter one keeps, so bars fall smoothly
 _QUIT_GRACE_S = 3.0
+_HEARING_HOLD_S = 3.0  # how long "you" keeps pulsing after the last loud moment, with no transcript
+_HEARING_TICK_S = 0.1
+_PULSE_BARS = "\u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588"
 _NO_TURNS = "no turns yet"
 
 
@@ -126,11 +132,67 @@ class Conversation(VerticalScroll):
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)
         self._reply: Static | None = None
+        self._pending: Static | None = None
+        self._pulse: Timer | None = None
+        self._expiry: Timer | None = None
+        self._phase = 0
+
+    def show_hearing(self) -> None:
+        """Show that the user is speaking: a pulsing "you" line, until the words arrive.
+
+        Call it on every loud moment. The line is added on the first call, and goes away
+        by itself if no words follow, as after a cough.
+        """
+        if self._pending is None:
+            self._phase = 0
+            self._pending = self._add("you pending", self._pulse_content())
+            self._pulse = self.set_interval(_HEARING_TICK_S, self._advance_pulse)
+            self.scroll_end(animate=False)
+        if self._expiry is not None:
+            self._expiry.stop()
+        self._expiry = self.set_timer(_HEARING_HOLD_S, self._drop_pending)
+
+    def _pulse_content(self) -> Content:
+        top = len(_PULSE_BARS) - 1
+        bars = "".join(
+            _PULSE_BARS[round((math.sin(self._phase * 0.7 + i * 0.9) + 1) / 2 * top)]
+            for i in range(5)
+        )
+        return Content.assemble(
+            ("you ▸ ", "bold $text-primary"), (bars, "$text-success"), (" \u2026", "dim")
+        )
+
+    def _advance_pulse(self) -> None:
+        if self._pending is not None:
+            self._phase += 1
+            self._pending.update(self._pulse_content())
+
+    def _stop_pending(self) -> Static | None:
+        pending, self._pending = self._pending, None
+        for timer in (self._pulse, self._expiry):
+            if timer is not None:
+                timer.stop()
+        self._pulse = self._expiry = None
+        return pending
+
+    def _drop_pending(self) -> None:
+        pending = self._stop_pending()
+        if pending is not None:
+            pending.remove()
 
     def add_user(self, text: str) -> None:
-        """Add a line the user said or typed. The reply that follows starts fresh."""
+        """Add a line the user said or typed. The reply that follows starts fresh.
+
+        If the "you" line was pulsing, it becomes this line where it stands.
+        """
         self._reply = None
-        self._add("you", Content.assemble(("you ▸ ", "bold $text-primary"), text))
+        content = Content.assemble(("you ▸ ", "bold $text-primary"), text)
+        pending = self._stop_pending()
+        if pending is None:
+            self._add("you", content)
+        else:
+            pending.remove_class("pending")
+            pending.update(content)
 
     def add_note(self, text: str) -> None:
         """Add a dim status line, such as a retry or an interruption."""
@@ -265,6 +327,8 @@ class VoiceApp(App[int]):
     def _side_effects(self, event: Event) -> None:
         conversation = self.query_one(Conversation)
         match event:
+            case MicLevel(rms=rms, need=need, source="listen") if rms >= need > 0.0:
+                conversation.show_hearing()
             case Heard(text=text):
                 conversation.add_user(text)
             case ReplyToken() | ReplyEnd():

@@ -67,3 +67,7 @@ Screen {
 #line {
     height: auto;
 }
+
+.message.pending {
+    opacity: 70%;
+}
