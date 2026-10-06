@@ -16,6 +16,7 @@ from typing import Any, Final
 from fishaudio import FlushEvent, TextEvent
 
 from fish_audio_suite_kit import (
+    MoodCarry,
     ends_sentence,
     is_empty_delta,
     normalize_cues,
@@ -136,6 +137,7 @@ def _scrub_chunk(
     before: str = "",
     after: str = "",
     continued: bool = False,
+    official: bool = False,
 ) -> str:
     """Scrub one stable stream chunk with the text already accepted around it."""
     if not text:
@@ -155,7 +157,7 @@ def _scrub_chunk(
         before=before[-1:],
         after=after[:1],
     )
-    spoken = normalize_cues(cleaned, lead=lead)
+    spoken = normalize_cues(cleaned, lead=lead, official=official)
     if (lead_space or cleaned[:1] == " ") and spoken[:1] != " ":
         spoken = f" {spoken}"
     if (trail_space or cleaned[-1:] == " ") and spoken[-1:] != " ":
@@ -186,8 +188,11 @@ class _StreamScrubber:
         partial_chars: int,
         mood_lead: bool,
         early_flush: bool,
+        official: bool = False,
     ) -> None:
         self._cancel = cancel
+        self._official = official
+        self._carry = MoodCarry()
         self._partial_chars = partial_chars
         self._mood_lead = mood_lead
         self._early_flush = early_flush
@@ -217,7 +222,11 @@ class _StreamScrubber:
         return piece
 
     def _emit(self, piece: str) -> Iterator[Any]:
-        event = _text_event(piece)
+        if is_empty_delta(piece):
+            return
+        # Each piece goes to Fish on its own, so a sentence the model wrote without a cue
+        # would start cold. It gets the mood the last sentence had.
+        event = _text_event(self._carry.apply(piece))
         if event is None:
             return
         self._sent += 1
@@ -259,6 +268,7 @@ class _StreamScrubber:
                     before=self._ready[-1:] or self._last,
                     after=self._raw[:1],
                     continued=bool((self._sent_line + self._ready).strip()),
+                    official=self._official,
                 ),
             )
             if self._ready:
@@ -280,6 +290,7 @@ class _StreamScrubber:
                     line_start=_at_line_start(self._sent_line + self._ready),
                     before=self._ready[-1:] or self._last,
                     continued=bool((self._sent_line + self._ready).strip()),
+                    official=self._official,
                 ),
             )
         # A span held until the end can be longer than the send window.
@@ -305,6 +316,7 @@ async def delta_events(
     partial_chars: int,
     mood_lead: bool = False,
     early_flush: bool = False,
+    official: bool = False,
 ) -> AsyncIterator[Any]:
     """Cut model deltas into Fish text events, scrubbing as each span closes.
 
@@ -318,6 +330,8 @@ async def delta_events(
         Size of one Fish text event.
     mood_lead : bool, optional
         Rewrite a sentence-leading mood word into a ``[cue]``. Default False.
+    official : bool, optional
+        Keep only Fish's own cues, mapping or removing the rest. Default False.
     early_flush : bool, optional
         Flush once at the end of the first sentence, so Fish speaks it while
         the model is still writing. Default False. Fish holds text until a
@@ -340,7 +354,11 @@ async def delta_events(
     a cut cannot speak the inside of a span the closer would remove.
     """
     scrubber = _StreamScrubber(
-        cancel, partial_chars=partial_chars, mood_lead=mood_lead, early_flush=early_flush
+        cancel,
+        partial_chars=partial_chars,
+        mood_lead=mood_lead,
+        early_flush=early_flush,
+        official=official,
     )
     async for tok in as_async(deltas):
         if cancel.is_set():

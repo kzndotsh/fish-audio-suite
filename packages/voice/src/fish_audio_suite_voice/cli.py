@@ -137,6 +137,7 @@ def _fish_tts(c: VoiceCliConfig, audio_format: str) -> FishSpeaker:
         min_chunk_length=c.min_chunk_length,
         volume=c.volume,
         mood_lead=c.mood_lead,
+        official_cues=c.official_cues,
         fade_ms=c.fade_ms,
         base_url=c.fish_base,
     )

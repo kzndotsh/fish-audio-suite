@@ -119,8 +119,8 @@ def _sdk_volume(volume: float) -> float:
     return min(_SDK_VOLUME_HI, max(_SDK_VOLUME_LO, volume))
 
 
-def _spoken(text: str, *, lead: bool = True) -> str:
-    return normalize_cues(scrub_tts(text), lead=lead)
+def _spoken(text: str, *, lead: bool = True, official: bool = False) -> str:
+    return normalize_cues(scrub_tts(text), lead=lead, official=official)
 
 
 def _quiet_result(cancelled: bool) -> TtsResult:
@@ -156,6 +156,7 @@ class FishSpeaker:
     min_chunk_length: int = _STOCK.min_chunk_length
     volume: float = _STOCK.volume
     mood_lead: bool = False
+    official_cues: bool = False
     partial_chars: int = _STOCK.tts_partial_chars
     fade_ms: float = DEFAULT_FADE_MS
     base_url: str = _STOCK.fish_base
@@ -326,7 +327,7 @@ class FishSpeaker:
         ``speak`` calls this on a private loop, which keeps the caller's loop
         free for the LLM.
         """
-        prepared = _spoken(text, lead=self.mood_lead)
+        prepared = _spoken(text, lead=self.mood_lead, official=self.official_cues)
         return await run_turn(
             self._spec(),
             text_events(prepared, cancel, self.partial_chars),
@@ -382,6 +383,7 @@ class FishSpeaker:
                 cancel,
                 partial_chars=self.partial_chars,
                 mood_lead=self.mood_lead,
+                official=self.official_cues,
                 early_flush=early_flush,
             ),
             sink,

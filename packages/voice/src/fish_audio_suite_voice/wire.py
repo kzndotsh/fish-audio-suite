@@ -25,6 +25,7 @@ from fish_audio_suite_kit import (
     FISH_RETRY_ATTEMPTS,
     AudioFormat,
     FishHttpError,
+    MoodCarry,
     describe_request_error,
     elapsed_ms,
     fish_attempt_exhausted,
@@ -188,6 +189,7 @@ async def text_events(
     """
     buf = prepared
     sent = 0
+    carry = MoodCarry()
     while buf:
         if cancel.is_set():
             break
@@ -197,7 +199,8 @@ async def text_events(
         piece, buf = split
         if is_empty_delta(piece):
             continue
-        yield TextEvent(text=piece)
+        # A sentence the model wrote without a cue gets the mood the last one had.
+        yield TextEvent(text=carry.apply(piece))
         sent += 1
     flush = flush_if_sent(sent, cancel)
     if flush is not None:

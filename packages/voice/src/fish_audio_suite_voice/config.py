@@ -49,10 +49,12 @@ from fish_audio_suite_voice.tune import (
 # the minimum voiced time. A faster clip is mostly pre-roll or leftover audio.
 DEFAULT_REPEAT_WINDOW_S: Final = 1.5
 OUTPUT_LATENCIES: Final = ("auto", "low", "high")
+TTS_CUE_MODES: Final = ("official", "free")
 
 __all__ = [
     "OPENROUTER_API_BASE",
     "OUTPUT_LATENCIES",
+    "TTS_CUE_MODES",
     "VoiceCliConfig",
     "load_config",
     "log_dir_from_env",
@@ -90,6 +92,9 @@ class VoiceCliConfig:
         within this many seconds of the mic opening. 0 never drops a repeat.
     mood_lead : bool
         Rewrite a sentence-leading mood word into a ``[cue]``.
+    tts_cues : str
+        ``"official"`` keeps only Fish's own cues and maps or removes the rest (a voice may act
+        out ``[smiling]`` as a hum). ``"free"`` sends every cue the model writes as written.
     stream_tts : bool
         Speak the reply while the model is still writing it. Off by default.
     fade_ms : float
@@ -131,9 +136,15 @@ class VoiceCliConfig:
     history_turns: int = DEFAULT_HISTORY_TURNS
     repeat_window_s: float = DEFAULT_REPEAT_WINDOW_S
     mood_lead: bool = False
+    tts_cues: str = "official"
     drop_narration: bool = False
     stream_tts: bool = False
     fade_ms: float = DEFAULT_FADE_MS
+
+    @property
+    def official_cues(self) -> bool:
+        """Return whether cues other than Fish's own are mapped or removed."""
+        return self.tts_cues == "official"
 
     @property
     def sink_latency(self) -> str:
@@ -189,6 +200,15 @@ def warn_if_insecure_base(c: VoiceCliConfig) -> bool:
 def log_dir_from_env() -> str:
     """Read ``FISH_VOICE_LOG_DIR``: a folder to write a complete log of each run to, or empty."""
     return read_text("FISH_VOICE_LOG_DIR")
+
+
+def _tts_cues() -> str:
+    """Read ``FISH_TTS_CUES``: ``official`` or ``free``."""
+    value = read_text("FISH_TTS_CUES", "official").lower() or "official"
+    if value not in TTS_CUE_MODES:
+        warn(f"fish-voice: ignoring FISH_TTS_CUES={value!r}, use official or free")
+        return "official"
+    return value
 
 
 def _output_latency() -> str:
@@ -287,6 +307,7 @@ def load_config() -> VoiceCliConfig:
         ),
         fade_ms=read_float("FISH_VOICE_FADE_MS", DEFAULT_FADE_MS, lo=0.0, hi=_FADE_MAX_MS),
         mood_lead=read_flag("FISH_TTS_MOOD_LEAD", default=False),
+        tts_cues=_tts_cues(),
         drop_narration=read_flag(
             "FISH_TTS_DROP_NARRATION",
             default=False,

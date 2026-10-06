@@ -22,6 +22,7 @@ class EnvCase(NamedTuple):
 
 _CASES: list[EnvCase] = [
     EnvCase("FISH_VOICE_PLAYBACK", "file", "file", attrgetter("playback")),
+    EnvCase("FISH_TTS_CUES", " Free ", "free", attrgetter("tts_cues")),
     EnvCase("FISH_VOICE_OUTPUT_LATENCY", " HIGH ", "high", attrgetter("output_latency")),
     EnvCase("FISH_VOICE_HISTORY_TURNS", "7", 7, attrgetter("history_turns")),
     EnvCase("FISH_VOICE_SYSTEM_PROMPT", "a prompt", "a prompt", attrgetter("system_prompt")),
@@ -72,3 +73,15 @@ def test_an_unknown_output_latency_is_ignored_and_auto_means_low_outside_the_scr
     config = load_config()
     assert config.output_latency == "auto"
     assert config.sink_latency == "low"
+
+
+def test_cues_are_official_by_default_and_an_unknown_choice_is_ignored(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert load_config().tts_cues == "official"
+    assert load_config().official_cues
+    monkeypatch.setenv("FISH_TTS_CUES", "free")
+    assert not load_config().official_cues
+    monkeypatch.setenv("FISH_TTS_CUES", "everything")
+    assert load_config().tts_cues == "official"
+    assert "FISH_TTS_CUES" in capsys.readouterr().err

@@ -653,3 +653,34 @@ def test_a_long_held_span_streams_without_rechecking_everything_per_token(opener
     started = time.perf_counter()
     asyncio.run(drain())
     assert time.perf_counter() - started < 6.0
+
+
+def _streamed_pieces(tokens: list[str], *, official: bool = False) -> list[str]:
+    async def run() -> list[str]:
+        events = delta_events(tokens, threading.Event(), partial_chars=40, official=official)
+        return [event.text async for event in events if isinstance(event, TextEvent)]
+
+    return asyncio.run(run())
+
+
+def test_a_sentence_the_model_wrote_without_a_cue_is_sent_with_the_last_mood() -> None:
+    pieces = _streamed_pieces(["[happy] You sound so relaxed. ", "Just perfect. ", "Truly."])
+    assert pieces[0].startswith("[happy] You sound")
+    assert "".join(pieces).count("[happy]") == 3  # every sentence started with the mood
+
+
+def test_a_piece_that_continues_a_sentence_is_not_given_a_cue() -> None:
+    long_sentence = "[calm] " + "word " * 20 + "end of it."
+    pieces = _streamed_pieces([long_sentence])
+    assert len(pieces) > 1  # it was cut mid-sentence
+    assert "".join(pieces).count("[calm]") == 1
+
+
+def test_official_mode_maps_invented_cues_while_streaming() -> None:
+    tokens = ["[smiling wider] Now, tell [in a storytelling voice] me. ", "[gentle] Okay."]
+    text = "".join(_streamed_pieces(tokens, official=True))
+    assert "[happy] Now, tell me." in text
+    assert "[calm] Okay." in text
+    assert "smiling" not in text
+    assert "storytelling" not in text
+    assert "[smiling wider]" in "".join(_streamed_pieces(tokens))  # free mode leaves it

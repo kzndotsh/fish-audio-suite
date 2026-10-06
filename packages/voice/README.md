@@ -84,6 +84,10 @@ With the default system prompt the session starts with one pinned exchange that 
 (`DEFAULT_SEED_EXCHANGE` in the kit). It costs about 40 tokens per request and is never trimmed from
 the history. A custom `FISH_VOICE_SYSTEM_PROMPT` gets no seed, so it stays in control of the replies.
 
+How Fish's S2 models read cues, from Fish's guides: a cue is square brackets around plain language, so `[warm and happy]` and `[laughing nervously]` work as well as the official names. Layered cues work (`[sad][whispering]`, at most three per sentence is advised), a sentence's emotion cue works best at its start, and sound cues can go anywhere. Follow a sound with the words of it (`[laughing] Ha ha`), use cues sparingly, and do not stack conflicting emotions. The kit keeps stacks whole, rewrites the older S1 `(parenthesis)` and alias spellings (`[laugh]` becomes `[laughing]`), and never speaks a cue. The S1 model uses parentheses and a fixed list, and the app does not write them back for it, so `FISH_TTS_MODEL=s1` is not supported for cues.
+
+Free-form cues are risky on some voices: a description of a face or a voice (`[smiling]`, `[soft chuckle]`, `[echoing voice]`) can be acted out as a hum or a small sound, which sounds like an "mhm" between sentences. The default prompt therefore asks for one word from a list of about 20 moods, and `FISH_TTS_CUES=official` (the default) is the safety net: any cue Fish does not list becomes the nearest official one (`smiling` to `happy`, `gentle` to `calm`, `soft chuckle` to `chuckling`) or is removed (`in a storytelling voice`). `FISH_TTS_CUES=free` sends cues as written. Whatever the mode, a sentence the model wrote without a cue is sent with the mood the last sentence had, because each piece goes to Fish on its own and a sentence with no cue starts cold; a piece that only continues a sentence is left alone.
+
 ### Characters and system prompts
 
 Put a character or scene in a file and point the session at it:
@@ -250,6 +254,7 @@ What happens, and what leaves your machine:
 - `FISH_VOICE_EAGER_EOT_THRESHOLD` starts the model's reply early. Nothing is shown, spoken or
   added to the history until Flux confirms the same words; if you carried on, or the words
   differ, the early reply is thrown away and asked for again.
+- Fish's own realtime transcription (the OpenAI-compatible socket) is not an alternative: it returns the transcript once, after a `commit`, with no words while you speak, and it refuses server-side voice detection. Deepgram Flux is the streaming option.
 - A transcript is judged exactly as a Fish one is: quit words, stray "mm-hmm" over a reply, and
   stale copies of the last line are dropped.
 - Only the PortAudio microphone path streams. Typed lines, mute and interrupt work as before.
@@ -320,6 +325,7 @@ LLM:
 | `FISH_VOICE_STREAM_TTS` | off | Speak the reply while the model is still writing it. See streaming above |
 | `FISH_VOICE_REPEAT_WINDOW` | `1.5` | Seconds. A line equal to the previous one is dropped only if it ends this soon after the mic opens. 0 never drops a repeat |
 | `FISH_TTS_MOOD_LEAD`, `FISH_TTS_DROP_NARRATION` | off | See roleplay helpers |
+| `FISH_TTS_CUES` | `official` | `official` keeps only Fish's own cues and maps the rest to the nearest one (`[smiling]` becomes `[happy]`) or drops them. `free` sends every cue as written. See cues in replies |
 
 Speech recognition. See [Streaming speech recognition](#streaming-speech-recognition-deepgram).
 

@@ -239,7 +239,9 @@ async def speak_reply(
     off, and it joins the last assistant message in history.
     """
     c = ctx.config
-    scrubbed = ensure_lead_cue(normalize_cues(scrub_tts(reply), lead=c.mood_lead))
+    scrubbed = ensure_lead_cue(
+        normalize_cues(scrub_tts(reply), lead=c.mood_lead, official=c.official_cues)
+    )
     if is_tts_junk(scrubbed, drop_narration=c.drop_narration):
         notice("  (skip junk TTS)")
         return snapshot, None
@@ -382,7 +384,9 @@ async def stream_turn(
             return snapshot, EXIT_FATAL
         _keep_for_resume(
             ctx,
-            ensure_lead_cue(normalize_cues(scrub_tts(reply), lead=c.mood_lead)),
+            ensure_lead_cue(
+                normalize_cues(scrub_tts(reply), lead=c.mood_lead, official=c.official_cues)
+            ),
             result,
             barge.captured,
         )
