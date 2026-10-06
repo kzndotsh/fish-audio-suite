@@ -64,7 +64,9 @@ def test_suite_defaults_and_timing() -> None:
     assert d.system_prompt == DEFAULT_SYSTEM_PROMPT
     assert "no markdown" in DEFAULT_SYSTEM_PROMPT.lower()
     assert "never spoken" in DEFAULT_SYSTEM_PROMPT
-    assert "[excited]" in DEFAULT_SYSTEM_PROMPT
+    assert "excited," in DEFAULT_SYSTEM_PROMPT  # the list of one-word moods
+    assert "never a description" in DEFAULT_SYSTEM_PROMPT
+    assert "Every sentence starts with its own cue" in DEFAULT_SYSTEM_PROMPT
     assert "change the cue" in DEFAULT_SYSTEM_PROMPT
     assert "do not tag every sentence" not in DEFAULT_SYSTEM_PROMPT
     assert "first_audio=850ms" in LatencySnapshot(first_audio_ms=850).log_line()
