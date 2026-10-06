@@ -731,4 +731,4 @@ def test_the_common_s2_breath_cues_are_cues_in_a_stack_and_as_old_parens() -> No
     # Fish's models guide lists [gasp], [inhale] and [exhale] as common S2 cues.
     assert scrub_tts("[inhale][exhale] Okay.") == "[inhale][exhale] Okay."
     assert scrub_tts("[gasp] No way [inhale] okay.") == "[gasp] No way [inhale] okay."
-    assert normalize_cues(scrub_tts("(gasp) wow")) == "[gasp] wow"
+    assert normalize_cues(scrub_tts("(gasp) wow")) == "[gasping] wow"

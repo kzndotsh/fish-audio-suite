@@ -15,9 +15,12 @@ from fish_audio_suite_kit.asr_text import (
 )
 from fish_audio_suite_kit.captions import CaptionCue, format_as_srt, format_as_vtt
 from fish_audio_suite_kit.cues import (
+    MoodCarry,
     ensure_lead_cue,
+    last_emotion,
     mood_lead_hold_at,
     normalize_cues,
+    official_cue,
     split_cues,
     strip_cue_tags,
 )
@@ -149,6 +152,7 @@ __all__ = [
     "FishTimeoutError",
     "FishUpstreamError",
     "LatencySnapshot",
+    "MoodCarry",
     "OpenAIErrorBody",
     "OpenAIErrorDetail",
     "SuiteDefaults",
@@ -193,11 +197,13 @@ __all__ = [
     "known_latency",
     "known_mp3_bitrate",
     "known_opus_bitrate",
+    "last_emotion",
     "make_traceparent",
     "mood_lead_hold_at",
     "next_tts_cut",
     "normalize_cues",
     "normalize_tts_model",
+    "official_cue",
     "parse_asr_body",
     "parse_fish_error",
     "parse_number",

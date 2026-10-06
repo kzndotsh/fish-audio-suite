@@ -4,6 +4,7 @@ import pytest
 from kit_helpers import assert_linear_time
 
 from fish_audio_suite_kit import (
+    MoodCarry,
     ensure_lead_cue,
     normalize_cues,
     scrub_tts,
@@ -11,7 +12,7 @@ from fish_audio_suite_kit import (
     strip_cue_tags,
     tts_hold_at,
 )
-from fish_audio_suite_kit.cues import mood_lead_hold_at
+from fish_audio_suite_kit.cues import last_emotion, mood_lead_hold_at, official_cue
 
 
 def test_mood_lead_becomes_cue() -> None:
@@ -320,3 +321,88 @@ def test_split_cues_leaves_a_too_long_or_broken_bracket_as_text() -> None:
 def test_split_cues_is_linear_on_hostile_input() -> None:
     for text in ("[" * 20_000, "[ " * 10_000, "[a" * 10_000, "]" * 20_000):
         assert_linear_time(split_cues, text)
+
+
+@pytest.mark.parametrize(
+    ("cue", "official"),
+    [
+        ("happy", "happy"),
+        ("Happy ", "happy"),
+        ("very excited", "very excited"),
+        ("slightly sad", "slightly sad"),
+        ("laugh", "laughing"),
+        ("gasp", "gasping"),
+        ("sob", "sobbing"),
+        ("smiling", "happy"),
+        ("smiling wider", "happy"),
+        ("soft chuckle", "chuckling"),  # a sound beats the word "soft"
+        ("laughing nervously", "laughing"),
+        ("whispers sweetly", "whispering"),
+        ("sultry", "soft tone"),
+        ("cheerful", "happy"),
+        ("impressed", "surprised"),
+        ("reassuring", "empathetic"),
+        ("frightened", "scared"),
+        ("intrigued", "curious"),
+        ("gentle", "calm"),
+        ("in a storytelling voice", None),
+        ("echoing voice", None),
+        ("back to normal voice", None),
+        ("madly in love", None),  # "mad" is a whole word only
+    ],
+)
+def test_a_cue_becomes_the_nearest_official_one_or_none(cue: str, official: str | None) -> None:
+    assert official_cue(cue) == official
+
+
+def test_in_official_mode_invented_cues_are_mapped_and_unmappable_ones_removed() -> None:
+    text = "[gentle] I can tell. [smiling] You sound so relaxed. [smiling wider] Now, tell [in a storytelling voice] me."
+    assert normalize_cues(text, official=True) == (
+        "[calm] I can tell. [happy] You sound so relaxed. [happy] Now, tell me."
+    )
+    # Left alone by default: S2 reads free-form cues.
+    assert "[smiling wider]" in normalize_cues(text)
+
+
+def test_official_mode_keeps_stacks_intensity_and_sounds() -> None:
+    text = "[sad][whispering] I miss you. [very excited][laughing] Ha ha."
+    assert normalize_cues(text, official=True) == (
+        "[sad] [whispering] I miss you. [very excited][laughing] Ha ha."
+    )
+
+
+def test_the_last_emotion_skips_sounds_and_keeps_an_intensity_word() -> None:
+    assert last_emotion("[happy] Hi. [laughing] Ha. [very sad] Oh.") == "very sad"
+    assert last_emotion("[calm] Hi. [laughing] Ha.") == "calm"
+    assert last_emotion("[laughing] Ha. [break] Well.") is None
+    assert last_emotion("no cues") is None
+
+
+def test_a_sentence_without_a_cue_gets_the_last_mood_and_a_continued_one_does_not() -> None:
+    carry = MoodCarry()
+    sent = [
+        carry.apply(piece)
+        for piece in (
+            "[calm] I can tell. ",
+            "You sound so relaxed. ",
+            "[happy] Just perfect. ",
+            "Now, why don't you tell ",  # no sentence ended before it: not a new start
+            "Mommy what you're thinking?",
+        )
+    ]
+    assert sent == [
+        "[calm] I can tell. ",
+        "[calm] You sound so relaxed. ",
+        "[happy] Just perfect. ",
+        "[happy] Now, why don't you tell ",
+        "Mommy what you're thinking?",
+    ]
+
+
+def test_a_sound_first_sentence_still_gets_the_mood_and_one_with_its_own_is_left_alone() -> None:
+    carry = MoodCarry()
+    assert carry.apply("[sad] Oh. ") == "[sad] Oh. "
+    assert carry.apply("[laughing] Ha. ") == "[sad] [laughing] Ha. "
+    assert carry.apply("[curious] Really? ") == "[curious] Really? "
+    assert carry.apply("Tell me. ") == "[curious] Tell me. "
+    assert MoodCarry().apply("No mood yet. ") == "No mood yet. "

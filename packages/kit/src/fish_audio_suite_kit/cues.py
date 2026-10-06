@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import re
 
-from fish_audio_suite_kit.cuts import next_tts_cut
+from fish_audio_suite_kit.cuts import ends_sentence, next_tts_cut
 
 __all__ = [
+    "MoodCarry",
     "ensure_lead_cue",
     "is_paren_cue",
+    "last_emotion",
     "mood_lead_hold_at",
     "normalize_cues",
+    "official_cue",
     "paren_cue_names",
     "rewrite_s1_parens",
     "split_cues",
@@ -118,6 +121,11 @@ _CUE_ALIASES = {
     "pause": "break",
     "sigh": "sighing",
     "chuckle": "chuckling",
+    "gasp": "gasping",
+    "groan": "groaning",
+    "yawn": "yawning",
+    "sob": "sobbing",
+    "cry": "sobbing",
 }
 
 # (happy) from the old S1 model. Emotions and the three sentence tones are
@@ -317,9 +325,180 @@ def spoken_mood_span(text: str) -> tuple[int, int] | None:
     return lead.start(), lead.end()
 
 
+# A word a model writes in a cue that Fish's own list lacks, and the official cue that sounds
+# nearest. Stems of four letters or more match the start of a word; shorter ones match a whole
+# word, so "mad" does not catch "made". The earliest row with a matching word decides, so sounds
+# and tones come before moods ("soft chuckle" is a chuckle, not a soft tone). A descriptive cue about a
+# face, a voice or an action ("smiling wider", "echoing voice") is acted out as a sound by
+# some voices, which is why it is mapped to a mood or dropped.
+_CUE_STEMS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("chuckl", "giggl", "snicker", "titter"), "chuckling"),
+    (("laugh", "cackl", "guffaw"), "laughing"),
+    (("sigh",), "sighing"),
+    (("gasp",), "gasping"),
+    (("groan",), "groaning"),
+    (("yawn",), "yawning"),
+    (("sob", "weep", "cry", "crying", "tearful"), "sobbing"),
+    (("pant", "breathless"), "panting"),
+    (("throat",), "clear throat"),
+    (("whisper", "hush", "murmur"), "whispering"),
+    (("shout", "yell", "bellow"), "shouting"),
+    (("scream", "shriek"), "screaming"),
+    (("hurried", "rushed", "urgent"), "in a hurry tone"),
+    (
+        (
+            *("soft", "softly", "sultry", "seduct", "breathy", "husky"),
+            *("intimate", "sensual", "purr", "velvet", "silky", "smoky"),
+        ),
+        "soft tone",
+    ),
+    (("delight", "elat", "overjoy"), "delighted"),
+    (
+        ("excit", "eager", "enthusias", "thrill", "hyped", "ecstatic", "energetic", "giddy"),
+        "excited",
+    ),
+    (("lively", "animated"), "excited"),
+    (("proud",), "proud"),
+    (("grate", "thank", "apprecia"), "grateful"),
+    (("relie", "relax", "easygoing", "unhurried"), "relaxed"),
+    (
+        (
+            *("smil", "grin", "cheer", "happy", "joy", "glad", "pleas", "warm", "friendly"),
+            *("sunny", "bright", "upbeat", "playful", "teas", "mischiev", "flirt", "coy"),
+            *("cheeky", "amus", "affection", "fond", "loving", "kind"),
+        ),
+        "happy",
+    ),
+    (("sarcas", "ironic", "dry", "deadpan", "wry", "mock"), "sarcastic"),
+    (("curious", "intrigu", "interest", "inquisitive", "wonder"), "curious"),
+    (("surpris", "amaz", "astonish", "impress", "shock", "stunned", "startl"), "surprised"),
+    (("sad", "sorrow", "melanchol", "mourn", "heartbr", "gloom", "somber", "grief"), "sad"),
+    (("regret", "remors", "sorry", "apolog"), "regretful"),
+    (("disappoint",), "disappointed"),
+    (("frustrat", "exasperat", "impatient"), "frustrated"),
+    (("angry", "furious", "irate", "enrag", "mad", "seething", "irritat", "annoy"), "angry"),
+    (("scar", "frighten", "afraid", "terrif", "fearful", "panic", "horrif"), "scared"),
+    (("worr", "concern", "troubled", "fretful"), "worried"),
+    (
+        (
+            "nervous",
+            "anxious",
+            "uneasy",
+            "tense",
+            "apprehens",
+            "jittery",
+            "hesitant",
+            "timid",
+            "shy",
+        ),
+        "nervous",
+    ),
+    (("embarrass", "awkward", "sheepish", "flustered", "bashful"), "embarrassed"),
+    (
+        ("empath", "sympath", "compassion", "caring", "tender", "comfort", "reassur", "understand"),
+        "empathetic",
+    ),
+    (("support",), "empathetic"),
+    (("hope", "optimis", "encourag"), "hopeful"),
+    (
+        ("confident", "assertive", "firm", "command", "authorit", "dominant", "stern", "decisive"),
+        "confident",
+    ),
+    (("bold", "determined", "resolute"), "determined"),
+    (("bore", "weary", "tired", "sleepy", "drowsy"), "bored"),
+    (("calm", "gentle", "soothing", "peaceful", "serene", "tranquil", "patient", "steady"), "calm"),
+    (("composed", "measured", "thoughtful", "pensive", "contemplat", "reflective"), "calm"),
+    (("mysterious", "suspense", "ominous", "eerie", "sinister", "dramatic", "intense"), "calm"),
+)
+# "very excited", "slightly sad": Fish reads an intensity word before an emotion.
+_INTENSITY_RE = re.compile(r"^(very|slightly|extremely|really|somewhat|a bit|a little) (\w+)$")
+
+
+def _word_matches(word: str, stem: str) -> bool:
+    return word.startswith(stem) if len(stem) >= 4 else word == stem
+
+
+def official_cue(inner: str) -> str | None:
+    """Return the Fish cue that a model's cue text stands for, or None to drop it.
+
+    Parameters
+    ----------
+    inner : str
+        Text inside one pair of brackets, such as ``smiling wider``.
+
+    Returns
+    -------
+    str or None
+        The cue name without brackets. An official cue, an alias, or an official emotion
+        with an intensity word (``very excited``) is returned as it is, lowercased. Any other
+        text becomes the nearest official cue by its words, or None when no word suggests
+        one (``in a storytelling voice``, ``back to normal voice``).
+
+    Examples
+    --------
+    >>> official_cue("Happy"), official_cue("very excited"), official_cue("smiling wider")
+    ('happy', 'very excited', 'happy')
+    >>> official_cue("soft chuckle"), official_cue("in a storytelling voice")
+    ('chuckling', None)
+    """
+    tag = " ".join(inner.lower().split())
+    tag = _CUE_ALIASES.get(tag, tag)
+    if tag in _PAREN_CUE_NAMES:
+        return tag
+    modified = _INTENSITY_RE.match(tag)
+    if modified and (_CUE_ALIASES.get(modified.group(2), modified.group(2)) in _FISH_EMOTIONS):
+        return tag
+    words = re.findall(r"[a-z][a-z-]*", tag)
+    for stems, target in _CUE_STEMS:
+        if any(_word_matches(word, stem) for word in words for stem in stems):
+            return target
+    return None
+
+
+def last_emotion(text: str) -> str | None:
+    """Return the cue of the last emotion in ``text``, or None when it has none.
+
+    Parameters
+    ----------
+    text : str
+        Text that may hold ``[cues]``.
+
+    Returns
+    -------
+    str or None
+        The last bracket that is an emotion, with its intensity word if it had one (``very
+        excited``). That is an official emotion or free-form text such as ``smiling``; official
+        sounds, tones and breaks do not count.
+
+    Examples
+    --------
+    >>> last_emotion("[happy] Hi. [laughing] Ha. [very sad] Oh.")
+    'very sad'
+    >>> last_emotion("[laughing] Ha.") is None
+    True
+    """
+    found: str | None = None
+    for match in _INNER_CUE_RE.finditer(text):
+        tag = " ".join(match.group(1).lower().split())
+        modified = _INTENSITY_RE.match(tag)
+        base = modified.group(2) if modified else tag
+        base = _CUE_ALIASES.get(base, base)
+        if base in _FISH_EMOTIONS or base not in _PAREN_CUE_NAMES:
+            found = tag
+    return found
+
+
 def _bracket(inner: str) -> str:
     tag = inner.strip().lower()
     return f"[{_CUE_ALIASES.get(tag, tag)}]"
+
+
+_DOUBLE_SPACE_RE = re.compile(r"(?<=\S)[ \t]{2,}(?=\S)")
+
+
+def _official_bracket(inner: str) -> str:
+    tag = official_cue(inner)
+    return f"[{tag}]" if tag else ""
 
 
 def _cue_word(inner: str) -> bool:
@@ -438,7 +617,9 @@ def _one_sentence(chunk: str, *, lead: bool) -> str:
     return chunk
 
 
-def normalize_cues(text: str, *, lead: bool = False, continued: bool = False) -> str:
+def normalize_cues(
+    text: str, *, lead: bool = False, continued: bool = False, official: bool = False
+) -> str:
     """Rewrite third-party mood markup into Fish ``[cue]`` tags.
 
     Parameters
@@ -456,6 +637,12 @@ def normalize_cues(text: str, *, lead: bool = False, continued: bool = False) ->
         True when ``text`` continues a sentence already sent. The first
         sentence is then not a mood lead, but later ones still are. Only
         meaningful with ``lead``. Default False.
+    official : bool, optional
+        Keep only Fish's own cues. Any other cue is replaced by the nearest official one
+        (``[smiling]`` becomes ``[happy]``, ``[soft chuckle]`` becomes ``[chuckling]``) or
+        removed when no word in it suggests one (``[in a storytelling voice]``). Some voices
+        act a description out as a sound, such as a hum, instead of changing tone. Default
+        False, which keeps free-form S2 cues as written.
 
     Returns
     -------
@@ -484,7 +671,11 @@ def normalize_cues(text: str, *, lead: bool = False, continued: bool = False) ->
         return text
     text = _WHISPER_XML_RE.sub(lambda m: f"[whispering] {m.group(1).strip()}", text)
     text = rewrite_s1_parens(text)
-    text = _CUE_RE.sub(lambda m: _bracket(m.group(1)), text)
+    if official:
+        text = _CUE_RE.sub(lambda m: _official_bracket(m.group(1)), text)
+        text = _DOUBLE_SPACE_RE.sub(" ", text)
+    else:
+        text = _CUE_RE.sub(lambda m: _bracket(m.group(1)), text)
     parts = _LINE_SPLIT_RE.split(text)
     out: list[str] = []
     allow_lead = lead and not continued
@@ -502,6 +693,61 @@ def normalize_cues(text: str, *, lead: bool = False, continued: bool = False) ->
             allow_lead = lead
         out.append("".join(spoken))
     return "".join(out)
+
+
+_LEADING_CUES_RE = re.compile(rf"^\s*((?:\[[^\[\]\n]{{1,{_MAX_CUE_CHARS}}}\]\s*)*)")
+
+
+class MoodCarry:
+    """Give each sentence Fish speaks the emotion cue it would otherwise start without.
+
+    Fish reads a cue for the sentence it opens, and each piece of a streamed reply goes to it
+    on its own, so a sentence the model wrote without a cue starts cold: some voices begin it
+    with a breath or a hum. This remembers the last emotion cue sent and puts it at the front
+    of the next piece that starts a sentence and has no emotion of its own. A piece that
+    continues a sentence is left as it is.
+
+    Examples
+    --------
+    >>> carry = MoodCarry()
+    >>> carry.apply("[happy] You sound relaxed. ")
+    '[happy] You sound relaxed. '
+    >>> carry.apply("Just perfect. ")
+    '[happy] Just perfect. '
+    >>> carry.apply("[laughing] Ha. ")
+    '[happy] [laughing] Ha. '
+    """
+
+    def __init__(self) -> None:
+        self._mood: str | None = None
+        self._before = ""
+
+    def apply(self, piece: str) -> str:
+        """Return ``piece``, with the carried emotion in front when it starts a sentence without one.
+
+        Parameters
+        ----------
+        piece : str
+            The next text sent to Fish, already scrubbed.
+
+        Returns
+        -------
+        str
+            The piece to send.
+        """
+        body = piece.lstrip(" \t")
+        out = piece
+        starts = not self._before.strip() or ends_sentence(self._before)
+        if starts and self._mood and body:
+            lead = _LEADING_CUES_RE.match(body)
+            if not (lead and last_emotion(lead.group(1))):
+                out = f"{piece[: len(piece) - len(body)]}[{self._mood}] {body}"
+        found = last_emotion(piece)
+        if found:
+            self._mood = found
+        if piece.strip():
+            self._before = piece
+        return out
 
 
 def ensure_lead_cue(text: str, *, default: str | None = None) -> str:
