@@ -27,3 +27,6 @@ prompts.txt
 prompt.txt
 prompt.md
 prompts.md
+
+# fish-voice logs (FISH_VOICE_LOG_DIR): they hold what was said
+logs/

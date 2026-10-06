@@ -100,6 +100,23 @@ class _TokenPipe:
                 yield item
 
 
+def _tokens_for(
+    ctx: DuplexContext, llm_cancel: asyncio.Event, trace_id: str | None
+) -> AsyncIterator[str]:
+    """Return the reply's tokens: the one already being written if it answers this line."""
+    ahead, ctx.speculation = ctx.speculation, None
+    last_user = (
+        ctx.history[-1]["content"] if ctx.history and ctx.history[-1]["role"] == "user" else ""
+    )
+    if ahead is not None and ahead.matches(last_user):
+        debug("llm.speculate hit, the reply was already being written")
+        return ahead.replay(llm_cancel)
+    if ahead is not None:
+        debug("llm.speculate miss: the words changed, asking again")
+        ahead.cancel()
+    return ctx.backend.stream(ctx.history, cancel=llm_cancel, trace_id=trace_id)
+
+
 async def collect_reply(
     ctx: DuplexContext,
     *,
@@ -111,8 +128,9 @@ async def collect_reply(
     """Stream the model's reply into one string, timing its first token."""
     parts: list[str] = []
     ttft_ms: float | None = None
+    tokens = _tokens_for(ctx, llm_cancel, trace_id)
     try:
-        async for tok in ctx.backend.stream(ctx.history, cancel=llm_cancel, trace_id=trace_id):
+        async for tok in tokens:
             if ttft_ms is None:
                 ttft_ms = elapsed_ms(started)
                 debug("llm.first_token {:.0f}ms", ttft_ms)

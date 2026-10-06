@@ -29,6 +29,8 @@ __all__ = [
     "DEFAULT_MIN_VOICED_FRAMES",
     "DEFAULT_POST_SPEAK_COOLDOWN_S",
     "DEFAULT_VAD_AGGRESSIVENESS",
+    "EAGER_EOT_HI",
+    "EAGER_EOT_LO",
     "HTTP_KEEPALIVE_S",
     "IMPULSE_START_EXTRA",
     "MAX_UTTERANCE_FRAMES",
@@ -54,6 +56,8 @@ DEFAULT_DEEPGRAM_REGION: Final = "global"
 DEFAULT_EOT_THRESHOLD: Final = 0.7
 EOT_THRESHOLD_LO: Final = 0.5
 EOT_THRESHOLD_HI: Final = 1.0
+EAGER_EOT_LO: Final = 0.3
+EAGER_EOT_HI: Final = 0.9
 
 DEFAULT_VAD_AGGRESSIVENESS: Final = 1
 VAD_MODE_HI: Final = 3
@@ -383,6 +387,22 @@ class AecTune:
         )
 
 
+def _eager_threshold(eot: float) -> float:
+    """Read ``FISH_VOICE_EAGER_EOT_THRESHOLD``: 0 for off, else 0.3 to 0.9 and at most ``eot``."""
+    value = read_float("FISH_VOICE_EAGER_EOT_THRESHOLD", 0.0, lo=0.0, hi=EAGER_EOT_HI)
+    if value == 0.0:
+        return 0.0
+    if value < EAGER_EOT_LO:
+        warn(f"fish-voice: FISH_VOICE_EAGER_EOT_THRESHOLD needs 0.3 to 0.9, using {EAGER_EOT_LO}")
+        value = EAGER_EOT_LO
+    if value > eot:
+        warn(
+            f"fish-voice: FISH_VOICE_EAGER_EOT_THRESHOLD is above FISH_VOICE_EOT_THRESHOLD, using {eot}"
+        )
+        value = eot
+    return value
+
+
 @dataclass(frozen=True, slots=True)
 class SttTune:
     """Which speech recognition hears the user, and how Deepgram's is set up.
@@ -400,6 +420,10 @@ class SttTune:
     eot_threshold : float
         How sure Flux must be that the user has finished, from 0.5 to 1. Higher waits a little
         longer and cuts in less often.
+    eager_eot_threshold : float
+        0 (the default) is off. From 0.3 to 0.9, and no higher than ``eot_threshold``, it asks
+        Flux to say when a turn is probably over, a little before it is sure, so the reply can
+        start being written early. Costs 50 to 70 percent more model calls.
     deepgram_region : str
         ``"global"``, or ``"eu"``, ``"au"`` or ``"in"`` to have the audio processed within the
         European Union, Australia or India. Deepgram fails a regional request rather than
@@ -413,6 +437,7 @@ class SttTune:
     deepgram_key: str = field(default="", repr=False)
     deepgram_model: str = DEFAULT_DEEPGRAM_MODEL
     eot_threshold: float = DEFAULT_EOT_THRESHOLD
+    eager_eot_threshold: float = 0.0
     deepgram_region: str = DEFAULT_DEEPGRAM_REGION
     save_dir: str = ""
 
@@ -443,16 +468,18 @@ class SttTune:
                 f"using {DEFAULT_DEEPGRAM_REGION} (one of {', '.join(DEEPGRAM_REGIONS)})"
             )
             region = DEFAULT_DEEPGRAM_REGION
+        eot = read_float(
+            "FISH_VOICE_EOT_THRESHOLD",
+            DEFAULT_EOT_THRESHOLD,
+            lo=EOT_THRESHOLD_LO,
+            hi=EOT_THRESHOLD_HI,
+        )
         return cls(
             provider=provider,
             deepgram_key=read_text("DEEPGRAM_API_KEY"),
             deepgram_model=model,
-            eot_threshold=read_float(
-                "FISH_VOICE_EOT_THRESHOLD",
-                DEFAULT_EOT_THRESHOLD,
-                lo=EOT_THRESHOLD_LO,
-                hi=EOT_THRESHOLD_HI,
-            ),
+            eot_threshold=eot,
+            eager_eot_threshold=_eager_threshold(eot),
             deepgram_region=region,
             save_dir=read_text("FISH_VOICE_STT_SAVE_DIR"),
         )

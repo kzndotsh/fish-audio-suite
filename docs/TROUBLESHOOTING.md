@@ -94,7 +94,7 @@ The WebSocket could not verify Deepgram's certificate. The connection uses `cert
 
 ### `stt.empty Flux was sent N kB (X s of audio) and found no speech`
 
-Flux heard the audio and recognised no words, so it never started a turn. The usual cause is a quiet mic: speech around -50 to -40 dBFS (an rms of roughly 100 to 300) was missed in testing. Raise the input volume or the mic's gain, and set `FISH_VOICE_STT_SAVE_DIR=tmp/stt` to save what was sent and listen to it. A `stt.noise` line instead means the local gate dropped a knock or a cough before anything was sent.
+Flux heard the audio and recognised no words, so it never started a turn. The usual cause is a quiet mic: speech around -50 to -40 dBFS (an rms of roughly 100 to 300) was missed in testing. Raise the input volume or the mic's gain, and set `FISH_VOICE_STT_SAVE_DIR=tmp/stt` to save what was sent and listen to it. A `stt.noise` line instead means the local gate dropped a knock or a cough before anything was sent. A `stt.gave_up` line means Flux returned no words within 1.2 s of streaming starting, so the turn was dropped as noise early, as with repeated taps.
 
 ### Turns end late, with `stt end trigger=manual`
 
@@ -224,7 +224,7 @@ A provider's own key is never sent over plain `http`, where anyone on the networ
 
 Open an issue with:
 - the `fish-voice ready` line, or the proxy's start-up lines
-- the `--debug` log around the problem, with keys removed (the log never prints keys, but check anyway)
+- the `--debug` log around the problem, with keys removed (the log never prints keys, but check anyway). To capture a whole run without watching the screen, set `FISH_VOICE_LOG_DIR=logs` (or pass `--log-dir logs`): each run writes a complete log there, at the most detailed level. It also holds what you said and what the model answered, so read it before sharing
 - your OS and how you run it (`dev.sh`, `uv run`, Docker or Nix)
 
 > [!CAUTION]

@@ -18,7 +18,7 @@ from typing import Any, Final, Literal
 from loguru import logger
 
 from fish_audio_suite_kit import LatencySnapshot
-from fish_audio_suite_voice.debug import log_tag, warn
+from fish_audio_suite_voice.debug import displayed, log_tag, log_to_file, warn
 
 __all__ = [
     "DEFAULT_KEYS",
@@ -45,6 +45,7 @@ __all__ = [
     "TurnEnded",
     "available_actions",
     "forward_logs",
+    "mirror_conversation",
     "next_state",
     "notice",
 ]
@@ -632,6 +633,29 @@ def notice(text: str) -> None:
     EVENTS.emit(Notice(text.strip()))
 
 
+def mirror_conversation(bus: EventBus | None = None) -> Callable[[], None]:
+    """Write what was heard and what the model answered to the log file.
+
+    Parameters
+    ----------
+    bus : EventBus or None, optional
+        The bus to follow. The session's ``EVENTS`` when omitted.
+
+    Returns
+    -------
+    Callable
+        Call it to stop.
+    """
+
+    def write(event: Event) -> None:
+        if isinstance(event, Heard):
+            log_to_file("you", f"\u25b8 {event.text}")
+        elif isinstance(event, ReplyEnd):
+            log_to_file("llm", f"\u25b8 {event.text}")
+
+    return (bus if bus is not None else EVENTS).subscribe(write)
+
+
 def forward_logs(bus: EventBus | None = None, *, level: str = "DEBUG") -> Callable[[], None]:
     """Send each log line to ``bus`` as a ``LogLine``.
 
@@ -661,7 +685,7 @@ def forward_logs(bus: EventBus | None = None, *, level: str = "DEBUG") -> Callab
         tag, text = log_tag(str(record["message"]), name)
         target.emit(LogLine(name, tag, text))
 
-    handler = logger.add(sink, level=level, format="{message}")
+    handler = logger.add(sink, level=level, format="{message}", filter=displayed)
 
     def stop() -> None:
         try:

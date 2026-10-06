@@ -140,6 +140,7 @@ flowchart LR
 | `asr` | Sends the WAV clip to Fish ASR |
 | `deepgram` | Deepgram Flux's protocol and connection: the address, the turn messages, a connection a test can fake |
 | `streaming` | One turn streamed to Flux: the mic gate feeds frames to the connection, and Flux says when the turn is over |
+| `speculate` | A reply written ahead of time for a turn Flux thinks is probably over: held back, then used if the same words are confirmed, or thrown away |
 | `hearing` | Skips hallucinations, fillers and stale repeats; detects quit |
 | `history` | Appends the user line and trims to `FISH_VOICE_HISTORY_TURNS` |
 | `llm` / `transports` | Streams tokens from the chat model |
@@ -294,6 +295,7 @@ The rules most easily broken, each with its reason. A test or a lint rule enforc
 
 - **With a streaming recogniser, only speech leaves the machine.** Nothing is connected or sent while the mic waits for speech to start, nor until the turn has `min_voiced_frames` voiced frames (a knock or a cough passes the start gate too, and the batch path drops them only after recording, so `streaming._hold_until_voiced` does it before connecting) (Deepgram closes a connection left without audio, about 10 s on its general STT API, so connecting early would only fail). The same gate (`listen._Listen`) as the batch path decides when it starts, the pre-roll and any barge-in prefix go first, and every connection sets `mip_opt_out=true`. A recogniser that streamed all the time would send a room's worth of audio nobody meant to share. A test checks that nothing is sent before speech.
 - **The batch path stays the default and the fallback.** `FISH_VOICE_STT` is `fish` unless set, and a turn Deepgram cannot serve (an outage, not a bad key) is heard with Fish ASR: `StreamFallback.prefix` carries the speech captured so far into the batch path as the barge-in prefix, so the first words are kept. A bad or missing key is fatal at startup instead, because falling back would hide it.
+- **A reply written ahead of time is invisible until it is confirmed.** With `FISH_VOICE_EAGER_EOT_THRESHOLD`, the model is asked on Flux's early end-of-turn, but its tokens stay in `speculate.Speculation`: no `ReplyToken`, no speech, no history entry. `reply._tokens_for` replays them only if `EndOfTurn` carries the same words; any other outcome (`TurnResumed`, different words, no turn, a rejected line) cancels it. Nothing else may read a speculative reply, or a turn the user was still speaking would be answered twice.
 - **`DEEPGRAM_API_KEY` is read with the other settings, never at import, and `websockets` is imported when a connection opens.** The voice package imports without the `deepgram` extra.
 
 ### Speaking

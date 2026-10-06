@@ -13,6 +13,7 @@ from fish_audio_suite_voice.history import KEEP_SYSTEM
 from fish_audio_suite_voice.llm import ChatBackend
 from fish_audio_suite_voice.signals import DuplexSession
 from fish_audio_suite_voice.speaker import FishSpeaker
+from fish_audio_suite_voice.speculate import Speculation
 
 __all__ = [
     "EXIT_CRASH",
@@ -39,6 +40,8 @@ class DuplexContext:
     asr_http: httpx.AsyncClient
     history: list[ChatMessage]
     barge_prefix: bytes = b""
+    # A reply being written for a turn Flux thinks is probably over. Used if it is confirmed.
+    speculation: Speculation | None = None
     # What a barge-in cut off, kept until the next line shows the interrupt was
     # real speech. If it was only noise, this is spoken again.
     resume_text: str = ""

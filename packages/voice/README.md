@@ -240,11 +240,16 @@ What happens, and what leaves your machine:
 - Every connection asks Deepgram not to keep the audio or the transcript (`mip_opt_out=true`).
   `FISH_VOICE_DEEPGRAM_REGION` picks a regional endpoint that processes it in the EU, Australia or
   India.
+- If Flux has returned no words 1.2 s after streaming starts, the turn is dropped as noise
+  straight away instead of being sent until you stop (a run of taps or knocks, for instance).
 - `FISH_VOICE_SILENCE_FRAMES` is still a limit: if Flux has not ended the turn by then, it is
   asked to.
 - If Deepgram cannot be reached when you start speaking, that turn is heard with Fish ASR from
   the speech already captured, with a warning, so nothing you said is lost. A missing key,
   a refused key or a missing `deepgram` extra stops the app at the start instead.
+- `FISH_VOICE_EAGER_EOT_THRESHOLD` starts the model's reply early. Nothing is shown, spoken or
+  added to the history until Flux confirms the same words; if you carried on, or the words
+  differ, the early reply is thrown away and asked for again.
 - A transcript is judged exactly as a Fish one is: quit words, stray "mm-hmm" over a reply, and
   stale copies of the last line are dropped.
 - Only the PortAudio microphone path streams. Typed lines, mute and interrupt work as before.
@@ -325,6 +330,7 @@ Speech recognition. See [Streaming speech recognition](#streaming-speech-recogni
 | `FISH_VOICE_DEEPGRAM_MODEL` | `flux-general-en` | `flux-general-multi` for ten languages |
 | `FISH_VOICE_DEEPGRAM_REGION` | `global` | `eu`, `au` or `in` to have Deepgram process the audio inside the European Union, Australia or India. A regional request fails instead of going elsewhere |
 | `FISH_VOICE_EOT_THRESHOLD` | `0.7` | How sure Flux must be that you have finished, 0.5 to 1. Higher waits a little longer and cuts in less often |
+| `FISH_VOICE_EAGER_EOT_THRESHOLD` | `0` (off) | 0.3 to 0.9, and no higher than `FISH_VOICE_EOT_THRESHOLD`. Flux says when a turn is probably over a little before it is sure, and the reply starts being written then, held back until Flux confirms it. Saves about 150 to 250 ms, and costs 50 to 70 percent more model calls. See the streaming section |
 | `FISH_VOICE_STT_SAVE_DIR` | unset | A folder. Each streamed turn's audio, as Deepgram was sent it, is saved there as a 16 kHz WAV, to find out why it heard nothing. Only for debugging: it writes your voice to disk |
 
 Listen and interrupt. Times are approximate at 30 ms frames.
@@ -347,6 +353,7 @@ Listen and interrupt. Times are approximate at 30 ms frames.
 | `FISH_VOICE_BARGE_RMS` | `220` | Barge floor seed. It follows the room, never below this |
 | `FISH_VOICE_BARGE_PLAYING_GAIN` | `2.2` | Floor multiplier while the speaker plays and AEC is off. At least 1 |
 | `FISH_VOICE_DEBUG` | off | `1` or `--debug` logs events. `2`, `trace` or `--trace` adds mic heartbeats, raw audio events and HTTP lines |
+| `FISH_VOICE_LOG_DIR` | unset | A folder. Each run writes a complete log to a new `fish-voice-<time>.log` there, at the most detailed level (events, mic heartbeats, raw traffic), whatever the screen shows. It also holds what you said and what the model answered, and is readable only by you. `--log-dir DIR` does the same |
 
 `dev.sh` also reads `FISH_VOICE_ENV_FILE` (env file path), `FISH_VOICE_PORTAUDIO_LIB` (library directories), and `FISH_VOICE_NIX=1` (build PortAudio with nix on a host that is not NixOS).
 

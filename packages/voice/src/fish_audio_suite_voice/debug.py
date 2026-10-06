@@ -6,12 +6,16 @@ adds the mic heartbeats, raw websocket audio and HTTP request lines.
 
 from __future__ import annotations
 
+import atexit
+import contextlib
 import logging
 import os
 import re
 import sys
+import threading
 import time
 from enum import IntEnum
+from pathlib import Path
 from typing import Any, Final, override
 
 from loguru import logger
@@ -28,7 +32,9 @@ __all__ = [
     "debug_enabled",
     "debug_level",
     "heartbeat_due",
+    "log_file_path",
     "log_tag",
+    "log_to_file",
     "mark_turn",
     "short_model",
     "trace",
@@ -139,22 +145,32 @@ def debug_enabled() -> bool:
 
 
 def debug(message: str, *args: Any, **fields: Any) -> None:
-    """Log at debug when FISH_VOICE_DEBUG is on, after closing the token line."""
+    """Log at debug when FISH_VOICE_DEBUG is on, after closing the token line.
+
+    With a log file (``FISH_VOICE_LOG_DIR``) a line that is not shown is still written there.
+    """
     if debug_enabled():
         end_reply_line()
         logger.debug(message, *args, **fields)
+    elif _FILE.on:
+        _FILE.record(message, args, fields)
 
 
 def trace(message: str, *args: Any, **fields: Any) -> None:
-    """Log only at level 2. Use for per-frame and per-chunk detail."""
+    """Log only at level 2. Use for per-frame and per-chunk detail.
+
+    With a log file a line below that level is still written there.
+    """
     if debug_level() >= DebugLevel.TRACE:
         end_reply_line()
         logger.debug(message, *args, **fields)
+    elif _FILE.on:
+        _FILE.record(message, args, fields)
 
 
 def heartbeat_due(idle_frames: int, every: int) -> bool:
-    """Return whether a heartbeat should print on this idle frame (level 2 only)."""
-    return debug_level() >= DebugLevel.TRACE and idle_frames % every == 0
+    """Return whether a heartbeat should print on this idle frame (level 2, or a log file)."""
+    return (debug_level() >= DebugLevel.TRACE or _FILE.on) and idle_frames % every == 0
 
 
 class _Turn:
@@ -308,6 +324,89 @@ def conversation(role: str, text: str) -> None:
     console_print(_compose(_now_stamp(), role, label, body, sys.stdout), flush=True)
 
 
+class _FileLog:
+    """The log file for ``FISH_VOICE_LOG_DIR``: every line, whatever the screen shows."""
+
+    def __init__(self) -> None:
+        self.path: Path | None = None
+        self._handle: Any = None
+        self._lock = threading.Lock()
+
+    @property
+    def on(self) -> bool:
+        return self._handle is not None
+
+    def start(self, folder: str) -> Path | None:
+        """Open a new log file in ``folder``, once. Returns its path, or None when it cannot."""
+        if self._handle is not None:
+            return self.path
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        path = Path(folder).expanduser() / f"fish-voice-{stamp}.log"
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            # Private: it holds what was said and what the model answered.
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            self._handle = os.fdopen(fd, "a", encoding="utf-8", buffering=1)
+        except OSError as exc:
+            _write_stderr(f"fish-voice: cannot write the log file {path}: {exc}\n")
+            return None
+        self.path = path
+        atexit.register(self.close)
+        return path
+
+    def write(self, tag: str, body: str, stamp: str | None = None) -> None:
+        line = f"{stamp or _now_stamp()} {_offset()}  {tag.ljust(_TAG_WIDTH)}{body}".rstrip()
+        with self._lock, contextlib.suppress(OSError, ValueError):
+            if self._handle is not None:
+                self._handle.write(line + "\n")
+
+    def record(self, message: str, args: tuple[Any, ...], fields: dict[str, Any]) -> None:
+        """Write a debug or trace line the screen is not showing."""
+        try:
+            text = message.format(*args, **fields) if args or fields else message
+        except (IndexError, KeyError, ValueError):
+            text = message
+        tag, body = _split_tag(text, "DEBUG")
+        self.write(tag, body)
+
+    def close(self) -> None:
+        with self._lock:
+            handle, self._handle = self._handle, None
+        if handle is not None:
+            with contextlib.suppress(OSError):
+                handle.close()
+
+
+_FILE: Final = _FileLog()
+
+
+def log_file_path() -> Path | None:
+    """Return the log file in use, or None when logging to a file is off."""
+    return _FILE.path if _FILE.on else None
+
+
+def log_to_file(tag: str, text: str) -> None:
+    """Write one line to the log file, if there is one. For the conversation itself."""
+    if _FILE.on:
+        _FILE.write(tag, text)
+
+
+def _file_sink(message: Any) -> None:
+    record = message.record
+    tag, body = _split_tag(str(record["message"]), record["level"].name)
+    if record["level"].name == "WARNING" and tag == "log":
+        tag = "warn"
+    stamp = record["time"].strftime("%H:%M:%S.") + f"{record['time'].microsecond // 1000:03d}"
+    _FILE.write(tag, body, stamp)
+
+
+def displayed(record: Any) -> bool:
+    """Say whether a log record belongs on the screen: not file-only, and not debug when off."""
+    if record["extra"].get("file_only"):
+        return False
+    return record["level"].no >= logger.level("WARNING").no or debug_enabled()
+
+
 def _write_stderr(message: str) -> None:
     """Write at emit time so a wrapped stderr (pytest, a later redirect) is the one used."""
     sys.stderr.write(message)
@@ -343,7 +442,9 @@ class _InterceptHandler(logging.Handler):
         while frame is not None and frame.f_code.co_filename == logging.__file__:
             frame = frame.f_back
             depth += 1
-        logger.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
+        hidden = record.levelno < logging.WARNING and _DEBUG.level < DebugLevel.TRACE
+        scoped = logger.bind(file_only=True) if hidden else logger
+        scoped.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
 
 
 _INTERCEPTED: Final = ("httpx", "httpcore", "websockets", "asyncio")
@@ -353,6 +454,8 @@ _HTTPX_DEBUG_LEVEL: Final = logging.INFO
 
 
 def _intercept_libraries(*, level: DebugLevel) -> None:
+    if _FILE.on:
+        level = DebugLevel.TRACE  # the file gets the request lines too
     handler = _InterceptHandler()
     for name in _INTERCEPTED:
         lib = logging.getLogger(name)
@@ -372,10 +475,13 @@ def _stderr_logger(level: str) -> None:
         level=level,
         format=_format_record,
         colorize=False,
+        filter=displayed,
     )
 
 
-def configure_voice_logging(*, debug: bool | int | DebugLevel, to_stderr: bool = True) -> None:
+def configure_voice_logging(
+    *, debug: bool | int | DebugLevel, to_stderr: bool = True, log_dir: str = ""
+) -> Path | None:
     """Idempotent stderr sink. DEBUG when on; otherwise WARNING. Call from the CLI only.
 
     Parameters
@@ -387,7 +493,18 @@ def configure_voice_logging(*, debug: bool | int | DebugLevel, to_stderr: bool =
     to_stderr : bool, optional
         False installs no stderr sink, for a display that owns the terminal. Log
         lines then go only to sinks added afterwards, such as ``forward_logs``.
+    log_dir : str, optional
+        A folder to write a complete log to, in a new file for this run. It gets every line at
+        the most detailed level, whatever ``debug`` shows on the screen. Empty keeps an
+        earlier file, or none. Calling again without it keeps the same file.
+
+    Returns
+    -------
+    Path or None
+        The log file in use, or None.
     """
+    if log_dir:
+        _FILE.start(log_dir)
     level = max(DebugLevel(min(max(int(debug), 0), DebugLevel.TRACE)), _env_level())
     _DEBUG.level = level
     _DEBUG.frozen = level
@@ -395,6 +512,8 @@ def configure_voice_logging(*, debug: bool | int | DebugLevel, to_stderr: bool =
         _stderr_logger("DEBUG" if level >= DebugLevel.EVENTS else "WARNING")
     else:
         logger.remove()
+    if _FILE.on:
+        logger.add(_file_sink, level="DEBUG", format="{message}")
     _CONFIGURED.on = True
     _intercept_libraries(level=level)
     if level >= DebugLevel.EVENTS:
@@ -404,3 +523,6 @@ def configure_voice_logging(*, debug: bool | int | DebugLevel, to_stderr: bool =
             else "events (--trace adds more)"
         )
         logger.debug("debug.on {}", shown)
+    if log_dir and _FILE.on:
+        _FILE.write("debug", f"log file {_FILE.path}")
+    return log_file_path()

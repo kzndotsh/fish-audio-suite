@@ -16,11 +16,13 @@ from fish_audio_suite_voice import streaming
 from fish_audio_suite_voice.barge import FRAME_BYTES, StopFlag
 from fish_audio_suite_voice.deepgram import (
     DeepgramError,
+    EagerTurnEnd,
     FluxMessage,
     FluxStream,
     StreamError,
     StreamWarning,
     TurnEnded,
+    TurnResumed,
     TurnStarted,
     TurnUpdate,
 )
@@ -132,6 +134,7 @@ def _run(
     stop: StopFlag | None = None,
     prefix: bytes = b"",
     listen: ListenTune = ONE_VOICED,
+    **callbacks: Any,
 ) -> streaming.StreamedTurn | StreamFallback | str:
     quit_flag = threading.Event()
 
@@ -146,6 +149,7 @@ def _run(
             prefix=prefix,
             make_stream=lambda _url, _key: fake,
             listen_fn=listen_fn,
+            **callbacks,
         )
 
     return asyncio.run(asyncio.wait_for(go(), 10))
@@ -443,3 +447,70 @@ def test_the_audio_sent_is_saved_as_a_wav_only_when_a_folder_is_set(
     fake = _FakeFlux(lambda total: [TurnEnded("hi", 0.9, "model")] if total >= CHUNK else [])
     result = _run(fake, _mic(3), stt=replace(STT, save_dir=str(blocked / "sub")))
     assert isinstance(result, StreamedTurn)
+
+
+def test_an_early_end_of_turn_and_a_resumed_turn_are_passed_on_as_they_happen() -> None:
+    told: list[str] = []
+    script = {
+        CHUNK: [EagerTurnEnd("so I was"), TurnResumed(), EagerTurnEnd("so I was saying")],
+        CHUNK * 2: [TurnEnded("so I was saying", 0.9, "model")],
+    }
+    fake = _FakeFlux(lambda total: script.get(total, []))
+    result = _run(
+        fake,
+        _mic(6),
+        on_eager=lambda text: told.append(f"eager {text}"),
+        on_resumed=lambda: told.append("resumed"),
+    )
+    assert isinstance(result, StreamedTurn)
+    assert told == ["eager so I was", "resumed", "eager so I was saying"]
+
+
+def test_a_short_barge_in_clip_counts_as_speech_in_full_and_is_not_dropped_as_noise() -> None:
+    # The interrupt gate already accepted 4 voiced frames, which is fewer than the 12 a fresh
+    # utterance needs. The batch path credits them, and so must this one.
+    prefix = FRAME * 5
+    fake = _FakeFlux(lambda total: [TurnEnded("stop", 0.9, "model")] if total >= CHUNK else [])
+    result = _run(
+        fake,
+        _mic(5, voiced=[True, True, True, True, False]),
+        listen=ListenTune(min_voiced_frames=12),
+        prefix=prefix,
+    )
+    assert isinstance(result, StreamedTurn)
+    assert fake.opens == 1
+
+
+def test_a_short_clip_with_no_barge_in_is_still_dropped_as_noise() -> None:
+    fake = _FakeFlux()
+    result = _run(
+        fake,
+        _mic(5, voiced=[True, True, True, True, False], local_end=True),
+        listen=ListenTune(min_voiced_frames=12),
+    )
+    assert result == "noise"
+    assert fake.opens == 0
+
+
+def test_a_turn_with_no_words_from_flux_is_given_up_on_early_as_noise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(streaming, "_NO_WORDS_S", 0.05)
+    monkeypatch.setattr(streaming, "_FORCE_WAIT_S", 5.0)  # it must not come to this
+    fake = _FakeFlux()  # taps: audio goes in, no words come back
+    started = time.monotonic()
+    assert _run(fake, _mic(3)) == "noise"  # the mic is never ended: it gave up by itself
+    assert time.monotonic() - started < 2.0
+    assert fake.forced == 0
+    assert fake.closed
+
+
+def test_a_turn_whose_words_arrive_in_time_is_not_given_up_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(streaming, "_NO_WORDS_S", 0.3)
+    script = {CHUNK: [TurnUpdate("hello")], CHUNK * 2: [TurnEnded("hello there", 0.9, "model")]}
+    fake = _FakeFlux(lambda total: script.get(total, []))
+    result = _run(fake, _mic(6))
+    assert isinstance(result, StreamedTurn)
+    assert result.text == "hello there"

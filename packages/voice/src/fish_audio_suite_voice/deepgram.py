@@ -22,10 +22,12 @@ from urllib.parse import urlencode
 __all__ = [
     "FLUX_URL",
     "DeepgramError",
+    "EagerTurnEnd",
     "FluxStream",
     "StreamError",
     "StreamWarning",
     "TurnEnded",
+    "TurnResumed",
     "TurnStarted",
     "TurnUpdate",
     "flux_base",
@@ -106,6 +108,28 @@ class TurnEnded:
 
 
 @dataclass(frozen=True, slots=True)
+class EagerTurnEnd:
+    """Flux thinks the speaker has probably finished, a little before it is sure.
+
+    Only sent when ``eager_eot_threshold`` is set. The speaker may still carry on
+    (``TurnResumed``), so a reply started from this must be held back until
+    ``TurnEnded`` confirms it.
+
+    Attributes
+    ----------
+    text : str
+        The words so far. A confirming ``TurnEnded`` carries the same text.
+    """
+
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class TurnResumed:
+    """The speaker carried on after an ``EagerTurnEnd``, so that guess was wrong."""
+
+
+@dataclass(frozen=True, slots=True)
 class StreamError:
     """Deepgram reported an error on an open connection.
 
@@ -137,7 +161,9 @@ class StreamWarning:
     description: str
 
 
-type FluxMessage = TurnStarted | TurnUpdate | TurnEnded | StreamError | StreamWarning
+type FluxMessage = (
+    TurnStarted | TurnUpdate | TurnEnded | EagerTurnEnd | TurnResumed | StreamError | StreamWarning
+)
 
 
 def flux_base(region: str) -> str:
@@ -170,6 +196,7 @@ def flux_url(
     sample_rate: int,
     eot_threshold: float,
     eot_timeout_ms: int = DEFAULT_EOT_TIMEOUT_MS,
+    eager_eot_threshold: float = 0.0,
     base: str = FLUX_URL,
 ) -> str:
     """Build the Flux connection address for 16-bit mono PCM.
@@ -184,6 +211,9 @@ def flux_url(
         How sure Flux must be that a turn is over, from 0.5 to 1.
     eot_timeout_ms : int, optional
         The longest silence before a turn is ended anyway.
+    eager_eot_threshold : float, optional
+        From 0.3 to 0.9, and no higher than ``eot_threshold``. Asks Flux to say when a turn
+        is probably over, before it is sure. 0 leaves it off.
     base : str, optional
         The endpoint, to use a regional one.
 
@@ -197,16 +227,17 @@ def flux_url(
     >>> flux_url("flux-general-en", sample_rate=16000, eot_threshold=0.7)  # doctest: +ELLIPSIS
     'wss://api.deepgram.com/v2/listen?model=flux-general-en&encoding=linear16&sample_rate=16000&...'
     """
-    query = urlencode(
-        {
-            "model": model,
-            "encoding": "linear16",
-            "sample_rate": sample_rate,
-            "eot_threshold": eot_threshold,
-            "eot_timeout_ms": eot_timeout_ms,
-            "mip_opt_out": "true",
-        }
-    )
+    params: dict[str, str | float | int] = {
+        "model": model,
+        "encoding": "linear16",
+        "sample_rate": sample_rate,
+        "eot_threshold": eot_threshold,
+        "eot_timeout_ms": eot_timeout_ms,
+        "mip_opt_out": "true",
+    }
+    if eager_eot_threshold > 0:
+        params["eager_eot_threshold"] = eager_eot_threshold
+    query = urlencode(params)
     return f"{base}?{query}"
 
 
@@ -228,9 +259,10 @@ def parse_flux_message(raw: str | bytes) -> FluxMessage | None:
 
     Returns
     -------
-    TurnStarted or TurnUpdate or TurnEnded or StreamError or StreamWarning or None
+    TurnStarted or TurnUpdate or TurnEnded or EagerTurnEnd or TurnResumed or StreamError \
+    or StreamWarning or None
         What the message says, or None for one that needs no action: the greeting, an
-        acknowledgement, an early end-of-turn guess, malformed JSON or anything new.
+        acknowledgement, malformed JSON or anything new.
 
     Examples
     --------
@@ -266,8 +298,12 @@ def parse_flux_message(raw: str | bytes) -> FluxMessage | None:
                 _number(message.get("end_of_turn_confidence")),
                 str(message.get("trigger") or "model"),
             )
+        case "EagerEndOfTurn":
+            return EagerTurnEnd(text)
+        case "TurnResumed":
+            return TurnResumed()
         case _:
-            return None  # EagerEndOfTurn and TurnResumed are not used yet
+            return None
 
 
 def _is_closed(exc: Exception) -> bool:
@@ -370,7 +406,8 @@ class FluxStream:
 
         Yields
         ------
-        TurnStarted or TurnUpdate or TurnEnded or StreamError or StreamWarning
+        TurnStarted or TurnUpdate or TurnEnded or EagerTurnEnd or TurnResumed or StreamError \
+        or StreamWarning
             What Flux says, in order. Messages that need no action are skipped.
         """
         if self._socket is None:

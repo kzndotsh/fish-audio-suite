@@ -23,14 +23,16 @@ from typing import Final, Literal
 
 from fish_audio_suite_kit import elapsed_ms, make_traceparent, trace_id_of
 from fish_audio_suite_voice.aec import EchoCanceller
-from fish_audio_suite_voice.barge import SAMPLE_RATE, StopFlag
+from fish_audio_suite_voice.barge import FRAME_BYTES, SAMPLE_RATE, StopFlag
 from fish_audio_suite_voice.debug import debug, trace, warn
 from fish_audio_suite_voice.deepgram import (
     DeepgramError,
+    EagerTurnEnd,
     FluxStream,
     StreamError,
     StreamWarning,
     TurnEnded,
+    TurnResumed,
     TurnStarted,
     TurnUpdate,
     flux_base,
@@ -53,6 +55,9 @@ _SEND_MS: Final = 80
 _SEND_BYTES: Final = SAMPLE_RATE * 2 * _SEND_MS // 1000
 # How long to wait for Flux to answer when it was asked to end the turn.
 _FORCE_WAIT_S: Final = 2.5
+# Real speech has its first word back from Flux well inside this. A knock or a run of taps has
+# none, so the turn is given up on instead of being streamed until the silence timer ends.
+_NO_WORDS_S: Final = 1.2
 
 type Stopped = Literal["stopped", "noise", "again", "fatal"]
 # Flux says this when asked to end a turn that never started: there is nothing to end.
@@ -114,8 +119,11 @@ class _Turn:
         self.error = ""
         self.last_voice = 0.0
         self.sent = 0  # bytes of audio sent to Flux
+        self.gave_up = False  # no words came back in time, so it was not speech
         self.audio = bytearray()  # the same audio, kept only when it is to be saved
         self.keep = False
+        self.on_eager: Callable[[str], None] | None = None
+        self.on_resumed: Callable[[], None] | None = None
 
     def hear(self, text: str) -> None:
         if text and text != self.text:
@@ -134,6 +142,14 @@ async def _read(stream: FluxStream, turn: _Turn) -> None:
                 turn.hear(text)
                 turn.ended = True
                 return
+            case EagerTurnEnd(text=text):
+                debug("stt.eager {!r}", text)
+                if turn.on_eager is not None and text.strip():
+                    turn.on_eager(text)
+            case TurnResumed():
+                debug("stt.resumed the speaker carried on")
+                if turn.on_resumed is not None:
+                    turn.on_resumed()
             case StreamError(code=code, description=description):
                 turn.error = f"{code}: {description}"
                 return
@@ -239,8 +255,19 @@ def _save(folder: str, pcm: bytes | bytearray) -> None:
     debug("stt.saved {} ({:.1f} s)", path, len(pcm) / (SAMPLE_RATE * 2))
 
 
-async def _hold_until_voiced(capture: _Capture, need: int) -> Stopped | None:
+async def _hold_until_voiced(capture: _Capture, need: int, prefix_frames: int) -> Stopped | None:
     """Keep the frames until there is enough voiced audio to be speech and not a bump.
+
+    Parameters
+    ----------
+    capture : _Capture
+        The mic side.
+    need : int
+        Voiced frames wanted.
+    prefix_frames : int
+        How many of the first frames are a barge-in clip. The interrupt gate already judged
+        that clip to be speech, so the voice in it counts in full, as it does on the batch
+        path: a short interruption must not be dropped for being shorter than ``need``.
 
     Returns
     -------
@@ -249,6 +276,7 @@ async def _hold_until_voiced(capture: _Capture, need: int) -> Stopped | None:
         gate ended the turn first: it was a cough or a knock, and nothing was connected or sent.
     """
     voiced = 0
+    taken = 0
     while voiced < need:
         item = await capture.frames.get()
         if item is None:
@@ -258,6 +286,9 @@ async def _hold_until_voiced(capture: _Capture, need: int) -> Stopped | None:
             return "noise" if local_end else "stopped"
         capture.held.append(item)
         voiced += item[1]
+        taken += 1
+        if taken == prefix_frames and 0 < voiced < need:
+            need = voiced  # the barge-in clip was speech: that much voice is enough
     return None
 
 
@@ -299,7 +330,15 @@ async def _stream_until_decided(
     reader = asyncio.create_task(_read(stream, turn))
     sender = asyncio.create_task(_send(stream, capture.frames, capture.held, turn))
     tasks += [reader, sender]
-    await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    done, _pending = await asyncio.wait(
+        tasks, timeout=_NO_WORDS_S, return_when=asyncio.FIRST_COMPLETED
+    )
+    if not done and not turn.text:
+        debug("stt.gave_up no words from Flux after {:.1f} s: not speech", _NO_WORDS_S)
+        turn.gave_up = True
+        return False
+    if not done:  # words are coming in: carry on until the turn is over
+        await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
     if reader.done():
         return False
     # The mic side finished first. Either the silence limit was reached, or it was stopped.
@@ -317,6 +356,8 @@ def _outcome(
     turn: _Turn, *, local_end: bool, reader_done: bool
 ) -> StreamedTurn | StreamFallback | Stopped:
     """Turn what happened into the result."""
+    if turn.gave_up:
+        return "noise"
     if turn.error:
         warn(f"[stt] {turn.error}")
         return "again"
@@ -353,6 +394,8 @@ async def stream_turn(
     prefix: bytes = b"",
     make_stream: Callable[[str, str], FluxStream] = FluxStream,
     listen_fn: Callable[..., bool] = stream_utterance,
+    on_eager: Callable[[str], None] | None = None,
+    on_resumed: Callable[[], None] | None = None,
 ) -> StreamedTurn | StreamFallback | Stopped:
     """Open the mic, stream one turn to Flux, and return what it heard.
 
@@ -376,6 +419,11 @@ async def stream_turn(
         Builds the connection from ``(url, key)``. A fake in tests.
     listen_fn : Callable, optional
         Gates the mic and passes frames on, as ``stream_utterance`` does. A fake in tests.
+    on_eager : Callable, optional
+        Called with the words so far when Flux thinks the turn is probably over. Needs
+        ``eager_eot_threshold`` to be set.
+    on_resumed : Callable, optional
+        Called when the speaker carried on after that.
 
     Returns
     -------
@@ -392,6 +440,7 @@ async def stream_turn(
         stt.deepgram_model,
         sample_rate=SAMPLE_RATE,
         eot_threshold=stt.eot_threshold,
+        eager_eot_threshold=stt.eager_eot_threshold,
         base=flux_base(stt.deepgram_region),
     )
     stream = make_stream(url, stt.deepgram_key)
@@ -406,10 +455,16 @@ async def stream_turn(
     )
     turn = _Turn()
     turn.keep = bool(stt.save_dir)
+    turn.on_eager = on_eager
+    turn.on_resumed = on_resumed
     tasks: list[asyncio.Task[None]] = []
     try:
         # Nothing is connected or sent until the gate has opened and there is enough voice.
-        if (quiet := await _hold_until_voiced(capture, listen.min_voiced_frames)) is not None:
+        if (
+            quiet := await _hold_until_voiced(
+                capture, listen.min_voiced_frames, len(prefix) // FRAME_BYTES
+            )
+        ) is not None:
             return quiet
         if (failed := await _connect(stream, capture)) is not None:
             return failed

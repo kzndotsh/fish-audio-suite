@@ -55,6 +55,7 @@ __all__ = [
     "OUTPUT_LATENCIES",
     "VoiceCliConfig",
     "load_config",
+    "log_dir_from_env",
     "system_prompt_from_file",
     "warn_if_insecure_base",
 ]
@@ -183,6 +184,11 @@ def warn_if_insecure_base(c: VoiceCliConfig) -> bool:
         )
         warned = True
     return warned
+
+
+def log_dir_from_env() -> str:
+    """Read ``FISH_VOICE_LOG_DIR``: a folder to write a complete log of each run to, or empty."""
+    return read_text("FISH_VOICE_LOG_DIR")
 
 
 def _output_latency() -> str:

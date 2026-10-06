@@ -18,6 +18,7 @@ _KEYS = (
     "FISH_VOICE_DEEPGRAM_REGION",
     "FISH_VOICE_EOT_THRESHOLD",
     "FISH_VOICE_STT_SAVE_DIR",
+    "FISH_VOICE_EAGER_EOT_THRESHOLD",
 )
 
 
@@ -72,6 +73,8 @@ def test_the_key_is_never_shown_when_the_settings_are_printed(
         ("FISH_VOICE_EOT_THRESHOLD", "1.5", "eot_threshold", DEFAULT_EOT_THRESHOLD),
         ("FISH_VOICE_EOT_THRESHOLD", "high", "eot_threshold", DEFAULT_EOT_THRESHOLD),
         ("FISH_VOICE_DEEPGRAM_REGION", "mars", "deepgram_region", "global"),
+        ("FISH_VOICE_EAGER_EOT_THRESHOLD", "1.4", "eager_eot_threshold", 0.0),
+        ("FISH_VOICE_EAGER_EOT_THRESHOLD", "soon", "eager_eot_threshold", 0.0),
     ],
 )
 def test_an_unusable_value_is_ignored_with_a_warning_and_the_default_is_used(
@@ -91,3 +94,19 @@ def test_an_unusable_value_is_ignored_with_a_warning_and_the_default_is_used(
 def test_a_blank_provider_means_the_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FISH_VOICE_STT", "   ")
     assert SttTune.from_env().provider == "fish"
+
+
+def test_the_early_end_of_turn_is_off_unless_set_and_is_kept_within_flux_limits(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert SttTune.from_env().eager_eot_threshold == 0.0  # off: it costs extra model calls
+    monkeypatch.setenv("FISH_VOICE_EAGER_EOT_THRESHOLD", "0.5")
+    assert SttTune.from_env().eager_eot_threshold == 0.5
+    monkeypatch.setenv("FISH_VOICE_EAGER_EOT_THRESHOLD", "0.1")  # below what Flux accepts
+    assert SttTune.from_env().eager_eot_threshold == 0.3
+    monkeypatch.setenv("FISH_VOICE_EAGER_EOT_THRESHOLD", "0.85")  # above the final threshold
+    assert SttTune.from_env().eager_eot_threshold == DEFAULT_EOT_THRESHOLD
+    monkeypatch.setenv("FISH_VOICE_EOT_THRESHOLD", "0.9")
+    assert SttTune.from_env().eager_eot_threshold == 0.85
+    assert "FISH_VOICE_EAGER_EOT_THRESHOLD" in capsys.readouterr().err

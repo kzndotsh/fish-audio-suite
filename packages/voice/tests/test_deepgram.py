@@ -12,10 +12,12 @@ import pytest
 
 from fish_audio_suite_voice.deepgram import (
     DeepgramError,
+    EagerTurnEnd,
     FluxStream,
     StreamError,
     StreamWarning,
     TurnEnded,
+    TurnResumed,
     TurnStarted,
     TurnUpdate,
     _websockets_connect,
@@ -79,8 +81,6 @@ def test_an_error_message_carries_its_code_and_description() -> None:
     [
         '{"type":"Connected","request_id":"x","sequence_id":0}',
         '{"type":"ConfigureSuccess"}',
-        _turn("EagerEndOfTurn", "maybe done"),  # an early guess is not used yet
-        _turn("TurnResumed", "still talking"),
         _turn("SomethingNew"),
         "not json at all",
         "[1, 2, 3]",
@@ -90,6 +90,20 @@ def test_an_error_message_carries_its_code_and_description() -> None:
 )
 def test_messages_that_need_no_action_are_skipped(raw: str) -> None:
     assert parse_flux_message(raw) is None
+
+
+def test_an_early_end_of_turn_and_a_resumed_turn_are_read() -> None:
+    assert parse_flux_message(_turn("EagerEndOfTurn", "maybe done")) == EagerTurnEnd("maybe done")
+    assert parse_flux_message(_turn("TurnResumed", "still talking")) == TurnResumed()
+
+
+def test_the_early_end_of_turn_is_asked_for_only_when_a_threshold_is_given() -> None:
+    plain = flux_url("flux-general-en", sample_rate=16000, eot_threshold=0.7)
+    assert "eager_eot_threshold" not in plain
+    eager = flux_url(
+        "flux-general-en", sample_rate=16000, eot_threshold=0.7, eager_eot_threshold=0.5
+    )
+    assert parse_qs(urlsplit(eager).query)["eager_eot_threshold"] == ["0.5"]
 
 
 class _FakeSocket:

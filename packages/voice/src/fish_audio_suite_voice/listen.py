@@ -217,7 +217,7 @@ class _Listen:
             if not self.triggered
             else self.speech_hits
         )
-        debug(
+        trace(
             "listen.mic frames={} peak_rms={:.0f} last_rms={:.0f} floor={:.0f} vad={} triggered={} hits={}",
             idle_frames,
             self.window_peak,

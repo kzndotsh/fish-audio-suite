@@ -22,6 +22,7 @@ from fish_audio_suite_voice.aec import EchoCanceller
 from fish_audio_suite_voice.config import (
     VoiceCliConfig,
     load_config,
+    log_dir_from_env,
     system_prompt_from_file,
     warn_if_insecure_base,
 )
@@ -35,7 +36,7 @@ from fish_audio_suite_voice.debug import (
 )
 from fish_audio_suite_voice.duplex import EXIT_FATAL, EXIT_OK, bye, duplex_turns
 from fish_audio_suite_voice.envfile import apply_cli_env_files
-from fish_audio_suite_voice.events import forward_logs
+from fish_audio_suite_voice.events import forward_logs, mirror_conversation
 from fish_audio_suite_voice.inputs import LiveInput
 from fish_audio_suite_voice.llm import open_chat_backend
 from fish_audio_suite_voice.llm_tune import LlmTune, provider_for_base
@@ -328,6 +329,14 @@ def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Fish Audio duplex CLI recipe (kit + live WS + sinks)")
     p.add_argument("--smoke", action="store_true", help="TTS smoke test to a wav file")
     p.add_argument(
+        "--log-dir",
+        type=Path,
+        default=None,
+        metavar="DIR",
+        help="write a complete log of this run to a new file in DIR "
+        "(overrides FISH_VOICE_LOG_DIR). It holds what was said",
+    )
+    p.add_argument(
         "--out",
         type=Path,
         default=None,
@@ -385,6 +394,21 @@ def _can_draw_a_screen() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
+def _start_logging(args: argparse.Namespace) -> DebugLevel:
+    """Configure logging from the flags and the environment, and return the level shown."""
+    level = DebugLevel.TRACE if args.trace else DebugLevel(int(bool(args.debug)))
+    level = max(level, debug_level())
+    log_file = configure_voice_logging(
+        debug=level, log_dir=str(args.log_dir) if args.log_dir else log_dir_from_env()
+    )
+    if level >= DebugLevel.EVENTS or log_file:
+        install_fish_ws_tap()
+    if log_file:
+        mirror_conversation()
+        print(f"log: {log_file}", flush=True)
+    return level
+
+
 def main(argv: list[str] | None = None) -> int:
     """``fish-voice`` entry. Load dotenv, then smoke or duplex.
 
@@ -425,12 +449,8 @@ def main(argv: list[str] | None = None) -> int:
         loaded = apply_cli_env_files([DEFAULT_ENV_FILE], required=False)
     if loaded:
         print("env: " + " ".join(str(p) for p in loaded), flush=True)
-    level = DebugLevel.TRACE if args.trace else DebugLevel(int(bool(args.debug)))
-    level = max(level, debug_level())
+    level = _start_logging(args)
     debug = level >= DebugLevel.EVENTS
-    configure_voice_logging(debug=level)
-    if debug:
-        install_fish_ws_tap()
     c = load_config()
     warn_if_insecure_base(c)
     if args.playback:

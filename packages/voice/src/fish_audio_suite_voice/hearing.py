@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import time
 from dataclasses import dataclass
 from typing import Final, Literal
@@ -32,14 +33,17 @@ from fish_audio_suite_voice.debug import (
 )
 from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexContext
 from fish_audio_suite_voice.events import EVENTS, Heard, Listening
+from fish_audio_suite_voice.history import remember_user
 from fish_audio_suite_voice.listen import record_utterance
 from fish_audio_suite_voice.playback import PortAudioMissingError
+from fish_audio_suite_voice.speculate import Speculation
 from fish_audio_suite_voice.streaming import StreamedTurn, StreamFallback, stream_turn
 
 __all__ = [
     "HeardLine",
     "accept_transcript",
     "classify_transcript",
+    "drop_speculation",
     "hear_line",
     "recognize",
 ]
@@ -232,7 +236,10 @@ async def hear_line(
     if ctx.config.stt.provider == "deepgram" and (
         streamed := await _hear_streaming(ctx, last_user, stop)
     ):
+        if streamed.kind != "line":
+            drop_speculation(ctx)  # no turn to answer, so a reply started for one is no use
         return streamed
+    drop_speculation(ctx)
     try:
         prefix = ctx.barge_prefix
         ctx.barge_prefix = b""
@@ -265,6 +272,22 @@ async def hear_line(
     return heard
 
 
+def drop_speculation(ctx: DuplexContext) -> None:
+    """Throw away a reply that was being written ahead of time, if there is one."""
+    if ctx.speculation is not None:
+        ctx.speculation.cancel()
+        ctx.speculation = None
+        debug("llm.speculate dropped")
+
+
+def _speculate(ctx: DuplexContext, text: str) -> None:
+    """Start writing the reply for ``text``, which Flux thinks is probably the whole turn."""
+    drop_speculation(ctx)
+    asked = list(ctx.history)  # the real history only gains the line once the turn is confirmed
+    remember_user(asked, text, ctx.config.history_turns, ctx.pinned)
+    ctx.speculation = Speculation(ctx.backend, asked, text)
+
+
 async def _hear_streaming(
     ctx: DuplexContext, last_user: str, stop: StopFlag | None
 ) -> HeardLine | None:
@@ -288,6 +311,7 @@ async def _hear_streaming(
     quit_requested = ctx.session.quit_requested
     prefix = ctx.barge_prefix
     opened = time.monotonic()
+    eager = ctx.config.stt.eager_eot_threshold > 0
     outcome = await stream_turn(
         stt=ctx.config.stt,
         listen=ctx.config.listen,
@@ -296,6 +320,8 @@ async def _hear_streaming(
         quit_requested=quit_requested,
         stop=quit_requested if stop is None else stop,
         prefix=prefix,
+        on_eager=functools.partial(_speculate, ctx) if eager else None,
+        on_resumed=functools.partial(drop_speculation, ctx) if eager else None,
     )
     if isinstance(outcome, StreamFallback):
         # Deepgram failed once speech had started. The batch recogniser carries on from the

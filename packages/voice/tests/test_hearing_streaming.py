@@ -122,3 +122,58 @@ def test_the_barge_prefix_is_handed_to_the_stream_and_cleared(
     asyncio.run(hear_line(ctx, ""))
     assert calls[0]["prefix"] == b"\x02\x00" * 50
     assert ctx.barge_prefix == b""
+
+
+def _eager_ctx() -> DuplexContext:
+    ctx = _ctx()
+    ctx.config = replace(ctx.config, stt=replace(ctx.config.stt, eager_eot_threshold=0.5))
+    ctx.history.append({"role": "user", "content": "earlier"})
+    ctx.history.append({"role": "assistant", "content": "reply"})
+    return ctx
+
+
+def test_without_an_eager_threshold_no_reply_is_started_early(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _stream_returns(monkeypatch, _turn())
+    asyncio.run(hear_line(_ctx(), ""))
+    assert calls[0]["on_eager"] is None
+    assert calls[0]["on_resumed"] is None
+
+
+def test_an_early_end_of_turn_starts_a_reply_that_the_speaker_resuming_throws_away(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = _eager_ctx()
+    seen: dict[str, Any] = {}
+
+    async def fake(**kwargs: Any) -> object:
+        kwargs["on_eager"]("what is the weather")
+        seen["started"] = ctx.speculation
+        kwargs["on_resumed"]()
+        seen["after_resume"] = ctx.speculation
+        kwargs["on_eager"]("what is the weather today")
+        return _turn("what is the weather today")
+
+    monkeypatch.setattr("fish_audio_suite_voice.hearing.stream_turn", fake)
+    heard = asyncio.run(hear_line(ctx, ""))
+    assert heard.kind == "line"
+    assert seen["started"] is not None
+    assert seen["after_resume"] is None
+    assert ctx.speculation is not None  # the confirmed turn keeps the latest one for the reply
+    assert ctx.speculation.text == "what is the weather today"
+    assert [m["content"] for m in ctx.history] == ["be brief", "earlier", "reply"]  # not touched
+
+
+def test_a_reply_started_early_is_dropped_when_the_turn_turns_out_to_be_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = _eager_ctx()
+
+    async def fake(**kwargs: Any) -> object:
+        kwargs["on_eager"]("hmm")
+        return "noise"
+
+    monkeypatch.setattr("fish_audio_suite_voice.hearing.stream_turn", fake)
+    assert asyncio.run(hear_line(ctx, "")) == HeardLine("noise")
+    assert ctx.speculation is None

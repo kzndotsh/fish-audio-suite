@@ -207,7 +207,7 @@ def test_the_barge_heartbeat_only_logs_at_trace_level(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     lines: list[str] = []
-    monkeypatch.setattr(barge, "debug", lambda message, **_kw: lines.append(message))
+    monkeypatch.setattr(barge, "trace", lambda message, **_kw: lines.append(message))
     configure_voice_logging(debug=1)
     try:
         barge._barge_heartbeat(idle_frames=20, rms=10.0, need=220.0, far=True, hit=0, aec_on=True)  # pyright: ignore[reportPrivateUsage]

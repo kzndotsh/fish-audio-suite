@@ -123,7 +123,7 @@ def _barge_heartbeat(
 ) -> None:
     if not heartbeat_due(idle_frames, LISTEN_HEARTBEAT_FRAMES):
         return
-    debug(
+    trace(
         "barge.mic rms={rms:.0f} need={need:.0f} far={far} hit={hit} aec={aec}",
         rms=rms,
         need=need,
