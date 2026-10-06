@@ -159,7 +159,7 @@ _MD_FOOTNOTE_DEF_RE = re.compile(rf"(?m)^[ \t]*\[\^[^\]]{{1,{_LABEL}}}\]:[ \t]*"
 # could be a cue stack like [sad][whispering]. The lookahead finds that space
 # first, so the label itself is scanned once.
 _MD_REF_LINK_RE = re.compile(
-    rf"\[(?=[^\]\s]{{0,{_LABEL}}}\s)([^\]]{{1,{_LABEL}}})\]\[[^\]]{{1,{_LABEL}}}\]"
+    rf"\[(?=[^\]\s]{{0,{_LABEL}}}\s)([^\]]{{1,{_LABEL}}})\]\[([^\]]{{1,{_LABEL}}})\]"
 )
 _MD_REF_DEF_RE = re.compile(rf"(?m)^[ \t]{{0,3}}\[[^\]]{{1,{_LABEL}}}\]:[ \t]*\n?")
 # Block tags are word boundaries. Inline tags (<sup>, <span>) are not.
@@ -224,11 +224,29 @@ def _ref_link(match: re.Match[str], edge: _Edge) -> str:
         return match.group(0)
     label = match.group(1).strip()
     ref = match.group(2).strip()
-    if is_paren_cue(label) and (not ref or is_paren_cue(ref)):
+    if _cue_stack(label, ref):
         return match.group(0)
     if is_paren_cue(label):
         return f"[{label}]"
     return _with_word_gap(match, label, edge)
+
+
+def _cue_stack(label: str, ref: str) -> bool:
+    """Say whether ``[label][ref]`` is two cues one after the other, not a reference link.
+
+    A known cue on either side makes it a stack, so the layered form Fish documents, such as
+    ``[mysterious][whispering]`` or ``[very excited][laughing]``, keeps both. S2 also takes
+    free-form cues, and a reply that is spoken aloud has no markdown reference links to
+    protect.
+    """
+    return is_paren_cue(ref) if ref else is_paren_cue(label)
+
+
+def _spaced_ref(match: re.Match[str]) -> str:
+    # [the docs][ref] is a reference link: the label is the words. A known cue after it means
+    # the label is a cue too: [in a storytelling voice][calm].
+    label, ref = match.group(1), match.group(2).strip()
+    return match.group(0) if _cue_stack(label.strip(), ref) else label
 
 
 def _unwrap_marks(text: str, edge: _Edge) -> str:
@@ -390,7 +408,7 @@ def _strip_marks(text: str, *, line_start: bool, edge: _Edge) -> str:
     stripped = _MD_STRIKE_RE.sub(" ", stripped)
     stripped = _line_sub(_MD_FOOTNOTE_DEF_RE, "", stripped, line_start=line_start)
     stripped = _MD_FOOTNOTE_RE.sub(" ", stripped)
-    stripped = _MD_REF_LINK_RE.sub(r"\1", stripped)
+    stripped = _MD_REF_LINK_RE.sub(_spaced_ref, stripped)
     stripped = _line_sub(_MD_REF_DEF_RE, "", stripped, line_start=line_start)
     stripped = _MD_BREAK_RE.sub(" ", stripped)
     stripped = _MD_HTML_RE.sub("", stripped)

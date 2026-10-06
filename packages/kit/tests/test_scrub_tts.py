@@ -697,3 +697,31 @@ def test_closed_blocks_are_removed_and_an_unclosed_one_drops_the_rest() -> None:
     assert _words("Hi <think>cut off. gone") == ["Hi"]
     assert _words("x <script>alert(1)</script> y <style>p{}</style> z") == ["x", "y", "z"]
     assert _words("x <SCRIPT>a</script> y") == ["x", "y"]
+
+
+@pytest.mark.parametrize(
+    "stack",
+    [
+        "[mysterious][whispering] The old house stood silent.",
+        "[relieved][sighing] No one answered.",
+        "[very excited][laughing] We did it!",
+        "[extremely angry][shouting] Get out!",
+        "[in a storytelling voice][calm] Once upon a time.",
+    ],
+)
+def test_a_stack_of_cues_with_a_free_form_one_keeps_both_and_speaks_neither(stack: str) -> None:
+    # S2 takes free-form cues and Fish documents stacking them. Read as a markdown
+    # reference link, the first would be spoken aloud and the second lost.
+    assert scrub_tts(stack) == stack
+
+
+@pytest.mark.parametrize(
+    ("text", "spoken"),
+    [
+        ("See [the docs][ref] for details.", "See the docs for details."),
+        ("[docs][ref] page", "docs page"),
+        ("[happy][1] hello", "[happy] hello"),
+    ],
+)
+def test_reference_links_that_are_not_cues_still_become_their_words(text: str, spoken: str) -> None:
+    assert scrub_tts(text) == spoken
