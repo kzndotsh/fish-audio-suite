@@ -86,7 +86,7 @@ In normal use, scrubbing costs about 50 µs per token. Per-frame mic work (VAD, 
 | Setting | Default | Faster | Trade-off |
 | --- | --- | --- | --- |
 | `FISH_ASR_MODEL` | `transcribe-1-pro` | `transcribe-1` | Fish describes the non-pro model as faster for short recordings. Pro adds speaker labels and emotion cues, which a one-person conversation does not use. Worth an A/B test |
-| `FISH_ASR_LANGUAGE` | detected | `en` (or yours) | Skips detection. Without it, a short "Uh, …" is sometimes labelled Finnish or Tagalog, though the text still comes back right |
+| `FISH_ASR_LANGUAGE` | detected | `en` (or yours) | With `transcribe-1-pro` it changes nothing you hear: Fish detects the language either way, and the hint is only reported when detection fails. A short "Uh, …" can still be labelled Finnish or Tagalog while the text comes back right |
 
 Fish's speech-to-text has no streaming mode; each clip is sent once after you stop talking.
 

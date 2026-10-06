@@ -58,7 +58,7 @@ Fish is rate-limiting you or is having trouble. Retries happen only before the f
 
 ### `asr done ... lang=fi` (or `tl`) on English speech
 
-Fish labelled a short clip, often one starting with "Uh", as another language. The transcript is still correct English, so you can ignore it. Setting `FISH_ASR_LANGUAGE=en` stops the guessing.
+Fish labelled a short clip, often one starting with "Uh", as another language. The transcript is still correct English, so you can ignore it. Fish detects the language whether or not you send a hint, and with `transcribe-1-pro` the hint does not change the transcript, so `FISH_ASR_LANGUAGE=en` may not change the label.
 
 ## Listening and turn-taking
 
