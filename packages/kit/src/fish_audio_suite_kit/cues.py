@@ -151,6 +151,10 @@ _S1_PAREN_TAGS = (
             "breath",
             "cough",
             "lip-smacking",
+            # Common S2 cues from Fish's models guide that are not in the official lists.
+            "gasp",
+            "inhale",
+            "exhale",
             # Alias spellings, so (laugh) and (pause) match before the alias map.
             "pause",
             "laugh",

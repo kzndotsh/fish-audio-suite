@@ -725,3 +725,10 @@ def test_a_stack_of_cues_with_a_free_form_one_keeps_both_and_speaks_neither(stac
 )
 def test_reference_links_that_are_not_cues_still_become_their_words(text: str, spoken: str) -> None:
     assert scrub_tts(text) == spoken
+
+
+def test_the_common_s2_breath_cues_are_cues_in_a_stack_and_as_old_parens() -> None:
+    # Fish's models guide lists [gasp], [inhale] and [exhale] as common S2 cues.
+    assert scrub_tts("[inhale][exhale] Okay.") == "[inhale][exhale] Okay."
+    assert scrub_tts("[gasp] No way [inhale] okay.") == "[gasp] No way [inhale] okay."
+    assert normalize_cues(scrub_tts("(gasp) wow")) == "[gasp] wow"
