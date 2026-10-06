@@ -64,7 +64,7 @@ Fish labelled a short clip, often one starting with "Uh", as another language. T
 
 ### Short answers ("yes", "no") are ignored
 
-Look for `listen reject too_little_voice frames=... voiced_hits=7`. A one-word answer has about 200–250 ms of voice, and the default needs 360 ms (`FISH_VOICE_MIN_VOICED_FRAMES=12`). Set it to `7`. If coughs and desk taps then start turns, use `8` or `9`.
+Look for `listen reject too_little_voice frames=... voiced_hits=7`. A one-word answer has about 200–250 ms of voice, and the default needs 360 ms (`FISH_VOICE_MIN_VOICED_FRAMES=12`). Set it to `7`. If coughs and desk taps then start turns, use `8` or `9`. With `FISH_VOICE_STT=deepgram` the same setting decides how much voice there must be before anything is sent to Deepgram. A barge-in clip counts in full, so a short interruption still gets through.
 
 ### The bot cuts in while I pause mid-sentence
 

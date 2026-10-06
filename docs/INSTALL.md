@@ -79,7 +79,7 @@ On NixOS, use `dev.sh` or `nix run` as above. Both bring PortAudio with them.
 
 ### Optional parts
 
-The `cli` extra pulls in everything `fish-voice` uses. To install only some of it:
+The `cli` extra pulls in what `fish-voice` needs to talk and listen. The full-screen app and Deepgram streaming are separate extras (`--extra tui`, `--extra deepgram`). The Nix package includes both. To install only some of it:
 
 | Extra | Adds | Without it |
 | --- | --- | --- |
@@ -87,6 +87,8 @@ The `cli` extra pulls in everything `fish-voice` uses. To install only some of i
 | `vad` | `webrtcvad-wheels` | No voice activity detection |
 | `aec` | `pywebrtc-audio` (WebRTC AEC3) | No echo cancellation, so barge-in waits out the speaker bleed |
 | `cli` | All three, plus the `openrouter` SDK | |
+| `tui` | `textual`, for `fish-voice --tui` | `--tui` says how to install it and exits 2 |
+| `deepgram` | `websockets`, for `FISH_VOICE_STT=deepgram` (streaming speech recognition) | The start-up check stops with a message naming the extra |
 
 ## The proxy
 

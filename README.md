@@ -58,7 +58,7 @@ The [index](docs/INDEX.md) explains every doc and who it is for.
 ```mermaid
 flowchart LR
     mic["microphone"] --> ear["echo cancel + voice detection"]
-    ear --> asr["Fish ASR"]
+    ear --> asr["Fish ASR<br/>or Deepgram Flux, streamed while you speak"]
     asr --> llm["LLM<br/>OpenRouter, Experiential, or any OpenAI-compatible server"]
     llm --> kit["kit: scrub, cues, sentence cuts"]
     kit --> tts["Fish TTS websocket"]

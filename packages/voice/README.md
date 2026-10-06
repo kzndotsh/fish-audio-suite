@@ -43,9 +43,9 @@ uv run --package fish-audio-suite-voice --extra cli fish-voice --smoke
 | `stdout` | Raw chunks on stdout |
 | `mpv` | Optional. Plays mp3 from stdin. Not required for the other sinks |
 
-Duplex is mic, then Fish ASR, then an LLM, then one Fish turn. Settings are environment variables. Process env wins, then `--env-file`, then `./.env`.
+Duplex is mic, then Fish ASR (or Deepgram Flux, see below), then an LLM, then one Fish turn. Settings are environment variables. Process env wins, then `--env-file`, then `./.env`.
 
-`--debug` logs VAD, barge-in, Fish websocket metadata, and LLM metadata on stderr. What was said stays on stdout. Duplex exits 2 when playback is `file`, unknown, or `mpv` is not on `PATH`. It also exits 2 on ASR or TTS 401, 402, or 403.
+`--debug` logs VAD, barge-in, Fish websocket metadata, and LLM metadata on stderr. What was said stays on stdout. To keep a whole run, set `FISH_VOICE_LOG_DIR=logs` (or pass `--log-dir logs`): each run writes a complete log there, with what you said and what the model answered, to a file only you can read. Duplex exits 2 when playback is `file`, unknown, or `mpv` is not on `PATH`. It also exits 2 on ASR or TTS 401, 402, or 403.
 
 ### PortAudio
 
@@ -213,7 +213,7 @@ uv run --package fish-audio-suite-voice --extra cli --extra tui fish-voice --tui
 | F2 | Mute or unmute the mic |
 | Ctrl+Q | Quit |
 
-Ctrl+C is not quit here, because the app uses it to copy. Without the `tui` extra, `fish-voice --tui` says how to install it and exits 2. The panels shrink with the terminal: under 72 columns the timings and the log go, under 22 rows the timings go, and under 50x14 it asks for a bigger window (typing and Ctrl+Q still work). With no terminal on stdin or stdout, `--tui` falls back to the plain loop. `NO_COLOR` is honoured, and `TEXTUAL_ANIMATIONS=none` stops the pulsing "you" line, the listening cursor and the thinking wave from moving. A modern terminal works best; macOS's Terminal.app is limited to 256 colors, so use iTerm2, Kitty, WezTerm or Ghostty there.
+While it runs, the app asks the sound card for a bigger playback buffer (`FISH_VOICE_OUTPUT_LATENCY`, `high` in `--tui` by default), lets the playback thread in sooner, and collects garbage less often, because drawing the screen shares a process with playback and otherwise makes it click. Ctrl+C is not quit here, because the app uses it to copy. Without the `tui` extra, `fish-voice --tui` says how to install it and exits 2. The panels shrink with the terminal: under 72 columns the timings and the log go, under 22 rows the timings go, and under 50x14 it asks for a bigger window (typing and Ctrl+Q still work). With no terminal on stdin or stdout, `--tui` falls back to the plain loop. `NO_COLOR` is honoured, and `TEXTUAL_ANIMATIONS=none` stops the pulsing "you" line, the listening cursor and the thinking wave from moving. A modern terminal works best; macOS's Terminal.app is limited to 256 colors, so use iTerm2, Kitty, WezTerm or Ghostty there.
 
 ### Streaming speech recognition (Deepgram)
 

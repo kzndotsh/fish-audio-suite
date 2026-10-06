@@ -16,6 +16,8 @@ A turn starts when you stop talking and ends when you hear the first word of the
 
 The Fish websocket opens while the LLM is still thinking, so its setup time (about 0.3 s) is hidden. The LLM is usually the step that varies most from one turn to the next.
 
+With `FISH_VOICE_STT=deepgram` the first two rows change. Your speech is recognised while you talk, so there is no clip to upload, and Deepgram Flux decides when you have finished instead of waiting out the full silence. If Flux is not sure by the silence limit, the app asks it to end the turn. In our logs the `asr` step took 0.6 to 1.1 s, and the slower turns were the ones the silence limit ended. `FISH_VOICE_EAGER_EOT_THRESHOLD` goes further and starts the model on Flux's early guess, which saves roughly another 150 to 250 ms for about 50 to 70 percent more model calls.
+
 ## Recommended settings for low latency
 
 > [!TIP]
@@ -96,6 +98,9 @@ Fish's speech-to-text has no streaming mode; each clip is sent once after you st
 | `FISH_VOICE_COOLDOWN` | `0.8` | `0.3` | How long the mic stays shut after a reply. Anything said in this gap is lost, so a quick "yes" can vanish. Too short, and echo from loud speakers in an echoey room can open a junk turn |
 | `FISH_VOICE_MIN_VOICED_FRAMES` | `12` (360 ms) | `7` (210 ms) | A one-word answer is about 200 to 250 ms of voice. Lower lets "yes" and "no" through, but some coughs and desk taps reach speech-to-text too, where they usually come back empty |
 | `FISH_VOICE_SPEECH_FRAMES` | `4` (120 ms) | | How long a sound must last before it starts a turn |
+| `FISH_VOICE_STT` | `fish` | `deepgram` | Streams your speech to Deepgram Flux while you talk, which ends the turn by the model's own judgment instead of a fixed silence. Needs the `deepgram` extra and a key. Quiet speech was missed more often than with Fish ASR in testing, and near-homophones can differ |
+| `FISH_VOICE_EOT_THRESHOLD` | `0.7` | `0.6` | How sure Flux must be that you have finished. Lower ends turns sooner but may cut in on a long pause. Turns that end at `trigger=manual` waited for the silence timer instead |
+| `FISH_VOICE_EAGER_EOT_THRESHOLD` | `0` (off) | `0.5` | Starts the reply on Flux's early guess, held back until it is confirmed. Faster, and costs 50 to 70 percent more model calls |
 
 ### Barge-in
 
@@ -181,6 +186,9 @@ Lines worth watching:
 | --- | --- |
 | `tts underrun after N kB played (chunk_wait X ms, in_python Y ms, write Z ms)` | The speaker ran dry between chunks, heard as a click or gap. A large `chunk_wait` means the audio arrived late (Fish was slow to deliver it). A large `in_python` means the playback thread itself was stalled before the write. A `write` far above the length of a slice (about 30 ms) means the call itself waited, usually to get Python's lock back from a busy thread. Should not happen with current code |
 | `barge hit 3/10 ...` then `barge decay` | Something loud nearly interrupted the bot. Frequent near-misses with no one talking mean echo is leaking |
+| `stt end trigger=model confidence=0.8` | Flux ended the turn itself. `trigger=manual` means the silence limit ended it, usually because Flux was not sure |
+| `stt.empty ...` / `stt.gave_up ...` / `stt.noise ...` | A streamed turn with no words in it, dropped on purpose. The text says how much audio was sent, if any |
+| `llm.speculate hit` / `miss` / `dropped` | With the early reply on: the reply written ahead of time was used, replaced because the words changed, or thrown away |
 | `listen reject too_little_voice` | A sound too short to be a turn. If real words show up here, lower `FISH_VOICE_MIN_VOICED_FRAMES` |
 | `listen speech_start` right after `listen open`, with no one talking | Echo after the reply. Raise `FISH_VOICE_COOLDOWN` |
 | `asr.skip backchannel` / `hallucination` | A clip was dropped after transcription, on purpose |
@@ -215,6 +223,6 @@ These are known and left alone for now:
 
 - **One Fish websocket per turn.** Fish's protocol allows several utterances on one socket, but the setup cost is already hidden behind the LLM, so reuse would gain little.
 - **The mic closes and reopens around each reply.** Speech in the cooldown gap, and about 50 to 300 ms after a barge-in, is not recorded. A mic that stays open would fix both.
-- **Silence-only turn-taking.** A turn-detection model (Pipecat's Smart Turn runs in under 100 ms on CPU) would allow a 0.3 to 0.5 s end-of-speech wait without cutting off mid-sentence pauses.
+- **Silence-only turn-taking on the Fish ASR path.** Deepgram Flux decides turns itself (see above). The Fish ASR path still waits out a fixed silence; a turn-detection model (Pipecat's Smart Turn runs in under 100 ms on CPU) would allow a 0.3 to 0.5 s wait there without cutting off mid-sentence pauses.
 - **Trailing silence goes to speech-to-text.** Each clip ends with the full end-of-speech silence (a third of a short clip). Trimming it to about 0.25 s would cut the upload and reduce invented words. The gain is mostly accuracy, and about 20 to 50 ms of time.
 - **Very long held spans while streaming.** An unclosed `(`, code fence or URL in a 30,000-character reply still costs about 1.5 s in total, spread across the stream. Real replies stay well under that.
