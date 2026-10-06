@@ -285,7 +285,7 @@ Speech:
 | Variable | Default |
 | --- | --- |
 | `FISH_BASE` | `https://api.fish.audio` |
-| `FISH_TTS_MODEL` | `s2.1-pro` |
+| `FISH_TTS_MODEL` | `s2.1-pro` (or `s2.1-pro-free`, the same model free for testing under fair use, with no latency guarantee) |
 | `FISH_LATENCY` | `normal` (or `balanced`) |
 | `FISH_SPEED` | `1` |
 | `FISH_VOLUME` | `0` (dB) |
