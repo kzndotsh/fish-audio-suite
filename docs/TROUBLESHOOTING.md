@@ -134,6 +134,10 @@ start or end too softly, lower it, and `0` turns the fade off. The fade only cha
 few milliseconds at a sentence edge, never the length of the audio, and it applies to the
 `pcm` format only. It holds back about 10 ms of audio to see what follows.
 
+### A voice hums or says "mm" between sentences
+
+Look at the `tts say ...` lines in a `--debug` log for cues that are descriptions, such as `[smiling]`, `[smiling wider]` or `[soft chuckle]`. Some voices act those out as a sound instead of changing tone. In one test the same text sounded cleanest with plain cues (`[happy]`, `[curious]`), worse with none, and worst with the descriptions. Keep `FISH_TTS_CUES=official` (the default), which maps those cues to the nearest official one. A sentence the model wrote without a cue now gets the previous mood automatically, since a piece with no cue can start cold. If the sound is still there with only official cues, it is probably the voice: try the same text with another voice.
+
 ### A sigh, laugh or odd noise after the last sentence
 
 The model ended its reply with a cue such as `[sigh]`. The default prompt tells it not to, but some roleplay models still do. Check the `llm ▸` line. If it keeps happening, add "Never end a reply with a cue" to your character file.
