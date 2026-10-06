@@ -111,6 +111,15 @@ Fish 429 and 5xx are retried until `FISH_PROXY_RETRY_ATTEMPTS` tries have been m
 
 Transcription uses `FISH_PROXY_ASR_TIMEOUT` (900 seconds) as both its read timeout and its deadline, because Fish can work on a long recording for minutes. Speech keeps `FISH_PROXY_READ_TIMEOUT` and `FISH_PROXY_RETRY_DEADLINE`. A long recording also has to fit under `FISH_PROXY_MAX_BODY_BYTES`: an hour of 128 kbps MP3 is about 55 MiB and the default cap is 25 MiB, so raise it (for example to `67108864`, 64 MiB) to accept one.
 
+### Fish's own compatible endpoints
+
+Fish now serves OpenAI-compatible, OpenRouter-compatible and ElevenLabs-compatible endpoints under `https://api.fish.audio/compat`, which also cover subtitles, chat-modality audio and a realtime socket. This proxy is still the way to keep the Fish key off clients and to get this suite's cue scrubbing and phrase-style captions. Differences to know if you point a client at Fish directly:
+
+- `response_format` defaults to `pcm`, not `mp3`; `instructions` and preset voice names (`nova`, `echo`) are a 400; `voice` is a Fish voice id.
+- `whisper-1`, `gpt-4o-transcribe` and the like map to `transcribe-1`, not `transcribe-1-pro`, and a transcription's `language` field only echoes what you sent.
+- WAV responses carry a placeholder header with a wrong length. Trust the byte count, or ask for MP3 or Opus.
+- Synthesis defaults to `latency: "low"`; send `X-Fish-Latency: normal` for the best quality.
+
 ## Settings
 
 Read once at startup. `GET /health` shows the values in effect under `defaults`, never a key. The TTS defaults are `tts_model`, `tts_format` and `tts_speed`.

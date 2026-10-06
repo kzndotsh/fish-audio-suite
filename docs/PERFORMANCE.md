@@ -79,7 +79,7 @@ In normal use, scrubbing costs about 50 µs per token. Per-frame mic work (VAD, 
 | `FISH_SAMPLE_RATE` | `44100` | `24000` | About 45% less audio over the wire. Fish documents no difference in time to first audio |
 
 > [!NOTE]
-> `FISH_LATENCY=low` exists in Fish's REST API, but the Python SDK documents only `normal` and `balanced`. It is untested here.
+> `FISH_LATENCY=low` is a real, faster mode: Fish's compatible APIs default to it ("streaming-optimized") and say to set `normal` for maximum quality. The Python SDK (1.3.0) rejects it, so the app uses `balanced` and warns. Nothing here has tried it, and Fish gives no figure for it. See the future considerations in [ARCHITECTURE](ARCHITECTURE.md#10-future-considerations).
 
 ### Fish speech-to-text
 
@@ -89,6 +89,14 @@ In normal use, scrubbing costs about 50 µs per token. Per-frame mic work (VAD, 
 | `FISH_ASR_LANGUAGE` | detected | `en` (or yours) | With `transcribe-1-pro` it changes nothing you hear: Fish detects the language either way, and the hint is only reported when detection fails. A short "Uh, …" can still be labelled Finnish or Tagalog while the text comes back right |
 
 Fish's speech-to-text has no streaming mode; each clip is sent once after you stop talking.
+
+### Fish cost and limits
+
+As Fish documents them in October 2026; check Fish's pricing page for today's numbers.
+
+- **Text to speech:** $15 per million UTF-8 bytes, so a 1,200-character reply costs about 2 cents. Cue tags count as text, and a CJK character is 3 bytes. `FISH_TTS_MODEL=s2.1-pro-free` is the same model at no cost for testing, under fair use and with no latency guarantee.
+- **Speech to text:** $0.36 per audio hour for `transcribe-1` and `transcribe-1-pro` alike. The whole clip is billed, silence included, rounded up to the second. With `FISH_VOICE_STT=deepgram` Fish ASR is not used, and Deepgram bills separately.
+- **Concurrency:** 5 requests on the starter tier (under $100 paid), 15 from $100 and 50 from $1,000. The limit counts every request on the account, a text-to-speech socket holds its slot for the whole reply, and a 429 carries no `Retry-After` header. One chat is nowhere near it; several sessions or a busy proxy could be.
 
 ### Turn-taking
 
