@@ -764,3 +764,58 @@ def test_a_setup_failure_in_the_watcher_thread_is_reported(
     err = capsys.readouterr().err
     assert "aec failed to load" in err
     assert "off for this reply" in err
+
+
+def test_a_reply_that_starts_muted_is_not_watched_and_the_mic_is_not_opened(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gate = BargeGate(bleed_delay_s=0, muted=lambda: True)
+    opened: list[str] = []
+
+    def mic(*_args: object, **_kwargs: object) -> collections.abc.Iterator[bytes]:
+        opened.append("mic")
+        yield from ()
+
+    monkeypatch.setattr("fish_audio_suite_voice.barge.mic_frames", mic)
+    gate.start_after_bleed(threading.Event()).join(timeout=1)
+    assert opened == []
+    assert gate.failure is None
+
+
+def test_muting_during_a_reply_ends_the_watch_without_interrupting_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    muted = threading.Event()
+    read: list[int] = []
+
+    def mic(
+        device: str | int | None,
+        stop: threading.Event | None,
+        *,
+        timeout: float,
+        aec: object = None,
+    ) -> collections.abc.Iterator[bytes]:
+        del device, timeout, aec
+        assert stop is not None
+        while not stop.is_set():  # the stream closes as soon as the stop flag is set
+            read.append(1)
+            if len(read) == 2:
+                muted.set()
+            yield _pcm(0)
+
+    aec = EchoCanceller(AecTune(enabled=False))
+    gate, cancel = _watch_with(monkeypatch, [], aec=aec, tune=BargeTune())
+    gate = BargeGate(tune=BargeTune(), aec=aec, muted=muted.is_set)
+    monkeypatch.setattr("fish_audio_suite_voice.barge.mic_frames", mic)
+    gate.watch(cancel)
+    assert len(read) == 2  # it stopped reading when muted
+    assert not cancel.is_set()  # and the reply was not interrupted
+
+
+def test_a_gate_with_no_mute_switch_is_always_watching(monkeypatch: pytest.MonkeyPatch) -> None:
+    aec = EchoCanceller(AecTune(enabled=False))
+    gate, cancel = _watch_with(
+        monkeypatch, [_pcm(500)] * 5, aec=aec, tune=BargeTune(hit_frames=3, min_rms=200.0)
+    )
+    gate.watch(cancel)
+    assert cancel.is_set()

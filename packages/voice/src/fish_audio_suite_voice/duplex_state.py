@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Final
 
@@ -28,6 +29,10 @@ EXIT_FATAL: Final = 2
 EXIT_CRASH: Final = 1
 
 
+def _never_muted() -> bool:
+    return False
+
+
 @dataclass(slots=True)
 class DuplexContext:
     """Everything one duplex session shares between the listen, reply and history steps."""
@@ -40,6 +45,8 @@ class DuplexContext:
     asr_http: httpx.AsyncClient
     history: list[ChatMessage]
     barge_prefix: bytes = b""
+    # Says whether the user has muted the mic. A source with a mute switch sets it.
+    muted: Callable[[], bool] = _never_muted
     # A reply being written for a turn Flux thinks is probably over. Used if it is confirmed.
     speculation: Speculation | None = None
     # What a barge-in cut off, kept until the next line shows the interrupt was

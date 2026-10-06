@@ -245,7 +245,7 @@ async def speak_reply(
     if is_tts_junk(scrubbed, drop_narration=c.drop_narration):
         notice("  (skip junk TTS)")
         return snapshot, None
-    barge = BargeGate(device=ctx.device, tune=c.barge, aec=ctx.session.aec)
+    barge = BargeGate(device=ctx.device, tune=c.barge, aec=ctx.session.aec, muted=ctx.muted)
     thread = barge.start_after_bleed(cancel)
     sink = make_sink(
         c.playback,
@@ -332,7 +332,7 @@ async def stream_turn(
     """
     c = ctx.config
     pipe = _TokenPipe()
-    barge = BargeGate(device=ctx.device, tune=c.barge, aec=ctx.session.aec)
+    barge = BargeGate(device=ctx.device, tune=c.barge, aec=ctx.session.aec, muted=ctx.muted)
     barge_threads: list[threading.Thread] = []
     first_audio: list[float] = []
 

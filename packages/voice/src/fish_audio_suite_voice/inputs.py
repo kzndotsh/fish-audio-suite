@@ -61,9 +61,11 @@ class LiveInput:
     ``submit``, ``mute`` and ``unmute`` are safe to call from any thread. A
     typed line stops the mic at once and is answered like a spoken one. While
     muted, the mic stays closed between turns and the session waits for a typed
-    line, ``unmute`` or quit. Mute does not change the barge-in watch during a
-    reply. A line typed while a reply is playing stops that reply, like speaking
-    over it, unless ``submit`` is told not to.
+    line, ``unmute`` or quit. It closes the barge-in watch too: a reply that starts muted
+    is not watched, and muting during a reply ends the watch without interrupting it.
+    Unmuting does not restart a watch that ended, so it applies from the next reply.
+    Typing a line or pressing Escape still interrupts. A line typed while a reply is
+    playing stops that reply, like speaking over it, unless ``submit`` is told not to.
     """
 
     def __init__(self) -> None:
@@ -165,6 +167,7 @@ class LiveInput:
             The typed line or the heard one, ``bye`` on quit.
         """
         self._session = ctx.session
+        ctx.muted = lambda: self._muted  # the barge-in watch keeps the mic closed while muted
         quit_requested = ctx.session.quit_requested
         while True:
             typed = self._take_typed()

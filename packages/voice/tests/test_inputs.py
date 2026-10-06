@@ -221,3 +221,16 @@ def test_stopping_the_reply_cancels_the_turn_and_does_nothing_before_a_session()
 async def _llm_cancel_is_set(event: asyncio.Event) -> bool:
     await asyncio.sleep(0)  # the cancel crosses threads through the loop
     return event.is_set()
+
+
+def test_the_context_learns_the_mute_switch_so_the_barge_in_watch_can_follow_it() -> None:
+    live = LiveInput()
+    ctx = make_ctx()
+    assert not ctx.muted()  # a context with no mute switch is never muted
+    live.submit("hello")
+    assert _turn(live, ctx).kind == "line"
+    assert not ctx.muted()
+    live.mute()
+    assert ctx.muted()
+    live.unmute()
+    assert not ctx.muted()

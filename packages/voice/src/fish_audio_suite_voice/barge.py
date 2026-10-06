@@ -5,7 +5,7 @@ from __future__ import annotations
 import queue
 import threading
 from collections import deque
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import replace
 from typing import Any, Final, Protocol
 
@@ -147,6 +147,10 @@ class BargeGate:
         far-end reference is the audio that sink played. None runs without AEC.
     bleed_delay_s, hit_frames, min_rms : optional
         Per-gate overrides of the matching ``tune`` fields.
+    muted : Callable or None, optional
+        Says whether the user has muted the mic. While it is true the mic stays closed: a
+        reply that starts muted is not watched, and muting during a reply ends the watch
+        without interrupting it. Unmuting does not restart a watch that ended.
 
     Notes
     -----
@@ -169,6 +173,7 @@ class BargeGate:
         bleed_delay_s: float | None = None,
         hit_frames: int | None = None,
         min_rms: float | None = None,
+        muted: Callable[[], bool] | None = None,
     ) -> None:
         base = tune or BargeTune()
         self.device: str | int | None = device
@@ -194,6 +199,7 @@ class BargeGate:
         self._heard: deque[bytes] = deque(maxlen=BARGE_LOOKBACK_FRAMES)
         self.captured: bytes = b""
         self.failure: Exception | None = None
+        self._muted: Callable[[], bool] = muted or _never
 
     def _bleed_wait(self) -> float:
         if self._bleed_override is not None:
@@ -229,7 +235,13 @@ class BargeGate:
 
         try:
             for idle_frames, frame in enumerate(
-                mic_frames(self.device, cancel, timeout=_BARGE_POLL_S, aec=self.aec), start=1
+                mic_frames(
+                    self.device,
+                    _CancelOrMuted(cancel, self._muted),
+                    timeout=_BARGE_POLL_S,
+                    aec=self.aec,
+                ),
+                start=1,
             ):
                 rms = pcm_rms(frame)
                 far = self.aec.far_end_playing()
@@ -293,9 +305,15 @@ class BargeGate:
 
         def _run() -> None:
             try:
+                if self._muted():  # no need to wait out the bleed to find out
+                    debug("barge.muted the mic is muted, so there is no barge-in watch")
+                    return
                 delay = self._bleed_wait()
                 self.bleed_delay_s = delay
                 trace("barge.bleed sleep_s={}", delay)
+                if self._muted():
+                    debug("barge.muted the mic is muted, so there is no barge-in watch")
+                    return
                 # sleep() ignores cancel. A finished turn would wait out the rest
                 # of the bleed, or the next listen would open the mic twice.
                 if cancel.wait(timeout=delay):
@@ -312,6 +330,21 @@ class BargeGate:
         thread = threading.Thread(target=_run, daemon=True)
         thread.start()
         return thread
+
+
+class _CancelOrMuted:
+    """A stop flag for the mic stream: set when the watch is cancelled or the user mutes."""
+
+    def __init__(self, cancel: threading.Event, muted: Callable[[], bool]) -> None:
+        self._cancel = cancel
+        self._muted = muted
+
+    def is_set(self) -> bool:
+        return self._cancel.is_set() or self._muted()
+
+
+def _never() -> bool:
+    return False
 
 
 class StopFlag(Protocol):
