@@ -24,7 +24,7 @@ Terms used across the fish-audio-suite docs and code.
 | **Held span** | Streamed text kept back because it is unfinished: an open `**`, `<think>`, `(` or URL that a scrub rule would remove once closed |
 | **Interim words** | The words Flux has so far in a turn, sent about four times a second. The TUI shows them as you speak |
 | **Kit** | `fish-audio-suite-kit`, the shared library |
-| **Latency mode** | Fish's `latency` setting: `normal` (the most stable output) or `balanced` (about 300 ms to first audio, Fish's API default and the one recommended for conversation). The SDK has no `low` |
+| **Latency mode** | Fish's `latency` setting: `normal` (the most stable and best-sounding output, with slightly higher latency) or `balanced` (about 300 ms to first audio, Fish's API default and the one recommended for conversation). The SDK has no `low` |
 | **Lead cue** | A cue at the start of a reply or sentence that sets its mood |
 | **OpenAI-compatible** | A server that accepts OpenAI's request formats, such as `/v1/chat/completions` or `/v1/audio/speech`, so OpenAI clients can talk to it by changing the base URL |
 | **p50 / p90** | The median, and the value 90% of requests stay under. For an LLM's first token, p90 is the slow turn you notice |
