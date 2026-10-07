@@ -28,7 +28,7 @@ dependencies = [
     # fastapi whose Starlette does not leak a stream under the test client, and
     # python-multipart 0.0.18 fixes a boundary-parsing denial of service.
     "fastapi>=0.115.7",
-    "uvicorn[standard]>=0.32",
+    "uvicorn[standard]>=0.54.0",
     "httpx>=0.28",
     "ormsgpack>=1.5",
     "python-multipart>=0.0.18",

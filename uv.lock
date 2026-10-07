@@ -371,7 +371,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28" },
     { name = "ormsgpack", specifier = ">=1.5" },
     { name = "python-multipart", specifier = ">=0.0.18" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.54.0" },
 ]
 
 [[package]]
