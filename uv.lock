@@ -332,7 +332,7 @@ test = [
 [package.metadata.requires-dev]
 dev = [
     { name = "basedpyright", specifier = "==1.40.1" },
-    { name = "pydoclint", specifier = ">=0.7.3" },
+    { name = "pydoclint", specifier = ">=0.10.1" },
     { name = "pytest", specifier = ">=9.0" },
     { name = "ruff", specifier = ">=0.13" },
 ]
@@ -946,15 +946,15 @@ wheels = [
 
 [[package]]
 name = "pydoclint"
-version = "0.9.1"
+version = "0.10.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
     { name = "docstring-parser-fork" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/4c/46/e5043a43a127627c4eb901f511787096fe2b50d27bdf5e36dcc21e502dec/pydoclint-0.9.1.tar.gz", hash = "sha256:eb699ecf95124b8d0b881d55cd53cccaa567172005d1223ec91a0259b51a5650", size = 206434, upload-time = "2026-07-03T08:17:08.879Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/76/01/af79b4a9f6288fddd8503ffeb544b15db1f648dfbaa992dbc98159a04805/pydoclint-0.10.1.tar.gz", hash = "sha256:baa2ec9a1d1d60fbcf56fd56d75fbf37b426dfb620a04696ab3365025f44749c", size = 228567, upload-time = "2026-09-28T06:43:14.992Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/bc/35/e2fa913ba2d692ccefbf2e21337fe3fd44200efd9a6ee1ba65766eff7d14/pydoclint-0.9.1-py3-none-any.whl", hash = "sha256:685b4a1c3c852045e4523b61d9c3f789672dfab3a454fe51a9e346c9e21dfcdb", size = 84702, upload-time = "2026-07-03T08:17:07.827Z" },
+    { url = "https://files.pythonhosted.org/packages/33/50/6ea5e79c1df40aa1cee86a0cc2e1cece6eb1c5dc72e77acbd165a273be3a/pydoclint-0.10.1-py3-none-any.whl", hash = "sha256:e78be46fb82fa8068d16a5a8e8b17d11835d1a809b2702a2d0761801e956e97a", size = 93569, upload-time = "2026-09-28T06:43:13.81Z" },
 ]
 
 [[package]]
