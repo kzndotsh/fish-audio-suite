@@ -16,7 +16,7 @@ dev = [
     "pytest>=9.0",
     "ruff>=0.13",
     "basedpyright==1.40.1",
-    "pydoclint>=0.7.3",
+    "pydoclint>=0.10.1",
 ]
 test = [
     "textual>=8.2.8",
