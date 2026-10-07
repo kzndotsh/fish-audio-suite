@@ -27,7 +27,7 @@ dependencies = [
     # floors below with `uv sync --resolution lowest-direct`. 0.115.7 is the first
     # fastapi whose Starlette does not leak a stream under the test client, and
     # python-multipart 0.0.18 fixes a boundary-parsing denial of service.
-    "fastapi>=0.115.7",
+    "fastapi>=0.142.1",
     "uvicorn[standard]>=0.32",
     "httpx>=0.28",
     "ormsgpack>=1.5",
