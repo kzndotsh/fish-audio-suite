@@ -151,6 +151,10 @@ def test_ensure_lead_cue_only_when_missing() -> None:
     assert ensure_lead_cue("yeah i hear you") == "yeah i hear you"
     assert ensure_lead_cue("yeah i hear you", default="calm") == "[calm] yeah i hear you"
     assert ensure_lead_cue("  ") == "  "
+    # With a default: prepend even when a cue exists elsewhere but not at the start.
+    assert ensure_lead_cue("Hello! [happy] Come here.", default="calm") == "[calm] Hello! [happy] Come here."
+    # With a default: no change when the reply already starts with a cue.
+    assert ensure_lead_cue("[happy] Hello!", default="calm") == "[happy] Hello!"
 
 
 def test_pause_alias_vs_moss_duration() -> None:

@@ -328,9 +328,16 @@ class FishSpeaker:
         free for the LLM.
         """
         prepared = _spoken(text, lead=self.mood_lead, official=self.official_cues)
+        # The full reply is known here, so use its length as the partial-cut
+        # window. This prevents comma cuts from splitting short orphan fragments
+        # like "honey?" off the end of a sentence — fragments that drama-3-preview
+        # renders with inconsistent prosody. Sentence-boundary cuts still fire.
+        # partial_chars flows into TurnSpec so send_turn's replay path uses the
+        # same window (it rebuilds text_events from sent_text + spec.partial_chars).
+        partial = len(prepared) or self.partial_chars
         return await run_turn(
-            self._spec(),
-            text_events(prepared, cancel, self.partial_chars),
+            self._spec(partial_chars=partial),
+            text_events(prepared, cancel, partial),
             sink,
             cancel,
             sent_text=prepared,
@@ -392,7 +399,7 @@ class FishSpeaker:
             on_first_audio=on_first_audio,
         )
 
-    def _spec(self) -> TurnSpec:
+    def _spec(self, *, partial_chars: int | None = None) -> TurnSpec:
         return TurnSpec(
             api_key=self.api_key,
             base_url=self.base_url,
@@ -404,7 +411,7 @@ class FishSpeaker:
             latency=_sdk_latency(self.latency),
             speed=_sdk_speed(self.speed),
             sample_rate=_sdk_sample_rate(self.sample_rate),
-            partial_chars=self.partial_chars,
+            partial_chars=partial_chars if partial_chars is not None else self.partial_chars,
             trace_headers=MappingProxyType(dict(self.trace_headers)),
             config=self._tts_config(),
             fade_ms=self.fade_ms,

@@ -240,7 +240,8 @@ async def speak_reply(
     """
     c = ctx.config
     scrubbed = ensure_lead_cue(
-        normalize_cues(scrub_tts(reply), lead=c.mood_lead, official=c.official_cues)
+        normalize_cues(scrub_tts(reply), lead=c.mood_lead, official=c.official_cues),
+        default="calm",
     )
     if is_tts_junk(scrubbed, drop_narration=c.drop_narration):
         notice("  (skip junk TTS)")
@@ -385,7 +386,8 @@ async def stream_turn(
         _keep_for_resume(
             ctx,
             ensure_lead_cue(
-                normalize_cues(scrub_tts(reply), lead=c.mood_lead, official=c.official_cues)
+                normalize_cues(scrub_tts(reply), lead=c.mood_lead, official=c.official_cues),
+                default="calm",
             ),
             result,
             barge.captured,

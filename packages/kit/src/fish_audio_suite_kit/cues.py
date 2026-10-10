@@ -84,12 +84,13 @@ _FISH_EMOTIONS = frozenset(
 _SPOKEN_TONE = frozenset({"whispering", "shouting", "screaming"})
 # "Excited, hello" -> [excited] hello. Longest word first so a shorter emotion
 # cannot take a prefix. Punctuation is required, so "I am anxious today" stays speech.
+# A bare bracket ("Happy [chuckling]") is also accepted as the delimiter.
 _SPOKEN_MOOD_LEAD = re.compile(
     r"^\s*("
     + "|".join(
         re.escape(word) for word in sorted(_FISH_EMOTIONS | _SPOKEN_TONE, key=len, reverse=True)
     )
-    + r")\s*[,:!\-–—，！：]+\s*",
+    + r")\s*(?:[,:!\-–—，！：]+\s*|(?=\[))",
     re.IGNORECASE,
 )
 # The same marks the lead regex consumes. A stream can end on the first "!"
@@ -751,21 +752,24 @@ class MoodCarry:
 
 
 def ensure_lead_cue(text: str, *, default: str | None = None) -> str:
-    """Prepend one cue when the reply has none.
+    """Prepend one cue when the reply has none at the start.
 
     Parameters
     ----------
     text : str
         Already scrubbed reply.
     default : str or None, optional
-        Cue name without brackets. None or blank leaves the reply unchanged.
+        Cue name without brackets. When given, the reply is prepended with
+        ``[default]`` unless it already *starts* with a cue. When omitted or
+        blank, the reply is left unchanged regardless of cue presence.
 
     Returns
     -------
     str
-        ``text`` unchanged when any ``[cue]`` is already present, including
-        one mid-reply, or when no default cue is set. Empty or whitespace-only
-        input is unchanged.
+        ``text`` unchanged when it already starts with a ``[cue]``, or when
+        no default cue is set. Without a default, also unchanged when any
+        ``[cue]`` is present anywhere (existing behaviour). Empty or
+        whitespace-only input is unchanged.
 
     Notes
     -----
@@ -774,9 +778,13 @@ def ensure_lead_cue(text: str, *, default: str | None = None) -> str:
     """
     if not text.strip():
         return text
-    if _CUE_RE.search(text):
-        return text
     tag = (default or "").strip().lower()
     if not tag:
+        # No default: legacy behaviour — unchanged when any cue present.
+        if _CUE_RE.search(text):
+            return text
+        return text
+    # With a default: prepend unless the reply already *starts* with a cue.
+    if _CUE_RE.match(text.lstrip()):
         return text
     return f"[{tag}] {text.lstrip()}"
