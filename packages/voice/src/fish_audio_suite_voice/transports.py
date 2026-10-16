@@ -18,7 +18,7 @@ from fish_audio_suite_kit import (
     strip_base,
     utf8_text,
 )
-from fish_audio_suite_voice.debug import debug, debug_enabled, warn
+from fish_audio_suite_voice.debug import debug, debug_enabled, trace, warn
 from fish_audio_suite_voice.llm_tune import LlmTune
 from fish_audio_suite_voice.tune import HTTP_KEEPALIVE_S
 
@@ -32,6 +32,7 @@ __all__ = [
 ]
 
 _ABORT_CHARS: Final = 800
+_EVENT_TRACE_CHARS: Final = 600
 # One warning line stays short enough to read. The whole body is in the debug log.
 _ERROR_LINE_CHARS: Final = 220
 _SSE_DATA: Final = "data:"
@@ -434,9 +435,12 @@ async def _iter_httpx_sse_events(call: ChatCall) -> AsyncIterator[object]:
         async for line in resp.aiter_lines():
             buf, parsed, stop = _feed_sse(buf, line)
             if parsed is not None:
+                trace("llm.event {}", json.dumps(parsed, ensure_ascii=False)[:_EVENT_TRACE_CHARS])
                 yield parsed
             if stop:
+                trace("llm.event [DONE]")
                 return
+        trace("llm.event stream closed without [DONE]")
 
 
 def chat_events(call: ChatCall) -> AsyncIterator[object]:
