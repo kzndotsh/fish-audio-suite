@@ -137,16 +137,18 @@ flowchart LR
 | --- | --- |
 | `aec` | AEC3 removes the bot's own voice from the mic, using what `playback` sends as the reference |
 | `listen` | webrtcvad and a loudness floor start and end the utterance |
-| `asr` | Sends the WAV clip to Fish ASR |
+| `asr` | Sends the WAV clip to Fish ASR. With `FISH_VOICE_HEAR_TONE` it also returns the tone marks Fish heard (`AsrResult`) |
 | `deepgram` | Deepgram Flux's protocol and connection: the address, the turn messages, a connection a test can fake |
 | `streaming` | One turn streamed to Flux: the mic gate feeds frames to the connection, and Flux says when the turn is over |
 | `speculate` | A reply written ahead of time for a turn Flux thinks is probably over: held back, then used if the same words are confirmed, or thrown away |
-| `hearing` | Skips hallucinations, fillers and stale repeats; detects quit |
+| `hearing` | Skips hallucinations, fillers and stale repeats; detects quit. Transcribes each clip (`transcribe`) and, with the turn check on, carries a turn across clips |
+| `turn_check` | The end-of-turn check on the Fish path: `OpenTurn` (the words so far across clips), the short and long silence tunes, and `Reopened`, the mic listening for a continuation while a clip is transcribed |
 | `history` | Appends the user line and trims to `FISH_VOICE_HISTORY_TURNS` |
 | `llm` / `transports` | Streams tokens from the chat model |
 | `reply` | `_TokenPipe` hands tokens to the TTS thread |
 | `stream_scrub` | Kit helpers scrub markup, hold open spans, cut sentences, normalize cues |
 | `speaker` / `tts_turn` / `wire` | One Fish websocket per turn: text and flush out, audio chunks back |
+| `loudness` | `LoudnessMatch`: one smoothed gain and a soft limiter that bring a reply's speech to a target level as it streams |
 | `playback` | Writes ~30 ms slices to the speakers on a worker thread |
 | `barge` | Watches the mic on its own thread while audio plays; loud voiced frames cancel the turn |
 | `spoken` | Records only what was heard (`spoken_so_far`) for history |
@@ -179,10 +181,10 @@ There is no frontend. The user-facing parts are an HTTP API (the proxy) and a te
 
 ### 3.1. fish-audio-suite-kit
 
-- **Description:** shared, pure functions and types. It holds every rule that both programs need, so it is written once: scrubbing markdown and thoughts out of TTS text, Fish `[cue]` tags, sentence cuts and stream holds for streaming TTS, ASR cleanup and hallucination checks, the Fish error shape and retry policy, settings defaults and env readers, caption formatting, and W3C trace headers.
+- **Description:** shared, pure functions and types. It holds every rule that both programs need, so it is written once: scrubbing markdown and thoughts out of TTS text, Fish `[cue]` tags, sentence cuts and stream holds for streaming TTS, ASR cleanup and hallucination checks, whether a transcript looks like a finished turn, the tone marks Fish ASR leaves in a transcript, the Fish error shape and retry policy, settings defaults and env readers, caption formatting, and W3C trace headers.
 - **Technologies:** Python 3.12+, standard library only (no runtime dependencies).
 - **Deployment:** a wheel. Proxy and voice pin `fish-audio-suite-kit>=0.1,<0.2`; in the workspace the local source is used.
-- **Key modules:** `scrub_tts`, `stream_holds`, `cuts`, `cues`, `dialogue`, `junk`, `asr_text`, `captions`, `http_errors`, `defaults`, `env`, `timing`, `trace_context`, `literals`, `payloads`. Private helpers: `_charsets`, `_single_pass`.
+- **Key modules:** `scrub_tts`, `stream_holds`, `cuts`, `cues`, `dialogue`, `junk`, `asr_text`, `turn`, `captions`, `http_errors`, `defaults`, `env`, `timing`, `trace_context`, `literals`, `payloads`. Private helpers: `_charsets`, `_single_pass`.
 
 ### 3.2. fish-audio-suite-proxy
 
@@ -203,9 +205,9 @@ There is no frontend. The user-facing parts are an HTTP API (the proxy) and a te
 | Layer | Modules |
 | --- | --- |
 | Settings | `config` (`VoiceCliConfig`), `tune` (listen, barge and AEC tunes, env readers), `llm_tune` (`LlmTune`, provider table) |
-| Duplex loop | `duplex` (the loop), `duplex_state` (`DuplexContext`), `hearing` (listen and ASR), `reply` (answer and speak), `history`, `signals` (cancel and quit flags) |
+| Duplex loop | `duplex` (the loop), `duplex_state` (`DuplexContext`), `hearing` (listen and ASR), `turn_check` (end-of-turn check), `reply` (answer and speak), `history`, `signals` (cancel and quit flags) |
 | Audio in | `listen`, `barge`, `floor`, `aec` |
-| Speech out | `speaker` (`FishSpeaker`), `tts_turn` (one turn with retry), `wire` (websocket pump, `TtsResult`), `declick` (fades the start and end of each sentence that meets silence), `stream_scrub`, `playback`, `spoken` |
+| Speech out | `speaker` (`FishSpeaker`), `tts_turn` (one turn with retry), `wire` (websocket pump, `TtsResult`), `declick` (fades the start and end of each sentence that meets silence), `loudness` (levels the reply), `stream_scrub`, `playback`, `spoken` |
 | LLM | `llm` (`ChatBackend`, retry, stats), `transports` (OpenRouter SDK or httpx SSE) |
 | Events | `events` (`EVENTS`, the typed events a display follows, `StateTracker`, `EventQueue`, `forward_logs`, `mirror_conversation`), `console_sink` (the plain terminal display, one subscriber), `inputs` (`TurnSource`, and `LiveInput` for typed lines and mute), `session_view` (`reduce_view` folds events into one immutable `SessionView`), `tui` (the Textual app, `fish-voice --tui`, needs the `tui` extra) |
 | Support | `asr`, `cancel`, `pause`, `debug`, `console`, `ws_tap`, `envfile`, `cli` |
@@ -296,6 +298,7 @@ The rules most easily broken, each with its reason. A test or a lint rule enforc
 - **With a streaming recogniser, only speech leaves the machine.** Nothing is connected or sent while the mic waits for speech to start, nor until the turn has `min_voiced_frames` voiced frames (a knock or a cough passes the start gate too, and the batch path drops them only after recording, so `streaming._hold_until_voiced` does it before connecting) (Deepgram closes a connection left without audio, about 10 s on its general STT API, so connecting early would only fail). The same gate (`listen._Listen`) as the batch path decides when it starts, the pre-roll and any barge-in prefix go first, and every connection sets `mip_opt_out=true`. A recogniser that streamed all the time would send a room's worth of audio nobody meant to share. A test checks that nothing is sent before speech.
 - **The batch path stays the default and the fallback.** `FISH_VOICE_STT` is `fish` unless set, and a turn Deepgram cannot serve (an outage, not a bad key) is heard with Fish ASR: `StreamFallback.prefix` carries the speech captured so far into the batch path as the barge-in prefix, so the first words are kept. A bad or missing key is fatal at startup instead, because falling back would hide it.
 - **Mute closes every mic path.** `LiveInput.next_turn` gives the context its mute switch (`DuplexContext.muted`), and `BargeGate` takes it as `muted`: a reply that starts muted opens no mic at all, and muting mid-reply ends the watch through `_CancelOrMuted` without setting the cancel flag. Typing a line or Escape still interrupts. Do not add a mic reader that ignores the switch.
+- **The end-of-turn check never loses the first clip and never opens a muted mic.** With `FISH_VOICE_TURN_CHECK` the first clip ends on a short silence, and `hearing._hear_checked` keeps the mic listening (`turn_check.Reopened`) while it is transcribed. Its words join the turn (`OpenTurn`) whatever happens to a continuation: nothing said, noise, a failed request. The continuation is not started when `ctx.muted()` is true, and it listens through the same stop flag as the first clip, so quit, mute and a typed line end it. A stop that is not quit drops the whole turn before `Heard` is announced, as it does for a clip. A recording it no longer needs is closed before `hear_line` returns, so the reply's barge-in watch and the next listen do not find the device busy. The Deepgram path never goes through it. The cap on continuations is `TurnTune.max_extensions`, and a joined line is never marked stale.
 - **A streamed turn is dropped early when it is not speech.** A barge-in clip counts as speech in full when `_hold_until_voiced` checks for enough voice, as `listen_reject_reason` does on the batch path, or a short interruption would be dropped as noise and the cut-off reply would go on. If Flux returns no words within `_NO_WORDS_S` (1.2 s) of streaming starting, the turn is given up on as noise, so a run of taps is not sent until the silence limit.
 - **A reply written ahead of time is invisible until it is confirmed.** With `FISH_VOICE_EAGER_EOT_THRESHOLD`, the model is asked on Flux's early end-of-turn, but its tokens stay in `speculate.Speculation`: no `ReplyToken`, no speech, no history entry. `reply._tokens_for` replays them only if `EndOfTurn` carries the same words; any other outcome (`TurnResumed`, different words, no turn, a rejected line) cancels it. Nothing else may read a speculative reply, or a turn the user was still speaking would be answered twice.
 - **`DEEPGRAM_API_KEY` is read with the other settings, never at import, and `websockets` is imported when a connection opens.** The voice package imports without the `deepgram` extra.
@@ -309,6 +312,7 @@ The rules most easily broken, each with its reason. A test or a lint rule enforc
 - **Playback never blocks the TTS loop.** Each chunk is written on a worker thread, and cancel and tokens wake the loop instead of being polled. A blocked loop stalls text going to Fish and audio coming back.
 - **`CancelledError` ends a stream quietly only when `is_own_cancel(flag)` is true.** Anything else (`asyncio.timeout`, an outer `task.cancel()`) must propagate. Reap a cancelled child with `reap(task)`, never `suppress(BaseException)`, so Ctrl+C and `SystemExit` are not swallowed. Ctrl+C must cancel the TTS turn (`session.turn`), not only the mic.
 
+- **The reply is levelled between the fade and the sink.** `wire._Shaper` runs `EdgeFade` and then `LoudnessMatch` on each PCM chunk before `sink.write`, and `SounddeviceSink` taps the far end from what it is given, so the echo canceller sees the level the speaker plays. The gain comes from the first chunk and then drifts slowly, silence is not counted, it is bounded to 12 dB and a soft limiter keeps peaks below full scale. The Fish websocket `TTSConfig` has no `normalize_loudness`, so this cannot be left to Fish. It adds no delay and is off unless `FISH_VOICE_NORMALIZE_LOUDNESS` is set.
 - **Cues are shaped before Fish sees them.** `normalize_cues(..., official=True)` (`FISH_TTS_CUES`, default `official`) maps any cue Fish does not list to the nearest official one with `cues.official_cue`, and drops one with no match, because a description of a face or a voice is acted out as a sound by some voices. `cues.MoodCarry` then puts the last emotion on any sentence that starts without one, in both `stream_scrub._StreamScrubber._emit` and `wire.text_events`, because each piece is sent on its own. A piece that continues a sentence gets no cue. Keep both in kit, with the stem table in `cues._CUE_STEMS`; never copy it.
 
 ### Events
@@ -333,6 +337,7 @@ The rules most easily broken, each with its reason. A test or a lint rule enforc
 
 ### Text rules
 
+- **The user's tone is context for one request, never history and never speech.** `asr_tone` (kit) returns a few plain words from the marks Fish ASR leaves in its text, and `history.with_tone_hint` appends them, in round brackets that `scrub_tts` removes, to a copy of the last user message for that request only. `DuplexContext.history`, the screen and the next request keep the plain line. The hint is never passed to the TTS cue path. The cleaned text that classification and history see is the same with the setting on or off.
 - **Roleplay helpers are opt-in.** `normalize_cues(lead=True)`, `tts_hold_at(lead=True)` and `is_tts_junk(drop_narration=True)` rewrite or drop ordinary-looking English, so nothing in the default path may match it.
 - **Gates drop only noise.** The letter floor is `min_letters=2` with a `short_words` allowlist ("no", "ok"), and the quit and backchannel lists take caller phrases and default to explicit goodbyes and listener noise only.
 - **The default system prompt is voice formatting and cue use only.** No persona, scene or refusal wording: a character belongs in a character file.
@@ -356,11 +361,9 @@ The rules most easily broken, each with its reason. A test or a lint rule enforc
 Known architectural debt and likely changes, roughly in order of value:
 
 - **A mic that stays open.** The mic closes during each reply and reopens afterwards, so speech in the post-reply cooldown, and about 50 to 300 ms after a barge-in, is lost. A persistent capture stream that is gated, not closed, would fix both.
-- **Turn detection beyond silence on the Fish ASR path.** With Deepgram Flux the model decides when a turn is over. The Fish path still waits out a fixed silence; a small end-of-turn model (for example Pipecat's Smart Turn) would allow a shorter wait without cutting off pauses.
+- **A trained end-of-turn model on the Fish ASR path.** `FISH_VOICE_TURN_CHECK` judges the words with a small English heuristic (`judge_turn`). A small model (for example Pipecat's Smart Turn) that also hears the voice would judge pauses and other languages better. It is unmeasured on real speech.
 - **Trimming trailing silence** from ASR clips.
 - **`latency: "low"` for Fish speech.** Fish's compatible APIs default to it, but the Python SDK's `LatencyMode` accepts only `normal` and `balanced` and rejects `low` before the socket opens, so `speaker._sdk_latency` coerces it. Building the config without validation might reach the native realtime socket; it is untested, and Fish gives no figure for the saving.
-- **Emotion cues from Fish ASR as context for the reply.** `transcribe-1-pro` annotates how speech sounds (`[laughter]`, an emotion word) in its text, and `asr.fish_asr` strips them (`strip_cues=True`). Passing them on, in a form the model will not copy into its own cues, would give the reply the user's tone for free. It exists only on the Fish ASR path, since Deepgram Flux returns plain words, and needs a trial on real English speech. `tag_audio_events=false` is the opposite option: skip the annotation work, which is unmeasured.
-- **Loudness normalisation of each reply.** Fish voices differ a lot in level: across 42 saved clips the average level while speaking ran from -30 to -11 dBFS, a spread of 19 dB, and nothing evens it out. Raise or lower each reply toward a target (about -18 dBFS while speaking) with a soft limiter above it, so voices are comparable and quiet ones get louder without touching the system volume. It has to run before the far-end tap, so the echo canceller sees what the speaker plays. Check Fish first: the proxy sends `normalize_loudness` on its REST requests, but the Python SDK's websocket `TTSConfig`, which `fish-voice` uses, has no such field, so the voice app cannot ask Fish to do it.
 - **EQ presets for playback.** There is no tone shaping. A high-pass around 80 Hz for rumble and bass-heavy voices (one saved clip had 39 percent of its energy below 150 Hz), and optional warmth and presence tweaks, off by default. It is a matter of taste, and a proper EQ needs SciPy filters or an FFT-based filter, since the voice package only uses NumPy now.
 - **A short crossfade at joins between chunks** of continuous speech. `declick` fades only edges that meet silence, so a join in the middle of speech gets nothing.
 - **Linear held spans** in the stream scrubber, by remembering where a span opened across tokens.
@@ -375,7 +378,7 @@ Known architectural debt and likely changes, roughly in order of value:
 - **Repository:** https://github.com/kzndotsh/fish-audio-suite
 - **Maintainer:** kzndotsh
 - **License:** MIT ([LICENSE](../LICENSE))
-- **Last updated:** 2026-10-04
+- **Last updated:** 2026-10-14
 
 ## 12. Glossary
 

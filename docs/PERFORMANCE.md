@@ -27,6 +27,8 @@ With `FISH_VOICE_STT=deepgram` the first two rows change. Your speech is recogni
 FISH_VOICE_STREAM_TTS=1          # speak while the model is still writing
 FISH_LATENCY=balanced            # Fish's recommended mode for voice agents
 FISH_VOICE_SILENCE_FRAMES=25     # end your turn after 0.75 s of silence (default 1.2 s)
+# or, instead of a fixed short silence, let the words decide (Fish ASR):
+# FISH_VOICE_TURN_CHECK=1
 FISH_VOICE_COOLDOWN=0.3          # reopen the mic 0.3 s after a reply (default 0.8 s)
 FISH_VOICE_MIN_VOICED_FRAMES=7   # let a one-word "yes" through (default needs 360 ms)
 FISH_LLM_PROVIDER_SORT=latency   # the default: route to the provider with the fastest first token
@@ -103,6 +105,7 @@ As Fish documents them in October 2026; check Fish's pricing page for today's nu
 | Setting | Default | Faster | Trade-off |
 | --- | --- | --- | --- |
 | `FISH_VOICE_SILENCE_FRAMES` | `40` (1.2 s) | `25` (0.75 s) | The single biggest fixed cost per turn. Production voice agents use 0.4 to 0.5 s, but they pair it with a turn-detection model. With silence alone, a pause mid-sentence longer than this ends your turn. `30` (0.9 s) is a middle ground |
+| `FISH_VOICE_TURN_CHECK` | off | `1` | Ends the first clip after `FISH_VOICE_TURN_SILENCE_FRAMES` (12, about 0.36 s) instead of 1.2 s, and the words decide whether you were done. A turn that ends on a full stop or a question mark is answered about 0.8 s sooner. One that stops on "and", a comma or the like waits for a continuation, at most as long in all as the ordinary silence, and the mic stays open meanwhile so nothing you say is lost. Fish ASR only, English words. The check costs one extra mic open per turn while the clip is transcribed, and no extra requests unless you do continue |
 | `FISH_VOICE_COOLDOWN` | `0.8` | `0.3` | How long the mic stays shut after a reply. Anything said in this gap is lost, so a quick "yes" can vanish. Too short, and echo from loud speakers in an echoey room can open a junk turn |
 | `FISH_VOICE_MIN_VOICED_FRAMES` | `12` (360 ms) | `7` (210 ms) | A one-word answer is about 200 to 250 ms of voice. Lower lets "yes" and "no" through, but some coughs and desk taps reach speech-to-text too, where they usually come back empty |
 | `FISH_VOICE_SPEECH_FRAMES` | `4` (120 ms) | | How long a sound must last before it starts a turn |

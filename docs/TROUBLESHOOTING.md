@@ -66,9 +66,32 @@ Fish labelled a short clip, often one starting with "Uh", as another language. T
 
 Look for `listen reject too_little_voice frames=... voiced_hits=7`. A one-word answer has about 200–250 ms of voice, and the default needs 360 ms (`FISH_VOICE_MIN_VOICED_FRAMES=12`). Set it to `7`. If coughs and desk taps then start turns, use `8` or `9`. With `FISH_VOICE_STT=deepgram` the same setting decides how much voice there must be before anything is sent to Deepgram. A barge-in clip counts in full, so a short interruption still gets through.
 
+### Soft speech is missed, or talking over the bot does nothing, because the mic is quiet
+
+Look for `listen reject too_little_voice`, short clips that come back as `asr skip hallucination (0 chars)`, and `barge hit` lines that sit just above the floor (about 220 to 330 rms) and fall back before they reach `FISH_VOICE_BARGE_FRAMES`. The default gates are `FISH_VOICE_MIN_RMS=200` and `FISH_VOICE_BARGE_RMS=220`, about -44 dBFS. They assume your voice is well above that and the room is well below it.
+
+Measure before changing anything. `scripts/mic_levels.py` calls no API and saves no audio, and its summary gives your noise floor and speaking level in dB below full scale. Stay quiet for the first two seconds and then talk for the rest, or the "speech" figure is only room noise. Conversational speech usually averages around -26 to -20 dBFS. In one setup (a Yeti X) speech averaged -37.7 dBFS and soft words dipped under the gates. A gain increase of about 8 dB brought it to -31.4 and fixed the missed interruptions.
+
+Things to consider:
+
+- **Order of fixes.** Move closer to the mic, then raise the mic's own gain, then the system input volume. Software gain amplifies the room noise by the same amount, so it cannot improve speech against noise. Moving closer is the only step that does.
+- **Do not overshoot.** Keep the noise floor below about -47 dBFS (an rms of roughly 140). Near the 200 rms gate the room itself starts to look like speech. In the same setup the floor rose from -55.4 to -48.8 dBFS with the extra gain.
+- **Volume scales are cubic.** In `pavucontrol` and `wpctl`, 60% is about -13 dB and 44% is about -21 dB (dB = 60 x log10 of the fraction). A linear setting such as WirePlumber's `default-source-volume` is the cube of that percentage, so 0.22 matches 60%.
+- **Other apps share the input.** A chat or call app on the same default source hears the change. On PipeWire the volume is remembered per device, so a value set in a config file applies only when nothing is saved.
+- **Echo cancellation takes some of your voice** while the speakers play, so your level during a reply is lower than in `mic_levels.py`. Headphones remove that. The measurement above is of the raw mic, not of what is left after cancellation.
+- **Lowering the gates instead** (for example `FISH_VOICE_MIN_RMS` near 120 and `FISH_VOICE_BARGE_RMS` near 150) is untested and relies on a quiet room, so prefer fixing the level first.
+
+### Replies are too quiet, too loud or distorted with loudness normalisation
+
+`FISH_VOICE_NORMALIZE_LOUDNESS=1` moves each reply toward `FISH_VOICE_LOUDNESS_TARGET_DB` by at most 12 dB, so a very quiet voice stays a little quiet, and a limiter bends peaks rather than clipping them. Lower the target (`-22`) if a boosted voice sounds harsh, or turn the setting off to hear the voice as Fish sends it. The level is measured on the speech so far, so it can settle a second into a reply.
+
 ### The bot cuts in while I pause mid-sentence
 
-Your pause was longer than the end-of-speech silence, `FISH_VOICE_SILENCE_FRAMES` (frames are 30 ms; the default 40 is 1.2 s). Raise it. `30` (0.9 s) is a good middle ground if you have lowered it for speed.
+Your pause was longer than the end-of-speech silence, `FISH_VOICE_SILENCE_FRAMES` (frames are 30 ms; the default 40 is 1.2 s). Raise it. `30` (0.9 s) is a good middle ground if you have lowered it for speed. With Fish ASR you can also set `FISH_VOICE_TURN_CHECK=1`, which keeps listening when your words stop on "and", "but" or a comma.
+
+### The turn check waits when I had finished, or answers too soon
+
+Run with `--debug` and look for `turn.extend <reason> clip=1 '...'`. The reason says what the words looked like: `open_punctuation` (a comma, a colon or an ellipsis), `dangling_word` ("and", "but", "because", "the", "um", a preposition) or `number_list`. Fish ASR sometimes ends a finished sentence on a comma, and the check then waits for a continuation, at most `FISH_VOICE_TURN_EXTEND_FRAMES` less `FISH_VOICE_TURN_SILENCE_FRAMES` of quiet (about 0.84 s). No `turn.extend` line means the words looked finished and the short `FISH_VOICE_TURN_SILENCE_FRAMES` ended the clip: raise it (`18` is about 0.54 s) if it still cuts you off. The check reads English only, and does nothing with `FISH_VOICE_STT=deepgram`.
 
 ### My quick reply right after the bot finishes is lost
 
@@ -102,9 +125,16 @@ Flux was not sure enough that you had finished (its `confidence` was below `FISH
 
 ## Barge-in
 
-### Coughs, chairs or keyboard noise interrupt the bot
+### Coughs, chairs, sniffs or keyboard noise interrupt the bot
 
 The log shows `barge interrupt` after hits from short, loud noises. Raise `FISH_VOICE_BARGE_FRAMES` (default 10, about 300 ms) before raising `FISH_VOICE_BARGE_RMS`. A noise that interrupts but holds no words is treated as a false alarm: the reply resumes where it was cut.
+
+Hits do not have to be in a row. The count falls by one only after 3 missed frames, so a run of small sounds such as sniffs or breathing can add up to an interruption. The default voice detection (`FISH_VOICE_VAD=1`) is lenient enough to call those sounds voiced.
+
+Two things help:
+
+- `FISH_VOICE_VAD=2` makes the detector pickier. In one setup (a Yeti X, about 8 dB of extra input gain) it stopped sniffs and mic bumps from interrupting, and nothing else changed. It also applies to normal listening, so check that your first words are not clipped and that soft speech still arrives. If it is, go back to `1`.
+- `FISH_VOICE_BARGE_RMS` set above the level of those sounds and below your voice. Compare the `barge hit ... rms=` lines for a sniff and for a real interruption first. In that setup sniffs read 245 to 650 and real interruptions 740 or more, but your mic will differ.
 
 ### The bot interrupts itself
 
@@ -165,6 +195,12 @@ On Experiential, `403 model_not_granted` means the model id is wrong or not on y
 
 That is the model's own content policy, and settings will not change it. [PERFORMANCE.md](PERFORMANCE.md#choosing-an-llm) lists roleplay-tuned models.
 
+### `HTTP 400 ... provider rejected the request` and the bot says nothing
+
+`W llm HTTP 400, model=...: provider rejected the request; verify the request fields against the model alias capabilities`, then `tts stream empty reply, nothing to speak`. The wording points at the request fields, but a hosted model can send the same 400 when its safety filter refuses the prompt text. In one setup every field and message shape returned 200 for the model with a plain test prompt, and only the real character prompt was rejected.
+
+To tell them apart, send the same fields with a plain prompt, or the default prompt (`fish-voice` without `--prompt-file`). A 200 there means the content was refused, and no setting will change that. Use a model that accepts the prompt, such as a roleplay-tuned one ([PERFORMANCE.md](PERFORMANCE.md#choosing-an-llm)).
+
 ### `[llm] empty reply (model=... finish=...)`
 
 The model returned no text.
@@ -193,6 +229,18 @@ time curl -s https://openrouter.ai/api/v1/chat/completions \
 
 - **Local models:** the first request loads the model into memory (15–20 s for a mid-sized model). Set `OLLAMA_KEEP_ALIVE=-1` on the Ollama server to keep it loaded.
 - **Cloud models:** the first turn opens new connections. Later turns reuse them for 2 minutes.
+
+### The reply stops in the middle of a sentence
+
+The last `tts say` line is a fragment such as `'[calm] Just'`, and `llm stream_end finish=stop` shows a small `chunks=` count (2 or 3, where other servers show 20 to 50). `finish=stop` means the server ended the reply, not a length limit (that is `finish=length`).
+
+To see who cut it, run with `--trace` (or `FISH_VOICE_LOG_DIR`, which keeps the lines in a file). Each chunk the server sent is logged as `llm.event {...}`, and a stream that closed without the end marker logs `llm.event stream closed without [DONE]`.
+
+- The last `llm.event` has `finish_reason: "stop"` and the text on screen also stops there: the model or the server ended the reply. Nothing here cut it.
+- The events hold more text than was spoken: the cleanup removed it, for example an unclosed `(`, `*` or `[`.
+- The stream closed without `[DONE]`, or a `llm.event` line is missing words that arrived: the connection ended early.
+
+Compare `out=` with the characters spoken. About 3.5 to 4 characters per token is normal for English. A much lower ratio means text went missing after the model wrote it. `FISH_LLM_CONTINUE=1` sends one more request when a reply stops mid-sentence with `finish=stop`.
 
 ### Replies are sometimes fast and sometimes slow
 

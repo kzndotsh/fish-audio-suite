@@ -17,6 +17,7 @@ Terms used across the fish-audio-suite docs and code.
 | **Eager end of turn** | Flux's early guess that you have probably finished, sent a little before it is sure (`FISH_VOICE_EAGER_EOT_THRESHOLD`). The model's reply starts being written then, held back until Flux confirms the same words |
 | **Early flush** | A `FlushEvent` sent after the first sentence of a streamed reply, so Fish starts speaking before the model finishes |
 | **End-of-speech silence** | How long the mic must hear quiet before your turn ends (`FISH_VOICE_SILENCE_FRAMES`, 30 ms per frame) |
+| **End-of-turn check** | The Fish-path option (`FISH_VOICE_TURN_CHECK`) that ends the first clip on a short silence and reads the words to decide whether the turn is over. If it stops on "and", "because" or a comma, the mic keeps listening and the next clip is joined on |
 | **End of turn (Flux)** | Deepgram Flux's own decision that you have finished speaking, with a confidence from 0 to 1. It ends the turn at `FISH_VOICE_EOT_THRESHOLD`; if it has not by the silence limit, the app asks it to (`trigger=manual`) |
 | **Far end** | The audio sent to the speakers. Echo cancellation subtracts it from what the mic hears |
 | **Flux** | Deepgram's streaming speech recognition model with turn detection built in (`flux-general-en`, `flux-general-multi`) |
@@ -26,15 +27,18 @@ Terms used across the fish-audio-suite docs and code.
 | **Kit** | `fish-audio-suite-kit`, the shared library |
 | **Latency mode** | Fish's `latency` setting: `normal` (the most stable and best-sounding output, with slightly higher latency) or `balanced` (about 300 ms to first audio, Fish's API default and the one recommended for conversation). The SDK has no `low` |
 | **Lead cue** | A cue at the start of a reply or sentence that sets its mood |
+| **Loudness normalisation** | Bringing each reply to a steady level (`FISH_VOICE_NORMALIZE_LOUDNESS`), measured on the speech as it streams and applied before the speaker and the echo canceller, with a soft limiter so a boost never clips |
 | **OpenAI-compatible** | A server that accepts OpenAI's request formats, such as `/v1/chat/completions` or `/v1/audio/speech`, so OpenAI clients can talk to it by changing the base URL |
 | **p50 / p90** | The median, and the value 90% of requests stay under. For an LLM's first token, p90 is the slow turn you notice |
 | **Private loop** | The separate asyncio event loop and thread a Fish websocket turn runs on |
 | **Provider sort** | OpenRouter's `provider.sort`: which of a model's providers to prefer. The voice app sends `latency` by default |
 | **Reference id / voice id** | The id of a Fish voice model. Fish calls it `reference_id`; OpenAI clients send it as `voice`; the voice app reads `FISH_VOICE_ID` |
 | **Sink** | Where audio goes: `SounddeviceSink` (speakers), `FileSink`, `StdoutSink`, `MpvSink` |
+| **Soft limiter** | Bends peaks above a knee toward a ceiling below full scale instead of cutting them flat, so a boosted reply does not clip |
 | **Speculative reply** | A reply written ahead of time for a turn Flux thinks is probably over. Invisible and silent until Flux confirms the same words; otherwise thrown away |
 | **Spoken so far** | The part of a reply that was actually heard, estimated from bytes played. Only this goes into history after a barge-in |
 | **SSE** | Server-Sent Events: the streaming format OpenAI-compatible chat servers use to send tokens as they are generated |
+| **Tone hint** | A short note, in round brackets and for one request only, telling the model how the user sounded (`laughter`, `tired`), from the marks Fish ASR puts in its text (`FISH_VOICE_HEAR_TONE`, experimental). Never saved, never spoken |
 | **TTFA / first token** | Time to first audio from Fish; time to the first token from the LLM |
 | **Turn** | One user line and the bot's reply |
 | **Underrun** | The speaker running out of audio, heard as a click or a gap. Logged as `tts underrun`, with `chunk_wait`, `in_python` and `write` timings that say whether the audio came late or the playback thread stalled |
