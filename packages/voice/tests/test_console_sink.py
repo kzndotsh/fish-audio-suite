@@ -16,6 +16,7 @@ from session_fakes import (
 from voice_fakes import install_audio
 
 from fish_audio_suite_kit import LatencySnapshot
+from fish_audio_suite_voice.asr import AsrResult
 from fish_audio_suite_voice.console_sink import ConsoleSink
 from fish_audio_suite_voice.duplex import duplex_turns
 from fish_audio_suite_voice.duplex_state import DuplexContext
@@ -130,8 +131,8 @@ def test_a_whole_turn_prints_the_same_transcript_as_before(
     install_audio(monkeypatch)
     speak_with_fakes(monkeypatch, tts)
 
-    async def asr(*_args: object, **_kwargs: object) -> str:
-        return "tell me something fun"
+    async def asr(*_args: object, **_kwargs: object) -> AsrResult:
+        return AsrResult("tell me something fun")
 
     monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", lambda *_a, **_k: b"w")
     monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", asr)

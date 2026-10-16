@@ -68,7 +68,9 @@ The `cli` extra includes AEC3. Speaker audio is subtracted from the mic before v
 
 A barge-in keeps the audio that tripped it and clears the speaker tap. The next listen starts from that clip.
 
-The barge floor follows the room: it is the quiet-percentile of recent mic frames, never below `FISH_VOICE_BARGE_RMS`. If barge-in fires on a cough or a chair, raise `FISH_VOICE_BARGE_FRAMES` (30 ms each) before raising the RMS.
+The barge floor follows the room: it is the quiet-percentile of recent mic frames, never below `FISH_VOICE_BARGE_RMS`. If barge-in fires on a cough or a chair, raise `FISH_VOICE_BARGE_FRAMES` (30 ms each) before raising the RMS. If sniffs, breathing or a bumped mic interrupt it, try `FISH_VOICE_VAD=2`, which counts fewer of those sounds as speech. It also affects normal listening, so check that soft speech and the first word of a sentence still come through. See [Troubleshooting](../../docs/TROUBLESHOOTING.md#coughs-chairs-sniffs-or-keyboard-noise-interrupt-the-bot).
+
+If talking over the bot does nothing, your voice may be reaching the gate quietly after echo cancellation. `scripts/mic_levels.py` prints your noise floor and speaking level, and raising the mic's own gain (not only software volume) helps more than lowering the thresholds. See [Troubleshooting](../../docs/TROUBLESHOOTING.md#soft-speech-is-missed-or-talking-over-the-bot-does-nothing-because-the-mic-is-quiet) for the numbers and the order to fix things in.
 
 ### History after a barge-in
 
@@ -259,6 +261,56 @@ What happens, and what leaves your machine:
   stale copies of the last line are dropped.
 - Only the PortAudio microphone path streams. Typed lines, mute and interrupt work as before.
 
+### Sounding more human (opt in)
+
+Three settings, each off by default, so nothing changes until you turn one on.
+
+**End-of-turn check** (`FISH_VOICE_TURN_CHECK=1`, Fish speech recognition only). The Fish path waits
+`FISH_VOICE_SILENCE_FRAMES` (1.2 s) of quiet before every reply, because a shorter wait cuts you off
+mid-thought. With the check on, the first wait is short (`FISH_VOICE_TURN_SILENCE_FRAMES`, 12 frames,
+about 0.36 s) and the words decide. A clip that ends on a comma, an ellipsis, "and", "but",
+"because", "the", "um" or a preposition, or in the middle of a list of numbers, is not taken as the end of the turn.
+A clip that ends with a full stop, a question mark, an exclamation mark or a short answer is.
+
+- While the clip is transcribed, the mic is already listening again. If the turn was over, that
+  recording is closed before the reply starts. If it was not, what you say next is transcribed too and
+  joined to the first part, and the whole line is judged and answered as one. The first part is never
+  dropped, even when nothing more comes.
+- You wait at most as long as before. A continuation ends on `FISH_VOICE_TURN_EXTEND_FRAMES` of
+  quiet (40, the old limit), and the wait for it to start is that minus the short silence. At most
+  `FISH_VOICE_TURN_EXTENSIONS` (1, or 2) continuations are joined to one turn.
+- Quit words, mute, a typed line and Ctrl+C work while it waits. Mute closes the mic and drops the
+  turn, and a muted mic is never reopened for a continuation.
+- The judgement reads English. Text in another language is judged by its punctuation alone.
+  Deepgram has its own turn detection, so the check does nothing with `FISH_VOICE_STT=deepgram`.
+- The log (`--debug`) shows `turn.extend` with the reason each time it waits for more.
+
+**Tone as context** (`FISH_VOICE_HEAR_TONE=1`, experimental, Fish speech recognition only).
+`transcribe-1-pro` marks how speech sounds in its text (`[laughter]`, an emotion word), and the app
+removes those marks before the model sees your words. With this on, the marks are kept
+beside the clean text, and the model is told how you sounded for that turn only, in a
+note after your line: `(Note on how they sounded: laughter, tired. This is not something they said.
+Do not repeat or mention it, and never write it as a [cue] or in brackets.)`
+
+- The note is added to the request for that turn and never saved. History and the screen keep your plain words, and the next
+  request has no memory of it.
+- It is not in the speech path. The note is in round brackets, which the text scrubber
+  removes, so a model that echoes it halfway through a reply is not heard saying it.
+  A reply made of nothing but the note would be spoken, so this is a safeguard and not a guarantee.
+- Only a few plain words from Fish are passed on (at most three marks, none with digits or symbols).
+- It is unproven how well it works on real speech. Try it and judge the replies.
+
+**Loudness** (`FISH_VOICE_NORMALIZE_LOUDNESS=1`). Fish voices differ by up to 19 dB in level, and the
+realtime socket cannot ask Fish to even them out. The app measures the speech in each reply as it
+arrives and brings it to `FISH_VOICE_LOUDNESS_TARGET_DB` (-18 dBFS while speaking), then limits any peak above that so a boost never clips.
+
+- The level is set from the first chunk of the reply and drifts slowly after that, so a loud word does
+  not make the next quiet one pump. Pauses are not counted as speech and are not boosted.
+- The change is at most 12 dB up or down. A very quiet voice ends up quieter than the target.
+- It runs before the sound goes to the speaker and to the echo canceller, so the canceller sees
+  what the speaker plays. It does not touch your system volume and adds no delay.
+- It applies to PCM playback (the default speakers). mpv plays mp3 and is left alone.
+
 ## Extras
 
 | Extra | Pulls in |
@@ -339,6 +391,18 @@ Speech recognition. See [Streaming speech recognition](#streaming-speech-recogni
 | `FISH_VOICE_EAGER_EOT_THRESHOLD` | `0` (off) | 0.3 to 0.9, and no higher than `FISH_VOICE_EOT_THRESHOLD`. Flux says when a turn is probably over a little before it is sure, and the reply starts being written then, held back until Flux confirms it. Saves about 150 to 250 ms, and costs 50 to 70 percent more model calls. See the streaming section |
 | `FISH_VOICE_STT_SAVE_DIR` | unset | A folder. Each streamed turn's audio, as Deepgram was sent it, is saved there as a 16 kHz WAV, to find out why it heard nothing. Only for debugging: it writes your voice to disk |
 
+Sounding more human. All off by default. See [Sounding more human](#sounding-more-human-opt-in).
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `FISH_VOICE_TURN_CHECK` | off | End the first clip on a short silence and let the words decide whether the turn is over. Fish ASR only |
+| `FISH_VOICE_TURN_SILENCE_FRAMES` | `12` | About 0.36 s of quiet that ends the first clip while the check is on. Never more than `FISH_VOICE_SILENCE_FRAMES` |
+| `FISH_VOICE_TURN_EXTEND_FRAMES` | `40` | Quiet frames that end a continuation, about 1.2 s. The wait for it to begin is this minus `FISH_VOICE_TURN_SILENCE_FRAMES` |
+| `FISH_VOICE_TURN_EXTENSIONS` | `1` | Continuations one turn may have, 1 or 2 |
+| `FISH_VOICE_HEAR_TONE` | off | Experimental. Tell the model how you sounded (`laughter`, `tired`) for that turn only, from the marks Fish ASR puts in its text |
+| `FISH_VOICE_NORMALIZE_LOUDNESS` | off | Bring each reply to a steady level, with a soft limiter, before it plays |
+| `FISH_VOICE_LOUDNESS_TARGET_DB` | `-18` | The level, in dB below full scale, that speech is brought to. Read only with `FISH_VOICE_NORMALIZE_LOUDNESS`. -40 to -6 |
+
 Listen and interrupt. Times are approximate at 30 ms frames.
 
 | Variable | Default | Effect |
@@ -358,7 +422,7 @@ Listen and interrupt. Times are approximate at 30 ms frames.
 | `FISH_VOICE_BARGE_FRAMES` | `10` | Loud voiced frames in a row that interrupt (about 300 ms) |
 | `FISH_VOICE_BARGE_RMS` | `220` | Barge floor seed. It follows the room, never below this |
 | `FISH_VOICE_BARGE_PLAYING_GAIN` | `2.2` | Floor multiplier while the speaker plays and AEC is off. At least 1 |
-| `FISH_VOICE_DEBUG` | off | `1` or `--debug` logs events. `2`, `trace` or `--trace` adds mic heartbeats, raw audio events and HTTP lines |
+| `FISH_VOICE_DEBUG` | off | `1` or `--debug` logs events. `2`, `trace` or `--trace` adds mic heartbeats, raw audio events, HTTP lines and each raw chat event (`llm.event`) |
 | `FISH_VOICE_LOG_DIR` | unset | A folder. Each run writes a complete log to a new `fish-voice-<time>.log` there, at the most detailed level (events, mic heartbeats, raw traffic), whatever the screen shows. It also holds what you said and what the model answered, and is readable only by you. `--log-dir DIR` does the same |
 
 `dev.sh` also reads `FISH_VOICE_ENV_FILE` (env file path), `FISH_VOICE_PORTAUDIO_LIB` (library directories), and `FISH_VOICE_NIX=1` (build PortAudio with nix on a host that is not NixOS).

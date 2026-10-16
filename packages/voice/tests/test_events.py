@@ -27,6 +27,7 @@ from voice_fakes import install_audio, install_vad, make_result, set_tts
 
 from fish_audio_suite_kit import LatencySnapshot
 from fish_audio_suite_voice import events as events_module
+from fish_audio_suite_voice.asr import AsrResult
 from fish_audio_suite_voice.barge import FRAME_BYTES, MIC_LEVEL_EVERY_FRAMES, BargeGate
 from fish_audio_suite_voice.cli import _quit_line  # pyright: ignore[reportPrivateUsage]
 from fish_audio_suite_voice.debug import configure_voice_logging
@@ -129,8 +130,8 @@ def test_a_notice_is_reported_trimmed_and_printed_by_nothing_itself(
 def test_hear_line_reports_listening_and_the_transcript(
     monkeypatch: pytest.MonkeyPatch, seen: list[Event]
 ) -> None:
-    async def asr(*_args: object, **_kwargs: object) -> str:
-        return "tell me something fun"
+    async def asr(*_args: object, **_kwargs: object) -> AsrResult:
+        return AsrResult("tell me something fun")
 
     monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", lambda *_a, **_k: b"w")
     monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", asr)

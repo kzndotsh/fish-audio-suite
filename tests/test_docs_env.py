@@ -112,6 +112,26 @@ DEFAULTS = {
         "voice",
     ),
     "FISH_VOICE_FADE_MS": ("fish_audio_suite_voice.tune", "DEFAULT_FADE_MS", "voice"),
+    "FISH_VOICE_LOUDNESS_TARGET_DB": (
+        "fish_audio_suite_voice.tune",
+        "DEFAULT_LOUDNESS_TARGET_DB",
+        "voice",
+    ),
+    "FISH_VOICE_TURN_SILENCE_FRAMES": (
+        "fish_audio_suite_voice.tune",
+        "DEFAULT_TURN_SILENCE_FRAMES",
+        "voice",
+    ),
+    "FISH_VOICE_TURN_EXTEND_FRAMES": (
+        "fish_audio_suite_voice.tune",
+        "DEFAULT_END_SILENCE_FRAMES",
+        "voice",
+    ),
+    "FISH_VOICE_TURN_EXTENSIONS": (
+        "fish_audio_suite_voice.tune",
+        "DEFAULT_TURN_EXTENSIONS",
+        "voice",
+    ),
     "FISH_VOICE_COOLDOWN": (
         "fish_audio_suite_voice.tune",
         "DEFAULT_POST_SPEAK_COOLDOWN_S",

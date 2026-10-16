@@ -56,6 +56,7 @@ async def _answer_line(ctx: DuplexContext, heard: HeardLine) -> int | None:
             llm_cancel=llm_cancel,
             trace_id=heard.trace_id,
             started=time.perf_counter(),
+            tone=heard.tone,
         )
         snapshot = LatencySnapshot(
             asr_ms=heard.asr_ms, llm_first_token_ms=ttft_ms, trace_id=heard.trace_id

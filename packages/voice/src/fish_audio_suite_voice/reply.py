@@ -28,6 +28,7 @@ from fish_audio_suite_voice.debug import debug, warn
 from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexContext
 from fish_audio_suite_voice.events import EVENTS, ReplyEnd, ReplyToken, Speaking, notice
 from fish_audio_suite_voice.hearing import HeardLine
+from fish_audio_suite_voice.history import with_tone_hint
 from fish_audio_suite_voice.playback import PortAudioMissingError, make_sink
 from fish_audio_suite_voice.spoken import unspoken_text
 from fish_audio_suite_voice.wire import TtsResult
@@ -101,9 +102,15 @@ class _TokenPipe:
 
 
 def _tokens_for(
-    ctx: DuplexContext, llm_cancel: asyncio.Event, trace_id: str | None
+    ctx: DuplexContext,
+    llm_cancel: asyncio.Event,
+    trace_id: str | None,
+    tone: tuple[str, ...] = (),
 ) -> AsyncIterator[str]:
-    """Return the reply's tokens: the one already being written if it answers this line."""
+    """Return the reply's tokens: the one already being written if it answers this line.
+
+    ``tone`` is how the line sounded. It goes into this request only, never into history.
+    """
     ahead, ctx.speculation = ctx.speculation, None
     last_user = (
         ctx.history[-1]["content"] if ctx.history and ctx.history[-1]["role"] == "user" else ""
@@ -114,7 +121,9 @@ def _tokens_for(
     if ahead is not None:
         debug("llm.speculate miss: the words changed, asking again")
         ahead.cancel()
-    return ctx.backend.stream(ctx.history, cancel=llm_cancel, trace_id=trace_id)
+    return ctx.backend.stream(
+        with_tone_hint(ctx.history, tone), cancel=llm_cancel, trace_id=trace_id
+    )
 
 
 async def collect_reply(
@@ -124,11 +133,12 @@ async def collect_reply(
     trace_id: str | None,
     started: float,
     on_token: Callable[[str], None] | None = None,
+    tone: tuple[str, ...] = (),
 ) -> tuple[str, float | None]:
     """Stream the model's reply into one string, timing its first token."""
     parts: list[str] = []
     ttft_ms: float | None = None
-    tokens = _tokens_for(ctx, llm_cancel, trace_id)
+    tokens = _tokens_for(ctx, llm_cancel, trace_id, tone)
     try:
         async for tok in tokens:
             if ttft_ms is None:
@@ -371,6 +381,7 @@ async def stream_turn(
                 trace_id=heard.trace_id,
                 started=time.perf_counter(),
                 on_token=pipe.push,
+                tone=heard.tone,
             )
         finally:
             pipe.close()

@@ -25,9 +25,12 @@ __all__ = [
     "DEFAULT_END_SILENCE_FRAMES",
     "DEFAULT_EOT_THRESHOLD",
     "DEFAULT_FADE_MS",
+    "DEFAULT_LOUDNESS_TARGET_DB",
     "DEFAULT_MIN_SPEECH_RMS",
     "DEFAULT_MIN_VOICED_FRAMES",
     "DEFAULT_POST_SPEAK_COOLDOWN_S",
+    "DEFAULT_TURN_EXTENSIONS",
+    "DEFAULT_TURN_SILENCE_FRAMES",
     "DEFAULT_VAD_AGGRESSIVENESS",
     "EAGER_EOT_HI",
     "EAGER_EOT_LO",
@@ -35,10 +38,12 @@ __all__ = [
     "IMPULSE_START_EXTRA",
     "MAX_UTTERANCE_FRAMES",
     "STT_PROVIDERS",
+    "TURN_EXTENSIONS_MAX",
     "AecTune",
     "BargeTune",
     "ListenTune",
     "SttTune",
+    "TurnTune",
     "read_flag",
     "read_float",
     "read_int",
@@ -69,6 +74,12 @@ DEFAULT_MIN_VOICED_FRAMES: Final = 12
 MAX_UTTERANCE_FRAMES: Final = 500
 IMPULSE_START_EXTRA: Final = 6
 
+# The end-of-turn check on the Fish path: a short silence ends the clip, and a transcript
+# that stops mid-thought reopens the mic.
+DEFAULT_TURN_SILENCE_FRAMES: Final = 12
+DEFAULT_TURN_EXTENSIONS: Final = 1
+TURN_EXTENSIONS_MAX: Final = 2
+
 DEFAULT_BARGE_HIT_FRAMES: Final = 10
 DEFAULT_BARGE_RMS: Final = 220.0
 DEFAULT_BARGE_PLAYING_GAIN: Final = 2.2
@@ -80,6 +91,8 @@ DEFAULT_AEC_WET: Final = 0.85
 # Fade-in, in milliseconds, at each sound that starts out of silence, so a sentence does
 # not click when it begins. 0 turns it off.
 DEFAULT_FADE_MS: Final = 4.0
+# The level, in dB below full scale, that a reply is brought to when loudness is normalised.
+DEFAULT_LOUDNESS_TARGET_DB: Final = -18.0
 # Idle seconds an ASR or LLM connection stays open. httpx drops it after 5 s,
 # which is shorter than the gap between two turns, so every turn paid a new
 # TLS handshake.
@@ -298,6 +311,56 @@ class ListenTune:
                 DEFAULT_MIN_VOICED_FRAMES,
                 lo=1,
                 hi=MAX_UTTERANCE_FRAMES,
+            ),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class TurnTune:
+    """The end-of-turn check for the Fish speech recogniser.
+
+    Attributes
+    ----------
+    enabled : bool
+        Off by default. On, a short silence ends the clip and the words decide whether the
+        turn is over.
+    silence_frames : int
+        Quiet 30 ms frames that end the first clip while the check is on.
+    extend_frames : int
+        Quiet frames that end a continuation. The wait for it to begin is this minus
+        ``silence_frames``, so a turn that was not over never waits longer than the
+        ordinary silence limit.
+    max_extensions : int
+        Continuations one turn may have, 1 or 2.
+    """
+
+    enabled: bool = False
+    silence_frames: int = DEFAULT_TURN_SILENCE_FRAMES
+    extend_frames: int = DEFAULT_END_SILENCE_FRAMES
+    max_extensions: int = DEFAULT_TURN_EXTENSIONS
+
+    @classmethod
+    def from_env(cls) -> Self:
+        """Build from the ``FISH_VOICE_TURN_*`` keys.
+
+        Returns
+        -------
+        TurnTune
+            Validated tune. A bad value is replaced by its default with a warning.
+        """
+        return cls(
+            enabled=read_flag("FISH_VOICE_TURN_CHECK", default=False),
+            silence_frames=read_int(
+                "FISH_VOICE_TURN_SILENCE_FRAMES", DEFAULT_TURN_SILENCE_FRAMES, lo=1
+            ),
+            extend_frames=read_int(
+                "FISH_VOICE_TURN_EXTEND_FRAMES", DEFAULT_END_SILENCE_FRAMES, lo=1
+            ),
+            max_extensions=read_int(
+                "FISH_VOICE_TURN_EXTENSIONS",
+                DEFAULT_TURN_EXTENSIONS,
+                lo=1,
+                hi=TURN_EXTENSIONS_MAX,
             ),
         )
 

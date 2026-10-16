@@ -38,6 +38,12 @@ _CASES: list[EnvCase] = [
     EnvCase("FISH_LLM_API_KEY", "sk-new", "sk-new", attrgetter("llm.api_key")),
     EnvCase("FISH_TTS_MODEL", "s1", "s1", attrgetter("tts_model")),
     EnvCase("FISH_SPEED", "1.2", 1.2, attrgetter("speed")),
+    EnvCase("FISH_VOICE_NORMALIZE_LOUDNESS", "1", -18.0, attrgetter("loudness_db")),
+    EnvCase("FISH_VOICE_HEAR_TONE", "1", True, attrgetter("hear_tone")),
+    EnvCase("FISH_VOICE_TURN_CHECK", "1", True, attrgetter("turn.enabled")),
+    EnvCase("FISH_VOICE_TURN_SILENCE_FRAMES", "9", 9, attrgetter("turn.silence_frames")),
+    EnvCase("FISH_VOICE_TURN_EXTEND_FRAMES", "55", 55, attrgetter("turn.extend_frames")),
+    EnvCase("FISH_VOICE_TURN_EXTENSIONS", "2", 2, attrgetter("turn.max_extensions")),
 ]
 
 
@@ -85,3 +91,35 @@ def test_cues_are_official_by_default_and_an_unknown_choice_is_ignored(
     monkeypatch.setenv("FISH_TTS_CUES", "everything")
     assert load_config().tts_cues == "official"
     assert "FISH_TTS_CUES" in capsys.readouterr().err
+
+
+def test_the_three_human_touches_are_off_by_default() -> None:
+    c = load_config()
+    assert c.loudness_db is None
+    assert c.hear_tone is False
+    assert c.turn.enabled is False
+
+
+def test_the_loudness_target_is_read_only_when_normalising_is_on(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("FISH_VOICE_LOUDNESS_TARGET_DB", "-14")
+    assert load_config().loudness_db is None
+    monkeypatch.setenv("FISH_VOICE_NORMALIZE_LOUDNESS", "1")
+    assert load_config().loudness_db == -14.0
+    monkeypatch.setenv("FISH_VOICE_LOUDNESS_TARGET_DB", "3")
+    assert load_config().loudness_db == -18.0
+    assert "FISH_VOICE_LOUDNESS_TARGET_DB" in capsys.readouterr().err
+
+
+def test_the_turn_check_keeps_its_cap_to_one_or_two_and_ignores_nonsense(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("FISH_VOICE_TURN_EXTENSIONS", "3")
+    monkeypatch.setenv("FISH_VOICE_TURN_SILENCE_FRAMES", "0")
+    monkeypatch.setenv("FISH_VOICE_TURN_EXTEND_FRAMES", "long")
+    turn = load_config().turn
+    assert (turn.max_extensions, turn.silence_frames, turn.extend_frames) == (1, 12, 40)
+    err = capsys.readouterr().err
+    for name in ("EXTENSIONS", "SILENCE_FRAMES", "EXTEND_FRAMES"):
+        assert f"FISH_VOICE_TURN_{name}" in err

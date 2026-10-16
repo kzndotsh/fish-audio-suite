@@ -311,6 +311,7 @@ def record_utterance(
     prefix: bytes = b"",
     tune: ListenTune | None = None,
     aec: EchoCanceller | None = None,
+    give_up_frames: int | None = None,
 ) -> bytes | None:
     """Block until one VAD utterance.
 
@@ -327,12 +328,15 @@ def record_utterance(
         VAD and utterance limits. None uses the defaults.
     aec : EchoCanceller or None, optional
         Cleans each frame against the far-end tap. None skips AEC.
+    give_up_frames : int or None, optional
+        Stop and return None when speech has not started after this many 30 ms frames. None
+        waits as long as it takes.
 
     Returns
     -------
     bytes or None
-        16 kHz mono WAV, or None when the clip is too short, an impulse, or
-        ``quit_requested`` is set.
+        16 kHz mono WAV, or None when the clip is too short, an impulse, speech never
+        started within ``give_up_frames``, or ``quit_requested`` is set.
 
     Notes
     -----
@@ -365,6 +369,8 @@ def record_utterance(
     ):
         if heard.take(frame, idle_frames):
             break
+        if give_up_frames is not None and not heard.triggered and idle_frames >= give_up_frames:
+            return None
     if quit_requested is not None and quit_requested.is_set():
         return None
     return _clip_wav(heard, tune)

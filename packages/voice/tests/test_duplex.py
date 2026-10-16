@@ -12,6 +12,7 @@ from session_fakes import FakeBackend, make_config, make_ctx
 from voice_fakes import FakeGate, FakeSink, install_audio, make_result, set_tts
 
 from fish_audio_suite_kit import ChatMessage, FishHttpError, LatencySnapshot
+from fish_audio_suite_voice.asr import AsrResult
 from fish_audio_suite_voice.console_sink import ConsoleSink
 from fish_audio_suite_voice.duplex import duplex_turns
 from fish_audio_suite_voice.duplex_state import DuplexContext
@@ -154,7 +155,7 @@ def test_after_speech_records_only_audio_that_was_played() -> None:
 def test_recognize_fatal_again_and_quit(monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = make_ctx()
 
-    async def denied(*_args: object, **_kwargs: object) -> str:
+    async def denied(*_args: object, **_kwargs: object) -> AsrResult:
         raise FishHttpError.from_status(401, "nope")
 
     monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", denied)
@@ -162,14 +163,14 @@ def test_recognize_fatal_again_and_quit(monkeypatch: pytest.MonkeyPatch) -> None
     assert fatal.kind == "fatal"
     assert fatal.code == 2
 
-    async def down(*_args: object, **_kwargs: object) -> str:
+    async def down(*_args: object, **_kwargs: object) -> AsrResult:
         raise TimeoutError("late")
 
     monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", down)
     assert asyncio.run(recognize(ctx, b"wav", "")).kind == "again"
 
-    async def bye_text(*_args: object, **_kwargs: object) -> str:
-        return "goodbye"
+    async def bye_text(*_args: object, **_kwargs: object) -> AsrResult:
+        return AsrResult("goodbye")
 
     monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", bye_text)
     assert asyncio.run(recognize(ctx, b"wav", "")).kind == "bye"
@@ -185,9 +186,9 @@ def test_quit_during_asr_does_not_ask_the_llm(
     def wav(*_args: object, **_kwargs: object) -> bytes:
         return b"RIFFwav"
 
-    async def asr(*_args: object, **_kwargs: object) -> str:
+    async def asr(*_args: object, **_kwargs: object) -> AsrResult:
         session.quit_requested.set()
-        return "hello there friend"
+        return AsrResult("hello there friend")
 
     async def tokens(*_args: object, **_kwargs: object) -> AsyncIterator[str]:
         asked["n"] += 1
@@ -331,7 +332,7 @@ def test_cancelled_speak_keeps_the_audio_that_tripped_barge(
         cancel: threading.Event | None = None,
         on_first_audio: object = None,
     ) -> TtsResult:
-        assert text == "Hello there friend"
+        assert text == "[calm] Hello there friend"
         return make_result(
             "hello",
             bytes_played=4,
@@ -691,7 +692,7 @@ def test_quit_during_the_stream_fallback_rebind_does_not_speak(
 def test_recognize_listens_again_after_a_network_error(monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = make_ctx()
 
-    async def unreachable(*_args: object, **_kwargs: object) -> str:
+    async def unreachable(*_args: object, **_kwargs: object) -> AsrResult:
         raise httpx.ConnectError("down")
 
     monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", unreachable)
@@ -704,7 +705,7 @@ def test_recognize_does_not_hide_a_programming_error(
 ) -> None:
     ctx = make_ctx()
 
-    async def broken(*_args: object, **_kwargs: object) -> str:
+    async def broken(*_args: object, **_kwargs: object) -> AsrResult:
         raise bug
 
     monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", broken)
@@ -780,7 +781,7 @@ def test_a_cut_off_reply_is_remembered_for_resuming(monkeypatch: pytest.MonkeyPa
             trace_id=None,
         )
     )
-    assert ctx.resume_text == "How was your day today?"
+    assert ctx.resume_text == "[calm] How was your day today?"
 
 
 def test_noise_after_a_barge_in_speaks_the_rest_and_joins_history(
@@ -806,7 +807,7 @@ def test_noise_after_a_barge_in_speaks_the_rest_and_joins_history(
     monkeypatch.setattr("fish_audio_suite_voice.duplex.hear_line", hear)
     monkeypatch.setattr("fish_audio_suite_voice.duplex.DuplexContext", lambda **_kw: ctx)
     asyncio.run(duplex_turns(ctx.config, ctx.tts, None, ctx.backend, session=DuplexSession()))
-    assert said[1] == "How was your day today?"
+    assert said[1] == "[calm] How was your day today?"
     assert ctx.resume_text == ""
     assert ctx.history[-1] == {"role": "assistant", "content": "Hello there. Hello there."}
 
@@ -821,8 +822,8 @@ def test_hear_line_answers_a_yeah_unless_it_was_said_over_the_reply(
     def wav(*_args: object, **_kwargs: object) -> bytes:
         return b"RIFFwav"
 
-    async def asr(*_args: object, **_kwargs: object) -> str:
-        return "Yeah."
+    async def asr(*_args: object, **_kwargs: object) -> AsrResult:
+        return AsrResult("Yeah.")
 
     monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", wav)
     monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", asr)

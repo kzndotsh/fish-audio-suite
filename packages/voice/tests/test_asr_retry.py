@@ -10,7 +10,12 @@ import httpx
 import pytest
 
 from fish_audio_suite_kit import FishHttpError
-from fish_audio_suite_voice.asr import fish_asr
+from fish_audio_suite_voice.asr import AsrResult
+from fish_audio_suite_voice.asr import fish_asr as fish_asr_result
+
+
+async def fish_asr(*args: Any, **kwargs: Any) -> str:
+    return (await fish_asr_result(*args, **kwargs)).text
 
 
 class _FakeAsrResponse:
@@ -490,3 +495,26 @@ def test_asr_done_debug_line_names_the_fish_request_id(monkeypatch: pytest.Monke
     assert lines
     assert lines[0].startswith("asr.done status=200")
     assert lines[0].endswith("request_id=req-ok")
+
+
+_TONE_BODY: dict[str, Any] = {
+    "text": "[laughter] Oh that is great. [tired] Really.",
+    "segments": [],
+}
+
+
+def _tone_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _FakeAsrClient([_FakeAsrResponse(200, payload=_TONE_BODY)])
+    monkeypatch.setattr("fish_audio_suite_voice.asr.httpx.AsyncClient", lambda **_kwargs: client)
+
+
+def test_tone_is_kept_beside_the_unchanged_text_when_asked(monkeypatch: pytest.MonkeyPatch) -> None:
+    _tone_client(monkeypatch)
+    got = asyncio.run(fish_asr_result(b"wav", "key", base="https://api.fish.audio", hear_tone=True))
+    assert got == AsrResult("Oh that is great. Really.", ("laughter", "tired"))
+
+
+def test_tone_is_not_returned_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    _tone_client(monkeypatch)
+    got = asyncio.run(fish_asr_result(b"wav", "key", base="https://api.fish.audio"))
+    assert got == AsrResult("Oh that is great. Really.")

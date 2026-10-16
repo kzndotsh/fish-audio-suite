@@ -38,14 +38,23 @@ from fish_audio_suite_voice.listen import record_utterance
 from fish_audio_suite_voice.playback import PortAudioMissingError
 from fish_audio_suite_voice.speculate import Speculation
 from fish_audio_suite_voice.streaming import StreamedTurn, StreamFallback, stream_turn
+from fish_audio_suite_voice.turn_check import (
+    OpenTurn,
+    Reopened,
+    continuation_tune,
+    first_clip_tune,
+    wait_frames,
+)
 
 __all__ = [
     "HeardLine",
+    "Transcript",
     "accept_transcript",
     "classify_transcript",
     "drop_speculation",
     "hear_line",
     "recognize",
+    "transcribe",
 ]
 
 
@@ -112,22 +121,43 @@ class HeardLine:
     started: float = 0.0
     trace_id: str | None = None
     code: int = 0
+    # How Fish heard the voice (``laughter``, ``tired``). Only set with ``FISH_VOICE_HEAR_TONE``,
+    # and only the model's request for this turn sees it.
+    tone: tuple[str, ...] = ()
 
 
-async def recognize(
-    ctx: DuplexContext,
-    wav: bytes,
-    last_user: str,
-    *,
-    stale: bool = True,
-    over_reply: bool = True,
-) -> HeardLine:
-    """Send one utterance to Fish ASR and classify the text it returns."""
+@dataclass(frozen=True, slots=True)
+class Transcript:
+    """One clip as Fish ASR heard it, with the timings the reply counts from."""
+
+    text: str
+    tone: tuple[str, ...]
+    asr_ms: float
+    started: float
+    trace_id: str | None
+
+
+async def transcribe(ctx: DuplexContext, wav: bytes) -> Transcript | HeardLine:
+    """Send one clip to Fish ASR.
+
+    Parameters
+    ----------
+    ctx : DuplexContext
+        The session.
+    wav : bytes
+        One utterance.
+
+    Returns
+    -------
+    Transcript or HeardLine
+        The transcript, or the ``HeardLine`` the loop should act on when ASR failed or the
+        session is quitting: ``bye``, ``fatal`` or ``again``.
+    """
     c = ctx.config
     started = time.perf_counter()
     asr_parent = make_traceparent()
     try:
-        text = await fish_asr(
+        heard = await fish_asr(
             wav,
             c.fish_api_key,
             base=c.fish_base,
@@ -136,6 +166,7 @@ async def recognize(
             extra_headers={"traceparent": asr_parent},
             cancel=ctx.session.quit_requested,
             client=ctx.asr_http,
+            hear_tone=c.hear_tone,
         )
     except FishHttpError as e:
         if ctx.session.quit_requested.is_set():
@@ -153,14 +184,36 @@ async def recognize(
         return HeardLine("again")
     if ctx.session.quit_requested.is_set():
         return HeardLine("bye")
-    return accept_transcript(
-        text,
-        last_user,
+    return Transcript(
+        text=heard.text,
+        tone=heard.tone,
         asr_ms=elapsed_ms(started),
         started=started,
         trace_id=trace_id_of(asr_parent),
+    )
+
+
+async def recognize(
+    ctx: DuplexContext,
+    wav: bytes,
+    last_user: str,
+    *,
+    stale: bool = True,
+    over_reply: bool = True,
+) -> HeardLine:
+    """Send one utterance to Fish ASR and classify the text it returns."""
+    got = await transcribe(ctx, wav)
+    if isinstance(got, HeardLine):
+        return got
+    return accept_transcript(
+        got.text,
+        last_user,
+        asr_ms=got.asr_ms,
+        started=got.started,
+        trace_id=got.trace_id,
         stale=stale,
         over_reply=over_reply,
+        tone=got.tone,
     )
 
 
@@ -173,6 +226,7 @@ def accept_transcript(
     trace_id: str | None,
     stale: bool = True,
     over_reply: bool = True,
+    tone: tuple[str, ...] = (),
 ) -> HeardLine:
     """Decide what a recognised transcript is, whichever recogniser made it.
 
@@ -192,6 +246,8 @@ def accept_transcript(
         See ``classify_transcript``.
     over_reply : bool, optional
         See ``classify_transcript``.
+    tone : tuple of str, optional
+        How the voice sounded, carried on the ``line`` for the model's request.
 
     Returns
     -------
@@ -205,7 +261,9 @@ def accept_transcript(
     if decision == "skip":
         return HeardLine("noise")
     EVENTS.emit(Heard(text, asr_ms))
-    return HeardLine("line", text=text, asr_ms=asr_ms, started=started, trace_id=trace_id)
+    return HeardLine(
+        "line", text=text, asr_ms=asr_ms, started=started, trace_id=trace_id, tone=tone
+    )
 
 
 async def hear_line(
@@ -249,7 +307,7 @@ async def hear_line(
             ctx.device,
             ctx.session.quit_requested if stop is None else stop,
             prefix=prefix,
-            tune=ctx.config.listen,
+            tune=first_clip_tune(ctx.config.listen, ctx.config.turn),
             aec=ctx.session.aec,
         )
     except PortAudioMissingError as e:
@@ -264,12 +322,95 @@ async def hear_line(
     # A barge-in clip carries fresh speech, so it is never a stale copy.
     window = ctx.config.repeat_window_s
     stale = not prefix and time.monotonic() - opened < window
-    heard = await recognize(ctx, wav, last_user, stale=stale, over_reply=bool(prefix))
+    if ctx.config.turn.enabled:
+        heard = await _hear_checked(
+            ctx, wav, last_user, stop=stop, stale=stale, over_reply=bool(prefix)
+        )
+    else:
+        heard = await recognize(ctx, wav, last_user, stale=stale, over_reply=bool(prefix))
     # Quit during the Fish request used to come back as a normal line, so
     # the LLM still answered after Ctrl+C.
     if ctx.session.quit_requested.is_set():
         return HeardLine("bye")
     return heard
+
+
+async def _hear_checked(
+    ctx: DuplexContext,
+    wav: bytes,
+    last_user: str,
+    *,
+    stop: StopFlag | None,
+    stale: bool,
+    over_reply: bool,
+) -> HeardLine:
+    """Transcribe a clip that ended on a short silence, and carry on if the turn is not over.
+
+    While each clip is transcribed the mic is already listening for a continuation. When
+    the words so far look finished that recording is dropped. Otherwise it is awaited, its
+    transcript is joined on, and the combined line is judged again, up to the turn's cap.
+    The first clip's words are kept whatever happens to a continuation.
+    """
+    stopper = ctx.session.quit_requested if stop is None else stop
+    last: Transcript | None = None
+    open_turn = OpenTurn()
+    clip: bytes | None = wav
+    while clip is not None:
+        reopened = _reopen(ctx, stopper, open_turn)
+        try:
+            got = await transcribe(ctx, clip)
+            if isinstance(got, HeardLine):
+                if got.kind != "again" or last is None:
+                    return got
+                break  # the words so far were heard, so a failed continuation only ends the turn
+            if last is not None and is_asr_hallucination(got.text):
+                break  # noise caught as a continuation
+            last = got
+            open_turn = open_turn.add(got.text, got.tone)
+            if reopened is None or open_turn.judgement().finished:
+                break
+            debug(
+                "turn.extend {} clip={} {!r}",
+                open_turn.judgement().reason,
+                open_turn.clips,
+                open_turn.text[-60:],
+            )
+            try:
+                clip = await reopened.clip()
+            except PortAudioMissingError as e:
+                warn(str(e))
+                return HeardLine("fatal", code=EXIT_FATAL)
+        finally:
+            if reopened is not None:
+                await reopened.drop()
+    if last is None or stopper.is_set():
+        return HeardLine("noise")
+    return accept_transcript(
+        open_turn.text,
+        last_user,
+        asr_ms=last.asr_ms,
+        started=last.started,
+        trace_id=last.trace_id,
+        stale=stale and open_turn.clips == 1,
+        over_reply=over_reply,
+        tone=open_turn.tone,
+    )
+
+
+def _reopen(ctx: DuplexContext, stop: StopFlag, open_turn: OpenTurn) -> Reopened | None:
+    """Start listening for a continuation, unless the turn has used them all or the mic is muted."""
+    turn = ctx.config.turn
+    if not open_turn.room_for_more(turn) or ctx.muted() or stop.is_set():
+        return None
+    tune = continuation_tune(ctx.config.listen, turn)
+    wait = wait_frames(turn)
+
+    def record(flag: StopFlag) -> bytes | None:
+        return record_utterance(
+            ctx.device, flag, tune=tune, aec=ctx.session.aec, give_up_frames=wait
+        )
+
+    return Reopened(record, stop)
 
 
 def drop_speculation(ctx: DuplexContext) -> None:

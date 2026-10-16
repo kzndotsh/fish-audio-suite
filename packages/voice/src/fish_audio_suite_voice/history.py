@@ -16,6 +16,7 @@ __all__ = [
     "opening_history",
     "remember_user",
     "trim_history",
+    "with_tone_hint",
 ]
 
 KEEP_SYSTEM: Final = 1
@@ -53,6 +54,41 @@ def opening_history(
             history.append({"role": "user", "content": user})
             history.append({"role": "assistant", "content": assistant})
     return history, len(history)
+
+
+def with_tone_hint(history: list[ChatMessage], tone: tuple[str, ...]) -> list[ChatMessage]:
+    """Return the history for one request, with a note on how the last user line sounded.
+
+    Parameters
+    ----------
+    history : list of ChatMessage
+        The session history. It is not changed.
+    tone : tuple of str
+        What Fish ASR heard in the voice, such as ``("laughter", "tired")``. Empty means no
+        hint.
+
+    Returns
+    -------
+    list of ChatMessage
+        ``history`` itself when there is no tone or the last message is not the user's.
+        Otherwise a copy whose last user message ends with a parenthesised note. The note is
+        for this request only: the history keeps the plain line, so it is never sent again
+        on a later turn.
+
+    Notes
+    -----
+    The note is in round brackets, which ``scrub_tts`` removes, and it tells the model not
+    to repeat it or turn it into a ``[cue]``. If the model echoes it anyway, it is not
+    spoken.
+    """
+    if not tone or not history or history[-1]["role"] != "user":
+        return history
+    note = (
+        f"(Note on how they sounded: {', '.join(tone)}. This is not something they said. "
+        "Do not repeat or mention it, and never write it as a [cue] or in brackets.)"
+    )
+    last = history[-1]
+    return [*history[:-1], {"role": "user", "content": f"{last['content']}\n\n{note}"}]
 
 
 def trim_history(

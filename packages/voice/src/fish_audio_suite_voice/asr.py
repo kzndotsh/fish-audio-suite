@@ -6,6 +6,7 @@ import json
 import threading
 from collections.abc import Mapping
 from contextlib import AsyncExitStack
+from dataclasses import dataclass
 from typing import Any, Final, cast
 
 import httpx
@@ -17,6 +18,7 @@ from fish_audio_suite_kit import (
     FishHttpError,
     SuiteDefaults,
     asr_language_hint,
+    asr_tone,
     bearer,
     describe_request_error,
     fish_attempt_exhausted,
@@ -36,6 +38,7 @@ from fish_audio_suite_voice.tune import HTTP_KEEPALIVE_S
 from fish_audio_suite_voice.ws_tap import public_meta
 
 __all__ = [
+    "AsrResult",
     "asr_client",
     "fish_asr",
 ]
@@ -43,6 +46,24 @@ __all__ = [
 _ASR_TIMEOUT_S: Final = 60.0
 _ASR_CONNECT_S: Final = 10.0
 _REQUEST_ID_MAX: Final = 128
+
+
+@dataclass(frozen=True, slots=True)
+class AsrResult:
+    """One transcribed clip.
+
+    Attributes
+    ----------
+    text : str
+        The scrubbed transcript, with Fish's annotations removed. This is what the turn is
+        judged and answered on.
+    tone : tuple of str
+        The annotations Fish heard in the voice, such as ``("laughter", "tired")``. Empty
+        unless ``fish_asr`` was asked to keep them.
+    """
+
+    text: str
+    tone: tuple[str, ...] = ()
 
 
 def _request_id(headers: Mapping[str, str], body: object) -> str:
@@ -150,7 +171,8 @@ async def fish_asr(
     extra_headers: dict[str, str] | None = None,
     cancel: threading.Event | None = None,
     client: httpx.AsyncClient | None = None,
-) -> str:
+    hear_tone: bool = False,
+) -> AsrResult:
     """Transcribe one WAV with Fish ASR, retrying 429 and 5xx.
 
     Parameters
@@ -175,11 +197,14 @@ async def fish_asr(
     client : httpx.AsyncClient or None, optional
         A session-scoped client from ``asr_client``. A new one is opened for
         this call when omitted.
+    hear_tone : bool, optional
+        Also return the annotations Fish put in the transcript (``[laughter]``). The text
+        is scrubbed of them either way.
 
     Returns
     -------
-    str
-        Scrubbed transcript.
+    AsrResult
+        The scrubbed transcript, and its tone when ``hear_tone`` is set.
 
     Raises
     ------
@@ -191,7 +216,7 @@ async def fish_asr(
     -----
     Connect times out in 10 seconds. Read, write, and pool wait 60 seconds,
     so a dead host fails before the read budget. ``cancel`` during a retry
-    pause returns an empty string instead of posting again. A 429 or 5xx waits
+    pause returns an empty result instead of posting again. A 429 or 5xx waits
     with jitter and honours ``Retry-After``.
     """
     headers = {
@@ -217,7 +242,7 @@ async def fish_asr(
             data=form or None,
         )
         if response is None:
-            return ""
+            return AsrResult("")
     try:
         body = response.json()
     except (json.JSONDecodeError, UnicodeDecodeError, RecursionError) as exc:
@@ -235,6 +260,11 @@ async def fish_asr(
             _request_id(response.headers, body) or "-",
         )
     parsed, raw_text = parse_asr_body(body)
+    tone = asr_tone(raw_text) if hear_tone else ()
+    return AsrResult(_clean_text(raw_text, parsed), tone)
+
+
+def _clean_text(raw_text: str, parsed: AsrBody) -> str:
     text = scrub_asr(raw_text.strip(), strip_cues=True)
     # Duplex only hears this string. A blank field or a caption watermark
     # still drops words that Fish put in segments.

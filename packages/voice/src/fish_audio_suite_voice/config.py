@@ -35,10 +35,12 @@ from fish_audio_suite_voice.llm_tune import DEFAULT_HISTORY_TURNS, OPENROUTER_AP
 from fish_audio_suite_voice.playback import DEFAULT_PLAYBACK, playback_key
 from fish_audio_suite_voice.tune import (
     DEFAULT_FADE_MS,
+    DEFAULT_LOUDNESS_TARGET_DB,
     AecTune,
     BargeTune,
     ListenTune,
     SttTune,
+    TurnTune,
     read_flag,
     read_float,
     read_int,
@@ -70,7 +72,7 @@ class VoiceCliConfig:
     Notes
     -----
     ``fish_api_key`` and ``fish_voice_id`` are empty unless the env sets them.
-    The five tune objects are read once here and passed down, so nothing below
+    The tune objects are read once here and passed down, so nothing below
     this layer reads the environment. Process env wins over ``--env-file``.
 
     Attributes
@@ -85,6 +87,11 @@ class VoiceCliConfig:
         Echo cancellation.
     stt : SttTune
         Which speech recognition hears the user.
+    turn : TurnTune
+        The end-of-turn check on the Fish path. Off by default.
+    hear_tone : bool
+        Keep the tone Fish ASR hears in the voice (``[laughter]``) and give the model a short
+        note about it for that turn. Experimental, and off by default.
     history_turns : int
         User and assistant pairs kept in the chat history.
     repeat_window_s : float
@@ -100,6 +107,9 @@ class VoiceCliConfig:
     fade_ms : float
         Fade-in at each sound that starts out of silence, so a sentence does not
         click when it begins. 0 turns it off.
+    loudness_db : float or None
+        The level, in dB below full scale, each reply is brought to while it plays, or None
+        (the default) to play it as Fish sends it.
     drop_narration : bool
         Drop stage-direction lines such as ``She smiles.`` before TTS.
     output_latency : str
@@ -133,6 +143,8 @@ class VoiceCliConfig:
     barge: BargeTune = field(default_factory=BargeTune)
     aec: AecTune = field(default_factory=AecTune)
     stt: SttTune = field(default_factory=SttTune)
+    turn: TurnTune = field(default_factory=TurnTune)
+    hear_tone: bool = False
     history_turns: int = DEFAULT_HISTORY_TURNS
     repeat_window_s: float = DEFAULT_REPEAT_WINDOW_S
     mood_lead: bool = False
@@ -140,6 +152,7 @@ class VoiceCliConfig:
     drop_narration: bool = False
     stream_tts: bool = False
     fade_ms: float = DEFAULT_FADE_MS
+    loudness_db: float | None = None
 
     @property
     def official_cues(self) -> bool:
@@ -209,6 +222,18 @@ def _tts_cues() -> str:
         warn(f"fish-voice: ignoring FISH_TTS_CUES={value!r}, use official or free")
         return "official"
     return value
+
+
+def _loudness_db() -> float | None:
+    """Read ``FISH_VOICE_NORMALIZE_LOUDNESS`` and, when it is on, ``FISH_VOICE_LOUDNESS_TARGET_DB``."""
+    if not read_flag("FISH_VOICE_NORMALIZE_LOUDNESS", default=False):
+        return None
+    return read_float(
+        "FISH_VOICE_LOUDNESS_TARGET_DB",
+        DEFAULT_LOUDNESS_TARGET_DB,
+        lo=_LOUDNESS_TARGET_LO_DB,
+        hi=_LOUDNESS_TARGET_HI_DB,
+    )
 
 
 def _output_latency() -> str:
@@ -295,6 +320,8 @@ def load_config() -> VoiceCliConfig:
         barge=BargeTune.from_env(),
         aec=AecTune.from_env(),
         stt=SttTune.from_env(),
+        turn=TurnTune.from_env(),
+        hear_tone=read_flag("FISH_VOICE_HEAR_TONE", default=False),
         history_turns=read_int(
             "FISH_VOICE_HISTORY_TURNS",
             DEFAULT_HISTORY_TURNS,
@@ -306,6 +333,7 @@ def load_config() -> VoiceCliConfig:
             lo=0.0,
         ),
         fade_ms=read_float("FISH_VOICE_FADE_MS", DEFAULT_FADE_MS, lo=0.0, hi=_FADE_MAX_MS),
+        loudness_db=_loudness_db(),
         mood_lead=read_flag("FISH_TTS_MOOD_LEAD", default=False),
         tts_cues=_tts_cues(),
         drop_narration=read_flag(
@@ -333,6 +361,9 @@ class _Prompt:
 _PROMPT_FILE_MAX_BYTES: Final = 64 * 1024
 # A fade-in longer than this would blur the start of every word.
 _FADE_MAX_MS: Final = 50.0
+# Quieter than this leaves nothing to hear, and louder leaves no room for a peak.
+_LOUDNESS_TARGET_LO_DB: Final = -40.0
+_LOUDNESS_TARGET_HI_DB: Final = -6.0
 # Where a character file asks for the default voice rules. ``{{default_prompt}}``, with
 # optional spaces inside the braces.
 _DEFAULT_SLOT: Final = re.compile(r"\{\{\s*default_prompt\s*\}\}")

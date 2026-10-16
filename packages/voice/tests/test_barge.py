@@ -569,6 +569,18 @@ def test_record_utterance_drops_a_clip_that_never_starts(
     assert record_utterance() is None
 
 
+def test_record_utterance_gives_up_when_speech_has_not_started_in_time(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loud = _pcm(500)
+    quiet = _pcm(0)
+    tune = _install_listen_fakes(monkeypatch, [quiet] * 6 + [loud] * 6 + [quiet] * 2)
+    assert record_utterance(tune=tune, give_up_frames=3) is None
+    # Once speech has started, the limit no longer applies.
+    assert record_utterance(tune=tune, give_up_frames=8) is not None
+    assert record_utterance(tune=tune) is not None
+
+
 def _watch_with(
     monkeypatch: pytest.MonkeyPatch,
     frames: list[bytes],

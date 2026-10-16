@@ -15,6 +15,7 @@ from session_fakes import make_ctx
 
 from fish_audio_suite_kit import FishHttpError
 from fish_audio_suite_voice import barge, console
+from fish_audio_suite_voice.asr import AsrResult
 from fish_audio_suite_voice.barge import FRAME_BYTES, mic_frames
 from fish_audio_suite_voice.console import console_print, end_reply_line, write_reply_token
 from fish_audio_suite_voice.debug import configure_voice_logging
@@ -24,10 +25,10 @@ from fish_audio_suite_voice.playback import PortAudioMissingError
 
 
 def _asr_returns(monkeypatch: pytest.MonkeyPatch, outcome: str | BaseException) -> None:
-    async def asr(*_args: object, **_kwargs: object) -> str:
+    async def asr(*_args: object, **_kwargs: object) -> AsrResult:
         if isinstance(outcome, BaseException):
             raise outcome
-        return outcome
+        return AsrResult(outcome)
 
     monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", asr)
 
