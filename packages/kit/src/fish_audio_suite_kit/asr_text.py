@@ -24,6 +24,7 @@ __all__ = [
     "DEFAULT_BACKCHANNELS",
     "DEFAULT_QUIT_PHRASES",
     "asr_language_hint",
+    "asr_tone",
     "is_asr_hallucination",
     "is_backchannel",
     "is_caption_watermark",
@@ -268,6 +269,46 @@ def scrub_asr(text: str, *, strip_speakers: bool = True, strip_cues: bool = Fals
         cleaned = _ASR_CUE_RE.sub(" ", cleaned)
     cleaned = _H_SPACE_RE.sub(" ", cleaned)
     return utf8_text(_tidy_asr(cleaned))
+
+
+# One annotation worth passing on as tone: a few plain words, no digits or markup.
+_TONE_CUE_RE = re.compile(r"[^\W\d_]+(?:[ '-][^\W\d_]+){0,2}")
+_TONE_CUES_MAX = 3
+
+
+def asr_tone(text: str, *, limit: int = _TONE_CUES_MAX) -> tuple[str, ...]:
+    """List the tone annotations ``transcribe-1-pro`` left in a raw transcript.
+
+    Parameters
+    ----------
+    text : str
+        The transcript before ``scrub_asr`` removed its annotations.
+    limit : int, optional
+        The most cues to return.
+
+    Returns
+    -------
+    tuple of str
+        Each distinct annotation in order, lowercased, such as ``("laughter", "tired")``. An
+        annotation that is not one to three plain words (a timestamp, a long phrase,
+        anything with a digit or a symbol) is left out, so the result is safe to put in a
+        prompt.
+
+    Examples
+    --------
+    >>> asr_tone("[laughter] That is so funny [Tired] [1-2] [laughter]")
+    ('laughter', 'tired')
+    >>> asr_tone("no annotations here")
+    ()
+    """
+    found: list[str] = []
+    for match in _ASR_CUE_RE.finditer(text):
+        cue = " ".join(match.group()[1:-1].split()).casefold()
+        if _TONE_CUE_RE.fullmatch(cue) and cue not in found:
+            found.append(cue)
+            if len(found) >= limit:
+                break
+    return tuple(found)
 
 
 def _known_hallucination(s: str) -> bool:

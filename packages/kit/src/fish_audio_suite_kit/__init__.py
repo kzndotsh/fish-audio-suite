@@ -5,6 +5,7 @@ from fish_audio_suite_kit.asr_text import (
     DEFAULT_BACKCHANNELS,
     DEFAULT_QUIT_PHRASES,
     asr_language_hint,
+    asr_tone,
     is_asr_hallucination,
     is_backchannel,
     is_caption_watermark,
@@ -86,7 +87,14 @@ from fish_audio_suite_kit.http_errors import (
     should_retry_fish_status,
 )
 from fish_audio_suite_kit.junk import DEFAULT_SHORT_WORDS
-from fish_audio_suite_kit.literals import AsrFormat, AudioFormat, ChatRole, FishLatency, TtsModel
+from fish_audio_suite_kit.literals import (
+    AsrFormat,
+    AudioFormat,
+    ChatRole,
+    FishLatency,
+    TtsModel,
+    TurnReason,
+)
 from fish_audio_suite_kit.payloads import (
     AsrBody,
     AsrSegment,
@@ -111,6 +119,7 @@ from fish_audio_suite_kit.trace_context import (
     make_traceparent,
     trace_id_of,
 )
+from fish_audio_suite_kit.turn import TurnJudgement, judge_turn
 
 __version__ = read_version()
 
@@ -157,8 +166,11 @@ __all__ = [
     "OpenAIErrorDetail",
     "SuiteDefaults",
     "TtsModel",
+    "TurnJudgement",
+    "TurnReason",
     "__version__",
     "asr_language_hint",
+    "asr_tone",
     "bearer",
     "canonical_traceparent",
     "catalog_tts_model",
@@ -192,6 +204,7 @@ __all__ = [
     "is_quit_utterance",
     "is_same_utterance",
     "is_tts_junk",
+    "judge_turn",
     "known_asr_format",
     "known_audio_format",
     "known_latency",
