@@ -26,11 +26,12 @@ def test_a_heard_line_is_answered_by_the_llm_and_spoken_then_the_loop_says_bye(
     said = speak_with_fakes(monkeypatch, tts, stream=stream)
     loop = ScriptedHearing(monkeypatch, heard_line("hi there"))
     assert run_session(quick_config(stream=stream), tts) == 0
-    assert said == ["Hello there friend."]
+    # Only the whole-reply path gives the line a lead cue itself. A stream gets one from the scrubber.
+    assert said == ["Hello there friend." if stream else "[calm] Hello there friend."]
     assert loop.ctx is not None
     assert loop.ctx.history[-2:] == [
         {"role": "user", "content": "hi there"},
-        {"role": "assistant", "content": "Hello there friend."},
+        {"role": "assistant", "content": said[0]},
     ]
     assert "first audio" in capsys.readouterr().out
 

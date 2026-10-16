@@ -161,7 +161,7 @@ def test_the_loop_answers_a_typed_line_through_a_source(monkeypatch: pytest.Monk
     # The second turn finds nothing typed, so the fake mic says goodbye.
     _Mic(monkeypatch, HeardLine("bye"))
     assert run_session_with(quick_config(), tts, hello_tokens, source) == 0
-    assert said == ["Hello there friend."]
+    assert said == ["[calm] Hello there friend."]
 
 
 def _bound_turn(ctx: DuplexContext) -> tuple[threading.Event, asyncio.Event]:
