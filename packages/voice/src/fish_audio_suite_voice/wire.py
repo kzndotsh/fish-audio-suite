@@ -36,6 +36,7 @@ from fish_audio_suite_kit import (
 from fish_audio_suite_voice.cancel import is_cancel_noise, reap
 from fish_audio_suite_voice.debug import debug, warn, with_detail
 from fish_audio_suite_voice.declick import EdgeFade
+from fish_audio_suite_voice.loudness import LoudnessMatch
 from fish_audio_suite_voice.playback import PlaybackSink
 from fish_audio_suite_voice.spoken import spoken_prefix
 
@@ -130,6 +131,7 @@ class TurnSpec:
     trace_headers: Mapping[str, str]
     config: TTSConfig
     fade_ms: float = 0.0
+    loudness_db: float | None = None
 
 
 @dataclass(slots=True)
@@ -321,6 +323,31 @@ async def _read_stream(stream: AsyncIterator[Any], queue: asyncio.Queue[Any]) ->
         await queue.put(_STREAM_END)
 
 
+class _Shaper:
+    """Fade the edges of each sentence, then bring the speech to the target level.
+
+    Fish can start or stop a sentence on a loud sample next to silence, which clicks. The
+    level goes last and before the sink, so the far-end tap sees what the speaker plays.
+    """
+
+    def __init__(self, spec: TurnSpec) -> None:
+        pcm = spec.audio_format == "pcm"
+        self._fade = EdgeFade(spec.sample_rate, spec.fade_ms) if pcm and spec.fade_ms > 0 else None
+        self._level = (
+            LoudnessMatch(spec.sample_rate, spec.loudness_db)
+            if pcm and spec.loudness_db is not None
+            else None
+        )
+
+    def process(self, chunk: bytes) -> bytes:
+        shaped = chunk if self._fade is None else self._fade.process(chunk)
+        return shaped if self._level is None or not shaped else self._level.process(shaped)
+
+    def finish(self) -> bytes:
+        tail = b"" if self._fade is None else self._fade.finish()
+        return tail if self._level is None or not tail else self._level.process(tail)
+
+
 async def _pump_ws_audio(
     stream: AsyncIterator[Any],
     run: TurnRun,
@@ -330,12 +357,7 @@ async def _pump_ws_audio(
     # rest of a long reply in memory.
     queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=1)
     reader = asyncio.create_task(_read_stream(aiter(stream), queue))
-    # Fish can start or stop a sentence on a loud sample next to silence, which clicks.
-    fade = (
-        EdgeFade(run.spec.sample_rate, run.spec.fade_ms)
-        if run.spec.audio_format == "pcm" and run.spec.fade_ms > 0
-        else None
-    )
+    shaper = _Shaper(run.spec)
     cancelled, stop_watching = _watch_cancel(run.cancel)
     cancel_wait = asyncio.ensure_future(cancelled.wait())
     get: asyncio.Future[Any] | None = None
@@ -361,7 +383,7 @@ async def _pump_ws_audio(
             item = get.result()
             get = None
             if item is _STREAM_END:
-                tail = fade.finish() if fade is not None else b""
+                tail = shaper.finish()
                 if tail:
                     await _play(run.sink, tail)
                 return
@@ -373,7 +395,7 @@ async def _pump_ws_audio(
             if run.cancel.is_set():
                 await close_client()
                 return
-            chunk = item if fade is None else fade.process(item)
+            chunk = shaper.process(item)
             if chunk:
                 await _play(run.sink, chunk)
     finally:

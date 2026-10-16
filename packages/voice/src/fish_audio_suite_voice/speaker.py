@@ -159,6 +159,7 @@ class FishSpeaker:
     official_cues: bool = False
     partial_chars: int = _STOCK.tts_partial_chars
     fade_ms: float = DEFAULT_FADE_MS
+    loudness_db: float | None = None
     base_url: str = _STOCK.fish_base
     trace_headers: dict[str, str] = field(default_factory=dict)
 
@@ -415,6 +416,7 @@ class FishSpeaker:
             trace_headers=MappingProxyType(dict(self.trace_headers)),
             config=self._tts_config(),
             fade_ms=self.fade_ms,
+            loudness_db=self.loudness_db,
         )
 
     def _tts_config(self) -> TTSConfig:
