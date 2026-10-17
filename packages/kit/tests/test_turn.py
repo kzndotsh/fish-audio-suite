@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 from kit_helpers import assert_linear_time
 
@@ -82,3 +85,28 @@ def test_only_the_end_of_a_long_text_matters() -> None:
 )
 def test_judging_hostile_text_is_linear(unit: str) -> None:
     assert_linear_time(judge_turn, unit * 20_000)
+
+
+_CORPUS = json.loads((Path(__file__).parent / "golden" / "turn_corpus.json").read_text("utf-8"))
+_CASES = [
+    pytest.param(
+        case["text"],
+        case["finished"],
+        id=f"{case['group']}-{n}",
+        marks=[pytest.mark.xfail(strict=True, reason="a known miss")] if case["known_miss"] else [],
+    )
+    for n, case in enumerate(_CORPUS["cases"])
+]
+
+
+@pytest.mark.parametrize(("text", "finished"), _CASES)
+def test_judge_turn_agrees_with_the_pipecat_corpus(text: str, finished: bool) -> None:
+    """A known miss is a strict xfail, so improving the judge shows up as a failure to update."""
+    assert judge_turn(text).finished is finished
+
+
+def test_the_corpus_never_makes_a_finished_turn_wait() -> None:
+    """A wrong "not finished" only costs a wait, but none of the corpus should need one."""
+    finished = [c["text"] for c in _CORPUS["cases"] if c["finished"]]
+    assert finished
+    assert all(judge_turn(text).finished for text in finished)
