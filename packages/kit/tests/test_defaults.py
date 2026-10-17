@@ -82,6 +82,14 @@ def test_suite_defaults_and_timing() -> None:
     assert "trace=4bf92f3577b34da6a3ce929d0e0e4736" in traced
 
 
+def test_the_wait_after_the_last_word_adds_the_silence_to_the_first_audio() -> None:
+    snapshot = LatencySnapshot(first_audio_ms=900, end_wait_ms=360)
+    assert snapshot.since_stop_ms == 1260
+    assert "end_wait=360ms" in snapshot.log_line()
+    assert LatencySnapshot(first_audio_ms=900).since_stop_ms is None  # Flux ended the turn
+    assert LatencySnapshot(end_wait_ms=360).since_stop_ms is None  # no sound was heard
+
+
 def test_env_number_keeps_default_when_blank_or_junk(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FISH_TEST_NUM", "12")
     assert env_int("FISH_TEST_NUM", 3) == 12

@@ -50,7 +50,7 @@ Two roleplay helpers are opt-in. `normalize_cues(text, lead=True)` turns a sente
 | Errors | `FishHttpError` and `FishAuthError`, `FishRateLimitError`, `FishUpstreamError`, `FishTimeoutError`, all under `FishAudioSuiteError` | `FishHttpError.from_status(status, message)` returns the matching class, so callers catch by type instead of comparing status numbers. `for_unreachable()`, `for_timeout()`, `for_non_json()` and `for_non_object()` build the fixed 502 and 504 errors. `.retryable` is true for 429 and 5xx, and `.retry_after` carries Fish's hint |
 | Types | `FishLatency`, `AudioFormat`, `AsrFormat`, `TtsModel`, `ChatRole`, `ChatMessage`, `AsrBody`, `AsrSegment`, `OpenAIErrorBody`, `OpenAIErrorDetail`, `FishErrorBody` | Closed value sets and the JSON shapes the kit reads and builds, so callers type against them instead of `str` and `dict[str, Any]` |
 | Captions | `CaptionCue`, `format_as_srt`, `format_as_vtt` | Timed text to SubRip or WebVTT |
-| Timing | `LatencySnapshot`, `elapsed_ms` | One turn's times in milliseconds: `asr_ms`, `llm_first_token_ms`, `tts_first_text_ms`, `tts_first_audio_ms`, `voice_to_voice_ms`, `first_audio_ms`, and `trace_id`. `log_line()` prints them without utterance text |
+| Timing | `LatencySnapshot`, `elapsed_ms` | One turn's times in milliseconds: `asr_ms`, `llm_first_token_ms`, `tts_first_text_ms`, `tts_first_audio_ms`, `voice_to_voice_ms`, `first_audio_ms`, `end_wait_ms` (the silence waited out after the last word), and `trace_id`. `since_stop_ms` adds the last two. `log_line()` prints them without utterance text |
 
 Docstrings on those functions are the contract, and the ones with an Examples section are run as doctests (`pytest --doctest-modules packages/kit/src`).
 

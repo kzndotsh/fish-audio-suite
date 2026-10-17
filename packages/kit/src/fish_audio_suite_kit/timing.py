@@ -35,7 +35,10 @@ class LatencySnapshot:
         W3C trace id of the turn, when one was made.
     first_audio_ms : float or None
         From sending the utterance to ASR until the first Fish audio chunk goes to
-        the speaker. This is the wait the user hears after they stop talking.
+        the speaker. It does not count the silence the listener waited out first.
+    end_wait_ms : float or None
+        The silence the listener waited out after the last word before it sent the
+        utterance. None when the recogniser decided the end itself (Deepgram Flux).
 
     Notes
     -----
@@ -52,6 +55,27 @@ class LatencySnapshot:
     # Last, and deliberately not keyword-only: a caller that builds a snapshot by
     # position keeps its meaning, and a new field must never shift the old ones.
     first_audio_ms: float | None = None
+    end_wait_ms: float | None = None
+
+    @property
+    def since_stop_ms(self) -> float | None:
+        """The wait the user hears: from their last word until the first sound.
+
+        Returns
+        -------
+        float or None
+            ``end_wait_ms + first_audio_ms``, or None when either is unknown.
+
+        Examples
+        --------
+        >>> LatencySnapshot(first_audio_ms=900, end_wait_ms=600).since_stop_ms
+        1500
+        >>> LatencySnapshot(first_audio_ms=900).since_stop_ms is None
+        True
+        """
+        if self.end_wait_ms is None or self.first_audio_ms is None:
+            return None
+        return self.end_wait_ms + self.first_audio_ms
 
     def log_line(self) -> str:
         """One stdout timing line. Missing times are omitted. No utterance text.
@@ -72,6 +96,7 @@ class LatencySnapshot:
             _timing_field("llm_first_token", self.llm_first_token_ms),
             _timing_field("tts_first_text", self.tts_first_text_ms),
             _timing_field("tts_first_audio", self.tts_first_audio_ms),
+            _timing_field("end_wait", self.end_wait_ms),
             _timing_field("first_audio", self.first_audio_ms),
             _timing_field("voice_to_voice", self.voice_to_voice_ms),
         ]
