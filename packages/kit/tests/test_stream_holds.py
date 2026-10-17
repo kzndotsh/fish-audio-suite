@@ -19,6 +19,8 @@ def test_tts_hold_at_keeps_an_unfinished_span() -> None:
     ("text", "held_at"),
     [
         ("Hello <thinking>still going", 6),
+        ("Hello <analysis>still going", 6),
+        ("Hello <scratch", 6),
         ("Hello <thinking>done</thinking> there", None),
         ("Hello <whisper>quiet", 6),
         ("Hello <script>x</style>", 6),

@@ -461,6 +461,16 @@ def test_an_image_or_script_does_not_join_the_words() -> None:
     assert "[happy]" in cue
 
 
+@pytest.mark.parametrize(
+    "name", ["scratchpad", "analysis", "planning", "plan", "policy", "internal", "Analysis"]
+)
+def test_other_scratch_work_tags_are_not_spoken(name: str) -> None:
+    out = scrub_tts(f"Open the door.<{name}>secret</{name}> Today friend please.")
+    assert "secret" not in out
+    assert out.split() == ["Open", "the", "door.", "Today", "friend", "please."]
+    assert "secret" not in scrub_tts(f"Open the door. <{name}>never said, cut off")
+
+
 def test_a_hidden_span_does_not_join_the_words() -> None:
     thought = scrub_tts("Open the door<think>secret plan</think>today friend please.")
     assert "secret" not in thought

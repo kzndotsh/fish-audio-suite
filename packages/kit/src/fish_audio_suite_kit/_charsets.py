@@ -54,7 +54,19 @@ BREAKS_RE = re.compile(r"\n{3,}")
 
 # Chain-of-thought tag names, longest first. Every thought-tag regex is built
 # from this tuple. Stream holds also prefix-match it for a split "<thi".
-THOUGHT_WORDS = ("reasoning", "thoughts", "thinking", "thought", "think")
+THOUGHT_WORDS = (
+    "scratchpad",
+    "reasoning",
+    "planning",
+    "analysis",
+    "thoughts",
+    "thinking",
+    "internal",
+    "thought",
+    "policy",
+    "think",
+    "plan",
+)
 _THOUGHT_NAMES = "|".join(THOUGHT_WORDS)
 THOUGHT_OPEN_RE = re.compile(rf"<\s*(?:{_THOUGHT_NAMES})\s*>", re.IGNORECASE)
 THOUGHT_CLOSE_RE = re.compile(rf"<\s*/\s*(?:{_THOUGHT_NAMES})\s*>", re.IGNORECASE)
