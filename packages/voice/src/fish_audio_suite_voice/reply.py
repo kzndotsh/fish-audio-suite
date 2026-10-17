@@ -361,7 +361,9 @@ async def stream_turn(
         latency=c.sink_latency,
     )
     ctx.tts.trace_headers = {"traceparent": make_traceparent(trace_id=heard.trace_id)}
-    snapshot = LatencySnapshot(asr_ms=heard.asr_ms, trace_id=heard.trace_id)
+    snapshot = LatencySnapshot(
+        asr_ms=heard.asr_ms, trace_id=heard.trace_id, end_wait_ms=heard.end_wait_ms
+    )
     tts_task = asyncio.create_task(
         asyncio.to_thread(
             ctx.tts.speak_stream,
@@ -446,6 +448,7 @@ def _seconds(ms: float) -> str:
 def turn_summary(snapshot: LatencySnapshot) -> str:
     """One human line for a finished turn. The first number is the wait that matters."""
     fields = [
+        ("since you stopped", snapshot.since_stop_ms),
         ("first audio", snapshot.first_audio_ms),
         ("asr", snapshot.asr_ms),
         ("llm first token", snapshot.llm_first_token_ms),

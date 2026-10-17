@@ -22,7 +22,7 @@ from fish_audio_suite_kit import (
     trace_id_of,
 )
 from fish_audio_suite_voice.asr import fish_asr
-from fish_audio_suite_voice.barge import StopFlag
+from fish_audio_suite_voice.barge import FRAME_MS, StopFlag
 from fish_audio_suite_voice.debug import (
     clear_turn,
     debug,
@@ -121,6 +121,8 @@ class HeardLine:
     started: float = 0.0
     trace_id: str | None = None
     code: int = 0
+    # The silence waited out after the last word, when the listener ended the turn.
+    end_wait_ms: float | None = None
     # How Fish heard the voice (``laughter``, ``tired``). Only set with ``FISH_VOICE_HEAR_TONE``,
     # and only the model's request for this turn sees it.
     tone: tuple[str, ...] = ()
@@ -200,8 +202,12 @@ async def recognize(
     *,
     stale: bool = True,
     over_reply: bool = True,
+    end_wait_ms: float | None = None,
 ) -> HeardLine:
-    """Send one utterance to Fish ASR and classify the text it returns."""
+    """Send one utterance to Fish ASR and classify the text it returns.
+
+    ``end_wait_ms`` is the silence the clip ended on, carried through to the timings.
+    """
     got = await transcribe(ctx, wav)
     if isinstance(got, HeardLine):
         return got
@@ -214,7 +220,13 @@ async def recognize(
         stale=stale,
         over_reply=over_reply,
         tone=got.tone,
+        end_wait_ms=end_wait_ms,
     )
+
+
+def _silence_ms(frames: int) -> float:
+    """Return the silence a clip ended on, in milliseconds."""
+    return float(frames * FRAME_MS)
 
 
 def accept_transcript(
@@ -227,6 +239,7 @@ def accept_transcript(
     stale: bool = True,
     over_reply: bool = True,
     tone: tuple[str, ...] = (),
+    end_wait_ms: float | None = None,
 ) -> HeardLine:
     """Decide what a recognised transcript is, whichever recogniser made it.
 
@@ -248,6 +261,9 @@ def accept_transcript(
         See ``classify_transcript``.
     tone : tuple of str, optional
         How the voice sounded, carried on the ``line`` for the model's request.
+    end_wait_ms : float or None, optional
+        The silence the listener waited out after the last word. None when the recogniser
+        ended the turn itself.
 
     Returns
     -------
@@ -262,7 +278,13 @@ def accept_transcript(
         return HeardLine("noise")
     EVENTS.emit(Heard(text, asr_ms))
     return HeardLine(
-        "line", text=text, asr_ms=asr_ms, started=started, trace_id=trace_id, tone=tone
+        "line",
+        text=text,
+        asr_ms=asr_ms,
+        started=started,
+        trace_id=trace_id,
+        tone=tone,
+        end_wait_ms=end_wait_ms,
     )
 
 
@@ -302,12 +324,13 @@ async def hear_line(
         prefix = ctx.barge_prefix
         ctx.barge_prefix = b""
         opened = time.monotonic()
+        first_tune = first_clip_tune(ctx.config.listen, ctx.config.turn)
         wav = await asyncio.to_thread(
             record_utterance,
             ctx.device,
             ctx.session.quit_requested if stop is None else stop,
             prefix=prefix,
-            tune=first_clip_tune(ctx.config.listen, ctx.config.turn),
+            tune=first_tune,
             aec=ctx.session.aec,
         )
     except PortAudioMissingError as e:
@@ -324,10 +347,23 @@ async def hear_line(
     stale = not prefix and time.monotonic() - opened < window
     if ctx.config.turn.enabled:
         heard = await _hear_checked(
-            ctx, wav, last_user, stop=stop, stale=stale, over_reply=bool(prefix)
+            ctx,
+            wav,
+            last_user,
+            stop=stop,
+            stale=stale,
+            over_reply=bool(prefix),
+            first_silence_frames=first_tune.end_silence_frames,
         )
     else:
-        heard = await recognize(ctx, wav, last_user, stale=stale, over_reply=bool(prefix))
+        heard = await recognize(
+            ctx,
+            wav,
+            last_user,
+            stale=stale,
+            over_reply=bool(prefix),
+            end_wait_ms=_silence_ms(first_tune.end_silence_frames),
+        )
     # Quit during the Fish request used to come back as a normal line, so
     # the LLM still answered after Ctrl+C.
     if ctx.session.quit_requested.is_set():
@@ -343,6 +379,7 @@ async def _hear_checked(
     stop: StopFlag | None,
     stale: bool,
     over_reply: bool,
+    first_silence_frames: int,
 ) -> HeardLine:
     """Transcribe a clip that ended on a short silence, and carry on if the turn is not over.
 
@@ -394,6 +431,9 @@ async def _hear_checked(
         stale=stale and open_turn.clips == 1,
         over_reply=over_reply,
         tone=open_turn.tone,
+        end_wait_ms=_silence_ms(
+            first_silence_frames if open_turn.clips == 1 else ctx.config.turn.extend_frames
+        ),
     )
 
 

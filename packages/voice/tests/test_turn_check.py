@@ -13,6 +13,7 @@ from session_fakes import make_ctx
 
 from fish_audio_suite_kit import FishHttpError
 from fish_audio_suite_voice.asr import AsrResult
+from fish_audio_suite_voice.barge import FRAME_MS
 from fish_audio_suite_voice.duplex_state import DuplexContext
 from fish_audio_suite_voice.events import EVENTS, Event, Heard
 from fish_audio_suite_voice.hearing import HeardLine, hear_line
@@ -108,6 +109,18 @@ def test_a_finished_clip_is_answered_on_the_short_silence_and_the_mic_is_closed_
     assert reopened["tune"].end_silence_frames == 40
     assert reopened["give_up_frames"] == 28
     assert reopened["stop"].is_set()  # nothing is left listening when the reply starts
+
+
+def test_the_silence_waited_out_is_counted_from_the_clip_that_ended_the_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_ms = 12 * FRAME_MS
+    _asr(monkeypatch, {b"clip1": "What time is it?"})
+    heard, _ = _hear(monkeypatch, _ctx(), ScriptedMic())
+    assert heard.end_wait_ms == first_ms
+    _asr(monkeypatch, {b"clip1": "I was going to ask, but", b"clip2": "never mind, it is fine."})
+    joined, _ = _hear(monkeypatch, _ctx(), ScriptedMic(b"clip2"))
+    assert joined.end_wait_ms == 40 * FRAME_MS  # the continuation's longer silence
 
 
 def test_the_mic_is_already_listening_for_more_while_the_first_clip_is_transcribed(

@@ -59,7 +59,10 @@ async def _answer_line(ctx: DuplexContext, heard: HeardLine) -> int | None:
             tone=heard.tone,
         )
         snapshot = LatencySnapshot(
-            asr_ms=heard.asr_ms, llm_first_token_ms=ttft_ms, trace_id=heard.trace_id
+            asr_ms=heard.asr_ms,
+            llm_first_token_ms=ttft_ms,
+            trace_id=heard.trace_id,
+            end_wait_ms=heard.end_wait_ms,
         )
         if ctx.session.quit_requested.is_set():
             return bye()

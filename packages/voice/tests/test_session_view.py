@@ -321,3 +321,11 @@ def test_a_scale_keeps_the_noise_floor_it_measured_through_a_gap_in_the_audio() 
         fresh.update(speech if step % 8 < 4 else room, step * BLOCK_S)
     forgetful = SpeechScale()  # the same, but it was started again after the gap
     assert forgetful.update(room, 40.0) > max(first_blocks)  # what it did before this fix
+
+
+def test_the_turn_summary_leads_with_the_wait_since_the_last_word() -> None:
+    from fish_audio_suite_voice.reply import turn_summary
+
+    line = turn_summary(LatencySnapshot(first_audio_ms=900.0, end_wait_ms=360.0))
+    assert line.startswith("  ↳ since you stopped 1.26s · first audio 0.90s")
+    assert "since you stopped" not in turn_summary(LatencySnapshot(first_audio_ms=900.0))

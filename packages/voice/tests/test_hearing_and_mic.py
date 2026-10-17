@@ -98,6 +98,14 @@ def test_hear_line_reports_a_dropped_clip_and_quit(
     assert asyncio.run(hear_line(ctx, "")).kind == kind
 
 
+def test_a_batch_turn_reports_the_silence_it_waited_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    ctx = make_ctx()
+    _asr_returns(monkeypatch, "what time is it")
+    monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", lambda *_a, **_k: b"wav")
+    heard = asyncio.run(hear_line(ctx, ""))
+    assert heard.end_wait_ms == ctx.config.listen.end_silence_frames * barge.FRAME_MS
+
+
 def test_a_barge_in_clip_is_never_a_stale_copy(monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = make_ctx()
     ctx.barge_prefix = b"clip"

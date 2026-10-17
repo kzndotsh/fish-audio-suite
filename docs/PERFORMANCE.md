@@ -182,9 +182,10 @@ FISH_LLM_REASONING_EFFORT=none
 Run `./packages/voice/dev.sh --debug` (or `--trace` for more). Each turn ends with a summary:
 
 ```
-turn summary first audio 1.18s · asr 0.15s · llm first token 0.46s · tts first audio 1.01s · total 8.82s
+turn summary since you stopped 1.54s · first audio 1.18s · asr 0.15s · llm first token 0.46s · tts first audio 1.01s · total 8.82s
 ```
 
+- **since you stopped:** from your last word to the first sound: the silence the listener waited out, plus `first audio`. Left out when Deepgram Flux ended the turn, because Flux decides that itself.
 - **first audio:** from the end of your speech to the first sound, not counting the end-of-speech silence. This is the wait you feel.
 - **asr:** Fish speech-to-text.
 - **llm first token:** the model's first token.
