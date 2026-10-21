@@ -23,7 +23,7 @@ classifiers = [
 dependencies = [
     "fish-audio-sdk>=1.0,<2",
     "httpx>=0.28",
-    "numpy>=2.0",
+    "numpy>=2.5.4",
     "fish-audio-suite-kit>=0.1,<0.2",
     "loguru>=0.7.3",
 ]
