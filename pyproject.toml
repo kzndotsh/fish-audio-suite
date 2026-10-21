@@ -14,14 +14,14 @@ members = ["packages/*"]
 [dependency-groups]
 dev = [
     "pytest>=9.0",
-    "ruff>=0.13",
-    "basedpyright==1.40.1",
-    "pydoclint>=0.7.3",
+    "ruff>=0.17.0",
+    "basedpyright==1.40.2",
+    "pydoclint>=0.11.1",
 ]
 test = [
     "textual>=8.2.8",
-    "websockets>=14",
-    "hypothesis>=6.140",
+    "websockets>=17.2",
+    "hypothesis>=6.169.1",
     "pytest-cov>=7",
     "pytest-randomly>=3.16",
     "pytest-socket>=0.7",
