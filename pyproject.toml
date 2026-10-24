@@ -15,7 +15,7 @@ members = ["packages/*"]
 dev = [
     "pytest>=9.0",
     "ruff>=0.13",
-    "basedpyright==1.40.1",
+    "basedpyright==1.40.2",
     "pydoclint>=0.7.3",
 ]
 test = [
@@ -47,7 +47,9 @@ filterwarnings = [
     # 1.2, and pytest cannot parse a filter naming a missing class, so the category
     # is the base class and the message keeps the filter narrow.
     "ignore:Using .httpx. with .starlette.testclient. is deprecated:UserWarning",
-    # Starlette's TestClient reads an anyio alias that anyio has deprecated.
+    # Starlette's TestClient reads an anyio alias that anyio has deprecated. Starlette
+    # 1.7 stopped, but the lowest-direct CI job still pairs fastapi 0.115.7 with an
+    # older Starlette, so the filter stays while that floor does.
     "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning:starlette.testclient",
 ]
 # Doctests run from kit's source, which holds the Examples in its docstrings. The root

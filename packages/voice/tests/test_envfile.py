@@ -34,6 +34,17 @@ def test_dotenv_quotes_comments_and_export(tmp_path: Path, monkeypatch: pytest.M
     assert os.environ["ENVF_E"] == "after"
 
 
+def test_dotenv_empty_value_with_a_comment_is_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    for name in ("ENVF_I", "ENVF_J", "ENVF_K"):
+        monkeypatch.delenv(name, raising=False)
+    _load(tmp_path, "ENVF_I= # unset for now\nENVF_J=\t# tab before the hash\nENVF_K=#kept\n")
+    assert os.environ["ENVF_I"] == ""
+    assert os.environ["ENVF_J"] == ""
+    assert os.environ["ENVF_K"] == "#kept"
+
+
 def test_dotenv_double_quote_escapes_and_bom(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
