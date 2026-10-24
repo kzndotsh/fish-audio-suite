@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12"
 
 [manifest]
@@ -310,6 +310,7 @@ wheels = [
 name = "fish-audio-suite"
 version = "0.0.0"
 source = { virtual = "." }
+default-groups = ["dev", "test"]
 
 [package.dev-dependencies]
 dev = [
@@ -372,7 +373,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28" },
     { name = "ormsgpack", specifier = ">=1.5" },
     { name = "python-multipart", specifier = ">=0.0.18" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.32" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.54.0" },
 ]
 
 [[package]]
