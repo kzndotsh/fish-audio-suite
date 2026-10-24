@@ -68,6 +68,8 @@ def _unescape_double(inner: str) -> str:
 def _env_value(raw: str) -> str:
     """Unquote a dotenv value. An unquoted ` #` starts a comment."""
     val = raw.strip()
+    if val.startswith("#") and raw[:1].isspace():
+        return ""
     span = _quoted_span(val)
     if span is not None:
         inner, rest = span
