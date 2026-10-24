@@ -16,6 +16,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Floors stay at the lowest version that works (CI tests them with
+    # --resolution lowest-direct), so only the lock moves unless a new release
+    # falls outside a range, such as the exact basedpyright pin.
+    versioning-strategy: increase-if-necessary
     cooldown:
       default-days: 7
     # Runtime bumps change what users install, dev bumps only change CI, so they
