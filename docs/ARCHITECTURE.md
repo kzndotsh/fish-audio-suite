@@ -289,7 +289,7 @@ The rules most easily broken, each with its reason. A test or a lint rule enforc
 
 ### Package boundaries
 
-- **Three distributions only: `fish-audio-suite-kit`, `-proxy` and `-voice`.** The CLI stays in voice. There is no fourth package, no OpenTelemetry SDK (kit parses W3C trace headers itself) and no VAD package of our own (voice uses `webrtcvad-wheels`).
+- **Three distributions only: `fish-audio-suite-kit`, `-proxy` and `-voice`.** The CLI stays in voice. There is no fourth package, no OpenTelemetry SDK (kit parses W3C trace headers itself; FastAPI 0.142+ pulls in `opentelemetry-api`, which does nothing unless a deployment installs the SDK) and no VAD package of our own (voice uses `webrtcvad-wheels`).
 - **Shared logic lives in kit.** Scrubbing, cues, sentence cuts, W3C parsing, the Fish error shape and captions are written once there. Proxy and voice must not copy those regexes, and they import kit only through its root, never a private module.
 - **Kit is pure text.** No network, no audio, no HTTP client, no `fishaudio`, no OpenTelemetry. `dependencies = []` keeps that honest, and a test checks that its sources import only the standard library.
 
