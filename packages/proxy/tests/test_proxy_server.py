@@ -7,7 +7,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from fish_audio_suite_proxy.server import _iter_upstream, _uvicorn_run_kwargs, app
+from fish_audio_suite_proxy.server import _iter_upstream, _uvicorn_run_kwargs, app, lifespan
 
 
 def test_health_without_api_key() -> None:
@@ -86,3 +86,13 @@ def test_streamed_audio_is_passed_on_as_it_arrives() -> None:
         return [chunk async for chunk in _iter_upstream(response)]
 
     assert asyncio.run(collect()) == [b"a" * 10, b"b" * 20, b"c" * 5]
+
+
+def test_lifespan_closes_the_client_when_shutdown_raises() -> None:
+    async def run() -> httpx.AsyncClient:
+        with pytest.raises(RuntimeError):
+            async with lifespan(app):
+                raise RuntimeError("boom")
+        return app.state.http
+
+    assert asyncio.run(run()).is_closed

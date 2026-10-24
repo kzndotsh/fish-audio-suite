@@ -142,8 +142,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         headers=headers,
         http2=False,
     )
-    yield
-    await app.state.http.aclose()
+    try:
+        yield
+    finally:
+        await app.state.http.aclose()
 
 
 app: Final[FastAPI] = FastAPI(lifespan=lifespan, title="fish-audio-suite-proxy")
