@@ -1,7 +1,8 @@
 version: 2
 # Every ecosystem waits a week before it proposes a release (cooldown), so a
 # release that is pulled or found broken in its first days never reaches a PR.
-# Security updates ignore the cooldown.
+# Security updates ignore the cooldown. Every ecosystem titles its pull requests
+# chore(deps), runtime and dev alike.
 updates:
   - package-ecosystem: github-actions
     directory: /
@@ -9,6 +10,8 @@ updates:
       interval: weekly
     cooldown:
       default-days: 7
+    commit-message:
+      prefix: chore(deps)
     groups:
       actions:
         patterns: ["*"]
@@ -22,6 +25,8 @@ updates:
     versioning-strategy: increase-if-necessary
     cooldown:
       default-days: 7
+    commit-message:
+      prefix: chore(deps)
     # Runtime bumps change what users install, dev bumps only change CI, so they
     # get separate pull requests that can be reviewed and reverted on their own.
     groups:
@@ -37,6 +42,8 @@ updates:
       interval: weekly
     cooldown:
       default-days: 7
+    commit-message:
+      prefix: chore(deps)
     groups:
       docker:
         patterns: ["*"]
@@ -46,6 +53,8 @@ updates:
       interval: weekly
     cooldown:
       default-days: 7
+    commit-message:
+      prefix: chore(deps)
     groups:
       nix:
         patterns: ["*"]
