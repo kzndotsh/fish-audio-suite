@@ -21,7 +21,10 @@ updates:
       interval: weekly
     # Floors stay at the lowest version that works (CI tests them with
     # --resolution lowest-direct), so only the lock moves unless a new release
-    # falls outside a range, such as the exact basedpyright pin.
+    # falls outside a range, such as the exact basedpyright pin. The uv ecosystem
+    # still raises satisfied floors (dependabot/dependabot-core#14908), so close
+    # floor-only PRs. lockfile-only would stop them but also blocks security
+    # updates for transitive dependencies (dependabot/dependabot-core#16449).
     versioning-strategy: increase-if-necessary
     cooldown:
       default-days: 7
