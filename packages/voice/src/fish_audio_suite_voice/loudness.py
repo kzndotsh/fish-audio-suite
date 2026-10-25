@@ -18,6 +18,7 @@ from typing import Final
 import numpy as np
 from numpy.typing import NDArray
 
+from fish_audio_suite_kit import MS_PER_S
 from fish_audio_suite_voice.aec import SAMPLE_BYTES
 
 __all__ = [
@@ -25,7 +26,6 @@ __all__ = [
 ]
 
 _BLOCK_MS: Final = 20
-_MS_PER_S: Final = 1000
 _FULL_SCALE: Final = 32768.0
 # Blocks quieter than this are pauses and breath, not speech, so they do not set the level.
 _GATE_DB: Final = -50.0
@@ -76,11 +76,11 @@ class LoudnessMatch:
         max_boost_db: float = 12.0,
         max_cut_db: float = 12.0,
     ) -> None:
-        self._block = max(1, sample_rate * _BLOCK_MS // _MS_PER_S)
+        self._block = max(1, sample_rate * _BLOCK_MS // MS_PER_S)
         self._target_db = target_db
         self._max_boost_db = max_boost_db
         self._max_cut_db = max_cut_db
-        self._step_db = _SLEW_DB_PER_S * _BLOCK_MS / _MS_PER_S
+        self._step_db = _SLEW_DB_PER_S * _BLOCK_MS / MS_PER_S
         self._min_speech = int(sample_rate * _MIN_SPEECH_S)
         self._energy = 0.0
         self._speech = 0

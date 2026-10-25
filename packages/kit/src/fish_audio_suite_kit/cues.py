@@ -19,7 +19,6 @@ __all__ = [
     "mood_lead_hold_at",
     "normalize_cues",
     "official_cue",
-    "paren_cue_names",
     "rewrite_s1_parens",
     "split_cues",
     "spoken_mood_span",
@@ -257,17 +256,6 @@ def split_cues(text: str) -> list[tuple[str, bool]]:
     if last < len(text):
         pieces.append((text[last:], False))
     return pieces
-
-
-def paren_cue_names() -> frozenset[str]:
-    """Return S1 cue names, including ``clear``.
-
-    Returns
-    -------
-    frozenset of str
-        Lowercase tags a parenthesis or bracket can carry without being speech.
-    """
-    return _PAREN_CUE_NAMES
 
 
 def strip_cue_tags(text: str) -> str:
@@ -789,10 +777,6 @@ def ensure_lead_cue(text: str, *, default: str | None = None) -> str:
     if not text.strip():
         return text
     tag = (default or "").strip().lower()
-    if not tag:
-        if _CUE_RE.search(text):
-            return text
-        return text
-    if _CUE_RE.match(text.lstrip()):
+    if not tag or _CUE_RE.match(text.lstrip()):
         return text
     return f"[{tag}] {text.lstrip()}"
