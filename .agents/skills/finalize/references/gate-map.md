@@ -15,7 +15,7 @@ Union rows. Fastest first: format/lint → docstrings → types → import contr
 | Dirty paths | Run |
 | --- | --- |
 | `packages/**/*.py`, `.github/scripts/**/*.py`, `scripts/*.py`, `pyproject.toml` | `just fmt`, `just lint`, `just docstrings`, `just types` |
-| `tests/*.py` (the root tests, which ruff and pydoclint do not cover) | `just types`, `uv run pytest tests` |
+| `tests/*.py` (the root tests, which pydoclint does not cover) | `just fmt`, `just lint`, `just types`, `uv run pytest tests` |
 | `packages/**/*.py`, `pyproject.toml` (an import added, or a voice module added or moved) | plus `just layers` (`uv run lint-imports --no-cache`). A new voice module goes in the lowest layer of `[tool.importlinter]` it fits |
 | a package's root `__init__.py` or any exported name or signature | plus `just types-public`. For kit, `uv run pytest packages/kit/tests/test_api_contract.py`, and `UPDATE_GOLDEN=1` only when the change is intended |
 | `packages/kit/**` | plus `uv run pytest packages/kit` |

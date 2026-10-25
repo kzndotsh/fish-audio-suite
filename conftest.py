@@ -8,13 +8,13 @@ from pathlib import Path
 
 import pytest
 
-# Only the kit documents its API with runnable Examples. With --doctest-modules on,
-# pytest would otherwise import every proxy and voice module just to find nothing.
-_NO_DOCTESTS = ("proxy", "voice")
+# Kit and voice carry runnable Examples. The proxy has none, and with --doctest-modules
+# on, pytest would otherwise import every proxy module just to find nothing.
+_NO_DOCTESTS = ("proxy",)
 
 
 def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool | None:
-    """Keep the proxy and voice sources out of doctest collection.
+    """Keep the proxy source out of doctest collection.
 
     Parameters
     ----------
@@ -26,9 +26,9 @@ def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool 
     Returns
     -------
     bool or None
-        True for a file or directory under ``packages/proxy/src`` or
-        ``packages/voice/src`` while ``--doctest-modules`` is on, so nothing there
-        is imported. None leaves every other path to pytest.
+        True for a file or directory under ``packages/proxy/src`` while
+        ``--doctest-modules`` is on, so nothing there is imported. None leaves every
+        other path to pytest.
     """
     if not config.option.doctestmodules:
         return None
