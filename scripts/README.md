@@ -101,9 +101,9 @@ uv run python scripts/eval_voices.py --dry-run             # list the files, mak
 | `--find WORDS` | List public voices whose title matches, most used first, then stop. `--language` keeps one language, such as `en`, and `--count` sets how many (default 15) |
 | `--dry-run` | List the files that would be written and make no requests |
 
-The text goes through the voice app's speech cleanup (`FishSpeaker.speak` runs `scrub_tts`,
-then `normalize_cues`) before it is sent to Fish. Unlike the app's default, cues Fish does
-not support are not filtered out, so a clip can carry a cue the app would drop. Your key is `FISH_API_KEY`, from `.env` or the environment.
+The text goes through the voice app's own speech cleanup in `FishSpeaker.speak` (`scrub_tts`,
+then `normalize_cues`), with cues Fish does not support mapped or dropped as `fish-voice` does
+by default (`FISH_TTS_CUES=official`). Your key is `FISH_API_KEY`, from `.env` or the environment.
 
 ## mic_levels.py
 

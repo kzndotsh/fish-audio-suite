@@ -37,7 +37,7 @@ from pathlib import Path
 from fishaudio import FishAudio
 from fishaudio.core import OMIT
 
-from fish_audio_suite_kit import SuiteDefaults, known_latency, normalize_cues, scrub_tts
+from fish_audio_suite_kit import SuiteDefaults, known_latency
 from fish_audio_suite_voice import FileSink, FishSpeaker
 from fish_audio_suite_voice.envfile import load_dotenv
 
@@ -182,6 +182,7 @@ def speak_clip(
         model=model,
         latency=known_latency(latency, defaults.latency),
         sample_rate=sample_rate,
+        official_cues=True,  # as fish-voice by default (FISH_TTS_CUES=official)
     )
     sink = FileSink(path, sample_rate=sample_rate, wav=True)
     first: list[float] = []
@@ -327,10 +328,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         text = args.text_file.read_text(encoding="utf-8").strip()
     else:
         text = (args.text or TEXT).strip()
-    # FishSpeaker.speak cleans the text again, in the app's order (scrub_tts, then
-    # normalize_cues). Unlike the app's default, unsupported cues are not filtered out
-    # (official_cues is off), so a clip can carry a cue the app would drop.
-    spoken = scrub_tts(normalize_cues(text))
     out_dir = Path(args.out_dir) if args.out_dir else ROOT / OUT_DIR
     stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
     print(
@@ -356,7 +353,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     api_key,
                     voice,
                     model,
-                    spoken,
+                    text,
                     path,
                     latency=args.latency,
                     sample_rate=args.sample_rate,
