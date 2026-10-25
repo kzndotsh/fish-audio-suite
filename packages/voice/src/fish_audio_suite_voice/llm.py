@@ -26,6 +26,8 @@ from fish_audio_suite_voice.llm_tune import LlmTune, is_openrouter_host
 from fish_audio_suite_voice.pause import sleep_unless
 from fish_audio_suite_voice.transports import (
     ChatCall,
+    ChatChunk,
+    ChatHttpError,
     chat_events,
     http_client,
     openrouter_client,
@@ -78,6 +80,13 @@ def _model_author_slug(model: str) -> tuple[str, str] | None:
     return author, slug
 
 
+def _lookup_field(found: object, name: str) -> Any:
+    value = getattr(found, name, None)
+    if value is None and isinstance(found, dict):
+        return cast(dict[str, Any], found).get(name)
+    return value
+
+
 async def check_openrouter_model(client: Any, tune: LlmTune) -> None:
     """Resolve the configured model via ``models.get``. Warn on 404; never abort duplex.
 
@@ -106,12 +115,12 @@ async def check_openrouter_model(client: Any, tune: LlmTune) -> None:
     except Exception as e:  # noqa: BLE001 - best-effort lookup must never stop the session
         warn(f"[llm] models.get {e}")
         return
-    data = _event_field(res, "data")
+    data = _lookup_field(res, "data")
     if data is None:
         data = res
-    mid = _event_field(data, "id")
-    name = _event_field(data, "name")
-    ctx = _event_field(data, "context_length")
+    mid = _lookup_field(data, "id")
+    name = _lookup_field(data, "name")
+    ctx = _lookup_field(data, "context_length")
     routed = f", routed from {route}" if isinstance(mid, str) and mid and mid != route else ""
     # The ready line already names the model. A remap is announced below.
     trace("llm.model {} ({} token context){}", name or short_model(mid or route), ctx, routed)
@@ -119,89 +128,15 @@ async def check_openrouter_model(client: Any, tune: LlmTune) -> None:
         notice(f"  [llm model {route} → {mid}]")
 
 
-def _event_field(event: object, name: str) -> Any:
-    value = getattr(event, name, None)
-    if value is None and isinstance(event, dict):
-        return event.get(name)
-    return value
-
-
-_TEXT_PARTS: Final = frozenset({"text", "output_text"})
-
-
-def _part_text(part: object) -> str:
-    if isinstance(part, str):
-        return part
-    kind = _event_field(part, "type")
-    # Reasoning and image parts are not speech.
-    if isinstance(kind, str) and kind not in _TEXT_PARTS:
-        return ""
-    text = _event_field(part, "text")
-    return text if isinstance(text, str) else ""
-
-
-def _content_text(content: object) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return "".join(_part_text(part) for part in content)
-    # One part object is the same payload as a one-item list. Dropping it
-    # speaks nothing for that token.
-    if content is None:
-        return ""
-    return _part_text(content)
-
-
-def _message_text(choice: object) -> str:
-    msg = _event_field(choice, "message")
-    if msg is None:
-        return ""
-    return _content_text(_event_field(msg, "content"))
-
-
-def _refusal_text(obj: object | None) -> str:
-    # A refusal is the reply. Content is null, so reading only content
-    # speaks nothing and the next turn has no record of what was said.
-    if obj is None:
-        return ""
-    refusal = _event_field(obj, "refusal")
-    return refusal if isinstance(refusal, str) else ""
-
-
-def _first_choice(event: object) -> object | None:
-    choices = _event_field(event, "choices")
-    if isinstance(choices, list) and choices:
-        return choices[0]
-    return None
-
-
-def _delta_content(chunk: object, *, already: bool = False) -> str:
-    ch0 = _first_choice(chunk)
-    if ch0 is None:
-        return ""
-    delta = _event_field(ch0, "delta")
-    content = _event_field(delta, "content") if delta is not None else None
-    refused = _refusal_text(delta)
-    # An empty delta is the end of a streamed reply. Falling through would
-    # speak message.content again when the provider also sends the full text.
-    if content is not None:
-        text = _content_text(content)
-        # A first chunk often sets content to "" with the role. That is not
-        # the end of the reply. The words can still be on message or refusal.
-        if text:
-            return text
-        if already:
-            return refused
-    elif already:
-        return refused
-    if refused:
-        return refused
-    # A null content on the first event is the whole reply. After tokens
-    # have already been spoken, the same null is a second copy.
-    text = _message_text(ch0)
-    if text:
-        return text
-    return _refusal_text(_event_field(ch0, "message"))
+def _delta_content(chunk: ChatChunk, *, already: bool) -> str:
+    # An empty delta is the end of a streamed reply. After tokens have been
+    # spoken, the full message on it is a second copy, so only a refusal counts.
+    # Before any token, a null or blank delta leaves the reply on the message.
+    if chunk.text:
+        return chunk.text
+    if already:
+        return chunk.refusal
+    return chunk.refusal or chunk.message or chunk.message_refusal
 
 
 @dataclass(slots=True)
@@ -214,9 +149,7 @@ class _ChatStats:
     last_provider: str = ""
     last_native: str = ""
     aborted: bool = False
-    http_status: int | None = None
-    retry_after_s: float | None = None
-    quota_exhausted: bool = False
+    refused: ChatHttpError | None = None
 
 
 class _HeldStats:
@@ -225,83 +158,38 @@ class _HeldStats:
         self.stopped = ""
 
 
-def _usage_dict(usage: object) -> dict[str, Any] | None:
-    dump = getattr(usage, "model_dump", None)
-    if callable(dump):
-        dumped = dump(mode="json")
-        if isinstance(dumped, dict):
-            return dumped
-    if isinstance(usage, dict):
-        return usage
-    return None
-
-
-def _remember_text(current: str, value: object) -> str:
-    if isinstance(value, str) and value:
-        return value
-    return current
-
-
-def _finish_text(value: object) -> str | None:
-    if isinstance(value, str) and value:
-        return value
-    if value is not None and not isinstance(value, str):
-        return str(value)
-    return None
-
-
-def _note_identity(event: object, stats: _ChatStats) -> None:
-    stats.last_id = _remember_text(stats.last_id, _event_field(event, "id"))
-    stats.last_model = _remember_text(stats.last_model, _event_field(event, "model"))
-    stats.last_provider = _remember_text(stats.last_provider, _event_field(event, "provider"))
-    meta = _event_field(event, "openrouter_metadata")
-    if stats.last_provider == "" and meta is not None:
-        stats.last_provider = _remember_text(stats.last_provider, _event_field(meta, "summary"))
-
-
-def _note_choice(choice: object, stats: _ChatStats) -> None:
-    finish = _finish_text(_event_field(choice, "finish_reason"))
-    if finish is not None:
-        stats.last_finish = finish
-    stats.last_native = _remember_text(
-        stats.last_native, _event_field(choice, "native_finish_reason")
-    )
-
-
-def _note_chat_event(event: object, stats: _ChatStats) -> str:
-    err = _event_field(event, "error")
-    if err:
-        warn(f"[llm] stream error: {err}")
+def _note_chat_event(chunk: ChatChunk, stats: _ChatStats) -> str:
+    if chunk.error is not None:
+        warn(f"[llm] stream error: {chunk.error}")
         stats.aborted = True
         return ""
-    usage = _event_field(event, "usage")
-    if usage is not None:
-        dumped = _usage_dict(usage)
-        if dumped is not None:
-            stats.last_usage = dumped
-    _note_identity(event, stats)
-    choice = _first_choice(event)
-    if choice is not None:
-        _note_choice(choice, stats)
-    piece = _delta_content(event, already=stats.yielded > 0)
+    if chunk.usage is not None:
+        stats.last_usage = chunk.usage
+    stats.last_id = chunk.id or stats.last_id
+    stats.last_model = chunk.model or stats.last_model
+    stats.last_provider = chunk.provider or stats.last_provider or chunk.provider_summary
+    if chunk.finish is not None:
+        stats.last_finish = chunk.finish
+    stats.last_native = chunk.native_finish or stats.last_native
+    piece = _delta_content(chunk, already=stats.yielded > 0)
     if piece:
         stats.yielded += 1
     return utf8_text(piece)
 
 
-async def _next_chat_event(events: AsyncIterator[object]) -> object:
+async def _next_chat_event(events: AsyncIterator[ChatChunk]) -> ChatChunk:
     return await anext(events)
 
 
 async def _consume_chat_events(
-    events: AsyncIterator[object],
+    events: AsyncIterator[ChatChunk],
     cancel: asyncio.Event | None,
     stats: _ChatStats,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     # async for only notices cancel after the next token. Ctrl+C during a
     # stalled reply would wait until the provider sends something.
     incoming = aiter(events)
-    pending: asyncio.Task[object] = asyncio.create_task(_next_chat_event(incoming))
+    pending: asyncio.Task[ChatChunk] = asyncio.create_task(_next_chat_event(incoming))
     try:
         while True:
             if not await _event_or_cancel(pending, cancel):
@@ -320,9 +208,13 @@ async def _consume_chat_events(
         if not pending.done():
             pending.cancel()
             await reap(pending)
+        elif not pending.cancelled():
+            # A read that failed after the consumer stopped is not news. Taking
+            # its exception keeps asyncio from logging it as never retrieved.
+            pending.exception()
 
 
-async def _event_or_cancel(pending: asyncio.Task[object], cancel: asyncio.Event | None) -> bool:
+async def _event_or_cancel(pending: asyncio.Task[ChatChunk], cancel: asyncio.Event | None) -> bool:
     """Return whether ``pending`` finished. False means cancel won."""
     if cancel is None:
         await asyncio.wait({pending})
@@ -677,11 +569,13 @@ async def _stream_generation(
                     http=http,
                     session_id=session_id,
                     trace_id=trace_id,
-                    stats=stats,
                 )
             )
             async for piece in _consume_chat_events(events, cancel, stats):
                 yield piece
+        except ChatHttpError as refused:
+            stats.aborted = True
+            stats.refused = refused
         except asyncio.CancelledError:
             held.stopped = "cancel"
             # Only our own cancel flag may end the stream quietly. An outer
@@ -710,9 +604,10 @@ async def _stream_generation(
 
 
 def _retry_wait(stats: _ChatStats, cancel: asyncio.Event | None) -> float | None:
-    wait = stats.retry_after_s
-    if stats.http_status != 429 or stats.yielded or stats.quota_exhausted:
+    refused = stats.refused
+    if refused is None or refused.status != 429 or stats.yielded or refused.quota_exhausted:
         return None
+    wait = refused.retry_after_s
     if wait is None:
         wait = _LLM_429_DEFAULT_S
     if not math.isfinite(wait) or wait < 0 or wait > _LLM_429_CAP_S:

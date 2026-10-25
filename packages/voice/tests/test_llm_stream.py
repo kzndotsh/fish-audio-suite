@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
@@ -23,6 +24,8 @@ from fish_audio_suite_voice.llm import (
 from fish_audio_suite_voice.llm_tune import LlmTune, is_openrouter_host
 from fish_audio_suite_voice.transports import (
     ChatCall,
+    ChatChunk,
+    ChatHttpError,
     _abort_http,
     _chat_body,
     _feed_sse,
@@ -82,7 +85,6 @@ def test_surrogate_in_chat_messages_still_encodes() -> None:
         http=None,
         session_id=None,
         trace_id=None,
-        stats=_ChatStats(),
     )
     body = _chat_body(call, "max_tokens")
     request = httpx.Request(
@@ -118,7 +120,7 @@ def test_a_provider_error_group_is_reported(monkeypatch: pytest.MonkeyPatch) -> 
     )
 
     async def events() -> Any:
-        yield _chunk("Hello there")
+        yield ChatChunk(text="Hello there")
         raise ExceptionGroup("llm", [RuntimeError("provider down")])
 
     monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", lambda _call: events())
@@ -145,7 +147,7 @@ def test_a_cancel_group_does_not_warn(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     async def events() -> Any:
-        yield _chunk("Hello there")
+        yield ChatChunk(text="Hello there")
         raise BaseExceptionGroup("cancel", [asyncio.CancelledError()])
 
     monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", lambda _call: events())
@@ -709,8 +711,8 @@ def test_cancel_returns_while_the_next_token_is_still_pending() -> None:
     # The next chunk never arrives. Cancel has to end the turn anyway.
     cancel = asyncio.Event()
 
-    async def stalled() -> AsyncIterator[Any]:
-        yield _chunk("one")
+    async def stalled() -> AsyncIterator[ChatChunk]:
+        yield ChatChunk(text="one")
         await asyncio.Event().wait()
 
     async def run() -> list[str]:
@@ -789,6 +791,40 @@ def test_check_openrouter_model_calls_get_with_nitro() -> None:
     assert seen == {"author": "org", "slug": "model:nitro"}
 
 
+def test_check_openrouter_model_reads_a_dict_reply() -> None:
+    async def get_async(**_kwargs: Any) -> Any:
+        return {"data": {"id": "org/other", "name": "Other", "context_length": 8000}}
+
+    seen: list[Event] = []
+    unsubscribe = EVENTS.subscribe(seen.append)
+    client = SimpleNamespace(models=SimpleNamespace(get_async=get_async))
+    try:
+        asyncio.run(check_openrouter_model(client, _tune()))
+    finally:
+        unsubscribe()
+    assert seen == [Notice("[llm model org/model:nitro → org/other]")]
+
+
+def test_a_failed_read_after_the_consumer_stops_is_not_logged() -> None:
+    async def events() -> AsyncIterator[ChatChunk]:
+        yield ChatChunk(text="one")
+        raise ChatHttpError(500, None, quota_exhausted=False)
+
+    async def run() -> list[dict[str, Any]]:
+        reported: list[dict[str, Any]] = []
+        asyncio.get_running_loop().set_exception_handler(lambda _loop, ctx: reported.append(ctx))
+        stream = _consume_chat_events(events(), None, _ChatStats())
+        assert await anext(stream) == "one"
+        await asyncio.sleep(0.01)
+        await stream.aclose()
+        del stream
+        gc.collect()
+        await asyncio.sleep(0)
+        return reported
+
+    assert asyncio.run(run()) == []
+
+
 def test_check_openrouter_model_404(capsys: pytest.CaptureFixture[str]) -> None:
     async def get_async(**_kwargs: Any) -> Any:
         req = httpx.Request("GET", "https://openrouter.ai/api/v1/model/org/missing")
@@ -814,12 +850,9 @@ def _events_once_429(wait: float | None, then: list[str]):
         async def gen() -> Any:
             calls["n"] += 1
             if calls["n"] == 1:
-                call.stats.aborted = True
-                call.stats.http_status = 429
-                call.stats.retry_after_s = wait
-            else:
-                for text in then:
-                    yield _chunk(text)
+                raise ChatHttpError(429, wait, quota_exhausted=False)
+            for text in then:
+                yield ChatChunk(text=text)
 
         return gen()
 
@@ -915,12 +948,8 @@ def test_a_quota_429_is_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
     def events(call: Any) -> Any:
         async def gen() -> Any:
             calls["n"] += 1
-            call.stats.aborted = True
-            call.stats.http_status = 429
-            call.stats.retry_after_s = None
-            call.stats.quota_exhausted = True
-            for _ in ():
-                yield None
+            raise ChatHttpError(429, None, quota_exhausted=True)
+            yield ChatChunk()
 
         return gen()
 
@@ -975,10 +1004,8 @@ def test_429_after_a_token_does_not_retry(monkeypatch: pytest.MonkeyPatch) -> No
     def events(call: Any) -> Any:
         async def gen() -> Any:
             calls["n"] += 1
-            yield _chunk("partial")
-            call.stats.aborted = True
-            call.stats.http_status = 429
-            call.stats.retry_after_s = 2.0
+            yield ChatChunk(text="partial")
+            raise ChatHttpError(429, 2.0, quota_exhausted=False)
 
         return gen()
 
@@ -1000,21 +1027,17 @@ def test_429_after_a_token_does_not_retry(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 def test_abort_http_reads_retry_after_header() -> None:
-    stats = _ChatStats()
     req = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
     headers = httpx.Response(429, headers={"Retry-After": "12"}, request=req).headers
     body = '{"error":{"metadata":{"retry_after_seconds":2}}}'
-    _abort_http(stats, 429, "org/model", body, headers)
-    assert stats.http_status == 429
-    assert stats.aborted is True
-    assert stats.retry_after_s == 12.0
+    refused = _abort_http(429, "org/model", body, headers)
+    assert refused.status == 429
+    assert refused.retry_after_s == 12.0
 
 
 def test_abort_http_reads_retry_after_from_body() -> None:
-    stats = _ChatStats()
     body = '{"error":{"metadata":{"retry_after_seconds":8}}}'
-    _abort_http(stats, 429, "org/model", body, None)
-    assert stats.retry_after_s == 8.0
+    assert _abort_http(429, "org/model", body, None).retry_after_s == 8.0
 
 
 def test_openrouter_429_header_retries_once(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1058,10 +1081,9 @@ def test_openrouter_429_header_retries_once(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 def test_abort_http_ignores_retry_after_on_other_status() -> None:
-    stats = _ChatStats()
-    _abort_http(stats, 500, "org/model", '{"retry_after_seconds":2}', None)
-    assert stats.http_status == 500
-    assert stats.retry_after_s is None
+    refused = _abort_http(500, "org/model", '{"retry_after_seconds":2}', None)
+    assert refused.status == 500
+    assert refused.retry_after_s is None
 
 
 def test_log_briefs_show_the_provider_and_the_token_counts() -> None:
@@ -1092,18 +1114,12 @@ def test_a_retry_wait_in_the_error_body_is_read_the_way_a_header_is() -> None:
 
 
 def test_abort_http_marks_a_quota_429() -> None:
-    quota = _ChatStats()
-    _abort_http(
-        quota,
-        429,
-        "m",
-        '{"error":{"code":"insufficient_quota","message":"free_limit_reached"}}',
-        None,
+    quota = _abort_http(
+        429, "m", '{"error":{"code":"insufficient_quota","message":"free_limit_reached"}}', None
     )
     assert quota.quota_exhausted
-    limited = _ChatStats()
-    _abort_http(
-        limited, 429, "m", '{"error":{"message":"temporarily rate-limited upstream"}}', None
+    limited = _abort_http(
+        429, "m", '{"error":{"message":"temporarily rate-limited upstream"}}', None
     )
     assert not limited.quota_exhausted
 
