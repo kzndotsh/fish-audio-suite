@@ -81,7 +81,8 @@ def test_each_event_prints_its_line(capsys: pytest.CaptureFixture[str]) -> None:
     lines = capsys.readouterr().out.splitlines()
     assert lines[:3] == ["listening…", "you ▸ tell me a story", "  [llm 429, retrying in 4s]"]
     assert re.fullmatch(r"  ↳ first audio .*asr .*", lines[3])
-    assert lines[4:] == ["", "bye"]
+    assert lines[4] == "session 1 turns · first audio p50 0.90s p90 0.90s"
+    assert lines[5:] == ["", "bye"]
 
 
 def test_with_debug_on_the_summary_goes_to_the_log_not_stdout(
@@ -140,7 +141,8 @@ def test_a_whole_turn_prints_the_same_transcript_as_before(
     out = capsys.readouterr().out.splitlines()
     assert out[:3] == ["listening…", "you ▸ tell me something fun", "llm ▸ Hello there friend."]
     assert out[3].startswith("  ↳ ")
-    assert out[4:] == ["", "bye"]
+    assert out[4].startswith("session 1 turns · ")
+    assert out[5:] == ["", "bye"]
 
 
 def test_a_display_that_draws_its_own_screen_leaves_the_console_off(
@@ -170,3 +172,52 @@ def test_a_display_that_draws_its_own_screen_leaves_the_console_off(
     assert code == 0
     assert capsys.readouterr().out == ""
     assert any(isinstance(e, Bye) for e in seen)
+
+
+def _turn(since_stop: float, first_token: float) -> TurnEnded:
+    return TurnEnded(
+        LatencySnapshot(
+            llm_first_token_ms=first_token, first_audio_ms=since_stop - 400, end_wait_ms=400
+        )
+    )
+
+
+def test_the_session_ends_with_the_typical_and_the_slow_wait(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    bus = EventBus()
+    ConsoleSink(bus)
+    waits = [1000, 1200, 1400, 1600, 1800, 2000, 2200, 2400, 2600, 5000]
+    _emit(bus, *(_turn(wait, wait / 2) for wait in waits), Bye(0))
+    out = capsys.readouterr().out
+    summary = next(line for line in out.splitlines() if line.startswith("session"))
+    # The middle of ten turns, and the slow one in ten (the 9th of 10 sorted).
+    assert summary == (
+        "session 10 turns · since you stopped p50 1.80s p90 2.60s"
+        " · first audio p50 1.40s p90 2.20s · llm first token p50 0.90s p90 1.30s"
+    )
+    assert out.rstrip().endswith("bye")
+
+
+def test_a_session_with_no_turns_prints_no_summary(capsys: pytest.CaptureFixture[str]) -> None:
+    bus = EventBus()
+    ConsoleSink(bus)
+    _emit(bus, Bye(0))
+    assert "session" not in capsys.readouterr().out
+
+
+def test_the_session_summary_goes_to_the_log_with_debug_on(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    lines: list[str] = []
+
+    def record(message: str, *args: object, **_kw: object) -> None:
+        lines.append(message.format(*args))
+
+    monkeypatch.setattr("fish_audio_suite_voice.console_sink.debug_enabled", lambda: True)
+    monkeypatch.setattr("fish_audio_suite_voice.console_sink.debug", record)
+    bus = EventBus()
+    ConsoleSink(bus)
+    _emit(bus, _turn(1000, 500), Bye(2))
+    assert any(line.startswith("session.summary 1 turns") for line in lines)
+    assert "session" not in capsys.readouterr().out

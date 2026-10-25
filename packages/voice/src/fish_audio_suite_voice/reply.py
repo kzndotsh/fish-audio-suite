@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import math
 import threading
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from dataclasses import replace
 from typing import Final
 
@@ -37,6 +38,7 @@ from fish_audio_suite_voice.wire import TtsResult
 __all__ = [
     "after_speech",
     "collect_reply",
+    "session_summary",
     "speak_reply",
     "stream_turn",
     "turn_summary",
@@ -450,6 +452,46 @@ async def stream_turn(
 
 def _seconds(ms: float) -> str:
     return f"{ms / 1000:.2f}s"
+
+
+def _percentile(values: list[float], share: float) -> float:
+    # Nearest rank: the value at or below which ``share`` of the turns fall.
+    ordered = sorted(values)
+    return ordered[max(0, math.ceil(share * len(ordered)) - 1)]
+
+
+def session_summary(snapshots: Sequence[LatencySnapshot]) -> str:
+    """One human line for a whole session: the typical and the slow turn.
+
+    Parameters
+    ----------
+    snapshots : Sequence of LatencySnapshot
+        One per answered turn, in any order.
+
+    Returns
+    -------
+    str
+        ``session N turns · since you stopped p50 … p90 …`` and the same for first
+        audio, the LLM's first token and the total, for each one any turn recorded.
+        Empty when there were no turns.
+    """
+    if not snapshots:
+        return ""
+    fields = [
+        ("since you stopped", [s.since_stop_ms for s in snapshots]),
+        ("first audio", [s.first_audio_ms for s in snapshots]),
+        ("llm first token", [s.llm_first_token_ms for s in snapshots]),
+        ("total", [s.voice_to_voice_ms for s in snapshots]),
+    ]
+    parts = [f"session {len(snapshots)} turns"]
+    for name, values in fields:
+        known = [value for value in values if value is not None]
+        if known:
+            parts.append(
+                f"{name} p50 {_seconds(_percentile(known, 0.5))}"
+                f" p90 {_seconds(_percentile(known, 0.9))}"
+            )
+    return " \u00b7 ".join(parts)
 
 
 def turn_summary(snapshot: LatencySnapshot) -> str:
