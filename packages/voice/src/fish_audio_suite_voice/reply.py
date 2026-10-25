@@ -38,6 +38,7 @@ from fish_audio_suite_voice.wire import TtsResult
 __all__ = [
     "after_speech",
     "collect_reply",
+    "session_summary",
     "speak_reply",
     "stream_turn",
     "turn_summary",
