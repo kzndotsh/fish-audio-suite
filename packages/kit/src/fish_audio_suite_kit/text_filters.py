@@ -1,4 +1,4 @@
-"""TTS text filters. Re-exports the scrub, dialogue, and stream-hold modules."""
+"""TTS text filters, gathered from the scrub, dialogue, junk, and stream-hold modules."""
 
 from __future__ import annotations
 

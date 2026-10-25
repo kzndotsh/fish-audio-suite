@@ -562,15 +562,17 @@ def scrub_tts(
         True when text was already sent before this chunk. Default False.
         A leading parenthesis is then an aside, not the whole reply.
     before : str, optional
-        One character already spoken before this chunk. Default empty.
+        Text already spoken before this chunk. Only its last character is
+        read. Default empty.
     after : str, optional
-        One character still held after this chunk. Default empty.
+        Text still held after this chunk. Only its first character is read.
+        Default empty.
 
     Returns
     -------
     str
-        Spoken text. The no-argument call is the whole string, stripped.
-        A neighbor character keeps one edge space the replacement inserted.
+        Spoken text. With no neighbors the result is stripped. With a
+        neighbor, one edge space a replacement inserted is kept.
 
     Notes
     -----

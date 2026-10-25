@@ -1,4 +1,9 @@
-"""Fish [cue] tags: mood leads, lowercase, and third-party aliases."""
+"""Fish ``[cue]`` tags.
+
+Rewrites third-party markup and aliases into lowercase Fish cues, maps free-form
+cues to official ones, turns a sentence-leading mood word into a cue, and carries
+an emotion cue across the pieces of a streamed reply.
+"""
 
 from __future__ import annotations
 
@@ -508,7 +513,7 @@ def _cue_word(inner: str) -> bool:
 
 
 def rewrite_s1_parens(text: str) -> str:
-    """`(happy)` / `(break)` → `[happy]` / `[break]`. Unknown `(asides)` left for scrubbers."""
+    """Rewrite S1 ``(happy)`` tags as ``[happy]``. An unknown ``(aside)`` is left for the scrubber."""
     return _S1_PAREN_RE.sub(lambda m: _bracket(m.group(1)), text)
 
 
@@ -759,32 +764,35 @@ def ensure_lead_cue(text: str, *, default: str | None = None) -> str:
     text : str
         Already scrubbed reply.
     default : str or None, optional
-        Cue name without brackets. When given, the reply is prepended with
-        ``[default]`` unless it already *starts* with a cue. When omitted or
-        blank, the reply is left unchanged regardless of cue presence.
+        Cue name without brackets, lowercased before use. When omitted or
+        blank, the reply is returned unchanged.
 
     Returns
     -------
     str
-        ``text`` unchanged when it already starts with a ``[cue]``, or when
-        no default cue is set. Without a default, also unchanged when any
-        ``[cue]`` is present anywhere (existing behaviour). Empty or
-        whitespace-only input is unchanged.
+        ``text`` unchanged when it is blank, when no default is set, or when
+        it already starts with a ``[cue]``. Otherwise ``[default]``, a space,
+        and ``text`` without its leading whitespace.
 
     Notes
     -----
-    Fish speaks ``[clear throat]`` as ahem, and a short ``[clear]`` tag does
-    the same. A missing cue stays as written words.
+    Pick an emotion such as ``calm`` as the default. ``[clear]`` is not
+    neutral, because Fish speaks it as an ahem, the same as ``[clear throat]``.
+
+    Examples
+    --------
+    >>> ensure_lead_cue("  hi", default="Calm")
+    '[calm] hi'
+    >>> ensure_lead_cue("[sad] hi", default="calm")
+    '[sad] hi'
     """
     if not text.strip():
         return text
     tag = (default or "").strip().lower()
     if not tag:
-        # No default: legacy behaviour — unchanged when any cue present.
         if _CUE_RE.search(text):
             return text
         return text
-    # With a default: prepend unless the reply already *starts* with a cue.
     if _CUE_RE.match(text.lstrip()):
         return text
     return f"[{tag}] {text.lstrip()}"

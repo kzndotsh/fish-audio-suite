@@ -1,4 +1,8 @@
-"""Shared Fish TTS/ASR knobs. Literals live on SuiteDefaults."""
+"""Shared Fish TTS and ASR defaults, their bounds, and the checks that keep values in them.
+
+The default values live on ``SuiteDefaults``. The voice loop's default system
+prompt and seed exchange live here too.
+"""
 
 from __future__ import annotations
 
@@ -280,7 +284,7 @@ _TTS_MODEL_BY_NAME: Final[dict[str, TtsModel]] = {
 
 
 def normalize_tts_model(name: str) -> str:
-    """Catalog ids are lowercase. Any other single-token id is returned stripped.
+    """Clean a TTS model id so it is safe to send as a header.
 
     Parameters
     ----------

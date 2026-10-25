@@ -20,7 +20,9 @@ class LatencySnapshot:
     Attributes
     ----------
     asr_ms : float or None
-        From sending the finished utterance to Fish ASR until its transcript is back.
+        From the start of recognition until the final transcript is back. With
+        Fish ASR that starts when the finished utterance is sent. With a
+        streaming recogniser (Deepgram Flux) it starts at the last voiced audio.
     llm_first_token_ms : float or None
         From the LLM request until its first token.
     tts_first_text_ms : float or None
@@ -29,12 +31,12 @@ class LatencySnapshot:
     tts_first_audio_ms : float or None
         From the start of the TTS turn until the first audio chunk arrives from Fish.
     voice_to_voice_ms : float or None
-        From sending the utterance to ASR until the TTS turn ends, after playback
+        From the start of ``asr_ms`` until the TTS turn ends, after playback
         finishes or is cut off.
     trace_id : str or None
         W3C trace id of the turn, when one was made.
     first_audio_ms : float or None
-        From sending the utterance to ASR until the first Fish audio chunk goes to
+        From the start of ``asr_ms`` until the first Fish audio chunk goes to
         the speaker. It does not count the silence the listener waited out first.
     end_wait_ms : float or None
         The silence the listener waited out after the last word before it sent the

@@ -163,8 +163,8 @@ def flatten_table_rows(text: str, *, line_start: bool) -> str:
 def _wrap_end(text: str, start: int, run_end: int) -> int:
     """Return where the emphasis marks that begin at ``start`` end, or -1.
 
-    The rules are the ones the old pattern spelled out as five alternatives,
-    tried in order. ``_`` is both a mark and a word character, so a shorter run
+    Three cases are tried in order: two or more marks between word characters, an opener,
+    then a closer. ``_`` is both a mark and a word character, so a shorter run
     can end in front of it.
     """
     n = len(text)
@@ -173,8 +173,8 @@ def _wrap_end(text: str, start: int, run_end: int) -> int:
     followed_by_word = run_end < n and _is_word(text[run_end])
 
     def last_end(low: int, *, word_after: bool) -> int:
-        # Greedy, then give marks back one at a time. The lookahead at a shorter
-        # end sees a mark: a word character only when that mark is ``_``.
+        # Greedy, then give marks back one at a time. At a shorter end the next
+        # character is a mark, which counts as a word character only when it is ``_``.
         for end in range(run_end, low - 1, -1):
             at_word = followed_by_word if end == run_end else text[end] == "_"
             if at_word == word_after:
@@ -204,7 +204,7 @@ def _wrap_end(text: str, start: int, run_end: int) -> int:
 
 
 def emphasis_runs(text: str) -> Iterator[tuple[int, int]]:
-    """Yield the ``(start, end)`` of each run of emphasis marks that should be handled.
+    """Yield the ``(start, end)`` of each run of emphasis marks that wraps a word.
 
     Parameters
     ----------
@@ -218,8 +218,9 @@ def emphasis_runs(text: str) -> Iterator[tuple[int, int]]:
 
     Notes
     -----
-    A mark between word characters is an identifier or a product, and a mark spaced
-    on both sides is an operator. A closer may follow a comma or a ``]``.
+    One mark between word characters is an identifier or a product, and a mark spaced
+    on both sides is an operator, so neither is yielded. A closer may follow a
+    word, a comma or stop right after a word, or a ``]``.
     """
     n = len(text)
     i = 0

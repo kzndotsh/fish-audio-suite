@@ -245,8 +245,10 @@ def scrub_asr(text: str, *, strip_speakers: bool = True, strip_cues: bool = Fals
     text : str
         Raw transcript.
     strip_speakers : bool, optional
-        Drop ``Speaker 1:`` style labels. Default True. The proxy follows
-        ``FISH_PROXY_ASR_STRIP_SPEAKERS``, which is also on by default.
+        Drop ``Speaker 1:`` labels. Default True. The proxy follows
+        ``FISH_PROXY_ASR_STRIP_SPEAKERS``, which is also on by default. A
+        ``<|speaker:N|>`` marker becomes a space either way, like every
+        ``<|…|>`` token.
     strip_cues : bool, optional
         Drop ``[laughter]`` style annotations that ``transcribe-1-pro`` adds.
         Default False. A bracket with only digits, such as ``[1-2]``, stays.
@@ -284,7 +286,7 @@ def asr_tone(text: str, *, limit: int = _TONE_CUES_MAX) -> tuple[str, ...]:
     text : str
         The transcript before ``scrub_asr`` removed its annotations.
     limit : int, optional
-        The most cues to return.
+        The most cues to return. Default 3.
 
     Returns
     -------
@@ -429,8 +431,9 @@ def without_watermark_segments(
         if not body or not is_caption_watermark(body):
             continue
         dropped = True
-        # "Thanks for watching." does not equal "thanks for watching".
-        # The phrase stayed in the transcript and the next turn answered it.
+        # The segment ("Thanks for watching.") rarely matches the transcript's
+        # spelling exactly, so match the folded phrase first. A literal replace
+        # runs only when the pattern finds no copy at all.
         updated = _drop_watermark_clause(cleaned, body)
         if updated != cleaned:
             cleaned = updated
@@ -479,10 +482,10 @@ def is_asr_hallucination(
     bool
         True for empty text, ``nospeech``, YouTube-caption boilerplate
         (thanks-for-watching, Amara, 谢谢观看), gzip-repetitive text, emoji-only
-        or angle-token-only text, a single CJK character, or fewer than
-        ``min_letters`` letters. ``Été`` and a Russian sentence are speech.
-        Three digits are a number, so ``100`` is kept, and a longer CJK
-        sentence is kept.
+        or angle-token-only text, a single CJK character with no other letter,
+        or fewer than ``min_letters`` letters. ``Été`` and a Russian sentence
+        are speech. Three or more digits are a number, so ``100`` is kept, and
+        a longer CJK sentence is kept.
 
     Notes
     -----

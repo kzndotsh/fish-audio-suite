@@ -43,7 +43,7 @@ _QUOTE_PAIRS = (
 # A closed quote, with an optional cue in front. It may wrap across lines. The
 # body may be empty so that narration around "" is not read as speech. The body
 # also stops at another opener of the same style: an unclosed opener then gives
-# up there instead of scanning to the end of the text, which made a run of
+# up there instead of scanning to the end of the text, which would make a run of
 # unclosed quotes quadratic. A quote nested in its own style is not dialogue
 # anyway; nesting uses another style (“…「…」…”).
 _DIALOGUE_RE = re.compile(
@@ -141,8 +141,8 @@ def extract_quoted_speech(text: str) -> str:
     parts, closed_end = _closed_quotes(text)
     opened = _trailing_open_quote(text, closed_end)
     if not parts and not opened:
-        # A reply that opens with a quote holding only a cue name is passed
-        # through as a quote, as it always was.
+        # A reply that opens with a quote holding only a cue name, such as
+        # '"[laughing]" hello there', is still passed through as one open quote.
         opened = _trailing_open_quote(text.strip(), 0, anchored=True)
     if opened:
         parts.append(opened)

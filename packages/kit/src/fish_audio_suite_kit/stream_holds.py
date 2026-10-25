@@ -214,6 +214,7 @@ def _incomplete_html(text: str) -> int | None:
         tail = tail[1:].lstrip(" \t")
     if tail[:1] and not tail[0].isalpha():
         return None
+    # Still no ">" after 80 characters means prose after a "<", not a tag.
     if len(tail) > 80:
         return None
     return start
@@ -231,6 +232,7 @@ def _incomplete_escaped_tag(text: str) -> int | None:
         body = rest[1:].lstrip(" \t") if rest[:1] == "/" else rest
         if body[:1] and not body[0].isalpha():
             continue
+        # The same 80-character bound as _incomplete_html.
         if len(body) > 80:
             continue
         found = match.start() if found is None else min(found, match.start())
@@ -243,6 +245,7 @@ def _incomplete_entity(text: str) -> int | None:
     if mark < 0 or ";" in text[mark:]:
         return None
     tail = text[mark + 1 :]
+    # A run longer than any entity a reply uses is prose with an "&" in it.
     if len(tail) > 12 or not re.fullmatch(r"#?x?[0-9A-Za-z]*", tail):
         return None
     return mark
@@ -508,11 +511,11 @@ def _sentence_lead_hold(text: str, *, sentence_start: bool, before: str = "") ->
     return mood_lead_hold_at(text, sentence_start=True)
 
 
-# Text-only checks. Order does not matter: the earliest start wins.
+# Text-only checks. The earliest start wins, so the order does not change the
+# result. The spans most often held across many tokens go first, so tts_hold_at
+# can stop early on them.
 _TEXT_HOLDS: tuple[_Hold, ...] = (
     partial(_first_unclosed_pair, open_re=THOUGHT_OPEN_RE, close_re=THOUGHT_CLOSE_RE),
-    # The spans most often held across many tokens go first, so tts_hold_at
-    # stops early on them. The order does not change the result.
     partial(unclosed_span_start, open_ch="(", close_ch=")"),
     partial(unclosed_span_start, open_ch="（", close_ch="）"),
     partial(unclosed_span_start, open_ch="[", close_ch="]"),

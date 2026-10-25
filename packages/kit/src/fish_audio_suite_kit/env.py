@@ -139,8 +139,8 @@ def env_text(name: str, default: str = "") -> str:
 
 
 def _whole_int(value: Any) -> int:
-    # int("16000.0") raises, so a decimal string fell back to another rate
-    # and the speaker played the buffer at the wrong speed.
+    # int("16000.0") raises. A whole decimal is accepted, so a sample rate
+    # written that way is not swapped for a default rate.
     if isinstance(value, int):
         return value
     if isinstance(value, float):

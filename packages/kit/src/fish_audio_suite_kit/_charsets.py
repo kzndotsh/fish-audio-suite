@@ -34,7 +34,8 @@ IDEOGRAPHIC_STOPS = "。！？"
 # Arabic, Devanagari, and Urdu stops count only after a space.
 SPACED_STOPS = "؟।۔"
 SENTENCE_STOPS = frozenset(ASCII_STOPS + IDEOGRAPHIC_STOPS + SPACED_STOPS)
-# Characters that stay on the sentence after its stop: quotes and a closing paren.
+# Characters that stay on the sentence after its stop: closing quotes, guillemets,
+# CJK corner and angle brackets, and a closing paren.
 SENTENCE_CLOSER_CHARS = "\"'”’)」』»›〉》"
 SENTENCE_CLOSERS = frozenset(SENTENCE_CLOSER_CHARS)
 
