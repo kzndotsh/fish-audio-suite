@@ -14,13 +14,13 @@ import pytest
 from session_fakes import make_ctx
 
 from fish_audio_suite_kit import FishHttpError
-from fish_audio_suite_voice import barge, console
+from fish_audio_suite_voice import barge, console, mic
 from fish_audio_suite_voice.asr import AsrResult
-from fish_audio_suite_voice.barge import FRAME_BYTES, mic_frames
 from fish_audio_suite_voice.console import console_print, end_reply_line, write_reply_token
 from fish_audio_suite_voice.debug import configure_voice_logging
 from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexContext
 from fish_audio_suite_voice.hearing import hear_line, recognize
+from fish_audio_suite_voice.mic import FRAME_BYTES, SounddeviceMic
 from fish_audio_suite_voice.playback import PortAudioMissingError
 
 
@@ -103,7 +103,7 @@ def test_a_batch_turn_reports_the_silence_it_waited_out(monkeypatch: pytest.Monk
     _asr_returns(monkeypatch, "what time is it")
     monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", lambda *_a, **_k: b"wav")
     heard = asyncio.run(hear_line(ctx, ""))
-    assert heard.end_wait_ms == ctx.config.listen.end_silence_frames * barge.FRAME_MS
+    assert heard.end_wait_ms == ctx.config.listen.end_silence_frames * mic.FRAME_MS
 
 
 def test_a_barge_in_clip_is_never_a_stale_copy(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -164,10 +164,11 @@ def _frames_from(
         def RawInputStream(**kwargs: Any) -> _FakeStream:  # noqa: N802 - mirrors sounddevice
             return _FakeStream(buffers, **kwargs)
 
-    monkeypatch.setattr(barge, "load_sounddevice", lambda: Sd)
+    monkeypatch.setattr(mic, "load_sounddevice", lambda: Sd)
     stop = threading.Event()
     got: list[bytes] = []
-    frames: Iterator[bytes] = mic_frames(None, stop, timeout=0.01, aec=aec)  # pyright: ignore[reportArgumentType]
+    source = SounddeviceMic() if aec is None else SounddeviceMic(aec=aec)  # pyright: ignore[reportArgumentType]
+    frames: Iterator[bytes] = source.frames(stop)
     for frame in frames:
         got.append(frame)
         if len(got) == want:
@@ -175,7 +176,7 @@ def _frames_from(
     return got
 
 
-def test_mic_frames_regroups_ragged_buffers_into_whole_frames(
+def test_the_mic_regroups_ragged_buffers_into_whole_frames(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     half = FRAME_BYTES // 2
@@ -187,14 +188,14 @@ def test_mic_frames_regroups_ragged_buffers_into_whole_frames(
     assert got[2] == b"b" * FRAME_BYTES
 
 
-def test_mic_frames_cleans_each_frame_with_the_echo_canceller(
+def test_the_mic_cleans_each_frame_with_the_echo_canceller(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     got = _frames_from(monkeypatch, [b"a" * FRAME_BYTES], want=1, aec=_Aec())
     assert got == [b"A" * FRAME_BYTES]
 
 
-def test_mic_frames_waits_out_an_empty_queue_until_stopped(
+def test_the_mic_waits_out_an_empty_queue_until_stopped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class Sd:
@@ -202,12 +203,12 @@ def test_mic_frames_waits_out_an_empty_queue_until_stopped(
         def RawInputStream(**kwargs: Any) -> _FakeStream:  # noqa: N802 - mirrors sounddevice
             return _FakeStream([], **kwargs)
 
-    monkeypatch.setattr(barge, "load_sounddevice", lambda: Sd)
+    monkeypatch.setattr(mic, "load_sounddevice", lambda: Sd)
     stop = threading.Event()
     timer = threading.Timer(0.05, stop.set)
     timer.start()
     try:
-        assert list(mic_frames(None, stop, timeout=0.01)) == []
+        assert list(SounddeviceMic().frames(stop)) == []
     finally:
         timer.cancel()
 
@@ -251,10 +252,10 @@ def test_a_closed_stdout_never_raises_from_the_console_helpers(
 
 def test_a_buffer_shorter_than_a_frame_waits_and_a_zero_frame_size_yields_nothing() -> None:
     pending = bytearray()
-    assert barge._take_full_frames(pending, b"ab", 4) == []  # pyright: ignore[reportPrivateUsage]
-    assert barge._take_full_frames(pending, b"cdef", 4) == [b"abcd"]  # pyright: ignore[reportPrivateUsage]
+    assert mic._take_full_frames(pending, b"ab", 4) == []  # pyright: ignore[reportPrivateUsage]
+    assert mic._take_full_frames(pending, b"cdef", 4) == [b"abcd"]  # pyright: ignore[reportPrivateUsage]
     assert bytes(pending) == b"ef"
-    assert barge._take_full_frames(pending, b"gh", 0) == []  # pyright: ignore[reportPrivateUsage]
+    assert mic._take_full_frames(pending, b"gh", 0) == []  # pyright: ignore[reportPrivateUsage]
 
 
 def test_hear_line_logs_instead_of_printing_listening_in_debug_mode(

@@ -22,8 +22,6 @@ from pathlib import Path
 from typing import Final, Literal
 
 from fish_audio_suite_kit import elapsed_ms, make_traceparent, trace_id_of
-from fish_audio_suite_voice.aec import EchoCanceller
-from fish_audio_suite_voice.barge import FRAME_BYTES, SAMPLE_RATE, StopFlag
 from fish_audio_suite_voice.debug import debug, trace, warn
 from fish_audio_suite_voice.deepgram import (
     DeepgramError,
@@ -40,6 +38,7 @@ from fish_audio_suite_voice.deepgram import (
 )
 from fish_audio_suite_voice.events import EVENTS, Interim
 from fish_audio_suite_voice.listen import stream_utterance
+from fish_audio_suite_voice.mic import FRAME_BYTES, SAMPLE_RATE, Mic, StopFlag
 from fish_audio_suite_voice.playback import write_mono_wav
 from fish_audio_suite_voice.tune import ListenTune, SttTune
 
@@ -196,12 +195,11 @@ class _Capture:
         self,
         listen_fn: Callable[..., bool],
         *,
-        device: str | int | None,
+        mic: Mic,
         quit_requested: StopFlag,
         stop: StopFlag,
         prefix: bytes,
         listen: ListenTune,
-        aec: EchoCanceller | None,
     ) -> None:
         loop = asyncio.get_running_loop()
         self.frames: asyncio.Queue[tuple[bytes, bool, float] | None] = asyncio.Queue()
@@ -215,12 +213,11 @@ class _Capture:
             None,
             functools.partial(
                 listen_fn,
-                device,
+                mic,
                 _AnyStop(quit_requested, stop, self._decided),
                 sink,
                 prefix=prefix,
                 tune=listen,
-                aec=aec,
             ),
         )
         self.pump.add_done_callback(lambda _done: self.frames.put_nowait(None))
@@ -387,8 +384,7 @@ async def stream_turn(
     *,
     stt: SttTune,
     listen: ListenTune,
-    device: str | int | None,
-    aec: EchoCanceller | None,
+    mic: Mic,
     quit_requested: StopFlag,
     stop: StopFlag,
     prefix: bytes = b"",
@@ -405,10 +401,8 @@ async def stream_turn(
         The Deepgram key, model and end-of-turn setting.
     listen : ListenTune
         The voice-activity settings that decide when speech starts.
-    device : str or int or None
-        PortAudio input.
-    aec : EchoCanceller or None
-        Cleans each frame against the far-end tap.
+    mic : Mic
+        Where the frames come from, already cleaned of echo.
     quit_requested : StopFlag
         Set when the session is ending.
     stop : StopFlag
@@ -446,12 +440,11 @@ async def stream_turn(
     stream = make_stream(url, stt.deepgram_key)
     capture = _Capture(
         listen_fn,
-        device=device,
+        mic=mic,
         quit_requested=quit_requested,
         stop=stop,
         prefix=prefix,
         listen=listen,
-        aec=aec,
     )
     turn = _Turn()
     turn.keep = bool(stt.save_dir)

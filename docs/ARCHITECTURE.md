@@ -136,6 +136,7 @@ flowchart LR
 | Module | Job |
 | --- | --- |
 | `aec` | AEC3 removes the bot's own voice from the mic, using what `playback` sends as the reference |
+| `mic` | The one microphone: 30 ms frames from PortAudio, cleaned by the session's echo canceller. Listen, streaming and barge-in all read it |
 | `listen` | webrtcvad and a loudness floor start and end the utterance |
 | `asr` | Sends the WAV clip to Fish ASR. With `FISH_VOICE_HEAR_TONE` it also returns the tone marks Fish heard (`AsrResult`) |
 | `deepgram` | Deepgram Flux's protocol and connection: the address, the turn messages, a connection a test can fake |
@@ -206,7 +207,7 @@ There is no frontend. The user-facing parts are an HTTP API (the proxy) and a te
 | --- | --- |
 | Settings | `config` (`VoiceCliConfig`), `tune` (listen, barge and AEC tunes, env readers), `llm_tune` (`LlmTune`, provider table) |
 | Duplex loop | `duplex` (the loop), `duplex_state` (`DuplexContext`), `hearing` (listen and ASR), `turn_check` (end-of-turn check), `reply` (answer and speak), `history`, `signals` (cancel and quit flags) |
-| Audio in | `listen`, `barge`, `floor`, `aec` |
+| Audio in | `mic`, `listen`, `barge`, `floor`, `aec` |
 | Speech out | `speaker` (`FishSpeaker`), `tts_turn` (one turn with retry), `wire` (websocket pump, `TtsResult`), `declick` (fades the start and end of each sentence that meets silence), `loudness` (levels the reply), `stream_scrub`, `playback`, `spoken` |
 | LLM | `llm` (`ChatBackend`, retry, stats), `transports` (OpenRouter SDK or httpx SSE, each event read into one `ChatChunk`; a refused request raises `ChatHttpError`) |
 | Events | `events` (`EVENTS`, the typed events a display follows, `StateTracker`, `EventQueue`, `forward_logs`, `mirror_conversation`), `console_sink` (the plain terminal display, one subscriber), `inputs` (`TurnSource`, and `LiveInput` for typed lines and mute), `session_view` (`reduce_view` folds events into one immutable `SessionView`), `tui` (the Textual app, `fish-voice --tui`, needs the `tui` extra) |

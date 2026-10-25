@@ -7,21 +7,17 @@ import io
 from collections.abc import Callable
 from typing import Any, Final
 
-from fish_audio_suite_voice.aec import EchoCanceller, pcm_rms
+from fish_audio_suite_voice.aec import pcm_rms
 from fish_audio_suite_voice.barge import (
     DEFAULT_BARGE_RMS,
-    FRAME_BYTES,
-    FRAME_MS,
     LISTEN_HEARTBEAT_FRAMES,
     MIC_LEVEL_EVERY_FRAMES,
-    SAMPLE_RATE,
-    StopFlag,
     frame_is_speech,
-    mic_frames,
 )
 from fish_audio_suite_voice.debug import debug, heartbeat_due, trace
 from fish_audio_suite_voice.events import EVENTS, MicLevel
 from fish_audio_suite_voice.floor import AdaptiveFloor
+from fish_audio_suite_voice.mic import FRAME_BYTES, FRAME_MS, SAMPLE_RATE, Mic, StopFlag
 from fish_audio_suite_voice.playback import write_mono_wav
 from fish_audio_suite_voice.tune import (
     IMPULSE_START_EXTRA,
@@ -44,7 +40,6 @@ MIN_UTTERANCE_FRAMES: Final = 4
 # One quiet frame is 30 ms, a normal dip inside a word. Ending on that dip
 # after the cap sends a cut-off sentence to ASR.
 _CAP_QUIET_FRAMES: Final = 4
-_MIC_POLL_S: Final = 0.25
 _WAV_HEADER_BYTES: Final = 44
 IMPULSE_PEAK_RATIO: Final = 8.0
 IMPULSE_EXTRA_VOICED: Final = 12
@@ -305,20 +300,19 @@ def _prime_listen(heard: _Listen, pcm: bytes) -> None:
 
 
 def record_utterance(
-    device: str | int | None = None,
+    mic: Mic,
     quit_requested: StopFlag | None = None,
     *,
     prefix: bytes = b"",
     tune: ListenTune | None = None,
-    aec: EchoCanceller | None = None,
     give_up_frames: int | None = None,
 ) -> bytes | None:
     """Block until one VAD utterance.
 
     Parameters
     ----------
-    device : str or int or None, optional
-        PortAudio input. None uses the host default.
+    mic : Mic
+        Where the frames come from, already cleaned of echo.
     quit_requested : StopFlag or None, optional
         Ends the listen when set, such as the session's quit flag (Ctrl+C). Returns None.
     prefix : bytes, optional
@@ -326,8 +320,6 @@ def record_utterance(
         The next listen starts from this clip instead of a cooldown.
     tune : ListenTune or None, optional
         VAD and utterance limits. None uses the defaults.
-    aec : EchoCanceller or None, optional
-        Cleans each frame against the far-end tap. None skips AEC.
     give_up_frames : int or None, optional
         Stop and return None when speech has not started after this many 30 ms frames. None
         waits as long as it takes.
@@ -364,9 +356,7 @@ def record_utterance(
         len(heard.clip_frames),
     )
 
-    for idle_frames, frame in enumerate(
-        mic_frames(device, quit_requested, timeout=_MIC_POLL_S, aec=aec), start=1
-    ):
+    for idle_frames, frame in enumerate(mic.frames(quit_requested), start=1):
         if heard.take(frame, idle_frames):
             break
         if give_up_frames is not None and not heard.triggered and idle_frames >= give_up_frames:
@@ -398,21 +388,20 @@ class _StreamListen(_Listen):
 
 
 def stream_utterance(
-    device: str | int | None,
+    mic: Mic,
     quit_requested: StopFlag | None,
     sink: Callable[[bytes, bool], None],
     *,
     prefix: bytes = b"",
     tune: ListenTune | None = None,
-    aec: EchoCanceller | None = None,
     vad: Any = None,
 ) -> bool:
     """Block until one utterance ends, passing its frames to ``sink`` as they come.
 
     Parameters
     ----------
-    device : str or int or None
-        PortAudio input. None uses the host default.
+    mic : Mic
+        Where the frames come from, already cleaned of echo.
     quit_requested : StopFlag or None
         Ends the listen when set.
     sink : Callable
@@ -424,8 +413,6 @@ def stream_utterance(
         PCM kept from the barge-in that interrupted the previous reply.
     tune : ListenTune or None, optional
         VAD and utterance limits. None uses the defaults.
-    aec : EchoCanceller or None, optional
-        Cleans each frame against the far-end tap.
     vad : Any, optional
         A voice-activity detector with ``is_speech(frame, rate)``. WebRTC's by default.
 
@@ -448,9 +435,7 @@ def stream_utterance(
     tune = tune or ListenTune()
     heard = _StreamListen(tune, vad, sink)
     _prime_listen(heard, prefix)
-    for idle_frames, frame in enumerate(
-        mic_frames(device, quit_requested, timeout=_MIC_POLL_S, aec=aec), start=1
-    ):
+    for idle_frames, frame in enumerate(mic.frames(quit_requested), start=1):
         if heard.take(frame, idle_frames):
             return True
     return False

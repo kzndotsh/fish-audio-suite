@@ -8,11 +8,11 @@ import time
 from collections import deque
 from typing import Protocol
 
-from fish_audio_suite_voice.barge import StopFlag
 from fish_audio_suite_voice.debug import mark_turn
 from fish_audio_suite_voice.duplex_state import DuplexContext
 from fish_audio_suite_voice.events import EVENTS, Heard
 from fish_audio_suite_voice.hearing import HeardLine, hear_line
+from fish_audio_suite_voice.mic import StopFlag
 from fish_audio_suite_voice.signals import DuplexSession
 
 __all__ = [

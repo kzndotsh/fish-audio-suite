@@ -23,12 +23,12 @@ from session_fakes import (
     run_session,
     speak_with_fakes,
 )
-from voice_fakes import install_audio, install_vad, make_result, set_tts
+from voice_fakes import ScriptedMic, install_audio, install_vad, make_result, set_tts
 
 from fish_audio_suite_kit import LatencySnapshot
 from fish_audio_suite_voice import events as events_module
 from fish_audio_suite_voice.asr import AsrResult
-from fish_audio_suite_voice.barge import FRAME_BYTES, MIC_LEVEL_EVERY_FRAMES, BargeGate
+from fish_audio_suite_voice.barge import MIC_LEVEL_EVERY_FRAMES, BargeGate
 from fish_audio_suite_voice.cli import _quit_line  # pyright: ignore[reportPrivateUsage]
 from fish_audio_suite_voice.debug import configure_voice_logging
 from fish_audio_suite_voice.duplex import duplex_turns
@@ -61,6 +61,7 @@ from fish_audio_suite_voice.events import (
 )
 from fish_audio_suite_voice.hearing import HeardLine, hear_line
 from fish_audio_suite_voice.listen import _Listen  # pyright: ignore[reportPrivateUsage]
+from fish_audio_suite_voice.mic import FRAME_BYTES, StopFlag
 from fish_audio_suite_voice.speaker import FishSpeaker
 from fish_audio_suite_voice.tune import ListenTune
 
@@ -313,20 +314,15 @@ class _SpeechVad:
 def test_the_barge_gate_reports_the_mic_level_and_the_interruption(
     monkeypatch: pytest.MonkeyPatch, seen: list[Event]
 ) -> None:
-    def frames(
-        device: object,
-        stop: threading.Event | None,
-        *,
-        timeout: float,
-        aec: object = None,
-    ) -> collections.abc.Iterator[bytes]:
-        del device, stop, timeout, aec
+    def frames(stop: StopFlag | None) -> collections.abc.Iterator[bytes]:
+        del stop
         for _ in range(10):
             yield _loud()
 
     install_vad(monkeypatch, _SpeechVad)
-    monkeypatch.setattr("fish_audio_suite_voice.barge.mic_frames", frames)
-    gate = BargeGate(hit_frames=MIC_LEVEL_EVERY_FRAMES + 2, min_rms=1.0, bleed_delay_s=0)
+    gate = BargeGate(
+        mic=ScriptedMic(frames), hit_frames=MIC_LEVEL_EVERY_FRAMES + 2, min_rms=1.0, bleed_delay_s=0
+    )
     cancel = threading.Event()
     gate.watch(cancel)
     assert cancel.is_set()
