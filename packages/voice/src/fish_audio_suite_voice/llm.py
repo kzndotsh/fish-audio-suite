@@ -185,7 +185,7 @@ async def _consume_chat_events(
     events: AsyncIterator[ChatChunk],
     cancel: asyncio.Event | None,
     stats: _ChatStats,
-) -> AsyncIterator[str]:
+) -> AsyncGenerator[str, None]:
     # async for only notices cancel after the next token. Ctrl+C during a
     # stalled reply would wait until the provider sends something.
     incoming = aiter(events)
