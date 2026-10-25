@@ -118,10 +118,12 @@ def test_the_barge_prefix_is_handed_to_the_stream_and_cleared(
 ) -> None:
     calls = _stream_returns(monkeypatch, _turn())
     ctx = _ctx()
-    ctx.carry.prefix = b"\x02\x00" * 50
+    ctx.carry.keep(b"\x02\x00" * 50, "", since=42)
     asyncio.run(hear_line(ctx, ""))
     assert calls[0]["prefix"] == b"\x02\x00" * 50
+    assert calls[0]["since"] == 42
     assert ctx.carry.prefix == b""
+    assert ctx.carry.since is None
 
 
 def _eager_ctx() -> DuplexContext:

@@ -114,6 +114,7 @@ def _mic(
         *,
         prefix: bytes,
         tune: ListenTune,
+        since: int | None = None,
     ) -> bool:
         if seen is not None:
             seen.update(prefix=prefix, tune=tune)
@@ -258,6 +259,7 @@ def test_an_outage_hands_over_the_frames_the_mic_was_still_passing_on() -> None:
         *,
         prefix: bytes,
         tune: ListenTune,
+        since: int | None = None,
     ) -> bool:
         del prefix, tune
         for _ in range(3):
@@ -284,6 +286,7 @@ def test_a_turn_cancelled_while_the_mic_lets_go_still_closes_the_stream() -> Non
         *,
         prefix: bytes,
         tune: ListenTune,
+        since: int | None = None,
     ) -> bool:
         del prefix, tune
         for _ in range(3):

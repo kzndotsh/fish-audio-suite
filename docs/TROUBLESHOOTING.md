@@ -99,7 +99,7 @@ The mic stays shut for `FISH_VOICE_COOLDOWN` seconds (default 0.8) after a reply
 
 ### A turn starts with no one talking, right after the bot finishes
 
-In the log, `listen speech_start` comes within a few hundred ms of `listen open`, and the transcript is empty, junk, or the bot's own last words. The speaker's echo reached the mic before the room went quiet. Raise `FISH_VOICE_COOLDOWN`, lower the speaker volume, or move the mic away from the speaker.
+In the log, `listen speech_start` comes within a few hundred ms of `listen open`, and the transcript is empty, junk, or the bot's own last words. The speaker's echo reached the mic before the room went quiet. Raise `FISH_VOICE_COOLDOWN`, lower the speaker volume, or move the mic away from the speaker. With `--debug`, the `listen cooldown` line after each reply shows how close the echo came: `speech_like` near `start_needs` means it could start a turn.
 
 ### `asr.skip backchannel` or `asr.skip hallucination`
 

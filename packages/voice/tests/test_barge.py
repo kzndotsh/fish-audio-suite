@@ -216,7 +216,7 @@ def test_encode_wav_keeps_pcm_samples() -> None:
 
 
 def test_bleed_wait_ends_when_the_turn_is_cancelled() -> None:
-    gate = BargeGate(bleed_delay_s=30)
+    gate = BargeGate(mic=ScriptedMic(), bleed_delay_s=30)
     cancel = threading.Event()
     thread = gate.start_after_bleed(cancel)
     cancel.set()
@@ -233,7 +233,7 @@ def test_barge_tune_reads_env_once(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FISH_VOICE_BLEED_DELAY", "1.5")
     monkeypatch.setenv("FISH_VOICE_BARGE_FRAMES", "9")
     monkeypatch.setenv("FISH_VOICE_BARGE_RMS", "500")
-    gate = BargeGate(tune=BargeTune.from_env())
+    gate = BargeGate(mic=ScriptedMic(), tune=BargeTune.from_env())
     monkeypatch.setenv("FISH_VOICE_BARGE_FRAMES", "2")
     assert gate.bleed_delay_s == 1.5
     assert gate.hit_frames == 9
@@ -258,23 +258,25 @@ def test_barge_hit_frames_must_be_positive(monkeypatch: pytest.MonkeyPatch) -> N
     assert BargeTune.from_env().hit_frames == DEFAULT_BARGE_HIT_FRAMES
     monkeypatch.setenv("FISH_VOICE_BARGE_FRAMES", "-2")
     assert BargeTune.from_env().hit_frames == DEFAULT_BARGE_HIT_FRAMES
-    assert BargeGate(hit_frames=0).hit_frames == DEFAULT_BARGE_HIT_FRAMES
+    assert BargeGate(mic=ScriptedMic(), hit_frames=0).hit_frames == DEFAULT_BARGE_HIT_FRAMES
     monkeypatch.setenv("FISH_VOICE_BARGE_RMS", "0")
     assert BargeTune.from_env().min_rms == DEFAULT_BARGE_RMS
-    assert BargeGate(min_rms=-1).min_rms == DEFAULT_BARGE_RMS
-    assert BargeGate(min_rms=10).min_rms == 10
+    assert BargeGate(mic=ScriptedMic(), min_rms=-1).min_rms == DEFAULT_BARGE_RMS
+    assert BargeGate(mic=ScriptedMic(), min_rms=10).min_rms == 10
 
 
 def test_barge_gate_explicit_kwargs_win(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FISH_VOICE_BLEED_DELAY", "9.9")
-    gate = BargeGate(tune=BargeTune.from_env(), bleed_delay_s=0.2, hit_frames=3, min_rms=10.0)
+    gate = BargeGate(
+        mic=ScriptedMic(), tune=BargeTune.from_env(), bleed_delay_s=0.2, hit_frames=3, min_rms=10.0
+    )
     assert gate.bleed_delay_s == 0.2
     assert gate.hit_frames == 3
     assert gate.min_rms == 10.0
 
 
 def test_barge_keeps_the_lookback_that_tripped() -> None:
-    gate = BargeGate()
+    gate = BargeGate(mic=ScriptedMic())
     frame = b"\x01\x00" * 480
     for n in range(25):
         gate._heard.append(frame[:-1] + bytes([n]))
@@ -337,7 +339,7 @@ def test_barge_defaults_without_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("FISH_VOICE_BLEED_DELAY", raising=False)
     monkeypatch.delenv("FISH_VOICE_BARGE_FRAMES", raising=False)
     monkeypatch.delenv("FISH_VOICE_COOLDOWN", raising=False)
-    gate = BargeGate(tune=BargeTune.from_env())
+    gate = BargeGate(mic=ScriptedMic(), tune=BargeTune.from_env())
     assert gate.bleed_delay_s == DEFAULT_BLEED_DELAY_S
     assert gate.hit_frames == DEFAULT_BARGE_HIT_FRAMES
     assert BargeTune.from_env().cooldown_s == 0.8
@@ -451,7 +453,7 @@ def test_barge_watch_logs_a_mic_failure_without_cancelling(
 def test_bleed_thread_skips_the_mic_when_already_cancelled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    gate = BargeGate(bleed_delay_s=0)
+    gate = BargeGate(mic=ScriptedMic(), bleed_delay_s=0)
     watched: list[bool] = []
 
     def watch(cancel: threading.Event) -> None:
@@ -695,7 +697,7 @@ def test_speech_between_the_floor_and_the_boosted_need_does_not_raise_the_floor(
 
 
 def test_a_gate_without_an_aec_runs_without_one() -> None:
-    gate = BargeGate()
+    gate = BargeGate(mic=ScriptedMic())
     assert gate.aec.available() is False
     assert gate._bleed_wait() == gate.tune.bleed_delay_s
 
@@ -730,7 +732,7 @@ def test_a_setup_failure_in_the_watcher_thread_is_reported(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    gate = BargeGate(hit_frames=2, min_rms=1.0, bleed_delay_s=0)
+    gate = BargeGate(mic=ScriptedMic(), hit_frames=2, min_rms=1.0, bleed_delay_s=0)
 
     def broken_bleed() -> float:
         raise RuntimeError("aec failed to load")
@@ -786,3 +788,23 @@ def test_a_gate_with_no_mute_switch_is_always_watching(monkeypatch: pytest.Monke
     )
     gate.watch(cancel)
     assert cancel.is_set()
+
+
+def test_a_trip_records_where_the_next_listen_reads_on_from(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Positioned(ScriptedMic):
+        @property
+        def position(self) -> int:
+            return 100
+
+    aec = EchoCanceller(AecTune(enabled=False))
+    gate, cancel = _watch_with(
+        monkeypatch, [_pcm(500)] * 5, aec=aec, tune=BargeTune(hit_frames=3, min_rms=200.0)
+    )
+    source = _Positioned([_pcm(500)] * 5, aec=aec)
+    gate.mic = source
+    gate.watch(cancel)
+    assert cancel.is_set()
+    assert source.since == 100  # read from where the mic was when the watch began
+    assert gate.resume_at == 103  # the trip came on the third frame

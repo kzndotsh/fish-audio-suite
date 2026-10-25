@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Final
+from typing import Final, NamedTuple
 
 import httpx
 
@@ -21,6 +21,7 @@ __all__ = [
     "EXIT_CRASH",
     "EXIT_FATAL",
     "EXIT_OK",
+    "CarriedClip",
     "CarryOver",
     "DuplexContext",
 ]
@@ -35,6 +36,13 @@ def _never_muted() -> bool:
     return False
 
 
+class CarriedClip(NamedTuple):
+    """The clip a barge-in kept, and the mic position the next listen reads on from."""
+
+    pcm: bytes
+    since: int | None
+
+
 @dataclass(slots=True)
 class CarryOver:
     """What a barge-in leaves for the next turn.
@@ -42,20 +50,23 @@ class CarryOver:
     Notes
     -----
     ``prefix`` is the speech that tripped the barge-in. The next listen starts from
-    it instead of waiting out the cooldown, and takes it. ``resume`` is the part of
+    it instead of waiting out the cooldown, and takes it. ``since`` is the mic
+    position just after it, so that listen reads on from there and loses none of
+    the words said while the reply stopped. ``resume`` is the part of
     the cut reply that was not heard. It is spoken again if the interrupt turns out
     to be noise, and dropped once real speech is heard.
     """
 
     prefix: bytes = b""
     resume: str = ""
+    since: int | None = None
 
     @property
     def barged(self) -> bool:
         """Whether a barge-in left speech for the next listen."""
         return bool(self.prefix)
 
-    def keep(self, prefix: bytes, resume: str) -> None:
+    def keep(self, prefix: bytes, resume: str, since: int | None = None) -> None:
         """Hold the clip that cut a reply off, and what of the reply was not heard.
 
         Parameters
@@ -64,18 +75,23 @@ class CarryOver:
             The PCM that tripped the barge-in.
         resume : str
             The unheard rest of the reply. Empty when none of it played.
+        since : int or None, optional
+            The mic position just after ``prefix``. None when it is not known.
         """
         self.prefix = prefix
         self.resume = resume
+        self.since = since
 
-    def take_prefix(self) -> bytes:
+    def take_prefix(self) -> CarriedClip:
         """Return the barge-in clip for the next listen and forget it."""
-        prefix, self.prefix = self.prefix, b""
-        return prefix
+        clip = CarriedClip(self.prefix, self.since)
+        self.prefix, self.since = b"", None
+        return clip
 
     def hand_back(self, prefix: bytes) -> None:
         """Keep ``prefix`` for the next listen, such as speech a failed stream already caught."""
         self.prefix = prefix
+        self.since = None
 
     def take_resume(self) -> str:
         """Return the unheard rest of the cut reply and forget it."""

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import collections
 import io
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, Final
 
 from fish_audio_suite_voice.aec import pcm_rms
@@ -26,6 +26,7 @@ from fish_audio_suite_voice.tune import (
 )
 
 __all__ = [
+    "cooldown_report",
     "listen_reject_reason",
     "record_utterance",
     "spike_start_allowed",
@@ -254,6 +255,48 @@ class _Listen:
         return False
 
 
+def cooldown_report(frames: Sequence[bytes], tune: ListenTune, vad: Any) -> str:
+    """Describe what the mic heard while the cooldown kept it from listening.
+
+    Parameters
+    ----------
+    frames : Sequence of bytes
+        The 30 ms frames from the end of a reply to the end of its cooldown.
+    tune : ListenTune
+        Supplies the speech floor and how many frames start speech.
+    vad : Any
+        A voice-activity detector with ``is_speech(frame, rate)``.
+
+    Returns
+    -------
+    str
+        ``frames=… peak_rms=… floor=… voiced=… over_floor=… speech_like=… start_needs=…``.
+        ``speech_like`` counts frames both over the floor and voiced, the ones that
+        count toward starting a turn. Near ``start_needs``, the bot's own echo could
+        start a turn if the cooldown were shorter.
+
+    Examples
+    --------
+    >>> class Quiet:
+    ...     def is_speech(self, frame, rate):
+    ...         return False
+    >>> cooldown_report([], ListenTune(), Quiet())
+    'frames=0'
+    """
+    if not frames:
+        return "frames=0"
+    floor = tune.min_speech_rms
+    levels = [pcm_rms(frame) for frame in frames]
+    voiced = [frame_is_speech(vad, frame) for frame in frames]
+    over = [level >= floor for level in levels]
+    speech_like = sum(1 for loud, said in zip(over, voiced, strict=True) if loud and said)
+    return (
+        f"frames={len(frames)} peak_rms={max(levels):.0f} floor={floor:.0f} "
+        f"voiced={sum(voiced)} over_floor={sum(over)} speech_like={speech_like} "
+        f"start_needs={tune.start_speech_frames}"
+    )
+
+
 def _clip_wav(heard: _Listen, tune: ListenTune) -> bytes | None:
     why = listen_reject_reason(
         clip_frames=len(heard.clip_frames),
@@ -306,6 +349,7 @@ def record_utterance(
     prefix: bytes = b"",
     tune: ListenTune | None = None,
     give_up_frames: int | None = None,
+    since: int | None = None,
 ) -> bytes | None:
     """Block until one VAD utterance.
 
@@ -323,6 +367,9 @@ def record_utterance(
     give_up_frames : int or None, optional
         Stop and return None when speech has not started after this many 30 ms frames. None
         waits as long as it takes.
+    since : int or None, optional
+        The mic position to read from, such as just after a barge-in clip. None reads
+        from now.
 
     Returns
     -------
@@ -356,7 +403,7 @@ def record_utterance(
         len(heard.clip_frames),
     )
 
-    for idle_frames, frame in enumerate(mic.frames(quit_requested), start=1):
+    for idle_frames, frame in enumerate(mic.frames(quit_requested, since=since), start=1):
         if heard.take(frame, idle_frames):
             break
         if give_up_frames is not None and not heard.triggered and idle_frames >= give_up_frames:
@@ -395,6 +442,7 @@ def stream_utterance(
     prefix: bytes = b"",
     tune: ListenTune | None = None,
     vad: Any = None,
+    since: int | None = None,
 ) -> bool:
     """Block until one utterance ends, passing its frames to ``sink`` as they come.
 
@@ -415,6 +463,8 @@ def stream_utterance(
         VAD and utterance limits. None uses the defaults.
     vad : Any, optional
         A voice-activity detector with ``is_speech(frame, rate)``. WebRTC's by default.
+    since : int or None, optional
+        The mic position to read from. None reads from now.
 
     Returns
     -------
@@ -435,7 +485,7 @@ def stream_utterance(
     tune = tune or ListenTune()
     heard = _StreamListen(tune, vad, sink)
     _prime_listen(heard, prefix)
-    for idle_frames, frame in enumerate(mic.frames(quit_requested), start=1):
+    for idle_frames, frame in enumerate(mic.frames(quit_requested, since=since), start=1):
         if heard.take(frame, idle_frames):
             return True
     return False

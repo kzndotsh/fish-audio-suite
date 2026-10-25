@@ -43,9 +43,34 @@ class ScriptedMic:
         self._script = script
         self.aec = aec or EchoCanceller(AecTune(enabled=False))
         self.opened = 0
+        self.since: int | None = None
+        self.released = 0
 
-    def frames(self, stop: StopFlag | None) -> Iterator[bytes]:
-        """Yield the script, ending early once ``stop`` is set."""
+    def __enter__(self) -> ScriptedMic:
+        """Return the mic, as the session's exit stack expects."""
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        """Nothing to close."""
+
+    @property
+    def position(self) -> int:
+        """Always 0: every read plays the script from its start."""
+        return 0
+
+    def release(self) -> None:
+        """Count the release, as mute does."""
+        self.released += 1
+
+    def recent(self, since: int) -> list[bytes]:
+        """The script, as if all of it had arrived since ``since``."""
+        del since
+        script = self._script
+        return [] if callable(script) else list(script)
+
+    def frames(self, stop: StopFlag | None, since: int | None = None) -> Iterator[bytes]:
+        """Yield the script, ending early once ``stop`` is set. ``since`` is recorded."""
+        self.since = since
         self.opened += 1
         script = self._script(stop) if callable(self._script) else self._script
         for frame in script:
@@ -68,6 +93,7 @@ class FakeGate:
 
     def __init__(self, captured: bytes = b"", *, hold: bool = False) -> None:
         self.captured = captured
+        self.resume_at: int | None = None
         self.hold = hold
         self.armed = 0
         self.thread: threading.Thread | None = None

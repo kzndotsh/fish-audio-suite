@@ -12,14 +12,15 @@ from fish_audio_suite_voice.aec import EchoCanceller
 from fish_audio_suite_voice.asr import asr_client
 from fish_audio_suite_voice.config import VoiceCliConfig
 from fish_audio_suite_voice.console_sink import ConsoleSink
-from fish_audio_suite_voice.debug import debug
+from fish_audio_suite_voice.debug import debug, debug_enabled
 from fish_audio_suite_voice.duplex_state import EXIT_CRASH, EXIT_FATAL, EXIT_OK, DuplexContext
 from fish_audio_suite_voice.events import EVENTS, Bye, TurnEnded
 from fish_audio_suite_voice.hearing import HeardLine, hear_line
 from fish_audio_suite_voice.history import opening_history, remember_user
 from fish_audio_suite_voice.inputs import TurnSource
+from fish_audio_suite_voice.listen import cooldown_report
 from fish_audio_suite_voice.llm import ChatBackend, ChatUnusableError
-from fish_audio_suite_voice.mic import SounddeviceMic
+from fish_audio_suite_voice.mic import SessionMic
 from fish_audio_suite_voice.reply import collect_reply, speak_reply, stream_turn
 from fish_audio_suite_voice.signals import DuplexSession
 from fish_audio_suite_voice.speaker import FishSpeaker
@@ -89,12 +90,26 @@ async def _settle(ctx: DuplexContext) -> int | None:
     quit_requested = ctx.session.quit_requested
     ctx.session.turn.fire()
     ctx.session.turn.clear()
+    reply_ended = ctx.mic.position
     if quit_requested.is_set() or (
         not ctx.carry.barged
         and await asyncio.to_thread(quit_requested.wait, ctx.config.barge.cooldown_s)
     ):
         return bye()
+    if not ctx.carry.barged and debug_enabled():
+        _log_cooldown(ctx, reply_ended)
     return None
+
+
+def _log_cooldown(ctx: DuplexContext, since: int) -> None:
+    # The mic stays open through the cooldown, so this shows whether the bot's
+    # echo ever comes near starting a turn, which is what the cooldown guards.
+    try:
+        import webrtcvad  # noqa: PLC0415 - optional extra, as in listen
+    except ImportError:
+        return
+    vad = webrtcvad.Vad(ctx.config.listen.vad_aggressiveness)
+    debug("listen.cooldown {}", cooldown_report(ctx.mic.recent(since), ctx.config.listen, vad))
 
 
 async def _resume_reply(ctx: DuplexContext) -> int | None:
@@ -185,12 +200,14 @@ async def _session(
 ) -> int:
     async with AsyncExitStack() as stack:
         asr_http = await stack.enter_async_context(asr_client())
+        # One input for the whole session, so nothing is lost between listens.
+        mic = stack.enter_context(SessionMic(device, session.aec))
         history, pinned = opening_history(c.system_prompt, seed=c.pin_seed)
         ctx = DuplexContext(
             config=c,
             tts=tts,
             device=device,
-            mic=SounddeviceMic(device, session.aec),
+            mic=mic,
             backend=backend,
             session=session,
             asr_http=asr_http,

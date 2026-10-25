@@ -321,15 +321,16 @@ async def hear_line(
         return streamed
     drop_speculation(ctx)
     try:
-        prefix = ctx.carry.take_prefix()
+        clip = ctx.carry.take_prefix()
         opened = time.monotonic()
         first_tune = first_clip_tune(ctx.config.listen, ctx.config.turn)
         wav = await asyncio.to_thread(
             record_utterance,
             ctx.mic,
             ctx.session.quit_requested if stop is None else stop,
-            prefix=prefix,
+            prefix=clip.pcm,
             tune=first_tune,
+            since=clip.since,
         )
     except PortAudioMissingError as e:
         warn(str(e))
@@ -342,7 +343,7 @@ async def hear_line(
     mark_turn()
     # A barge-in clip carries fresh speech, so it is never a stale copy.
     window = ctx.config.repeat_window_s
-    stale = not prefix and time.monotonic() - opened < window
+    stale = not clip.pcm and time.monotonic() - opened < window
     if ctx.config.turn.enabled:
         heard = await _hear_checked(
             ctx,
@@ -350,7 +351,7 @@ async def hear_line(
             last_user,
             stop=stop,
             stale=stale,
-            over_reply=bool(prefix),
+            over_reply=bool(clip.pcm),
             first_silence_frames=first_tune.end_silence_frames,
         )
     else:
@@ -359,7 +360,7 @@ async def hear_line(
             wav,
             last_user,
             stale=stale,
-            over_reply=bool(prefix),
+            over_reply=bool(clip.pcm),
             end_wait_ms=_silence_ms(first_tune.end_silence_frames),
         )
     # Quit during the Fish request used to come back as a normal line, so
@@ -486,7 +487,7 @@ async def _hear_streaming(
         turn is heard the usual way.
     """
     quit_requested = ctx.session.quit_requested
-    prefix = ctx.carry.take_prefix()
+    clip = ctx.carry.take_prefix()
     opened = time.monotonic()
     eager = ctx.config.stt.eager_eot_threshold > 0
     outcome = await stream_turn(
@@ -495,7 +496,8 @@ async def _hear_streaming(
         mic=ctx.mic,
         quit_requested=quit_requested,
         stop=quit_requested if stop is None else stop,
-        prefix=prefix,
+        prefix=clip.pcm,
+        since=clip.since,
         on_eager=functools.partial(_speculate, ctx) if eager else None,
         on_resumed=functools.partial(drop_speculation, ctx) if eager else None,
     )
@@ -508,7 +510,7 @@ async def _hear_streaming(
         return HeardLine("bye")
     if isinstance(outcome, StreamedTurn):
         mark_turn()
-        stale = not prefix and time.monotonic() - opened < ctx.config.repeat_window_s
+        stale = not clip.pcm and time.monotonic() - opened < ctx.config.repeat_window_s
         return accept_transcript(
             outcome.text,
             last_user,
@@ -516,7 +518,7 @@ async def _hear_streaming(
             started=outcome.started,
             trace_id=outcome.trace_id,
             stale=stale,
-            over_reply=bool(prefix),
+            over_reply=bool(clip.pcm),
         )
     match outcome:
         case "fatal":

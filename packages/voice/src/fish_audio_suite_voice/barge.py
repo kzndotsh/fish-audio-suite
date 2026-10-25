@@ -12,7 +12,7 @@ from fish_audio_suite_voice.aec import EchoCanceller, pcm_rms
 from fish_audio_suite_voice.debug import debug, heartbeat_due, trace, warn
 from fish_audio_suite_voice.events import EVENTS, BargedIn, MicLevel
 from fish_audio_suite_voice.floor import AdaptiveFloor
-from fish_audio_suite_voice.mic import SAMPLE_RATE, Mic, SounddeviceMic
+from fish_audio_suite_voice.mic import SAMPLE_RATE, Mic
 from fish_audio_suite_voice.tune import (
     DEFAULT_BARGE_HIT_FRAMES,
     DEFAULT_BARGE_PLAYING_GAIN,
@@ -120,10 +120,9 @@ class BargeGate:
 
     Parameters
     ----------
-    mic : Mic or None, optional
+    mic : Mic
         The session's mic. Its echo canceller is shared with the playback sink so
-        the far-end reference is the audio that sink played. None opens the host
-        default input without AEC.
+        the far-end reference is the audio that sink played.
     tune : BargeTune or None, optional
         Gate settings. None uses the defaults.
     bleed_delay_s, hit_frames, min_rms : optional
@@ -148,7 +147,7 @@ class BargeGate:
     def __init__(
         self,
         *,
-        mic: Mic | None = None,
+        mic: Mic,
         tune: BargeTune | None = None,
         bleed_delay_s: float | None = None,
         hit_frames: int | None = None,
@@ -156,9 +155,7 @@ class BargeGate:
         muted: Callable[[], bool] | None = None,
     ) -> None:
         base = tune or BargeTune()
-        # No mic means no AEC. A default EchoCanceller would load AEC3 and
-        # shorten the bleed delay without ever receiving the sink's far-end audio.
-        self.mic: Mic = mic if mic is not None else SounddeviceMic()
+        self.mic: Mic = mic
         self.tune: BargeTune = replace(
             base,
             bleed_delay_s=base.bleed_delay_s
@@ -178,6 +175,8 @@ class BargeGate:
         self.min_rms: float = self.tune.min_rms
         self._heard: deque[bytes] = deque(maxlen=BARGE_LOOKBACK_FRAMES)
         self.captured: bytes = b""
+        # The mic position just after the frame that tripped the gate.
+        self.resume_at: int | None = None
         self.failure: Exception | None = None
         self._muted: Callable[[], bool] = muted or _never
 
@@ -212,10 +211,11 @@ class BargeGate:
         # The ring still holds audio from before the bleed delay. Keep only
         # what is about to reach the mic.
         self.aec.align()
+        start = self.mic.position
 
         try:
             for idle_frames, frame in enumerate(
-                self.mic.frames(_CancelOrMuted(cancel, self._muted)),
+                self.mic.frames(_CancelOrMuted(cancel, self._muted), since=start),
                 start=1,
             ):
                 rms = pcm_rms(frame)
@@ -252,6 +252,7 @@ class BargeGate:
                 )
                 if tripped:
                     self.captured = b"".join(self._heard)
+                    self.resume_at = start + idle_frames
                     self.aec.clear()
                     debug("barge.keep frames={} bytes={}", len(self._heard), len(self.captured))
                     EVENTS.emit(BargedIn())

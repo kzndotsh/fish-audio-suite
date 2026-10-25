@@ -228,12 +228,14 @@ def after_speech(
     )
 
 
-def _keep_for_resume(ctx: DuplexContext, sent: str, result: TtsResult, captured: bytes) -> None:
+def _keep_for_resume(ctx: DuplexContext, sent: str, result: TtsResult, barge: BargeGate) -> None:
     # A barge-in keeps the clip that tripped it. If that clip turns out to be
     # noise, the rest of the reply is spoken again.
-    if result.cancelled and captured:
+    if result.cancelled and barge.captured:
         ctx.carry.keep(
-            captured, unspoken_text(sent, result.spoken_so_far) if result.got_audio else ""
+            barge.captured,
+            unspoken_text(sent, result.spoken_so_far) if result.got_audio else "",
+            since=barge.resume_at,
         )
 
 
@@ -285,7 +287,7 @@ async def speak_reply(
         except PortAudioMissingError as exc:
             warn(str(exc))
             return snapshot, EXIT_FATAL
-        _keep_for_resume(ctx, scrubbed, result, barge.captured)
+        _keep_for_resume(ctx, scrubbed, result, barge)
         return after_speech(
             ctx,
             snapshot,
@@ -412,7 +414,7 @@ async def stream_turn(
                 default="calm",
             ),
             result,
-            barge.captured,
+            barge,
         )
     finally:
         cancel.set()

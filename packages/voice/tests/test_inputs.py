@@ -8,7 +8,7 @@ import time
 
 import pytest
 from session_fakes import hello_tokens, make_ctx, quick_config, run_session_with, speak_with_fakes
-from voice_fakes import install_audio
+from voice_fakes import ScriptedMic, install_audio
 
 from fish_audio_suite_voice.duplex_state import DuplexContext
 from fish_audio_suite_voice.events import EVENTS, Event, Heard
@@ -234,3 +234,31 @@ def test_the_context_learns_the_mute_switch_so_the_barge_in_watch_can_follow_it(
     assert ctx.muted()
     live.unmute()
     assert not ctx.muted()
+
+
+def test_muting_closes_the_session_mic_at_once_and_while_muted() -> None:
+    ctx = make_ctx()
+    mic = ctx.mic
+    assert isinstance(mic, ScriptedMic)
+    source = LiveInput()
+    source.submit("hi")
+    _turn(source, ctx)  # the source now knows the session's mic
+    source.mute()
+    assert mic.released == 1  # closed straight away, even with a reply still playing
+    source.submit("typed while muted")
+    assert _turn(source, ctx).text == "typed while muted"
+    source.toggle_mute()  # unmuted
+    assert mic.released == 1
+    source.toggle_mute()  # muted again
+    assert mic.released == 2
+
+
+def test_a_session_muted_before_its_first_turn_keeps_the_mic_closed() -> None:
+    ctx = make_ctx()
+    mic = ctx.mic
+    assert isinstance(mic, ScriptedMic)
+    source = LiveInput()
+    source.mute()
+    threading.Timer(0.05, lambda: source.submit("typed")).start()
+    assert _turn(source, ctx).text == "typed"
+    assert mic.released >= 1

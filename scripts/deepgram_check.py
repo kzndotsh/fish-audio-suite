@@ -27,7 +27,7 @@ from pathlib import Path
 
 from fish_audio_suite_voice.envfile import apply_cli_env_files
 from fish_audio_suite_voice.events import EVENTS, Event, Interim
-from fish_audio_suite_voice.mic import SounddeviceMic
+from fish_audio_suite_voice.mic import SessionMic
 from fish_audio_suite_voice.streaming import StreamedTurn, StreamFallback, stream_turn
 from fish_audio_suite_voice.tune import ListenTune, SttTune
 
@@ -58,13 +58,14 @@ async def run(turns: int, device: str | int | None) -> int:
             print(f"  ... {event.text}")
 
     stop_showing = EVENTS.subscribe(show)
+    mic = SessionMic(device)
     try:
         for number in range(1, turns + 1):
             print(f"\nturn {number}: say a sentence, then stop")
             outcome = await stream_turn(
                 stt=stt,
                 listen=ListenTune.from_env(),
-                mic=SounddeviceMic(device),
+                mic=mic,
                 quit_requested=quit_requested,
                 stop=quit_requested,
             )
@@ -78,6 +79,7 @@ async def run(turns: int, device: str | int | None) -> int:
                 if isinstance(outcome, StreamFallback) or outcome == "fatal":
                     return 2
     finally:
+        mic.close()
         stop_showing()
     return 0
 
