@@ -201,16 +201,11 @@ class EchoCanceller:
             except ImportError:
                 debug("aec.skip extra pywebrtc-audio not installed")
                 return None
-            self._proc = AudioProcessor(
-                sample_rate=AEC_RATE,
-                num_channels=1,
-                echo_cancellation=tune.enabled,
-                noise_suppression=tune.noise_suppression_db > 0,
-                ns_level=_NS_LEVELS.get(tune.noise_suppression_db, 0),
-                high_pass_filter=True,
-                auto_gain_control=tune.auto_gain,
-                stream_delay_ms=0,
-            )
+            try:
+                self._proc = self._build(AudioProcessor)
+            except Exception as exc:  # noqa: BLE001 - native processor boundary; the mic passes through raw
+                debug("aec.fail could not start the audio processor: {}", exc)
+                return None
             debug(
                 "aec.on 16k echo={} wet={} agc={} noise_db={}",
                 tune.enabled,
@@ -219,6 +214,19 @@ class EchoCanceller:
                 tune.noise_suppression_db,
             )
             return self._proc
+
+    def _build(self, processor: Any) -> Any:
+        tune = self.tune
+        return processor(
+            sample_rate=AEC_RATE,
+            num_channels=1,
+            echo_cancellation=tune.enabled,
+            noise_suppression=tune.noise_suppression_db > 0,
+            ns_level=_NS_LEVELS.get(tune.noise_suppression_db, 0),
+            high_pass_filter=True,
+            auto_gain_control=tune.auto_gain,
+            stream_delay_ms=0,
+        )
 
     def available(self) -> bool:
         """Return whether AEC3 loaded and is enabled."""

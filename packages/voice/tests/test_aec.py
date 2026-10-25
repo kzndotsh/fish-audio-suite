@@ -321,3 +321,16 @@ def test_noise_suppression_takes_only_the_processor_steps(
 def test_gain_can_be_turned_off(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FISH_VOICE_AGC", "0")
     assert AecTune.from_env().auto_gain is False
+
+
+def test_a_processor_that_fails_to_start_leaves_the_mic_raw(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def broken(**_kwargs: object) -> object:
+        raise RuntimeError("bad native build")
+
+    aec = EchoCanceller()
+    monkeypatch.setattr(aec, "_build", lambda _processor: broken())
+    near = _loud(8)
+    assert aec.clean(near) == near
+    assert aec.load() is None

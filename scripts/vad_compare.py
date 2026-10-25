@@ -141,6 +141,9 @@ def record(path: Path, seconds: float, device: int | None) -> None:
 def processed(frames: Sequence[bytes]) -> list[bytes]:
     """Run frames through the app's mic cleanup, with no speaker playing."""
     cleanup = EchoCanceller(AecTune.from_env())
+    if cleanup.load() is None:
+        msg = "--process needs the aec extra (pywebrtc-audio) and at least one cleanup stage on"
+        raise SystemExit(msg)
     return [cleanup.clean(frame) for frame in frames]
 
 
