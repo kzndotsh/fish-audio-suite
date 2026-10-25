@@ -101,6 +101,7 @@
               "cli"
               "tui"
               "deepgram"
+              "silero"
             ];
           };
         in

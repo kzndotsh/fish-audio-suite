@@ -79,7 +79,7 @@ On NixOS, use `dev.sh` or `nix run` as above. Both bring PortAudio with them.
 
 ### Optional parts
 
-The `cli` extra pulls in what `fish-voice` needs to talk and listen. The full-screen app and Deepgram streaming are separate extras (`--extra tui`, `--extra deepgram`). The Nix package includes both. To install only some of it:
+The `cli` extra pulls in what `fish-voice` needs to talk and listen. The full-screen app, Deepgram streaming and the Silero voice detector are separate extras (`--extra tui`, `--extra deepgram`, `--extra silero`). The Nix package includes all three. To install only some of it:
 
 | Extra | Adds | Without it |
 | --- | --- | --- |
