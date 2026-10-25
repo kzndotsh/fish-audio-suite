@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import itertools
 import threading
 import time
 import wave
@@ -384,54 +385,64 @@ class _EnergyVad:
         return any(frame)
 
 
-def test_the_mic_gate_sends_nothing_until_speech_starts_and_then_the_pre_roll_first(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_the_mic_gate_sends_nothing_until_speech_starts_and_then_the_pre_roll_first() -> None:
     from fish_audio_suite_voice import listen
 
+    # Each quiet frame has its own level, all under the speech floor, so the pre-roll
+    # can be checked frame by frame.
+    quiet = [
+        level.to_bytes(2, "little", signed=True) * (FRAME_BYTES // 2) for level in range(1, 31)
+    ]
     silence = b"\x00\x00" * (FRAME_BYTES // 2)
-    quiet_then_speech = [silence] * 30 + [_loud()] * 12 + [silence] * 8
+    # Under eight times the floor, so two voiced frames start the speech and the
+    # pre-roll still holds quiet frames. A spike needs ten, which fill the pre-roll.
+    speech = _loud(300)
+    script = [*quiet, *[speech] * 12, *[silence] * 8]
     levels: list[Event] = []
     stop_listening = EVENTS.subscribe(levels.append)
-
-    def frames(*_args: Any, **_kwargs: Any) -> Any:
-        yield from quiet_then_speech
-
     tune = ListenTune(
         start_speech_frames=2, pre_pad_frames=8, end_silence_frames=4, min_speech_rms=100.0
     )
-    got: list[tuple[bytes, bool]] = []
+    got: list[bytes] = []
     try:
         local_end = listen.stream_utterance(
-            ScriptedMic(frames),
+            ScriptedMic(script),
             None,
-            lambda frame, voiced: got.append((frame, voiced)),
+            lambda frame, _voiced: got.append(frame),
             tune=tune,
             vad=_EnergyVad(),
         )
     finally:
         stop_listening()
     assert local_end  # the silence after the speech ended it
-    assert got  # speech was found
-    # Nothing from the 30 quiet frames before the pre-roll was sent: only speech leaves the machine.
-    assert len(got) < len(quiet_then_speech)
-    assert any(voiced for _, voiced in got)
-    first_voiced = next(index for index, (_, voiced) in enumerate(got) if voiced)
-    assert first_voiced < 8  # the pre-roll comes first, so the first words are not clipped
+    first_loud = got.index(speech)
+    # The pre-roll comes first, so the first words are not clipped: the quiet frames
+    # just before the speech, in order. Nothing older leaves the machine.
+    assert first_loud == tune.pre_pad_frames - tune.start_speech_frames
+    assert got[:first_loud] == quiet[-first_loud:]
+    assert got[first_loud:].count(speech) == 12
     assert any(event.__class__.__name__ == "MicLevel" for event in levels)  # the meter still moves
 
 
-def test_the_mic_gate_returns_false_when_it_is_stopped_before_any_speech(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_the_mic_gate_returns_false_when_it_is_stopped_before_any_speech() -> None:
     from fish_audio_suite_voice import listen
 
-    def frames(*_args: Any, **_kwargs: Any) -> Any:
-        yield b"\x00\x00" * (FRAME_BYTES // 2)
+    silence = b"\x00\x00" * (FRAME_BYTES // 2)
+    stop = threading.Event()
+
+    def frames(flag: StopFlag | None) -> Any:
+        # An endless quiet mic. Only the stop flag reaching it can end the listen.
+        assert flag is stop
+        for index in itertools.count():
+            if index == 5:
+                stop.set()
+            if index > 200:
+                raise AssertionError("the stop flag never ended the listen")
+            yield silence
 
     got: list[bytes] = []
     assert not listen.stream_utterance(
-        ScriptedMic(frames), None, lambda frame, _voiced: got.append(frame), vad=_EnergyVad()
+        ScriptedMic(frames), stop, lambda frame, _voiced: got.append(frame), vad=_EnergyVad()
     )
     assert got == []
 
