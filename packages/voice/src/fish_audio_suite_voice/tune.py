@@ -563,14 +563,19 @@ class SttTune:
         if provider not in STT_PROVIDERS:
             warn(f"fish-voice: ignoring FISH_VOICE_STT={provider!r}, using {DEFAULT_STT}")
             provider = DEFAULT_STT
-        model = read_text("FISH_VOICE_DEEPGRAM_MODEL", DEFAULT_DEEPGRAM_MODEL)
+        model = (
+            read_text("FISH_VOICE_DEEPGRAM_MODEL", DEFAULT_DEEPGRAM_MODEL) or DEFAULT_DEEPGRAM_MODEL
+        )
         if not model.startswith("flux"):
             warn(
                 f"fish-voice: ignoring FISH_VOICE_DEEPGRAM_MODEL={model!r}, "
                 f"using {DEFAULT_DEEPGRAM_MODEL} (only Flux models stream turns)"
             )
             model = DEFAULT_DEEPGRAM_MODEL
-        region = read_text("FISH_VOICE_DEEPGRAM_REGION", DEFAULT_DEEPGRAM_REGION).lower()
+        region = (
+            read_text("FISH_VOICE_DEEPGRAM_REGION", DEFAULT_DEEPGRAM_REGION).lower()
+            or DEFAULT_DEEPGRAM_REGION
+        )
         if region not in DEEPGRAM_REGIONS:
             warn(
                 f"fish-voice: ignoring FISH_VOICE_DEEPGRAM_REGION={region!r}, "
