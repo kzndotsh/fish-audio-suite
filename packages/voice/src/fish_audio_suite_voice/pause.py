@@ -1,4 +1,4 @@
-"""Cancellable waits shared by the Fish and LLM retry loops."""
+"""Cancellable waits shared by the Fish TTS, Fish ASR and LLM retry loops."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ __all__ = [
     "sleep_unless",
 ]
 
+# A cancel ends the wait within 50 ms.
 POLL_S: Final = 0.05
 
 

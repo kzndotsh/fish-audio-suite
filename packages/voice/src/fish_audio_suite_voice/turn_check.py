@@ -2,7 +2,7 @@
 
 Fish ASR hears a clip only after the speaker stops, so the silence that ends the clip is a
 wait in front of every reply. With the check on, that silence is short. While the clip is
-transcribed the mic is already open again, and when the words stop mid-thought ("and",
+transcribed the mic is already recording again, and when the words stop mid-thought ("and",
 "because", a comma) the turn continues into that second recording instead of being
 answered half-finished. The pieces are joined and judged like one line.
 """
@@ -162,7 +162,7 @@ class _Either:
 
 
 class Reopened:
-    """The mic, listening for a continuation while the clip so far is transcribed.
+    """A recording that listens for a continuation while the clip so far is transcribed.
 
     Parameters
     ----------
@@ -175,8 +175,8 @@ class Reopened:
     Notes
     -----
     Recording while the first clip is in flight is what keeps the words said right after
-    the pause. If the turn turns out to be over, ``drop`` closes the mic again before the
-    reply opens it.
+    the pause. If the turn turns out to be over, ``drop`` ends the recording before the
+    reply starts, so it does not run on under the reply.
     """
 
     def __init__(self, record: Callable[[StopFlag], bytes | None], stop: StopFlag) -> None:
@@ -195,7 +195,7 @@ class Reopened:
         return await self._task
 
     async def drop(self) -> None:
-        """Close the mic and discard whatever it heard."""
+        """End the recording and discard whatever it heard."""
         self._dropped.set()
         with contextlib.suppress(OSError):
             await self._task

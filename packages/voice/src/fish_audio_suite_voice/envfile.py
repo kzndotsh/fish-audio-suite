@@ -22,16 +22,16 @@ _EXPORT_WORD: Final = "export"
 
 
 def _quoted_span(val: str) -> tuple[str, str] | None:
-    # The closer is the next unescaped quote, not the last character.
-    # "sk" # "old" used to keep the comment because the line also ended
-    # on a quote. \" inside the value is not that closer.
+    # The closer is the next unescaped quote, not the last character, so in
+    # "sk" # "old" the comment is not part of the value. \" inside the value is
+    # not that closer.
     if not val or val[0] not in {'"', "'"}:
         return None
     quote = val[0]
     index = 1
     while index < len(val):
-        # A single-quoted value is literal. "C:\temp\" used to skip the
-        # closer, so the next key was swallowed and the voice id was empty.
+        # A backslash escapes only inside double quotes. A single-quoted value is
+        # literal, so 'C:\temp\' ends at its last quote.
         if quote == '"' and val[index] == "\\" and index + 1 < len(val):
             index += 2
             continue
@@ -101,8 +101,9 @@ def _without_export(line: str) -> str:
 
 
 def _unclosed_quote(stripped: str) -> str | None:
-    # "You are helpful. keeps going on the next line. A one-line "key" is
-    # already balanced, including "key # not a comment".
+    # KEY="You are helpful. opens a quote it does not close, so the value goes on
+    # to the next line. A one-line "key" is already closed, and so is
+    # "key # not a comment".
     if not stripped or stripped.startswith("#") or "=" not in stripped:
         return None
     _, _, val = _without_export(stripped).partition("=")
@@ -130,8 +131,8 @@ def _logical_lines(text: str) -> list[str]:
         while index < len(raw_lines):
             parts.append(raw_lines[index])
             index += 1
-            # \" counts as a quote character, so a raw count closes too early
-            # and the next line of the prompt is dropped.
+            # Ask _unclosed_quote rather than count quote characters: an escaped \"
+            # would close the value too early and drop the rest of the prompt.
             if _unclosed_quote("\n".join(parts).strip()) is None:
                 break
         folded.append("\n".join(parts))

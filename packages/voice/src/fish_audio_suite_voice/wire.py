@@ -117,7 +117,8 @@ class TurnSpec:
     Notes
     -----
     ``trace_headers`` are copied onto the httpx client that upgrades the
-    socket. ``partial_chars`` is the cut size from ``SuiteDefaults``.
+    socket. ``partial_chars`` is the cut size: ``FishSpeaker.partial_chars`` for a
+    streamed reply, the whole reply's length for ``speak``. A replay cuts with it too.
     """
 
     api_key: str = field(repr=False)
@@ -424,8 +425,8 @@ def _watch_cancel(cancel: threading.Event) -> tuple[asyncio.Event, threading.Eve
     """Mirror a thread-side cancel flag into an event this loop can await.
 
     A barge-in or Ctrl+C sets ``cancel`` on another thread. Polling it from the
-    loop delayed the stop by up to the poll interval, so a thread waits on it
-    and wakes the loop as soon as it is set. Set the returned stop event when
+    loop would delay the stop by up to the poll interval, so a thread waits on
+    it and wakes the loop as soon as it is set. Set the returned stop event when
     the turn ends, and the thread exits within ``_CANCEL_WATCH_S``.
     """
     loop = asyncio.get_running_loop()
@@ -509,8 +510,8 @@ def tts_result(run: TurnRun) -> TtsResult:
         # A socket drop has no HTTP status. The message is still a failed turn.
         failed=run.error_status is not None or bool(run.error_message),
         speed=spec.speed,
-        # A sink written against the older protocol has no latency attribute,
-        # and a turn that already played must not fail on it.
+        # A third-party sink may not have the attribute, and a turn that
+        # already played must not fail on it.
         output_latency_s=float(getattr(run.sink, "output_latency_s", 0.0) or 0.0),
     )
     return TtsResult(
@@ -532,7 +533,7 @@ def tts_result(run: TurnRun) -> TtsResult:
 
 def _root_exc(exc: BaseException) -> BaseException:
     # The first entry is often the cancel from a sibling task. Stopping there
-    # hid a 503, so a turn with no audio was not retried.
+    # would hide a 503, and a turn with no audio would not be retried.
     if isinstance(exc, BaseExceptionGroup) and exc.exceptions:
         for item in exc.exceptions:
             found = _root_exc(item)
@@ -576,7 +577,7 @@ def turn_failure(
     exc : BaseException
         Error from one attempt. Exception groups are unwrapped to the root.
     attempt : int
-        Zero-based attempt. The fifth is final.
+        Zero-based attempt. ``FISH_RETRY_ATTEMPTS - 1`` is the last.
     sent_text : str
         Text available to replay. Empty blocks a retry.
     got_audio : bool
@@ -588,8 +589,8 @@ def turn_failure(
     Returns
     -------
     TtsFailure
-        ``retry`` is True only for 429 or 5xx before audio, with text to replay,
-        and attempts left.
+        ``retry`` is True only for a 429, a 5xx, a websocket error or a failed
+        connection, before audio, with text to replay and attempts left.
     """
     root = _root_exc(exc)
     retry, status, message = _classify_fish_exc(root)

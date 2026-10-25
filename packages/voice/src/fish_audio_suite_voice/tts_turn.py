@@ -120,8 +120,8 @@ class SdkSocket:
             return
         self.client = None
         # A task group of CancelledError is a BaseException, so Exception
-        # does not catch it. That used to escape after the audio had already
-        # played, and the next turn repeated the line.
+        # does not catch it. Escaping after the audio has played, it would
+        # make the next turn repeat the line.
         with contextlib.suppress(Exception, BaseExceptionGroup):
             await client.close()
 
@@ -134,8 +134,8 @@ class _Turn:
 
 async def _retry_pause(cancel: threading.Event, attempt: int) -> bool:
     """Wait out a Fish backoff with jitter. True means the turn was cancelled."""
-    # One sleep ignores barge-in. The next attempt would speak after the
-    # user already interrupted, or Ctrl+C would wait out the full backoff.
+    # A plain sleep would ignore barge-in. The next attempt would speak after
+    # the user had interrupted, or Ctrl+C would wait out the full backoff.
     return await sleep_unless(fish_backoff_s(attempt), cancel.is_set)
 
 
@@ -193,7 +193,7 @@ async def run_turn(
     on_first_audio: Callable[[], None] | None = None,
     socket: FishSocket | None = None,
 ) -> TtsResult:
-    """Play one Fish turn, retrying 429 and 5xx only before the first audio byte.
+    """Play one Fish turn, retrying a retryable failure only before the first audio byte.
 
     Parameters
     ----------
@@ -222,8 +222,8 @@ async def run_turn(
 
     Notes
     -----
-    The socket is closed here. The websocket iterator is not ``aclose()``'d;
-    closing the socket ends it.
+    ``turn_failure`` decides what is retryable. The socket is closed here. The
+    websocket iterator is not ``aclose()``'d; closing the socket ends it.
     """
     run = TurnRun(
         spec=spec,
@@ -262,7 +262,7 @@ def run_isolated(coro: Coroutine[Any, Any, TtsResult]) -> TtsResult:
     Parameters
     ----------
     coro : Coroutine
-        Usually ``FishSpeaker.speak``. It must close its own httpx client.
+        One turn, as ``FishSpeaker`` builds it. It must close its own httpx client.
 
     Returns
     -------

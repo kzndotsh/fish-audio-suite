@@ -1,4 +1,8 @@
-"""The chat model's settings, read once from the environment: provider, base URL, key and sampling."""
+"""The chat model's settings, read once from the environment.
+
+They cover the provider, base URL, key and model, sampling, and OpenRouter's
+routing options.
+"""
 
 from __future__ import annotations
 
@@ -185,7 +189,7 @@ class LlmTune:
         ``openai`` (any chat-completions server over httpx) or ``openrouter``
         (the OpenRouter SDK). Experiential and any other server use ``openai``.
     base : str
-        API origin without a trailing slash.
+        API base URL without a trailing slash.
     api_key : str
         Bearer token. Empty until the environment sets one.
     model : str
@@ -193,7 +197,7 @@ class LlmTune:
     temperature : float
         Sampling temperature.
     timeout_s : float
-        Per-request timeout.
+        Per-request timeout in seconds.
     max_tokens : int
         Completion cap.
     nitro : bool
@@ -253,16 +257,17 @@ class LlmTune:
         LlmTune
             ``FISH_LLM_PROVIDER`` names a provider and supplies its default base,
             and ``FISH_LLM_BASE`` overrides the base. The provider is then read
-            from the final base's host, so a key can only come from the variable
-            that belongs to that host (``OPENROUTER_API_KEY``, ``EXPLABS_API_KEY``),
-            or ``OPENAI_API_KEY`` for any other server. The backend follows the
-            host: the OpenRouter SDK for OpenRouter, the OpenAI-compatible client
-            for everything else.
+            from the final base's host. ``FISH_LLM_API_KEY`` comes first. Past it,
+            a key can only come from the variable that belongs to that host
+            (``OPENROUTER_API_KEY``, ``EXPLABS_API_KEY``), or ``OPENAI_API_KEY``
+            for any other server, and a known provider's key is never sent to a
+            base that is not https. The backend follows the host. OpenRouter gets
+            the OpenRouter SDK, and everything else the OpenAI-compatible client.
         """
         named = _named_provider()
         if named is not None:
-            # A named provider is only overridden by FISH_LLM_BASE. The older
-            # OPENROUTER_BASE_URL alias must not point its key at another host.
+            # Only FISH_LLM_BASE moves a named provider's base. The
+            # OPENROUTER_BASE_URL fallback must not send its key to another host.
             base = _first_base("FISH_LLM_BASE") or named.base
         else:
             base = _first_base("FISH_LLM_BASE", "OPENROUTER_BASE_URL") or OPENROUTER_API_BASE

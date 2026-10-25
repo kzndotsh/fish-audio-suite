@@ -1,4 +1,9 @@
-"""The microphone: 30 ms frames at 16 kHz, cleaned by the session's echo canceller."""
+"""The microphone: one input per session, read as 30 ms frames at 16 kHz.
+
+A reader thread runs every frame through the session's ``EchoCanceller`` (gain,
+noise suppression, and echo cancellation while the speaker plays) and keeps
+about two seconds, so readers that take turns miss nothing.
+"""
 
 from __future__ import annotations
 
@@ -30,8 +35,9 @@ FRAME_SAMPLES: Final = SAMPLE_RATE * FRAME_MS // MS_PER_S
 FRAME_BYTES: Final = FRAME_SAMPLES * SAMPLE_BYTES
 # How long a read waits for audio before it checks the stop flag again.
 _POLL_S: Final = 0.2
-# About two seconds of PortAudio blocks. A reader further behind than this is
-# hearing the past, so the oldest block makes room for the newest.
+# About two seconds, both of cleaned frames kept for readers and of PortAudio
+# blocks queued for the reader thread. Anything older is the past, so the
+# oldest makes room for the newest.
 _MAX_BACKLOG: Final = 2 * MS_PER_S // FRAME_MS
 
 
@@ -48,8 +54,8 @@ class Mic(Protocol):
 
     Notes
     -----
-    ``aec`` is the session's echo canceller. ``frames`` has already cleaned each
-    frame with it, and barge-in reads it to know whether the speaker is playing.
+    ``aec`` is the session's echo canceller. ``frames`` yields frames it has
+    already cleaned, and barge-in reads it to know whether the speaker is playing.
     """
 
     @property
@@ -122,15 +128,15 @@ class SessionMic:
     device : str or int or None, optional
         PortAudio input. None uses the host default.
     aec : EchoCanceller or None, optional
-        Cleans each frame against the far-end tap as it arrives. None is off.
+        Cleans each frame as it arrives. None passes the mic through untouched.
 
     Notes
     -----
     The input opens on the first read and stays open until ``close``. One
     thread cleans every frame in order and keeps the last two seconds, so a
     reader that starts late, or picks up where another stopped, misses
-    nothing. Opening and closing it per read lost the audio between readers,
-    such as the start of the words that tripped a barge-in.
+    nothing. Opening and closing it per read would lose the audio between
+    readers, such as the start of the words that tripped a barge-in.
     """
 
     def __init__(self, device: str | int | None = None, aec: EchoCanceller | None = None) -> None:

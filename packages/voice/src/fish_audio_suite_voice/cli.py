@@ -1,4 +1,4 @@
-"""Duplex CLI recipe: mic → Fish ASR → LLM → FishSpeaker → sink.
+"""Duplex CLI recipe: mic → speech to text → LLM → FishSpeaker → sink.
 
 Not the only way to use the voice library. Apps should import FishSpeaker.
 """
@@ -75,8 +75,8 @@ def _parse_device(raw: str | None) -> str | int | None:
     if raw is None:
         return None
     text = raw.strip()
-    # A newline is not part of a PortAudio name. The mic open then fails
-    # and the duplex loop stops.
+    # A control character, such as a newline left by an env file, is not part of a
+    # PortAudio name. Kept, it would match no device and the mic would not open.
     cut = next((index for index, ch in enumerate(text) if ord(ch) < 32), None)
     if cut is not None:
         text = text[:cut].strip()
@@ -85,8 +85,7 @@ def _parse_device(raw: str | None) -> str | int | None:
     try:
         return int(text)
     except ValueError:
-        # "1.0" is device 1. Leaving it as a name made the mic open fail
-        # and the duplex loop stop.
+        # "1.0" is device 1. As a name it would match no device.
         try:
             value = float(text)
         except ValueError:
@@ -159,8 +158,8 @@ async def smoke_test(c: VoiceCliConfig, out: Path | None = None) -> int:
     Returns
     -------
     int
-        0 when the file is at least 1000 bytes. 1 when Fish returns audio that
-        is shorter than that. 2 when a required setting is missing.
+        0 when Fish returned more than 1000 bytes of audio. 1 when Fish returned an
+        error or less audio than that. 2 when a required setting is missing.
     """
     missing = _require_fish(c)
     if missing is not None:
@@ -185,7 +184,7 @@ async def smoke_test(c: VoiceCliConfig, out: Path | None = None) -> int:
 
 
 def _preflight(c: VoiceCliConfig) -> int | None:
-    """Return an exit code when a key, the model or the playback sink is unusable."""
+    """Return an exit code when a key, the model, the sink, the detector or Deepgram is unusable."""
     missing = _require_fish(c)
     if missing is not None:
         return missing
@@ -221,7 +220,7 @@ def _require_deepgram(c: VoiceCliConfig) -> int | None:
 
 
 async def run_loop(c: VoiceCliConfig) -> int:
-    """Run duplex until quit, after checking keys, model, and the playback sink.
+    """Run duplex until quit, after checking the keys, model, sink and voice detector.
 
     Parameters
     ----------
@@ -231,7 +230,8 @@ async def run_loop(c: VoiceCliConfig) -> int:
     Returns
     -------
     int
-        2 when a key, the LLM model, or the playback sink is unusable.
+        2 when a key or the LLM model is missing, the playback sink, the voice
+        detector or Deepgram cannot be used, or the chat model is unusable.
         Otherwise the code from ``duplex_turns``.
 
     Notes
@@ -282,8 +282,9 @@ async def run_tui(c: VoiceCliConfig, *, debug: DebugLevel) -> int:
     Returns
     -------
     int
-        2 when a key, the LLM model, or the playback sink is unusable. Otherwise the
-        exit code of the session, which the app reports.
+        2 when a key or the LLM model is missing, the playback sink, the voice detector
+        or Deepgram cannot be used, or the chat model is unusable. Otherwise the exit
+        code of the session, which the app reports.
 
     Notes
     -----
@@ -294,9 +295,8 @@ async def run_tui(c: VoiceCliConfig, *, debug: DebugLevel) -> int:
     if blocked is not None:
         return blocked
     if c.output_latency == "auto":
-        c = replace(
-            c, output_latency="high"
-        )  # the screen is busy drawing: a bigger buffer rides it out
+        # The screen is busy drawing, so a bigger buffer rides it out.
+        c = replace(c, output_latency="high")
     # Imported here because Textual is an optional extra, checked for in ``main``.
     from fish_audio_suite_voice.tui import VoiceApp  # noqa: PLC0415 - optional extra
 
@@ -425,7 +425,7 @@ def _start_logging(args: argparse.Namespace) -> DebugLevel:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """``fish-voice`` entry. Load dotenv, then smoke or duplex.
+    """``fish-voice`` entry. Load dotenv, then the smoke test, the full-screen app or the loop.
 
     Parameters
     ----------

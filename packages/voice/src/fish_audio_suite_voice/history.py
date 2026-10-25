@@ -1,4 +1,9 @@
-"""Chat history kept between turns: the opening exchange and trimming by pairs."""
+"""Chat history kept between turns.
+
+It holds the pinned opening exchange, merges unanswered user lines, adds the tone
+note for one request, and trims old turns in blocks so a cached prompt start
+survives several turns.
+"""
 
 from __future__ import annotations
 
@@ -24,7 +29,7 @@ _ROLES_PER_TURN: Final = 2
 # Unanswered user lines kept in one message. While the model keeps failing, the
 # oldest drop off, so the merged message cannot grow without bound.
 _UNANSWERED_LINES: Final = 4
-# Over the cap, 1/_TRIM_BLOCK of the turns are dropped at once.
+# Over the cap, a quarter of the turns are dropped at once. See trim_history.
 _TRIM_BLOCK: Final = 4
 
 
@@ -45,7 +50,7 @@ def opening_history(
     -------
     tuple of list and int
         The history and the count of messages that trimming never drops. With
-        the default prompt, one opening exchange with several cues is pinned
+        the default prompt, one opening exchange with cues is pinned
         after the system message, because the model copies the pattern of the
         replies it sees. A custom prompt gets no seed, so it stays in control
         of how the model replies.
@@ -104,8 +109,8 @@ def trim_history(
     -----
     Over the cap, a quarter of ``turns`` goes at once, so the start of the prompt
     stays the same for the next several turns. A provider that caches prompts
-    reuses that start; dropping one pair per turn changed it every time. A cap
-    under four still drops one pair at a time.
+    reuses that start. Dropping one pair per turn would change it every time. A
+    cap under four turns drops only what is over the cap.
     """
     cap = pinned + turns * _ROLES_PER_TURN
     if len(history) <= cap:

@@ -1,4 +1,4 @@
-"""One duplex turn: listen, Fish ASR, LLM, then TTS on a private loop."""
+"""The duplex session loop: listen, speech to text, LLM, then TTS, until quit."""
 
 from __future__ import annotations
 
@@ -40,7 +40,7 @@ def bye() -> int:
     Returns
     -------
     int
-        ``EXIT_OK`` (0). Fatal Fish and PortAudio failures use 2 instead.
+        ``EXIT_OK`` (0). Fatal errors use ``EXIT_FATAL`` (2) instead.
     """
     return EXIT_OK
 
@@ -103,8 +103,9 @@ async def _settle(ctx: DuplexContext) -> int | None:
 
 
 def _log_cooldown(ctx: DuplexContext, since: int) -> None:
-    # The mic stays open through the cooldown, so this shows whether the bot's
-    # echo ever comes near starting a turn, which is what the cooldown guards.
+    # The session mic keeps hearing through the cooldown. This reports whether the
+    # tail of the reply came near starting a turn, which is what the cooldown guards,
+    # to show whether FISH_VOICE_COOLDOWN could be shorter.
     tune = ctx.config.listen
     try:
         vad = open_vad(tune.vad_engine, tune.vad_aggressiveness)
@@ -143,7 +144,7 @@ async def duplex_turns(
     source: TurnSource | None = None,
     console: bool = True,
 ) -> int:
-    """Mic, Fish ASR, LLM, then one TTS turn on a private loop, until quit.
+    """Run turns until quit: mic, speech to text, LLM, then one TTS turn per reply.
 
     Parameters
     ----------
@@ -156,7 +157,7 @@ async def duplex_turns(
     backend : ChatBackend
         Open chat backend, usually from ``open_chat_backend``.
     session : DuplexSession or None, optional
-        Cancel flags and the echo canceller. A new one is created when omitted.
+        Cancel flags and the mic cleanup. A new one is created when omitted.
         Pass your own to wire ``request_quit`` to a signal handler.
     source : TurnSource or None, optional
         Where each turn comes from. The mic when omitted.
@@ -167,16 +168,17 @@ async def duplex_turns(
     Returns
     -------
     int
-        ``0`` on a normal bye. ``2`` when Fish returns 401, 402, or 403, or
-        PortAudio is missing.
+        ``0`` on a normal bye. ``2`` on a fatal error: Fish answers 401, 402 or 403,
+        Deepgram refuses the key, the chat model is unusable, or PortAudio is missing.
 
     Notes
     -----
-    One sampled trace id is shared by ASR and the TTS websocket for that turn.
-    Barge-in keeps the audio that tripped the gate and skips the post-speak
-    cooldown. ``session.request_quit`` cancels the in-flight reply and ends
-    the loop. A ``Bye`` event carrying the exit code is sent once however the
-    session ends: 0 for a quit, 2 for a fatal error, 1 when the session raises.
+    One sampled trace id is shared by Fish ASR and the TTS websocket for that turn.
+    One mic stream stays open for the whole session. Barge-in keeps the audio
+    that tripped the gate and skips the post-reply cooldown.
+    ``session.request_quit`` cancels the in-flight reply and ends the loop. A
+    ``Bye`` event carrying the exit code is sent once however the session ends:
+    0 for a quit, 2 for a fatal error, 1 when the session raises.
     """
     session = session or DuplexSession(aec=EchoCanceller(c.aec))
     printer = ConsoleSink(EVENTS) if console else None

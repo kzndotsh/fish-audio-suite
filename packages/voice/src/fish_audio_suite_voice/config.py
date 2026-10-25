@@ -69,22 +69,16 @@ __all__ = [
 class VoiceCliConfig:
     """Duplex settings read from the process environment. No YAML.
 
-    Notes
-    -----
-    ``fish_api_key`` and ``fish_voice_id`` are empty unless the env sets them.
-    The tune objects are read once here and passed down, so nothing below
-    this layer reads the environment. Process env wins over ``--env-file``.
-
     Attributes
     ----------
     llm : LlmTune
         Chat backend and request settings.
     listen : ListenTune
-        Microphone capture limits.
+        The voice detector, its strictness, and the limits of one utterance.
     barge : BargeTune
         Barge-in gate and the pauses around a reply.
     aec : AecTune
-        Echo cancellation.
+        Mic cleanup: echo cancellation, automatic gain and noise suppression.
     stt : SttTune
         Which speech recognition hears the user.
     turn : TurnTune
@@ -105,8 +99,8 @@ class VoiceCliConfig:
     stream_tts : bool
         Speak the reply while the model is still writing it. Off by default.
     fade_ms : float
-        Fade-in at each sound that starts out of silence, so a sentence does not
-        click when it begins. 0 turns it off.
+        Fade at each edge between a sound and silence, so a sentence does not click
+        when it starts or stops. 0 turns it off.
     loudness_db : float or None
         The level, in dB below full scale, each reply is brought to while it plays, or None
         (the default) to play it as Fish sends it.
@@ -116,6 +110,12 @@ class VoiceCliConfig:
         The sound card's playback buffer: ``"low"`` or ``"high"`` (bigger, so a busy moment
         does not make it run dry and click). ``"auto"`` is ``"high"`` in the full-screen app,
         which is busy drawing, and ``"low"`` otherwise.
+
+    Notes
+    -----
+    ``fish_api_key`` and ``fish_voice_id`` are empty unless the env sets them.
+    The tune objects are read once here and passed down, so nothing below
+    this layer reads the environment. Process env wins over ``--env-file``.
     """
 
     fish_api_key: str = field(repr=False)
@@ -359,7 +359,7 @@ class _Prompt:
 # A character card is a few KB. This stops a wrong path (a log, a binary) from
 # becoming the system prompt.
 _PROMPT_FILE_MAX_BYTES: Final = 64 * 1024
-# A fade-in longer than this would blur the start of every word.
+# A fade longer than this would blur the start and end of every word.
 _FADE_MAX_MS: Final = 50.0
 # Quieter than this leaves nothing to hear, and louder leaves no room for a peak.
 _LOUDNESS_TARGET_LO_DB: Final = -40.0

@@ -95,14 +95,14 @@ DEFAULT_AEC_WET: Final = 0.85
 # a quiet voice in a measured recording; 18 dB did not.
 NOISE_SUPPRESSION_STEPS_DB: Final = (0, 6, 12, 18, 21)
 DEFAULT_NOISE_SUPPRESSION_DB: Final = 18
-# Fade-in, in milliseconds, at each sound that starts out of silence, so a sentence does
-# not click when it begins. 0 turns it off.
+# Fade, in milliseconds, at each edge between a sound and silence, so a sentence does not
+# click when it starts or stops. 0 turns it off.
 DEFAULT_FADE_MS: Final = 4.0
 # The level, in dB below full scale, that a reply is brought to when loudness is normalised.
 DEFAULT_LOUDNESS_TARGET_DB: Final = -18.0
-# Idle seconds an ASR or LLM connection stays open. httpx drops it after 5 s,
-# which is shorter than the gap between two turns, so every turn paid a new
-# TLS handshake.
+# Idle seconds an ASR or LLM connection stays open. httpx's default of 5 s is
+# shorter than the gap between two turns, so each turn would pay a new TLS
+# handshake.
 HTTP_KEEPALIVE_S: Final = 120.0
 
 _TRUE: Final = frozenset({"1", "true", "yes", "on"})
@@ -262,12 +262,13 @@ def read_text(name: str, default: str = "") -> str:
 
 @dataclass(frozen=True, slots=True)
 class ListenTune:
-    """Voice-activity and utterance limits for one microphone capture.
+    """Voice detection and utterance limits for hearing the user.
 
     Attributes
     ----------
     vad_aggressiveness : int
         How strict the voice detector is, 0 to 3. Higher calls fewer sounds speech.
+        The barge-in gate uses it too.
     end_silence_frames : int
         Quiet 30 ms frames that end an utterance.
     start_speech_frames : int
@@ -281,6 +282,7 @@ class ListenTune:
         Voiced frames an utterance needs before it is sent to ASR.
     vad_engine : str
         The voice detector: a name in ``vad.VAD_ENGINES`` or ``package.module:factory``.
+        The barge-in gate uses it too.
     """
 
     vad_aggressiveness: int = DEFAULT_VAD_AGGRESSIVENESS
@@ -387,9 +389,10 @@ class BargeTune:
     min_rms : float
         Seed for the adaptive barge floor, in int16 units.
     playing_gain : float
-        Floor multiplier while the speaker plays and AEC is off. At least 1.
+        Floor multiplier while the speaker plays and AEC3 is not running. At least 1.
     bleed_delay_s : float
-        Seconds to ignore the mic after TTS starts when AEC is off.
+        Seconds to ignore the mic after TTS starts when AEC3 is not running: echo
+        cancellation is off, the ``aec`` extra is missing, or the processor failed to start.
     cooldown_s : float
         Seconds to wait after a reply before the mic opens again.
     """
@@ -402,7 +405,7 @@ class BargeTune:
 
     @classmethod
     def from_env(cls) -> Self:
-        """Build from the ``FISH_VOICE_BARGE_*`` and delay keys.
+        """Build from ``FISH_VOICE_BARGE_*``, ``FISH_VOICE_BLEED_DELAY`` and ``FISH_VOICE_COOLDOWN``.
 
         Returns
         -------
@@ -429,12 +432,12 @@ class AecTune:
     Attributes
     ----------
     enabled : bool
-        Echo cancellation. False leaves the speaker's echo in the mic.
+        Echo cancellation (AEC3). False leaves the speaker's echo in the mic.
     wet : float
         Mix of echo-cancelled audio, 0 to 1, while the speaker plays.
     bleed_delay_s : float
-        Seconds to ignore the mic after TTS starts when AEC3 is loaded. Named
-        like ``BargeTune.bleed_delay_s``.
+        Seconds to ignore the mic after TTS starts when AEC3 is running. Replaces
+        ``BargeTune.bleed_delay_s``, which applies without it.
     auto_gain : bool
         Raise a quiet voice to a steady level, as a call app does.
     noise_suppression_db : int
@@ -549,7 +552,7 @@ class SttTune:
 
     @classmethod
     def from_env(cls) -> Self:
-        """Build from ``FISH_VOICE_STT`` and the ``DEEPGRAM_*`` and Deepgram keys.
+        """Build from ``FISH_VOICE_STT``, the Deepgram and end-of-turn keys, and ``DEEPGRAM_API_KEY``.
 
         Returns
         -------

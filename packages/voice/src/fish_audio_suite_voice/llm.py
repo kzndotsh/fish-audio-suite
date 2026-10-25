@@ -3,6 +3,10 @@
 Two backends ship: an OpenAI-compatible httpx client for any chat-completions
 server, and the OpenRouter SDK as an opt-in adapter. ``LlmTune.backend`` picks
 one. Both share the event consumer, the 429 retry, and the cut-off continuation.
+The wire formats live in ``transports``.
+
+A refusal that every later turn would get too (401, 402, 404, or a model that no
+provider serves) raises ``ChatUnusableError``, which ends the session.
 """
 
 from __future__ import annotations
@@ -48,7 +52,8 @@ _LLM_429_CAP_S: Final = 15.0
 _LLM_429_DEFAULT_S: Final = 1.0
 # A cue after a finished sentence is not a cut-off. "Hello. [break]" is done.
 _TRAIL_CUE_RE: Final = re.compile(r"(?:\s*\[[^\[\]]{0,80}\])+\s*$")
-# A follow-up with no sentence end past this is a runaway, not the missing words.
+# A follow-up with no sentence end in its first 240 characters is a runaway,
+# not the missing words. One of at most 80 with no sentence end is kept whole.
 _CONT_SCAN: Final = 240
 _CONT_BARE: Final = 80
 _MODEL_LOOKUP_S: Final = 15
@@ -329,7 +334,7 @@ def _finish_llm(stats: _ChatStats, route_model: str) -> None:
 
 def _cancel_group(exc: BaseException, *, cancelled: bool = False) -> bool:
     # A task group on barge-in is only cancel noise. A group that holds a
-    # provider error was swallowed, so the reply stopped and nothing was logged.
+    # provider error is not, and must be logged, or the reply stops unexplained.
     if isinstance(exc, BaseExceptionGroup):
         return bool(exc.exceptions) and all(
             _cancel_group(item, cancelled=cancelled) for item in exc.exceptions
@@ -339,7 +344,7 @@ def _cancel_group(exc: BaseException, *, cancelled: bool = False) -> bool:
 
 def _group_text(exc: BaseException) -> str:
     # str(ExceptionGroup) is "llm (1 sub-exception)". The provider message
-    # is on the nested error, so the log never said why the reply stopped.
+    # is on the nested error, so without this the log would not say why.
     if isinstance(exc, BaseExceptionGroup):
         inner = "; ".join(_group_text(item) for item in exc.exceptions)
         return inner or str(exc)
@@ -352,7 +357,8 @@ class ChatBackend(Protocol):
     Notes
     -----
     ``stream`` yields text deltas for one reply and ends on cancel, an error
-    that was already logged, or the end of the reply. ``aclose`` releases the
+    that was already logged, or the end of the reply. A refusal no later turn
+    could pass raises ``ChatUnusableError`` instead. ``aclose`` releases the
     connection pool or SDK client.
     """
 
@@ -446,8 +452,13 @@ async def open_chat_backend(
     Yields
     ------
     ChatBackend
-        Ready to stream. Closed when the context exits. The OpenRouter backend
-        also resolves the model once and warns when it is unknown.
+        Ready to stream. Closed when the context exits.
+
+    Notes
+    -----
+    The OpenRouter backend checks the model once before it yields. It raises
+    ``ChatUnusableError`` when OpenRouter does not know the model or no provider
+    serves it, and only warns when the lookup itself fails.
     """
     if tune.uses_openrouter_sdk:
         async with openrouter_client(tune) as sdk:
@@ -507,9 +518,11 @@ async def llm_token_stream(
     -----
     A 429 that arrives before the first text delta waits for ``Retry-After`` and
     tries once more when that wait is at most 15 seconds. With no
-    ``Retry-After`` it waits about one second and tries once more, unless the
-    quota is exhausted. Once any text has been yielded there is no retry. A longer wait, a spent
-    quota, or cancel ends the iterator. Any other stream error is logged and ends the iterator. With
+    ``Retry-After`` it waits one second and tries once more, unless the quota is
+    exhausted. Once any text has been yielded there is no retry. A longer wait,
+    a spent quota, or cancel ends the iterator. A 401, 402 or 404 raises
+    ``ChatUnusableError``, because every later turn would fail the same way.
+    Any other stream error is logged and ends the iterator. With
     ``tune.continuation`` on, a ``stop`` before a sentence end sends one more
     request with that text as the assistant line, and only a suffix that
     continues the sentence is yielded. A ``reasoning`` field on a stream event

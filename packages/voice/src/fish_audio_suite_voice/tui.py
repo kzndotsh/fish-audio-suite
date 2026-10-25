@@ -70,9 +70,9 @@ __all__ = [
 _WAVE_ROWS = 4  # lines tall; each line is four dot rows
 _WAVE_HISTORY = 480  # bars kept (two to a character), so a wide terminal is filled
 _WAVE_STILL_BARS = 60  # bars of the frozen thinking wave when animations are off
-_BAR_S = (
-    0.09  # one bar: the mic's own rate, which every other source keeps to so the scroll is even
-)
+# One bar: the mic's own rate, a level every three 30 ms frames. Every other source keeps to it,
+# so the scroll is even.
+_BAR_S = 0.09
 _THINK_TICK_S = _BAR_S  # one new bar of the thinking wave
 _AUDIO_GAP_S = 0.25  # no audio level for this long inside a reply: a pause, so fill it in
 _BLINK_S = 0.45  # the listening cursor's half cycle

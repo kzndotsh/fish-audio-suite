@@ -22,12 +22,11 @@ __all__ = [
 _SECRET_HEADER: Final = frozenset({"authorization", "proxy-authorization", "cookie", "set-cookie"})
 
 
+# What the user said or will hear. Logged by size only.
 _HIDDEN_KEYS: Final = frozenset({"text", "content", "audio", "messages"})
-
-
+# Nested metadata deeper than this is cut off, so a large body cannot flood the log.
 _META_DEPTH: Final = 3
-
-
+# Headers kept besides every ``x-`` header that is not a secret.
 _PUBLIC_HEADERS: Final = frozenset(
     {
         "content-type",

@@ -20,6 +20,7 @@ __all__ = [
     "TurnSource",
 ]
 
+# A muted wait wakes this often to notice quit, which does not set ``_changed``.
 _POLL_S = 0.1
 
 
@@ -34,7 +35,7 @@ class TurnSource(Protocol):
         ctx : DuplexContext
             The session.
         last_user : str
-            The previous line, used to drop an echo of it.
+            The previous user line, to drop a stale copy of it.
 
         Returns
         -------
@@ -59,13 +60,14 @@ class LiveInput:
     Notes
     -----
     ``submit``, ``mute`` and ``unmute`` are safe to call from any thread. A
-    typed line stops the mic at once and is answered like a spoken one. While
-    muted, the mic stays closed between turns and the session waits for a typed
-    line, ``unmute`` or quit. It closes the barge-in watch too: a reply that starts muted
-    is not watched, and muting during a reply ends the watch without interrupting it.
-    Unmuting does not restart a watch that ended, so it applies from the next reply.
-    Typing a line or pressing Escape still interrupts. A line typed while a reply is
-    playing stops that reply, like speaking over it, unless ``submit`` is told not to.
+    typed line stops the mic at once and is answered like a spoken one. Muting
+    closes the mic device at once, and the session then waits for a typed line,
+    ``unmute`` or quit. There is no barge-in watch while muted. A reply that
+    starts muted is not watched, and muting during a reply ends the watch without
+    interrupting the reply. Unmuting does not restart a watch that ended, so it
+    applies from the next reply. Typing a line or pressing Escape still
+    interrupts. A line typed while a reply is playing stops that reply, like
+    speaking over it, unless ``submit`` is told not to.
     """
 
     def __init__(self) -> None:
@@ -83,7 +85,7 @@ class LiveInput:
 
     @property
     def muted(self) -> bool:
-        """Whether the mic is held closed between turns."""
+        """Whether the mic is muted, with its device closed."""
         return self._muted
 
     def submit(self, text: str, *, interrupt: bool = True) -> None:
@@ -108,14 +110,14 @@ class LiveInput:
             self.stop_reply()
 
     def mute(self) -> None:
-        """Close the mic between turns, and stop a recording in progress."""
+        """Close the mic device now, and stop a recording in progress."""
         self._muted = True
         self._interrupt.set()
         self._changed.set()
         self._release_mic()
 
     def unmute(self) -> None:
-        """Open the mic again."""
+        """Let the mic open again on its next read."""
         self._muted = False
         self._changed.set()
 
@@ -170,7 +172,7 @@ class LiveInput:
         ctx : DuplexContext
             The session.
         last_user : str
-            The previous line, used to drop an echo of it.
+            The previous user line, to drop a stale copy of it.
 
         Returns
         -------
