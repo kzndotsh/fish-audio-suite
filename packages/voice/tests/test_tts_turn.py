@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from collections.abc import AsyncIterator
 from dataclasses import replace
 from typing import Any
 
@@ -10,6 +11,7 @@ from fishaudio import AsyncFishAudio
 from fishaudio.exceptions import RateLimitError, WebSocketError
 from wire_helpers import (
     RecordingSink,
+    ScriptedSocket,
     make_run,
 )
 
@@ -18,20 +20,14 @@ from fish_audio_suite_kit import (
     FishRateLimitError,
 )
 from fish_audio_suite_voice.speaker import FishSpeaker
-from fish_audio_suite_voice.tts_turn import _HeldClient, run_turn
-from fish_audio_suite_voice.wire import (
-    TurnRun,
-    text_events,
-)
+from fish_audio_suite_voice.tts_turn import SdkSocket, run_turn
+from fish_audio_suite_voice.wire import TurnSpec, text_events
 
 
 def test_run_turn_closes_the_sink_when_start_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    called = {"n": 0}
-
-    async def send_turn(*_args: object, **_kwargs: object) -> None:
-        called["n"] += 1
+    socket = ScriptedSocket()
 
     class _Boom(RecordingSink):
         def __init__(self) -> None:
@@ -47,7 +43,6 @@ def test_run_turn_closes_the_sink_when_start_fails(
             del kill
             self.finished = True
 
-    monkeypatch.setattr("fish_audio_suite_voice.tts_turn.send_turn", send_turn)
     run, _sink = make_run()
     sink = _Boom()
 
@@ -56,32 +51,26 @@ def test_run_turn_closes_the_sink_when_start_fails(
             yield ""
 
     with pytest.raises(RuntimeError, match="dac"):
-        asyncio.run(run_turn(run.spec, no_events(), sink, threading.Event(), sent_text="hello"))
+        asyncio.run(
+            run_turn(
+                run.spec, no_events(), sink, threading.Event(), sent_text="hello", socket=socket
+            )
+        )
     assert sink.opened is True
     assert sink.finished is True
-    assert called["n"] == 0
+    assert socket.streams == 0
 
 
 def test_run_turn_closes_the_client_when_finish_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    closed = {"n": 0}
-    original = _HeldClient.close
-
-    async def send_turn(*_args: object, **_kwargs: object) -> None:
-        return None
-
-    async def spy_close(self: _HeldClient) -> None:
-        closed["n"] += 1
-        await original(self)
+    socket = ScriptedSocket()
 
     class _FinishBoom(RecordingSink):
         def finish(self, *, kill: bool = False) -> None:
             del kill
             raise RuntimeError("disk")
 
-    monkeypatch.setattr("fish_audio_suite_voice.tts_turn.send_turn", send_turn)
-    monkeypatch.setattr("fish_audio_suite_voice.tts_turn._HeldClient.close", spy_close)
     run, _sink = make_run()
 
     async def no_events():
@@ -96,9 +85,10 @@ def test_run_turn_closes_the_client_when_finish_fails(
                 _FinishBoom(),
                 threading.Event(),
                 sent_text="hello",
+                socket=socket,
             )
         )
-    assert closed["n"] == 1
+    assert socket.closed == 1
 
 
 def test_client_close_after_audio_does_not_forget_the_line(
@@ -106,22 +96,24 @@ def test_client_close_after_audio_does_not_forget_the_line(
 ) -> None:
     original = AsyncFishAudio.close
 
-    async def send_turn(
-        _client: object,
-        collect_events: object,
-        run: TurnRun,
-        *,
-        close_client: object,
-    ) -> None:
-        del close_client
-        run.sink.write(b"\x00\x00" * 16_000)
-        run.audio.got_audio = True
+    class _OneSecond(SdkSocket):
+        """The SDK socket, with one second of audio in place of its websocket."""
+
+        def stream(self, events: AsyncIterator[Any], spec: TurnSpec) -> AsyncIterator[bytes]:
+            super().stream(events, spec)  # opens the real client, whose socket is never read
+
+            async def audio() -> AsyncIterator[bytes]:
+                async for _event in events:
+                    pass
+                yield b"\x00\x00" * 16_000
+
+            return audio()
 
     async def boom_close(self: AsyncFishAudio) -> None:
         await original(self)
         raise BaseExceptionGroup("close", [asyncio.CancelledError()])
 
-    monkeypatch.setattr("fish_audio_suite_voice.tts_turn.send_turn", send_turn)
+    monkeypatch.setattr("fish_audio_suite_voice.tts_turn.SdkSocket", _OneSecond)
     monkeypatch.setattr("fish_audio_suite_voice.tts_turn.AsyncFishAudio.close", boom_close)
     tts = FishSpeaker(api_key="k", voice_id="v", sample_rate=16_000, audio_format="pcm")
 
@@ -152,12 +144,10 @@ def test_client_close_after_audio_does_not_forget_the_line(
 def test_run_turn_stops_when_the_api_key_cannot_be_a_header(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    called = {"n": 0}
-
-    async def send_turn(*_args: object, **_kwargs: object) -> None:
-        called["n"] += 1
-
-    monkeypatch.setattr("fish_audio_suite_voice.tts_turn.send_turn", send_turn)
+    opened: list[object] = []
+    monkeypatch.setattr(
+        "fish_audio_suite_voice.tts_turn.AsyncFishAudio", lambda **kw: opened.append(kw)
+    )
     run, sink = make_run()
     spec = replace(run.spec, api_key="sk-\nbad")
 
@@ -166,7 +156,7 @@ def test_run_turn_stops_when_the_api_key_cannot_be_a_header(
             yield ""
 
     result = asyncio.run(run_turn(spec, no_events(), sink, threading.Event(), sent_text="hello"))
-    assert called["n"] == 0
+    assert opened == []
     assert result.error_status == 401
     assert isinstance(result.error, FishAuthError)
     assert result.error.status == 401
@@ -182,24 +172,8 @@ def test_run_turn_retries_before_audio_and_stops_after(
     async def fake_sleep(seconds: float) -> None:
         slept.append(seconds)
 
-    calls = {"n": 0}
-
-    async def send_turn(
-        client: object,
-        events: object,
-        run: TurnRun,
-        *,
-        close_client: object,
-    ) -> None:
-        del client, events, close_client
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise RateLimitError(429, "slow", None)
-        run.audio.got_audio = True
-        run.sink.write(b"abcd")
-
+    socket = ScriptedSocket([RateLimitError(429, "slow", None)], [b"abcd"])
     monkeypatch.setattr("fish_audio_suite_voice.pause.asyncio.sleep", fake_sleep)
-    monkeypatch.setattr("fish_audio_suite_voice.tts_turn.send_turn", send_turn)
     run, sink = make_run()
 
     async def no_events():
@@ -207,58 +181,29 @@ def test_run_turn_retries_before_audio_and_stops_after(
             yield ""
 
     result = asyncio.run(
-        run_turn(run.spec, no_events(), sink, threading.Event(), sent_text="hello")
+        run_turn(run.spec, no_events(), sink, threading.Event(), sent_text="hello", socket=socket)
     )
-    assert calls["n"] == 2
+    assert socket.streams == 2
     # Jitter: half to all of the 2**0 base.
     assert 0.5 <= sum(slept) <= 1.0
     assert result.got_audio is True
     assert result.spoken_so_far == "hello"
 
-    calls["n"] = 0
     slept.clear()
-
-    async def fail_after_audio(
-        client: object,
-        events: object,
-        run: TurnRun,
-        *,
-        close_client: object,
-    ) -> None:
-        del client, events, close_client
-        calls["n"] += 1
-        run.audio.got_audio = True
-        raise RateLimitError(429, "slow", None)
-
-    monkeypatch.setattr("fish_audio_suite_voice.tts_turn.send_turn", fail_after_audio)
+    socket = ScriptedSocket([b"abcd", RateLimitError(429, "slow", None)])
     run, sink = make_run()
     failed = asyncio.run(
-        run_turn(run.spec, no_events(), sink, threading.Event(), sent_text="hello")
+        run_turn(run.spec, no_events(), sink, threading.Event(), sent_text="hello", socket=socket)
     )
-    assert calls["n"] == 1
+    assert socket.streams == 1
     assert slept == []
     assert failed.error_status == 429
     assert isinstance(failed.error, FishRateLimitError)
     assert failed.error.retryable
     assert failed.got_audio is True
 
-    calls["n"] = 0
-
-    async def drop_after_audio(
-        client: object,
-        events: object,
-        run: TurnRun,
-        *,
-        close_client: object,
-    ) -> None:
-        del client, events, close_client
-        calls["n"] += 1
-        run.audio.got_audio = True
-        # About 0.4 s at 44.1 kHz int16, enough for the first word only.
-        run.sink.write(b"\x00" * 33_075)
-        raise WebSocketError("dropped")
-
-    monkeypatch.setattr("fish_audio_suite_voice.tts_turn.send_turn", drop_after_audio)
+    # About 0.4 s at 44.1 kHz int16, enough for the first word only.
+    socket = ScriptedSocket([b"\x00" * 33_075, WebSocketError("dropped")])
     run, sink = make_run()
     dropped = asyncio.run(
         run_turn(
@@ -267,9 +212,10 @@ def test_run_turn_retries_before_audio_and_stops_after(
             sink,
             threading.Event(),
             sent_text="hello there friend",
+            socket=socket,
         )
     )
-    assert calls["n"] == 1
+    assert socket.streams == 1
     assert dropped.error_status is None
     assert dropped.error is None
     assert dropped.got_audio is True
@@ -280,32 +226,22 @@ def test_retry_backoff_does_not_replay_after_cancel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cancel = threading.Event()
-    calls = {"n": 0}
-
-    async def send_turn(
-        client: object,
-        events: object,
-        run: TurnRun,
-        *,
-        close_client: object,
-    ) -> None:
-        del client, events, close_client, run
-        calls["n"] += 1
-        raise RateLimitError(429, "slow", None)
+    socket = ScriptedSocket([RateLimitError(429, "slow", None)])
 
     async def fake_sleep(_seconds: float) -> None:
         cancel.set()
 
     monkeypatch.setattr("fish_audio_suite_voice.pause.asyncio.sleep", fake_sleep)
-    monkeypatch.setattr("fish_audio_suite_voice.tts_turn.send_turn", send_turn)
     run, sink = make_run()
 
     async def no_events():
         if False:
             yield ""
 
-    result = asyncio.run(run_turn(run.spec, no_events(), sink, cancel, sent_text="hello"))
-    assert calls["n"] == 1
+    result = asyncio.run(
+        run_turn(run.spec, no_events(), sink, cancel, sent_text="hello", socket=socket)
+    )
+    assert socket.streams == 1
     assert result.cancelled is True
     assert result.error_status is None
     assert result.got_audio is False
@@ -315,19 +251,20 @@ def test_retry_backoff_does_not_replay_after_cancel(
 def test_a_keyboard_interrupt_in_a_turn_is_not_treated_as_a_fish_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from fish_audio_suite_voice.tts_turn import _HeldClient, _one_attempt, _Turn
-
-    run, _sink = make_run()
-    held = _HeldClient()
-    monkeypatch.setattr(held, "open", lambda *_a, **_k: object())
-
-    async def interrupted(*_args: Any, **_kwargs: Any) -> None:
-        raise KeyboardInterrupt
-
-    monkeypatch.setattr("fish_audio_suite_voice.tts_turn.send_turn", interrupted)
-    turn = _Turn(run=run, held=held, headers={})
+    run, sink = make_run()
+    socket = ScriptedSocket([KeyboardInterrupt()])
     with pytest.raises(KeyboardInterrupt):
-        asyncio.run(_one_attempt(turn, text_events("hi", run.cancel, 40), 0))
+        asyncio.run(
+            run_turn(
+                run.spec,
+                text_events("hi", run.cancel, 40),
+                sink,
+                run.cancel,
+                sent_text="",
+                socket=socket,
+            )
+        )
+    assert socket.streams == 1
 
 
 def test_run_isolated_does_not_swallow_a_keyboard_interrupt_but_still_closes_the_loop(

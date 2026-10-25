@@ -3,7 +3,8 @@
 import asyncio
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import AsyncIterator, Iterable, Sequence
+from typing import Any
 
 from fishaudio.types import TTSConfig
 
@@ -18,6 +19,37 @@ from fish_audio_suite_voice.wire import (
     TurnSpec,
     text_events,
 )
+
+
+class ScriptedSocket:
+    """A ``FishSocket`` that plays one script per attempt: audio chunks, then maybe an error.
+
+    Each attempt reads every text event first, as Fish does before it speaks. The last
+    script repeats when there are more attempts than scripts.
+    """
+
+    def __init__(self, *attempts: Sequence[bytes | BaseException]) -> None:
+        self._attempts = attempts or ((),)
+        self.streams = 0
+        self.closed = 0
+
+    def stream(self, events: AsyncIterator[Any], spec: TurnSpec) -> AsyncIterator[bytes]:
+        del spec
+        plan = self._attempts[min(self.streams, len(self._attempts) - 1)]
+        self.streams += 1
+
+        async def audio() -> AsyncIterator[bytes]:
+            async for _event in events:
+                pass
+            for step in plan:
+                if isinstance(step, BaseException):
+                    raise step
+                yield step
+
+        return audio()
+
+    async def close(self) -> None:
+        self.closed += 1
 
 
 class RecordingSink:

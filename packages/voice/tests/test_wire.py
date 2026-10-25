@@ -13,6 +13,7 @@ import pytest
 from fishaudio.exceptions import RateLimitError, ValidationError, WebSocketError
 from wire_helpers import (
     RecordingSink,
+    ScriptedSocket,
     collect_events,
     make_run,
     stream_events,
@@ -32,7 +33,6 @@ from fish_audio_suite_voice.wire import (
     FlushEvent,
     TextEvent,
     TtsResult,
-    TurnRun,
     _pump_ws_audio,
     text_events,
     tts_result,
@@ -278,24 +278,14 @@ def test_pump_does_not_play_audio_that_arrives_after_cancel(
 def test_cancel_scope_after_audio_keeps_only_the_played_words(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls = {"n": 0}
-
-    async def send_turn(
-        client: object,
-        events: object,
-        run: TurnRun,
-        *,
-        close_client: object,
-    ) -> None:
-        del client, events, close_client
-        calls["n"] += 1
-        run.audio.got_audio = True
-        run.sink.write(b"\x00" * 33_075)
-        raise RuntimeError(
-            "Attempted to exit cancel scope in a different task than it was entered in"
-        )
-
-    monkeypatch.setattr("fish_audio_suite_voice.tts_turn.send_turn", send_turn)
+    socket = ScriptedSocket(
+        [
+            b"\x00" * 33_075,
+            RuntimeError(
+                "Attempted to exit cancel scope in a different task than it was entered in"
+            ),
+        ]
+    )
     run, sink = make_run()
 
     async def no_events():
@@ -309,9 +299,10 @@ def test_cancel_scope_after_audio_keeps_only_the_played_words(
             sink,
             threading.Event(),
             sent_text="hello there friend",
+            socket=socket,
         )
     )
-    assert calls["n"] == 1
+    assert socket.streams == 1
     assert result.got_audio is True
     assert result.cancelled is False
     assert result.spoken_so_far == "hello"
