@@ -165,34 +165,34 @@ def test_env_file_bad_utf8_is_skipped(
     assert "not utf-8" in capsys.readouterr().err
 
 
-def test_llm_env_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_llm_settings_read_only_the_fish_llm_names(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (
         "FISH_LLM_BASE",
-        "OPENROUTER_BASE_URL",
         "FISH_LLM_API_KEY",
         "OPENROUTER_API_KEY",
         "OPENAI_API_KEY",
         "FISH_LLM_MODEL",
-        "OPENROUTER_MODEL",
     ):
         monkeypatch.delenv(name, raising=False)
+    # Old OpenRouter names are not read before 1.0: they move nothing.
     monkeypatch.setenv("OPENROUTER_BASE_URL", "https://example.test/v1")
+    monkeypatch.setenv("OPENROUTER_MODEL", "vendor/old-name")
+    c = load_config()
+    assert c.llm.base == OPENROUTER_API_BASE
+    assert c.llm.model == ""
+    monkeypatch.setenv("FISH_LLM_BASE", "https://example.test/v1")
     monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
-    monkeypatch.setenv("OPENROUTER_MODEL", "vendor/fallback")
+    monkeypatch.setenv("FISH_LLM_MODEL", "vendor/model")
     c = load_config()
     assert c.llm.base == "https://example.test/v1"
     assert c.llm.api_key == "openai-key"
-    assert c.llm.model == "vendor/fallback"
-    monkeypatch.setenv("FISH_LLM_BASE", "")
+    assert c.llm.model == "vendor/model"
     monkeypatch.setenv("FISH_LLM_API_KEY", "  fish-key  ")
     monkeypatch.setenv("FISH_LLM_MODEL", "   ")
     c = load_config()
-    assert c.llm.base == "https://example.test/v1"
     assert c.llm.api_key == "fish-key"
-    assert c.llm.model == "vendor/fallback"
+    assert c.llm.model == ""
     monkeypatch.setenv("FISH_LLM_BASE", "  ")
-    assert load_config().llm.base == "https://example.test/v1"
-    monkeypatch.setenv("OPENROUTER_BASE_URL", "  ")
     assert load_config().llm.base == OPENROUTER_API_BASE
     monkeypatch.setenv("FISH_LLM_BASE", "https://example.test/v1/")
     assert load_config().llm.base == "https://example.test/v1"
@@ -370,7 +370,6 @@ def test_sessions_do_not_share_quit_state() -> None:
 def test_llm_keys_never_cross_providers(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in (
         "FISH_LLM_BASE",
-        "OPENROUTER_BASE_URL",
         "FISH_LLM_API_KEY",
         "OPENROUTER_API_KEY",
         "OPENAI_API_KEY",
@@ -389,7 +388,6 @@ def test_llm_keys_never_cross_providers(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_the_llm_backend_follows_the_base_host(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
     monkeypatch.setenv("FISH_LLM_BASE", "http://localhost:11434/v1")
     assert load_config().llm.backend == "openai"
     monkeypatch.setenv("FISH_LLM_BASE", "https://openrouter.ai/api/v1")
@@ -495,7 +493,7 @@ def test_stream_tts_is_off_unless_asked(monkeypatch: pytest.MonkeyPatch) -> None
 def test_a_blank_llm_key_does_not_hide_the_provider_key(monkeypatch: pytest.MonkeyPatch) -> None:
     from fish_audio_suite_voice.llm_tune import LlmTune
 
-    for name in ("FISH_LLM_BASE", "OPENROUTER_BASE_URL", "OPENAI_API_KEY"):
+    for name in ("FISH_LLM_BASE", "OPENAI_API_KEY"):
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv("FISH_LLM_API_KEY", "")
     monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
@@ -509,7 +507,6 @@ def test_a_malformed_llm_base_warns_and_falls_back(
 ) -> None:
     from fish_audio_suite_voice.llm_tune import LlmTune, is_openrouter_host
 
-    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
     monkeypatch.setenv("FISH_LLM_BASE", "http://[::1")
     tune = LlmTune.from_env()
     assert tune.base == OPENROUTER_API_BASE

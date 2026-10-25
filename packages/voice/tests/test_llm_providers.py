@@ -22,13 +22,11 @@ from fish_audio_suite_voice.llm_tune import (
 _ENV = (
     "FISH_LLM_PROVIDER",
     "FISH_LLM_BASE",
-    "OPENROUTER_BASE_URL",
     "FISH_LLM_API_KEY",
     "OPENROUTER_API_KEY",
     "OPENAI_API_KEY",
     "EXPLABS_API_KEY",
     "FISH_LLM_MODEL",
-    "OPENROUTER_MODEL",
     "FISH_LLM_MODEL_OPENROUTER",
     "FISH_LLM_MODEL_EXPERIENTIAL",
     "FISH_LLM_REASONING_EFFORT",
@@ -62,7 +60,6 @@ def test_naming_experiential_picks_its_base_key_and_model(env: pytest.MonkeyPatc
     env.setenv("OPENAI_API_KEY", "oa-key")
     env.setenv("FISH_LLM_MODEL", "shared-model")
     env.setenv("FISH_LLM_MODEL_EXPERIENTIAL", "glm-5.3-flash-abliterated")
-    env.setenv("OPENROUTER_MODEL", "vendor/openrouter-only")
     tune = LlmTune.from_env()
     assert tune.provider == "experiential"
     assert tune.backend == "openai"
@@ -84,14 +81,6 @@ def test_each_providers_model_variable_lets_both_live_in_one_env(
     assert LlmTune.from_env().model == "fallback"
 
 
-def test_the_experiential_model_ignores_the_openrouter_model_variable(
-    env: pytest.MonkeyPatch,
-) -> None:
-    env.setenv("FISH_LLM_PROVIDER", "experiential")
-    env.setenv("OPENROUTER_MODEL", "vendor/openrouter-only")
-    assert LlmTune.from_env().model == ""
-
-
 def test_a_base_on_the_experiential_host_is_experiential_without_naming_it(
     env: pytest.MonkeyPatch,
 ) -> None:
@@ -110,17 +99,6 @@ def test_a_key_never_goes_to_the_wrong_provider(env: pytest.MonkeyPatch) -> None
     tune = LlmTune.from_env()
     assert tune.provider == "experiential"
     assert tune.api_key == ""
-
-
-def test_the_old_openrouter_base_alias_cannot_redirect_a_named_provider(
-    env: pytest.MonkeyPatch,
-) -> None:
-    env.setenv("FISH_LLM_PROVIDER", "experiential")
-    env.setenv("OPENROUTER_BASE_URL", "https://proxy.example.test/v1")
-    env.setenv("EXPLABS_API_KEY", "xpl-key")
-    tune = LlmTune.from_env()
-    assert tune.base == EXPERIENTIAL_API_BASE
-    assert tune.api_key == "xpl-key"
 
 
 def test_an_explicit_key_wins_and_a_blank_one_falls_back(env: pytest.MonkeyPatch) -> None:
@@ -348,13 +326,13 @@ def test_the_startup_blockers_name_the_selected_providers_variables(
     env.setenv("FISH_LLM_PROVIDER", "experiential")
     assert llm_setting_names(LlmTune.from_env()) == (
         "EXPLABS_API_KEY",
-        "FISH_LLM_MODEL_EXPERIENTIAL",
+        "FISH_LLM_MODEL_EXPERIENTIAL / FISH_LLM_MODEL",
     )
     env.setenv("FISH_LLM_PROVIDER", "openrouter")
     assert llm_setting_names(LlmTune.from_env()) == (
         "OPENROUTER_API_KEY",
-        "FISH_LLM_MODEL_OPENROUTER / OPENROUTER_MODEL",
+        "FISH_LLM_MODEL_OPENROUTER / FISH_LLM_MODEL",
     )
     env.setenv("FISH_LLM_PROVIDER", "custom")
     env.setenv("FISH_LLM_BASE", "http://127.0.0.1:11434/v1")
-    assert llm_setting_names(LlmTune.from_env()) == ("OPENAI_API_KEY", "OPENROUTER_MODEL")
+    assert llm_setting_names(LlmTune.from_env()) == ("OPENAI_API_KEY", "FISH_LLM_MODEL")

@@ -387,7 +387,7 @@ Required:
 | `FISH_API_KEY` | none |
 | `FISH_VOICE_ID` | none |
 | `FISH_LLM_API_KEY` (fallback: the provider's own key variable, see above) | none. Duplex only |
-| `FISH_LLM_MODEL` (the provider's model variable first, then this, then `OPENROUTER_MODEL` for OpenRouter and other hosts) | none. Duplex only |
+| `FISH_LLM_MODEL` (the provider's model variable first, then this) | none. Duplex only |
 
 Speech:
 
@@ -414,7 +414,7 @@ LLM:
 | Variable | Default | Effect |
 | --- | --- | --- |
 | `FISH_LLM_PROVIDER` | unset | `openrouter` or `experiential`. Sets the default base, key variable and model variable. Unset or `custom` follows `FISH_LLM_BASE`. See above |
-| `FISH_LLM_BASE` (fallback `OPENROUTER_BASE_URL`, ignored when `FISH_LLM_PROVIDER` names a provider) | the provider's base, else `https://openrouter.ai/api/v1` | API base URL, including the version path |
+| `FISH_LLM_BASE` | the provider's base, else `https://openrouter.ai/api/v1` | API base URL, including the version path |
 | `FISH_LLM_REASONING_EFFORT` | unset | `none`, `minimal`, `low`, `medium`, `high` or `max`. Which values work depends on the model's route |
 | `FISH_LLM_TEMPERATURE` | `0.8` | 0 to 2 |
 | `FISH_LLM_TIMEOUT` | `120` | Seconds per request. Above 0 |
