@@ -233,7 +233,7 @@ def test_a_reader_that_falls_behind_keeps_only_the_newest_audio(
         got = list(SounddeviceMic().frames(stop))
     finally:
         timer.cancel()
-    assert 0 < len(got) <= 100  # at most about three seconds
+    assert 0 < len(got) <= 2_000 // mic.FRAME_MS  # at most about two seconds
     assert got == buffers[-len(got) :]  # the newest frames, in order, with no gap
 
 
