@@ -87,6 +87,7 @@ The `cli` extra pulls in what `fish-voice` needs to talk and listen. The full-sc
 | `vad` | `webrtcvad-wheels` | No voice activity detection |
 | `aec` | `pywebrtc-audio` (WebRTC AEC3) | No echo cancellation, so barge-in waits out the speaker bleed |
 | `cli` | All three, plus the `openrouter` SDK | |
+| `silero` | `pysilero-vad`, for `FISH_VOICE_VAD_ENGINE=silero` | The start-up check stops with a message naming the extra |
 | `tui` | `textual`, for `fish-voice --tui` | `--tui` says how to install it and exits 2 |
 | `deepgram` | `websockets`, for `FISH_VOICE_STT=deepgram` (streaming speech recognition) | The start-up check stops with a message naming the extra |
 

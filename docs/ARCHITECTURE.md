@@ -137,7 +137,8 @@ flowchart LR
 | --- | --- |
 | `aec` | AEC3 removes the bot's own voice from the mic, using what `playback` sends as the reference |
 | `mic` | The one microphone: `SessionMic` opens PortAudio once per session, cleans each 30 ms frame with the echo canceller as it arrives, numbers it and keeps the last two seconds. Listen, streaming and barge-in all read it, and a reader can pick up where another stopped |
-| `listen` | webrtcvad and a loudness floor start and end the utterance |
+| `listen` | the voice detector and a loudness floor start and end the utterance |
+| `vad` | the `Vad` interface (`is_speech(frame, rate)`), the named engines (`webrtc`, `silero`) and `package.module:factory` plugins. Listen, barge-in and the cooldown log each open a fresh detector through `open_vad` |
 | `asr` | Sends the WAV clip to Fish ASR. With `FISH_VOICE_HEAR_TONE` it also returns the tone marks Fish heard (`AsrResult`) |
 | `deepgram` | Deepgram Flux's protocol and connection: the address, the turn messages, a connection a test can fake |
 | `streaming` | One turn streamed to Flux: the mic gate feeds frames to the connection, and Flux says when the turn is over |

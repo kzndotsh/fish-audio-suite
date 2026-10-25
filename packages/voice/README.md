@@ -68,7 +68,7 @@ The `cli` extra includes AEC3. Speaker audio is subtracted from the mic before v
 
 A barge-in keeps the audio that tripped it and clears the speaker tap. The next listen starts from that clip.
 
-The barge floor follows the room: it is the quiet-percentile of recent mic frames, never below `FISH_VOICE_BARGE_RMS`. If barge-in fires on a cough or a chair, raise `FISH_VOICE_BARGE_FRAMES` (30 ms each) before raising the RMS. If sniffs, breathing or a bumped mic interrupt it, try `FISH_VOICE_VAD=2`, which counts fewer of those sounds as speech. It also affects normal listening, so check that soft speech and the first word of a sentence still come through. See [Troubleshooting](../../docs/TROUBLESHOOTING.md#coughs-chairs-sniffs-or-keyboard-noise-interrupt-the-bot).
+The barge floor follows the room: it is the quiet-percentile of recent mic frames, never below `FISH_VOICE_BARGE_RMS`. If barge-in fires on a cough or a chair, raise `FISH_VOICE_BARGE_FRAMES` (30 ms each) before raising the RMS. If sniffs, breathing, typing or a bumped mic interrupt it, try `FISH_VOICE_VAD_ENGINE=silero`, or `FISH_VOICE_VAD=2`, which counts fewer of those sounds as speech. It also affects normal listening, so check that soft speech and the first word of a sentence still come through. See [Troubleshooting](../../docs/TROUBLESHOOTING.md#coughs-chairs-sniffs-or-keyboard-noise-interrupt-the-bot).
 
 If talking over the bot does nothing, your voice may be reaching the gate quietly after echo cancellation. `scripts/mic_levels.py` prints your noise floor and speaking level, and raising the mic's own gain (not only software volume) helps more than lowering the thresholds. See [Troubleshooting](../../docs/TROUBLESHOOTING.md#soft-speech-is-missed-or-talking-over-the-bot-does-nothing-because-the-mic-is-quiet) for the numbers and the order to fix things in.
 
@@ -323,10 +323,23 @@ arrives and brings it to `FISH_VOICE_LOUDNESS_TARGET_DB` (-18 dBFS while speakin
 | `vad` | `webrtcvad-wheels` |
 | `aec` | `pywebrtc-audio` |
 | `cli` | the three above, plus `openrouter` |
+| `silero` | `pysilero-vad`, for `FISH_VOICE_VAD_ENGINE=silero` |
 | `tui` | `textual`, for `fish-voice --tui` |
 | `deepgram` | `websockets`, for `FISH_VOICE_STT=deepgram` |
 
 `import fish_audio_suite_voice` works without them. The heavy imports happen inside the functions that need them.
+
+## Voice detectors
+
+One detector decides which 30 ms frames hold speech, both for starting and ending your turn and for barge-in. `FISH_VOICE_VAD_ENGINE` picks it:
+
+- `webrtc` (the default) is WebRTC's VAD. It is small and fast, but it calls many short sounds speech, such as key clicks and steady fan noise.
+- `silero` is Silero VAD v6, a small neural model run in C++ by `pysilero-vad`. It tells speech from clicks and noise much better, and costs about half a millisecond per frame. Install the `silero` extra.
+- `package.module:factory` loads your own. `factory(strictness)` gets `FISH_VOICE_VAD` (0 to 3) and returns an object with `is_speech(frame: bytes, sample_rate: int) -> bool`, which is called with each 30 ms frame of 16 kHz mono 16-bit PCM in order. `webrtcvad.Vad` has this shape. A new detector is opened for every listen and every barge-in watch, so it can keep state between frames.
+
+For Silero, `FISH_VOICE_VAD` sets the speech probability a frame must reach: 0.35, 0.5, 0.65 or 0.8. If the chosen detector cannot load, `fish-voice` stops at start-up and says why.
+
+To compare detectors on your own room and keyboard, record once and play it through each: `uv run python scripts/vad_compare.py --record 30 take.wav`. See [scripts/README.md](../../scripts/README.md#vad_comparepy).
 
 ## Settings
 
@@ -417,7 +430,8 @@ Listen and interrupt. Times are approximate at 30 ms frames.
 | `FISH_VOICE_MIN_RMS` | `200` | Listen floor seed. It can rise in a loud room |
 | `FISH_VOICE_MIN_VOICED_FRAMES` | `12` | About 360 ms of voice. Drops a cough |
 | `FISH_VOICE_SILENCE_FRAMES` | `40` | About 1.2 s of quiet ends the turn |
-| `FISH_VOICE_VAD` | `1` | WebRTC VAD mode, 0–3. Higher is pickier |
+| `FISH_VOICE_VAD` | `1` | Voice detector strictness, 0–3. Higher is pickier. Listening and barge-in both use it |
+| `FISH_VOICE_VAD_ENGINE` | `webrtc` | The voice detector: `webrtc`, `silero` (the `silero` extra) or a plugin as `package.module:factory`. See [Voice detectors](#voice-detectors) |
 | `FISH_VOICE_COOLDOWN` | `0.8` | Seconds after playback |
 | `FISH_VOICE_FADE_MS` | `4` | Milliseconds of fade at each sentence start and end (a sound next to silence), so it does not click. 0 turns it off. Up to 50 |
 | `FISH_VOICE_BLEED_DELAY` | `0.9` | Used when AEC is off or missing |

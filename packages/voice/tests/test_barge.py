@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import collections.abc
 import io
+import sys
 import threading
+import types
 import wave
 
 import pytest
@@ -10,7 +12,6 @@ from voice_fakes import ScriptedMic, install_vad
 
 from fish_audio_suite_voice.aec import EchoCanceller
 from fish_audio_suite_voice.barge import (
-    _BARGE_VAD,
     BARGE_MISS_DECAY_FRAMES,
     DEFAULT_BARGE_HIT_FRAMES,
     DEFAULT_BARGE_PLAYING_GAIN,
@@ -39,13 +40,19 @@ from fish_audio_suite_voice.tune import (
     DEFAULT_END_SILENCE_FRAMES,
     DEFAULT_MIN_SPEECH_RMS,
     DEFAULT_MIN_VOICED_FRAMES,
-    DEFAULT_VAD_AGGRESSIVENESS,
     IMPULSE_START_EXTRA,
     MAX_UTTERANCE_FRAMES,
     AecTune,
     BargeTune,
     ListenTune,
 )
+
+
+class _UnusedVad:
+    """A detector for tests that never score a frame."""
+
+    def is_speech(self, frame: bytes, rate: int) -> bool:
+        raise AssertionError((len(frame), rate))
 
 
 def test_listen_tune_keeps_vad_and_pre_pad_in_range(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -225,8 +232,32 @@ def test_bleed_wait_ends_when_the_turn_is_cancelled() -> None:
     assert thread.is_alive() is False
 
 
-def test_barge_vad_matches_listen() -> None:
-    assert _BARGE_VAD == DEFAULT_VAD_AGGRESSIVENESS
+def test_the_barge_watch_scores_speech_with_the_detector_listen_uses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened: list[int] = []
+
+    class Vad:
+        def __init__(self, strictness: int) -> None:
+            opened.append(strictness)
+
+        def is_speech(self, frame: bytes, rate: int) -> bool:
+            del frame, rate
+            return True
+
+    plugin = types.ModuleType("barge_vad_plugin")
+    vars(plugin)["Vad"] = Vad
+    monkeypatch.setitem(sys.modules, "barge_vad_plugin", plugin)
+    gate = BargeGate(
+        mic=ScriptedMic([(3000).to_bytes(2, "little", signed=True) * (FRAME_BYTES // 2)] * 2),
+        hit_frames=2,
+        min_rms=1.0,
+        listen=ListenTune(vad_aggressiveness=3, vad_engine="barge_vad_plugin:Vad"),
+    )
+    cancel = threading.Event()
+    gate.watch(cancel)
+    assert cancel.is_set()
+    assert opened == [3]
 
 
 def test_barge_tune_reads_env_once(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -288,7 +319,7 @@ def test_barge_keeps_the_lookback_that_tripped() -> None:
 
 def test_barge_prefix_meets_the_listen_minimum() -> None:
     tune = ListenTune(1, 1, 4, 200.0, 20, DEFAULT_MIN_VOICED_FRAMES)
-    heard = _Listen(tune, object())
+    heard = _Listen(tune, _UnusedVad())
     loud = (1000).to_bytes(2, "little", signed=True) * (FRAME_BYTES // 2)
     _prime_listen(heard, loud * DEFAULT_BARGE_HIT_FRAMES)
     assert heard.speech_hits == DEFAULT_BARGE_HIT_FRAMES
@@ -296,7 +327,7 @@ def test_barge_prefix_meets_the_listen_minimum() -> None:
     assert wav is not None
     assert wav.startswith(b"RIFF")
     spike = (4000).to_bytes(2, "little", signed=True) * (FRAME_BYTES // 2)
-    bang = _Listen(tune, object())
+    bang = _Listen(tune, _UnusedVad())
     _prime_listen(bang, spike * DEFAULT_BARGE_HIT_FRAMES)
     kept = _clip_wav(bang, tune)
     assert kept is not None
@@ -315,7 +346,7 @@ def test_barge_prefix_meets_the_listen_minimum() -> None:
 
 def test_barge_prefix_counts_under_a_higher_listen_floor() -> None:
     tune = ListenTune(1, 40, 4, 800.0, 20, DEFAULT_MIN_VOICED_FRAMES)
-    heard = _Listen(tune, object())
+    heard = _Listen(tune, _UnusedVad())
     speech = (256).to_bytes(2, "little", signed=True) * (FRAME_BYTES // 2)
     quiet = b"\x01\x00" * (FRAME_BYTES // 2)
     _prime_listen(heard, quiet + speech * DEFAULT_BARGE_HIT_FRAMES)
@@ -325,7 +356,7 @@ def test_barge_prefix_counts_under_a_higher_listen_floor() -> None:
 
 def test_prime_listen_counts_loud_prefix_frames() -> None:
     tune = ListenTune(1, 40, 4, 200.0, 20, 12)
-    heard = _Listen(tune, object())
+    heard = _Listen(tune, _UnusedVad())
     loud = b"\x00\x10" * 480
     quiet = b"\x01\x00" * 480
     _prime_listen(heard, quiet + loud)
@@ -471,7 +502,7 @@ def test_bleed_thread_skips_the_mic_when_already_cancelled(
 
 def test_quiet_vad_frame_holds_the_turn() -> None:
     tune = ListenTune(1, 2, 4, 200.0, 20, 12)
-    heard = _Listen(tune, object())
+    heard = _Listen(tune, _UnusedVad())
     assert heard._hold(b"\x00\x00", False, vad_speech=True) is False
     assert heard.silence == 0
     assert heard.speech_hits == 0

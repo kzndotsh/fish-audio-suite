@@ -162,6 +162,7 @@ DEFAULTS = {
     ),
     "FISH_VOICE_PRE_PAD_FRAMES": ("fish_audio_suite_voice.tune", "DEFAULT_PRE_PAD_FRAMES", "voice"),
     "FISH_VOICE_VAD": ("fish_audio_suite_voice.tune", "DEFAULT_VAD_AGGRESSIVENESS", "voice"),
+    "FISH_VOICE_VAD_ENGINE": ("fish_audio_suite_voice.tune", "DEFAULT_VAD_ENGINE", "voice"),
 }
 
 

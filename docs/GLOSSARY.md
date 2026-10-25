@@ -43,4 +43,4 @@ Terms used across the fish-audio-suite docs and code.
 | **TTFA / first token** | Time to first audio from Fish; time to the first token from the LLM |
 | **Turn** | One user line and the bot's reply |
 | **Underrun** | The speaker running out of audio, heard as a click or a gap. Logged as `tts underrun`, with `chunk_wait`, `in_python` and `write` timings that say whether the audio came late or the playback thread stalled |
-| **VAD** | Voice activity detection: webrtcvad decides whether a 30 ms frame contains speech |
+| **VAD** | Voice activity detection: the detector `FISH_VOICE_VAD_ENGINE` picks (webrtcvad by default, or Silero) decides whether a 30 ms frame contains speech |

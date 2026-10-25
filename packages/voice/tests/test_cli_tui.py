@@ -258,6 +258,21 @@ def test_choosing_deepgram_needs_its_key_and_its_extra(
     assert "deepgram extra" in capsys.readouterr().err
 
 
+def test_a_voice_detector_that_cannot_load_stops_the_start(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from fish_audio_suite_voice.cli import _preflight
+    from fish_audio_suite_voice.tune import ListenTune
+
+    base = _configured(monkeypatch)
+    assert _preflight(replace(base, listen=ListenTune(vad_engine="silero"))) is None
+    monkeypatch.setitem(sys.modules, "pysilero_vad", None)
+    assert _preflight(replace(base, listen=ListenTune(vad_engine="silero"))) == EXIT_FATAL
+    assert "fish-audio-suite-voice[silero]" in capsys.readouterr().err
+    assert _preflight(replace(base, listen=ListenTune(vad_engine="silro"))) == EXIT_FATAL
+    assert "unknown voice detector" in capsys.readouterr().err
+
+
 class _UnusableBackend:
     """``open_chat_backend`` when the model check finds nothing that can answer."""
 

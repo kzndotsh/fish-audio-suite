@@ -5,14 +5,13 @@ from __future__ import annotations
 import collections
 import io
 from collections.abc import Callable, Sequence
-from typing import Any, Final
+from typing import Final
 
 from fish_audio_suite_voice.aec import pcm_rms
 from fish_audio_suite_voice.barge import (
     DEFAULT_BARGE_RMS,
     LISTEN_HEARTBEAT_FRAMES,
     MIC_LEVEL_EVERY_FRAMES,
-    frame_is_speech,
 )
 from fish_audio_suite_voice.debug import debug, heartbeat_due, trace
 from fish_audio_suite_voice.events import EVENTS, MicLevel
@@ -24,6 +23,7 @@ from fish_audio_suite_voice.tune import (
     MAX_UTTERANCE_FRAMES,
     ListenTune,
 )
+from fish_audio_suite_voice.vad import Vad, frame_is_speech, open_vad
 
 __all__ = [
     "cooldown_report",
@@ -137,9 +137,9 @@ def _encode_wav(pcm: bytes) -> bytes:
 
 
 class _Listen:
-    def __init__(self, tune: ListenTune, vad: Any) -> None:
+    def __init__(self, tune: ListenTune, vad: Vad) -> None:
         self.tune: ListenTune = tune
-        self.vad: Any = vad
+        self.vad: Vad = vad
         self.clip_frames: list[bytes] = []
         self.ring: collections.deque[tuple[bytes, bool]] = collections.deque(
             maxlen=tune.pre_pad_frames
@@ -255,7 +255,7 @@ class _Listen:
         return False
 
 
-def cooldown_report(frames: Sequence[bytes], tune: ListenTune, vad: Any) -> str:
+def cooldown_report(frames: Sequence[bytes], tune: ListenTune, vad: Vad) -> str:
     """Describe what the mic heard while the cooldown kept it from listening.
 
     Parameters
@@ -264,8 +264,8 @@ def cooldown_report(frames: Sequence[bytes], tune: ListenTune, vad: Any) -> str:
         The 30 ms frames from the end of a reply to the end of its cooldown.
     tune : ListenTune
         Supplies the speech floor and how many frames start speech.
-    vad : Any
-        A voice-activity detector with ``is_speech(frame, rate)``.
+    vad : Vad
+        A fresh voice-activity detector.
 
     Returns
     -------
@@ -383,13 +383,10 @@ def record_utterance(
     8 times the floor also needs this frame to be at least half the peak and
     10 trailing hits. An impulse (peak >= 8 times the floor and at most 24
     voiced hits) is dropped. Silence of about 1.2 seconds ends the turn.
-    ``webrtcvad`` is imported here so the voice package imports without the
-    ``vad`` extra.
+    The detector is opened here, so the voice package imports without its extra.
     """
-    import webrtcvad
-
     tune = tune or ListenTune()
-    heard = _Listen(tune, webrtcvad.Vad(tune.vad_aggressiveness))
+    heard = _Listen(tune, open_vad(tune.vad_engine, tune.vad_aggressiveness))
     _prime_listen(heard, prefix)
     trace(
         "listen.open vad={} start_speech_frames={} min_rms={} min_voiced_frames={} "
@@ -416,7 +413,7 @@ def record_utterance(
 class _StreamListen(_Listen):
     """A listen that hands each frame of the utterance to ``sink`` as it is kept."""
 
-    def __init__(self, tune: ListenTune, vad: Any, sink: Callable[[bytes, bool], None]) -> None:
+    def __init__(self, tune: ListenTune, vad: Vad, sink: Callable[[bytes, bool], None]) -> None:
         super().__init__(tune, vad)
         self._sink = sink
 
@@ -441,7 +438,7 @@ def stream_utterance(
     *,
     prefix: bytes = b"",
     tune: ListenTune | None = None,
-    vad: Any = None,
+    vad: Vad | None = None,
     since: int | None = None,
 ) -> bool:
     """Block until one utterance ends, passing its frames to ``sink`` as they come.
@@ -461,8 +458,8 @@ def stream_utterance(
         PCM kept from the barge-in that interrupted the previous reply.
     tune : ListenTune or None, optional
         VAD and utterance limits. None uses the defaults.
-    vad : Any, optional
-        A voice-activity detector with ``is_speech(frame, rate)``. WebRTC's by default.
+    vad : Vad or None, optional
+        A fresh voice-activity detector. None opens the one ``tune`` names.
     since : int or None, optional
         The mic position to read from. None reads from now.
 
@@ -478,11 +475,9 @@ def stream_utterance(
     rejection) and the same ``MicLevel`` events, but the end of the turn is for the caller to
     judge, with this silence as the limit.
     """
-    if vad is None:
-        import webrtcvad
-
-        vad = webrtcvad.Vad((tune or ListenTune()).vad_aggressiveness)
     tune = tune or ListenTune()
+    if vad is None:
+        vad = open_vad(tune.vad_engine, tune.vad_aggressiveness)
     heard = _StreamListen(tune, vad, sink)
     _prime_listen(heard, prefix)
     for idle_frames, frame in enumerate(mic.frames(quit_requested, since=since), start=1):

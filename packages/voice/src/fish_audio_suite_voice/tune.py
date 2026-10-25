@@ -32,6 +32,7 @@ __all__ = [
     "DEFAULT_TURN_EXTENSIONS",
     "DEFAULT_TURN_SILENCE_FRAMES",
     "DEFAULT_VAD_AGGRESSIVENESS",
+    "DEFAULT_VAD_ENGINE",
     "EAGER_EOT_HI",
     "EAGER_EOT_LO",
     "HTTP_KEEPALIVE_S",
@@ -65,6 +66,7 @@ EAGER_EOT_LO: Final = 0.3
 EAGER_EOT_HI: Final = 0.9
 
 DEFAULT_VAD_AGGRESSIVENESS: Final = 1
+DEFAULT_VAD_ENGINE: Final = "webrtc"
 VAD_MODE_HI: Final = 3
 DEFAULT_END_SILENCE_FRAMES: Final = 40
 DEFAULT_START_SPEECH_FRAMES: Final = 4
@@ -260,7 +262,7 @@ class ListenTune:
     Attributes
     ----------
     vad_aggressiveness : int
-        WebRTC VAD mode, 0 to 3.
+        How strict the voice detector is, 0 to 3. Higher calls fewer sounds speech.
     end_silence_frames : int
         Quiet 30 ms frames that end an utterance.
     start_speech_frames : int
@@ -272,6 +274,8 @@ class ListenTune:
         impulse extra, or the mic would never trigger.
     min_voiced_frames : int
         Voiced frames an utterance needs before it is sent to ASR.
+    vad_engine : str
+        The voice detector: a name in ``vad.VAD_ENGINES`` or ``package.module:factory``.
     """
 
     vad_aggressiveness: int = DEFAULT_VAD_AGGRESSIVENESS
@@ -280,6 +284,7 @@ class ListenTune:
     min_speech_rms: float = DEFAULT_MIN_SPEECH_RMS
     pre_pad_frames: int = DEFAULT_PRE_PAD_FRAMES
     min_voiced_frames: int = DEFAULT_MIN_VOICED_FRAMES
+    vad_engine: str = DEFAULT_VAD_ENGINE
 
     @classmethod
     def from_env(cls) -> Self:
@@ -300,6 +305,7 @@ class ListenTune:
             vad_aggressiveness=read_int(
                 "FISH_VOICE_VAD", DEFAULT_VAD_AGGRESSIVENESS, lo=0, hi=VAD_MODE_HI
             ),
+            vad_engine=read_text("FISH_VOICE_VAD_ENGINE", DEFAULT_VAD_ENGINE) or DEFAULT_VAD_ENGINE,
             end_silence_frames=read_int(
                 "FISH_VOICE_SILENCE_FRAMES", DEFAULT_END_SILENCE_FRAMES, lo=1
             ),

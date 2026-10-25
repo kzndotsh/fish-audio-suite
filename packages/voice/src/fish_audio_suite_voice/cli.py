@@ -48,6 +48,7 @@ from fish_audio_suite_voice.playback import (
 )
 from fish_audio_suite_voice.signals import DuplexSession
 from fish_audio_suite_voice.speaker import FishSpeaker
+from fish_audio_suite_voice.vad import vad_problem
 from fish_audio_suite_voice.ws_tap import install_fish_ws_tap
 
 __all__ = [
@@ -196,6 +197,10 @@ def _preflight(c: VoiceCliConfig) -> int | None:
     playback_problem = duplex_playback_problem(c.playback)
     if playback_problem is not None:
         warn(f"BLOCKER: {playback_problem}")
+        return EXIT_FATAL
+    vad = vad_problem(c.listen.vad_engine, c.listen.vad_aggressiveness)
+    if vad is not None:
+        warn(f"BLOCKER: {vad}")
         return EXIT_FATAL
     return _require_deepgram(c)
 
