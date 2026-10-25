@@ -292,3 +292,20 @@ def test_a_detector_that_fails_in_the_cooldown_log_does_not_end_the_session(
     config = quick_config()
     broken = replace(config, listen=replace(config.listen, vad_engine="not-an-engine"))
     assert run_session(broken, tts) == 0
+
+
+def test_the_cooldown_report_judges_frames_against_the_adaptive_floor() -> None:
+    from fish_audio_suite_voice.listen import cooldown_report
+    from fish_audio_suite_voice.tune import ListenTune
+
+    def level(rms: int) -> bytes:
+        return rms.to_bytes(2, "little", signed=True) * 480
+
+    # Room hiss at 150 raises the floor to 375 (2.5 x the quiet level), so a 300 rms
+    # echo after it does not count, though it is over the 200 seed.
+    frames = [level(150)] * 30 + [level(300)] * 10
+    report = cooldown_report(frames, ListenTune(min_speech_rms=200.0), _LoudVad(1))
+    fields = dict(part.split("=") for part in report.split())
+    assert fields["floor"] == "375"
+    assert fields["over_floor"] == "0"
+    assert fields["speech_like"] == "0"
