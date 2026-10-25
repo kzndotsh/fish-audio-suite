@@ -286,7 +286,7 @@ layers = [
     "duplex : tui : console_sink : inputs",
     "reply : hearing : streaming",
     "listen : barge : speaker : duplex_state : speculate : stream_scrub : tts_turn : turn_check",
-    "config : mic : wire : llm : playback : transports : deepgram : asr : aec : loudness : spoken : signals : session_view",
+    "config : mic : wire : llm : playback : transports : vad : deepgram : asr : aec : loudness : spoken : signals : session_view",
     "tune : llm_tune : events : debug : envfile : cancel : ws_tap : console : declick : floor : history : pause",
 ]
 
