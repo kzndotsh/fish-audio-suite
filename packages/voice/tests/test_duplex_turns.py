@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator
 
 import pytest
 from session_fakes import ScriptedHearing, heard_line, quick_config, run_session, speak_with_fakes
-from voice_fakes import install_audio, set_tts
+from voice_fakes import ScriptedMic, install_audio, install_vad, set_tts
 
 from fish_audio_suite_voice.duplex_state import DuplexContext
 from fish_audio_suite_voice.hearing import HeardLine
@@ -195,3 +195,59 @@ def test_a_model_that_cannot_answer_ends_the_session(
     # Nothing was spoken, and the second line was never answered. The streaming path
     # has Fish listening before the first token, so it ends one empty turn.
     assert said == ([""] if stream else [])
+
+
+class _LoudVad:
+    def __init__(self, _mode: int) -> None:
+        pass
+
+    def is_speech(self, frame: bytes, _rate: int) -> bool:
+        return frame[:2] != b"\x00\x00"
+
+
+def _logged_cooldowns(monkeypatch: pytest.MonkeyPatch, *, barged: bool) -> list[str]:
+    tts = FishSpeaker(api_key="k", voice_id="voice")
+    install_audio(monkeypatch)
+    speak_with_fakes(monkeypatch, tts)
+    heard = ScriptedHearing(monkeypatch)
+    lines = iter([heard_line("hi there"), HeardLine("bye")])
+
+    async def hear(ctx: DuplexContext, last_user: str) -> HeardLine:
+        heard.last_user.append(last_user)
+        if barged:
+            ctx.carry.prefix = b"clip"  # the user spoke over the reply
+        return next(lines)
+
+    monkeypatch.setattr("fish_audio_suite_voice.duplex.hear_line", hear)
+    quiet = b"\x00\x00" * 480
+    echo = (300).to_bytes(2, "little", signed=True) * 480
+    monkeypatch.setattr(
+        "fish_audio_suite_voice.duplex.SessionMic",
+        lambda *_a, **_k: ScriptedMic([quiet, echo, echo, quiet]),
+    )
+    install_vad(monkeypatch, _LoudVad)
+    logged: list[str] = []
+
+    def record(message: str, *args: object, **_kw: object) -> None:
+        logged.append(message.format(*args))
+
+    monkeypatch.setattr("fish_audio_suite_voice.duplex.debug_enabled", lambda: True)
+    monkeypatch.setattr("fish_audio_suite_voice.duplex.debug", record)
+    assert run_session(quick_config(), tts) == 0
+    return [line for line in logged if line.startswith("listen.cooldown")]
+
+
+def test_what_the_mic_heard_in_the_cooldown_is_logged_after_each_reply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    logged = _logged_cooldowns(monkeypatch, barged=False)
+    assert logged == [
+        "listen.cooldown frames=4 peak_rms=300 floor=200 voiced=2 over_floor=2 "
+        "speech_like=2 start_needs=4"
+    ]
+
+
+def test_a_reply_cut_off_by_a_barge_in_has_no_cooldown_to_log(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert _logged_cooldowns(monkeypatch, barged=True) == []

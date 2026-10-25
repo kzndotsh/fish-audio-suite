@@ -251,9 +251,12 @@ def test_a_reader_that_falls_behind_keeps_only_the_newest_audio(
     with SessionMic() as source:
         stop = threading.Event()
         assert _take(source.frames(stop), stop, 1)  # opens the device
-        deadline = time.monotonic() + 5
-        while source.position < len(buffers) and time.monotonic() < deadline:
-            time.sleep(0.01)
+        # The device's own queue already dropped all but the newest blocks, so wait
+        # for the reader to stop moving rather than for every frame.
+        settled, deadline = -1, time.monotonic() + 5
+        while source.position != settled and time.monotonic() < deadline:
+            settled = source.position
+            time.sleep(0.05)
         stop = threading.Event()
         timer = threading.Timer(0.3, stop.set)
         timer.start()
@@ -354,3 +357,29 @@ def test_releasing_the_mic_closes_the_device_forgets_its_audio_and_a_read_reopen
     assert first == buffers
     assert again == buffers
     assert _FakeStream.opened == 2
+
+
+def test_recent_returns_what_arrived_since_a_position_without_waiting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    buffers = _numbered(10)
+    _install(monkeypatch, buffers)
+    with SessionMic() as source:
+        stop = threading.Event()
+        _take(source.frames(stop), stop, 10)
+        assert source.recent(6) == buffers[6:]
+        assert source.recent(10) == []
+        assert source.recent(0) == buffers
+
+
+def test_a_reader_that_is_already_stopped_does_not_open_the_device(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Mute sets the stop flag and then releases the mic. A recording that starts in
+    # between must not open it again while muted.
+    _install(monkeypatch, _numbered(3))
+    stopped = threading.Event()
+    stopped.set()
+    with SessionMic() as source:
+        assert list(source.frames(stopped)) == []
+    assert _FakeStream.opened == 0

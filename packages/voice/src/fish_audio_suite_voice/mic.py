@@ -84,9 +84,20 @@ class Mic(Protocol):
         """Close the device and forget what it heard, as mute does. A later read reopens it."""
         ...
 
+    def recent(self, since: int) -> list[bytes]:
+        """Return the frames kept from position ``since`` up to now, without waiting."""
+        ...
+
 
 def _no_aec() -> EchoCanceller:
     return EchoCanceller(AecTune(enabled=False))
+
+
+def _shut(stream: Any) -> None:
+    with contextlib.suppress(Exception):
+        stream.stop()
+    with contextlib.suppress(Exception):
+        stream.close()
 
 
 def _take_full_frames(pending: bytearray, chunk: bytes, frame_bytes: int) -> list[bytes]:
@@ -172,6 +183,10 @@ class SessionMic:
         """
         with self._ready:
             index = self._next if since is None else since
+        # Mute sets the stop flag before it releases the device, so a reader that
+        # is already stopped must not open it again.
+        if stop is not None and stop.is_set():
+            return
         # Opened after the start is fixed, so a first read misses nothing the
         # device delivers while it opens.
         self._open()
@@ -191,6 +206,23 @@ class SessionMic:
                 index += 1
                 yield frame
 
+    def recent(self, since: int) -> list[bytes]:
+        """Return the frames kept from position ``since`` up to now, without waiting.
+
+        Parameters
+        ----------
+        since : int
+            A ``position``. Frames older than the two seconds kept are left out.
+
+        Returns
+        -------
+        list of bytes
+            The frames, oldest first. Empty when none arrived since then.
+        """
+        with self._ready:
+            oldest = self._next - len(self._ring)
+            return list(itertools.islice(self._ring, max(0, since - oldest), None))
+
     def release(self) -> None:
         """Close the device and drop the audio kept, as mute does. A later read reopens it.
 
@@ -199,19 +231,19 @@ class SessionMic:
         Positions keep counting across a release, so an old ``since`` is simply
         older than anything kept.
         """
+        # Torn down under the lock, so a read cannot open a second stream on the
+        # device before this one has stopped.
         with self._opening:
             self._running.clear()
             stream, self._stream = self._stream, None
             reader, self._reader = self._reader, None
-        if stream is not None:
-            with contextlib.suppress(Exception):
-                stream.stop()
-            with contextlib.suppress(Exception):
-                stream.close()
-        if reader is not None:
-            reader.join(timeout=_POLL_S * 5)
-        with self._ready:
-            self._ring.clear()
+            if stream is not None:
+                _shut(stream)
+            if reader is not None:
+                reader.join(timeout=_POLL_S * 5)
+            with self._ready:
+                self._ring.clear()
+                self._failure = None
 
     def close(self) -> None:
         """Release the device for good. Safe to call more than once."""
@@ -239,17 +271,24 @@ class SessionMic:
                 blocksize=FRAME_SAMPLES,
                 callback=callback,
             )
-            stream.start()
-            self._stream = stream
-            with self._ready:
-                self._failure = None
             running = threading.Event()
             running.set()
-            self._running = running
-            self._reader = threading.Thread(
+            reader = threading.Thread(
                 target=self._read, args=(blocks, running), name="mic", daemon=True
             )
-            self._reader.start()
+            # Cleared before the reader starts, so a failure it hits at once is kept.
+            with self._ready:
+                self._failure = None
+            try:
+                stream.start()
+                reader.start()
+            except BaseException:
+                running.clear()
+                _shut(stream)
+                raise
+            self._running = running
+            self._stream = stream
+            self._reader = reader
 
     def _read(self, blocks: queue.Queue[bytes], running: threading.Event) -> None:
         pending = bytearray()
@@ -264,6 +303,10 @@ class SessionMic:
                     # the speaker in step even while no one is reading.
                     clean = self.aec.clean(frame)
                     with self._ready:
+                        # A release may have cleared the ring while this frame was
+                        # being cleaned. It belongs to before the mute, so drop it.
+                        if not running.is_set():
+                            return
                         self._ring.append(clean)
                         self._next += 1
                         self._ready.notify_all()

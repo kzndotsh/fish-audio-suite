@@ -46,6 +46,13 @@ class ScriptedMic:
         self.since: int | None = None
         self.released = 0
 
+    def __enter__(self) -> ScriptedMic:
+        """Return the mic, as the session's exit stack expects."""
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        """Nothing to close."""
+
     @property
     def position(self) -> int:
         """Always 0: every read plays the script from its start."""
@@ -54,6 +61,12 @@ class ScriptedMic:
     def release(self) -> None:
         """Count the release, as mute does."""
         self.released += 1
+
+    def recent(self, since: int) -> list[bytes]:
+        """The script, as if all of it had arrived since ``since``."""
+        del since
+        script = self._script
+        return [] if callable(script) else list(script)
 
     def frames(self, stop: StopFlag | None, since: int | None = None) -> Iterator[bytes]:
         """Yield the script, ending early once ``stop`` is set. ``since`` is recorded."""

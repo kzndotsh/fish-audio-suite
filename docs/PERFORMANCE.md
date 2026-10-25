@@ -214,6 +214,7 @@ Lines worth watching:
 | `listen speech_start` right after `listen open`, with no one talking | Echo after the reply. Raise `FISH_VOICE_COOLDOWN` |
 | `asr.skip backchannel` / `hallucination` | A clip was dropped after transcription, on purpose |
 | `llm stream_end ... provider=X` | Which provider served the reply |
+| `listen cooldown frames=... speech_like=N start_needs=M` | What the mic heard during the cooldown after a reply. `speech_like` counts frames loud and voiced enough to start a turn. If it stays well under `start_needs` on every reply, the bot's echo never comes close, and a shorter `FISH_VOICE_COOLDOWN` is safe on this setup |
 | `llm stream_end ... cached=N` | How many prompt tokens the provider read from its cache. 0 on every turn means the cache is not being used |
 | `llm stream_end ... tier=X` | Which service tier served it, when the response says. `ultrafast` that falls back shows `priority` |
 

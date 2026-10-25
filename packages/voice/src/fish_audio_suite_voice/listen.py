@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import collections
 import io
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any, Final
 
 from fish_audio_suite_voice.aec import pcm_rms
@@ -26,6 +26,7 @@ from fish_audio_suite_voice.tune import (
 )
 
 __all__ = [
+    "cooldown_report",
     "listen_reject_reason",
     "record_utterance",
     "spike_start_allowed",
@@ -252,6 +253,48 @@ class _Listen:
         self.ring.clear()
         self.silence = 0
         return False
+
+
+def cooldown_report(frames: Sequence[bytes], tune: ListenTune, vad: Any) -> str:
+    """Describe what the mic heard while the cooldown kept it from listening.
+
+    Parameters
+    ----------
+    frames : Sequence of bytes
+        The 30 ms frames from the end of a reply to the end of its cooldown.
+    tune : ListenTune
+        Supplies the speech floor and how many frames start speech.
+    vad : Any
+        A voice-activity detector with ``is_speech(frame, rate)``.
+
+    Returns
+    -------
+    str
+        ``frames=… peak_rms=… floor=… voiced=… over_floor=… speech_like=… start_needs=…``.
+        ``speech_like`` counts frames both over the floor and voiced, the ones that
+        count toward starting a turn. Near ``start_needs``, the bot's own echo could
+        start a turn if the cooldown were shorter.
+
+    Examples
+    --------
+    >>> class Quiet:
+    ...     def is_speech(self, frame, rate):
+    ...         return False
+    >>> cooldown_report([], ListenTune(), Quiet())
+    'frames=0'
+    """
+    if not frames:
+        return "frames=0"
+    floor = tune.min_speech_rms
+    levels = [pcm_rms(frame) for frame in frames]
+    voiced = [frame_is_speech(vad, frame) for frame in frames]
+    over = [level >= floor for level in levels]
+    speech_like = sum(1 for loud, said in zip(over, voiced, strict=True) if loud and said)
+    return (
+        f"frames={len(frames)} peak_rms={max(levels):.0f} floor={floor:.0f} "
+        f"voiced={sum(voiced)} over_floor={sum(over)} speech_like={speech_like} "
+        f"start_needs={tune.start_speech_frames}"
+    )
 
 
 def _clip_wav(heard: _Listen, tune: ListenTune) -> bytes | None:
