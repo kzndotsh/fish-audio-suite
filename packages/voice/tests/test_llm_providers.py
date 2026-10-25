@@ -32,6 +32,7 @@ _ENV = (
     "FISH_LLM_MODEL_OPENROUTER",
     "FISH_LLM_MODEL_EXPERIENTIAL",
     "FISH_LLM_REASONING_EFFORT",
+    "FISH_LLM_SERVICE_TIER",
 )
 
 
@@ -179,6 +180,17 @@ def test_reasoning_effort_is_validated(
     env.setenv("FISH_LLM_REASONING_EFFORT", "turbo")
     assert LlmTune.from_env().reasoning_effort == ""
     assert "FISH_LLM_REASONING_EFFORT" in capsys.readouterr().err
+
+
+def test_service_tier_is_validated(
+    env: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert LlmTune.from_env().service_tier == ""
+    env.setenv("FISH_LLM_SERVICE_TIER", " Ultrafast ")
+    assert LlmTune.from_env().service_tier == "ultrafast"
+    env.setenv("FISH_LLM_SERVICE_TIER", "turbo")
+    assert LlmTune.from_env().service_tier == ""
+    assert "FISH_LLM_SERVICE_TIER" in capsys.readouterr().err
 
 
 def _experiential_tune(**kw: Any) -> LlmTune:

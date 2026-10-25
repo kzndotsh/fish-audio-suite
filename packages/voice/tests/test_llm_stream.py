@@ -1315,3 +1315,40 @@ def test_an_unknown_model_is_refused_before_the_session_starts() -> None:
     client = SimpleNamespace(models=SimpleNamespace(get_async=get_async))
     with pytest.raises(ChatUnusableError, match="unknown model org/missing"):
         asyncio.run(check_openrouter_model(client, _tune(model="org/missing")))
+
+
+def test_a_service_tier_is_sent_only_when_one_is_chosen(
+    fake_openrouter: type[_FakeOpenRouter],
+) -> None:
+    del fake_openrouter
+
+    async def run(**extra: Any) -> None:
+        async for _tok in _tokens(**extra):
+            pass
+
+    asyncio.run(run())
+    assert _FakeChat.last_kw is not None
+    assert "service_tier" not in _FakeChat.last_kw
+    asyncio.run(run(tune=_tune(service_tier="ultrafast")))
+    assert _FakeChat.last_kw["service_tier"] == "ultrafast"
+
+
+def test_the_tier_that_served_the_reply_is_logged(
+    fake_openrouter: type[_FakeOpenRouter], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    served = _chunk("Hi.")
+    served.service_tier = "priority"  # ultrafast was asked for and fell back
+    fake_openrouter.chunks = [served]
+    lines: list[str] = []
+
+    def record(message: str, *args: object, **_kw: object) -> None:
+        lines.append(message.format(*args))
+
+    monkeypatch.setattr("fish_audio_suite_voice.llm.debug", record)
+
+    async def run() -> None:
+        async for _tok in _tokens(tune=_tune(service_tier="ultrafast")):
+            pass
+
+    asyncio.run(run())
+    assert any(line.startswith("llm.stream_end") and "tier=priority" in line for line in lines)

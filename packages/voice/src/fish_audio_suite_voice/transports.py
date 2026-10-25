@@ -63,6 +63,7 @@ class ChatChunk:
     model: str = ""
     provider: str = ""
     provider_summary: str = ""
+    service_tier: str = ""
     error: str | None = None
 
 
@@ -212,6 +213,8 @@ def _send_kwargs(call: ChatCall) -> dict[str, Any]:
     send_kw["timeout_ms"] = int(tune.timeout_s * MS_PER_S)
     if tune.provider_sort:
         send_kw["provider"] = {"sort": tune.provider_sort}
+    if tune.service_tier:
+        send_kw["service_tier"] = tune.service_tier
     if tune.reasoning_effort:
         # OpenRouter's unified reasoning control; the openai path sends the
         # flat reasoning_effort field instead.
@@ -555,6 +558,7 @@ def _chunk_of(event: object) -> ChatChunk:
         model=_text_field(event, "model"),
         provider=_text_field(event, "provider"),
         provider_summary=_text_field(_field(event, "openrouter_metadata"), "summary"),
+        service_tier=_text_field(event, "service_tier"),
         error=str(error) if error else None,
     )
 

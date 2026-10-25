@@ -160,7 +160,11 @@ chat-completions API. What to know about Experiential, from its published contra
 
 OpenRouter-only options: `FISH_LLM_PROVIDER_SORT` picks the provider by `latency` (the default, so
 the first word comes sooner), `throughput` or `price`, and `off` leaves it to OpenRouter. It only
-changes anything for a model that more than one provider serves. `FISH_LLM_NITRO=1` adds `:nitro`
+changes anything for a model that more than one provider serves. `FISH_LLM_SERVICE_TIER` asks for
+a processing tier: `priority` costs more for steadier speed, `ultrafast` (select OpenAI models
+only) costs several times the standard price and falls back to `priority`, then `default`, where
+it is not offered, and `flex` is cheaper and slower. With `--debug`, `llm stream_end` shows the
+tier that served the reply. `FISH_LLM_NITRO=1` adds `:nitro`
 to the model, and `FISH_LLM_REFERER`, `FISH_LLM_TITLE`, `FISH_LLM_CATEGORIES` set the attribution
 (empty disables one). Other servers get none of these.
 
@@ -369,6 +373,7 @@ LLM:
 | `FISH_LLM_MAX_TOKENS` | `1200` | Completion cap |
 | `FISH_LLM_NITRO` | off | OpenRouter only. Adds `:nitro` to the model |
 | `FISH_LLM_PROVIDER_SORT` | `latency` | OpenRouter only. `latency`, `throughput`, `price` or `off` |
+| `FISH_LLM_SERVICE_TIER` | unset | OpenRouter only. `default`, `flex`, `priority` or `ultrafast`. Unset lets OpenRouter pick. Higher tiers cost more |
 | `FISH_LLM_REFERER`, `FISH_LLM_TITLE`, `FISH_LLM_CATEGORIES` | this project's | OpenRouter attribution. Empty disables |
 | `FISH_LLM_CONTINUE` | off | Send one more request when a reply stops mid-sentence |
 | `FISH_VOICE_SYSTEM_PROMPT` | the kit default | System prompt text, used as written. Set but blank sends no system prompt |
