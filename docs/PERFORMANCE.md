@@ -193,6 +193,14 @@ turn summary since you stopped 1.54s · first audio 1.18s · asr 0.15s · llm fi
 - **tts first audio:** from opening the Fish socket to the first audio, so it includes waiting for the LLM. Fish's own delay is the gap between `tts_first_text` and `tts_first_audio` on the `turn timing` line.
 - **total:** until the reply finished playing.
 
+When the session ends, one line sums up all its turns: the middle value (p50) and the slow one in ten (p90) of each wait. With `--debug` it is the `session summary` log line instead.
+
+```
+session 12 turns · since you stopped p50 1.42s p90 2.31s · first audio p50 1.05s p90 1.70s · llm first token p50 0.48s p90 0.95s · total p50 6.10s p90 9.80s
+```
+
+Compare these between runs when changing a setting. One turn's numbers swing too much to judge from.
+
 Lines worth watching:
 
 | Line | Meaning |

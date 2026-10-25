@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
+from fish_audio_suite_kit import LatencySnapshot
 from fish_audio_suite_voice.console import console_print, end_reply_line, write_reply_token
 from fish_audio_suite_voice.debug import conversation, debug, debug_enabled, trace
 from fish_audio_suite_voice.duplex_state import EXIT_OK
@@ -18,7 +19,7 @@ from fish_audio_suite_voice.events import (
     ReplyToken,
     TurnEnded,
 )
-from fish_audio_suite_voice.reply import turn_summary
+from fish_audio_suite_voice.reply import session_summary, turn_summary
 
 __all__ = [
     "ConsoleSink",
@@ -37,16 +38,27 @@ class ConsoleSink:
     -----
     A display that draws its own screen leaves this out. With debug on, the
     reply is held and printed whole on one line after the log lines around it,
-    and the turn summary goes to the log instead of stdout.
+    and the turn summary goes to the log instead of stdout. When the session
+    ends, one line gives the typical (p50) and slow (p90) wait across its turns.
     """
 
     def __init__(self, bus: EventBus) -> None:
         self._reply_open = False
+        self._turns: list[LatencySnapshot] = []
         self._unsubscribe: Callable[[], None] = bus.subscribe(self._on_event)
 
     def close(self) -> None:
         """Stop printing."""
         self._unsubscribe()
+
+    def _print_session(self) -> None:
+        summary = session_summary(self._turns)
+        if not summary:
+            return
+        if debug_enabled():
+            debug("session.summary {}", summary.removeprefix("session "))
+        else:
+            console_print(summary, flush=True)
 
     def _on_event(self, event: Event) -> None:
         match event:
@@ -69,6 +81,7 @@ class ConsoleSink:
             case Notice(text=text):
                 console_print(f"  {text}", flush=True)
             case TurnEnded(snapshot=snapshot):
+                self._turns.append(snapshot)
                 summary = turn_summary(snapshot)
                 if debug_enabled():
                     debug("turn.summary {}", summary.strip().removeprefix("↳ "))
@@ -76,6 +89,7 @@ class ConsoleSink:
                 else:
                     console_print(summary, flush=True)
             case Bye(code=code):
+                self._print_session()
                 if code == EXIT_OK:
                     console_print("\nbye")
             case _:
