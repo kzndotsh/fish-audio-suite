@@ -180,6 +180,16 @@ A small model read an earlier `[whispering]` cue in the chat history as somethin
 
 The warning line reads `[llm] HTTP <status> from <provider>, model=<model>: <message>`, with the provider's own message unwrapped.
 
+### `[llm] stopping: ...` and exit code 2
+
+The model cannot answer any turn until a setting changes, so the app stops instead of going back to listening in silence. The line says what to fix:
+
+- `unknown model ...` or `no provider serves model ...`: OpenRouter has no such model, or keeps its page but no provider hosts it any more. A model can still be listed while its endpoints list is empty. Choose another `FISH_LLM_MODEL` that shows at least one provider. The app checks this at start on the OpenRouter backend, and on any backend when a reply gets HTTP 404.
+- `the key was refused`: HTTP 401. Check `FISH_LLM_API_KEY` or the provider's key variable.
+- `the account is out of credits`: HTTP 402. Add credits.
+
+A 400, 403, 429 or 5xx ends only that reply, since the next request can succeed.
+
 ### `HTTP 429` (rate limited)
 
 - **"temporarily rate-limited upstream":** the model's shared provider pool is busy. It is retried once after about 1 s. Single-provider models such as `thedrummer/cydonia-24b-v4.1` hit this most. Pick a model served by several providers.

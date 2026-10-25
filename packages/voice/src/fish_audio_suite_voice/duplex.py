@@ -18,7 +18,7 @@ from fish_audio_suite_voice.events import EVENTS, Bye, TurnEnded
 from fish_audio_suite_voice.hearing import HeardLine, hear_line
 from fish_audio_suite_voice.history import opening_history, remember_user
 from fish_audio_suite_voice.inputs import TurnSource
-from fish_audio_suite_voice.llm import ChatBackend
+from fish_audio_suite_voice.llm import ChatBackend, ChatUnusableError
 from fish_audio_suite_voice.mic import SounddeviceMic
 from fish_audio_suite_voice.reply import collect_reply, speak_reply, stream_turn
 from fish_audio_suite_voice.signals import DuplexSession
@@ -52,13 +52,16 @@ async def _answer_line(ctx: DuplexContext, heard: HeardLine) -> int | None:
         if fatal is not None:
             return fatal
     else:
-        reply, ttft_ms = await collect_reply(
-            ctx,
-            llm_cancel=llm_cancel,
-            trace_id=heard.trace_id,
-            started=time.perf_counter(),
-            tone=heard.tone,
-        )
+        try:
+            reply, ttft_ms = await collect_reply(
+                ctx,
+                llm_cancel=llm_cancel,
+                trace_id=heard.trace_id,
+                started=time.perf_counter(),
+                tone=heard.tone,
+            )
+        except ChatUnusableError:
+            return EXIT_FATAL
         snapshot = LatencySnapshot(
             asr_ms=heard.asr_ms,
             llm_first_token_ms=ttft_ms,

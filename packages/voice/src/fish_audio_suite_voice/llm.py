@@ -35,6 +35,7 @@ from fish_audio_suite_voice.transports import (
 
 __all__ = [
     "ChatBackend",
+    "ChatUnusableError",
     "check_openrouter_model",
     "llm_token_stream",
     "open_chat_backend",
@@ -53,6 +54,26 @@ _CONT_BARE: Final = 80
 _MODEL_LOOKUP_S: Final = 15
 _MODEL_LOOKUP_MS: Final = _MODEL_LOOKUP_S * MS_PER_S
 _LOOKUP_BODY_CHARS: Final = 200
+
+
+class ChatUnusableError(Exception):
+    """The chat model cannot answer any turn until a setting changes.
+
+    The message says what to fix. It has already been reported with ``warn``.
+    """
+
+
+def _unusable(reason: str) -> ChatUnusableError:
+    warn(f"[llm] stopping: {reason}")
+    return ChatUnusableError(reason)
+
+
+# A refusal that every later turn would get too. Each says what to change.
+_UNUSABLE_STATUS: Final = {
+    401: "the key was refused: check FISH_LLM_API_KEY",
+    402: "the account is out of credits",
+    404: "no provider serves model {model}: choose another FISH_LLM_MODEL",
+}
 
 
 def _route_suffix(model: str) -> str:
@@ -88,7 +109,7 @@ def _lookup_field(found: object, name: str) -> Any:
 
 
 async def check_openrouter_model(client: Any, tune: LlmTune) -> None:
-    """Resolve the configured model via ``models.get``. Warn on 404; never abort duplex.
+    """Check that the configured model exists and that a provider serves it.
 
     Parameters
     ----------
@@ -96,6 +117,12 @@ async def check_openrouter_model(client: Any, tune: LlmTune) -> None:
         An open OpenRouter SDK client.
     tune : LlmTune
         Supplies the model id and whether ``:nitro`` is added.
+
+    Raises
+    ------
+    ChatUnusableError
+        OpenRouter does not know the model, or no provider serves it, so every
+        turn would fail. A lookup that fails for any other reason only warns.
     """
     route = _nitro_route(tune.model, nitro=_want_nitro(tune.model, tune))
     parts = _model_author_slug(route)
@@ -108,9 +135,8 @@ async def check_openrouter_model(client: Any, tune: LlmTune) -> None:
         res = await client.models.get_async(author=author, slug=slug, timeout_ms=_MODEL_LOOKUP_MS)
     except OpenRouterError as e:
         if e.status_code == 404:
-            warn(f"[llm] unknown model {route}")
-        else:
-            warn(f"[llm] models.get HTTP {e.status_code}: {e.body[:_LOOKUP_BODY_CHARS]}")
+            raise _unusable(f"unknown model {route}: choose another FISH_LLM_MODEL") from e
+        warn(f"[llm] models.get HTTP {e.status_code}: {e.body[:_LOOKUP_BODY_CHARS]}")
         return
     except Exception as e:  # noqa: BLE001 - best-effort lookup must never stop the session
         warn(f"[llm] models.get {e}")
@@ -126,6 +152,27 @@ async def check_openrouter_model(client: Any, tune: LlmTune) -> None:
     trace("llm.model {} ({} token context){}", name or short_model(mid or route), ctx, routed)
     if isinstance(mid, str) and mid and mid != route:
         notice(f"  [llm model {route} → {mid}]")
+    await _check_providers(client, tune.model)
+
+
+async def _check_providers(client: Any, model: str) -> None:
+    # A retired model keeps its page, so models.get still answers. Only the
+    # endpoints list shows that nothing serves it. :nitro is a way of routing,
+    # not a model, so the model is asked about as it was configured.
+    parts = _model_author_slug(model)
+    if parts is None:
+        return
+    author, slug = parts
+    try:
+        res = await client.endpoints.list_async(
+            author=author, slug=slug, timeout_ms=_MODEL_LOOKUP_MS
+        )
+    except Exception as e:  # noqa: BLE001 - best-effort lookup must never stop the session
+        debug("llm.endpoints lookup failed: {}", e)
+        return
+    endpoints = _lookup_field(_lookup_field(res, "data"), "endpoints")
+    if isinstance(endpoints, list) and not endpoints:
+        raise _unusable(_UNUSABLE_STATUS[404].format(model=model))
 
 
 def _delta_content(chunk: ChatChunk, *, already: bool) -> str:
@@ -576,6 +623,9 @@ async def _stream_generation(
         except ChatHttpError as refused:
             stats.aborted = True
             stats.refused = refused
+            reason = _UNUSABLE_STATUS.get(refused.status or 0)
+            if reason is not None:
+                raise _unusable(reason.format(model=route_model)) from refused
         except asyncio.CancelledError:
             held.stopped = "cancel"
             # Only our own cancel flag may end the stream quietly. An outer

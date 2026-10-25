@@ -11,6 +11,7 @@ from voice_fakes import install_audio, set_tts
 
 from fish_audio_suite_voice.duplex_state import DuplexContext
 from fish_audio_suite_voice.hearing import HeardLine
+from fish_audio_suite_voice.llm import ChatUnusableError
 from fish_audio_suite_voice.playback import PortAudioMissingError
 from fish_audio_suite_voice.signals import DuplexSession
 from fish_audio_suite_voice.speaker import FishSpeaker
@@ -175,3 +176,22 @@ def test_debug_mode_logs_the_turn_summary_instead_of_printing_it(
     ScriptedHearing(monkeypatch, heard_line())
     assert run_session(quick_config(), tts) == 0
     assert "first audio" not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_a_model_that_cannot_answer_ends_the_session(
+    monkeypatch: pytest.MonkeyPatch, stream: bool
+) -> None:
+    tts = FishSpeaker(api_key="k", voice_id="voice")
+    install_audio(monkeypatch)
+    said = speak_with_fakes(monkeypatch, tts, stream=stream)
+    ScriptedHearing(monkeypatch, heard_line("hi there"), heard_line("anyone there?"))
+
+    async def gone(*_args: object, **_kwargs: object) -> AsyncIterator[str]:
+        raise ChatUnusableError("no provider serves model org/gone")
+        yield ""
+
+    assert run_session(quick_config(stream=stream), tts, gone) == 2
+    # Nothing was spoken, and the second line was never answered. The streaming path
+    # has Fish listening before the first token, so it ends one empty turn.
+    assert said == ([""] if stream else [])

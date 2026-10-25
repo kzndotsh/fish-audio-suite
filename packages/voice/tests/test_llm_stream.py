@@ -14,6 +14,7 @@ from openrouter.errors import OpenRouterError
 
 from fish_audio_suite_voice.events import EVENTS, Event, Notice
 from fish_audio_suite_voice.llm import (
+    ChatUnusableError,
     _ChatStats,
     _consume_chat_events,
     _model_author_slug,
@@ -825,16 +826,6 @@ def test_a_failed_read_after_the_consumer_stops_is_not_logged() -> None:
     assert asyncio.run(run()) == []
 
 
-def test_check_openrouter_model_404(capsys: pytest.CaptureFixture[str]) -> None:
-    async def get_async(**_kwargs: Any) -> Any:
-        req = httpx.Request("GET", "https://openrouter.ai/api/v1/model/org/missing")
-        raise OpenRouterError("missing", httpx.Response(404, request=req), body="nope")
-
-    client = SimpleNamespace(models=SimpleNamespace(get_async=get_async))
-    asyncio.run(check_openrouter_model(client, _tune(model="org/missing")))
-    assert "unknown model org/missing:nitro" in capsys.readouterr().err
-
-
 def test_check_openrouter_model_skips_unsplit_slug() -> None:
     async def get_async(**_kwargs: Any) -> Any:
         raise AssertionError("must not call get")
@@ -1228,3 +1219,99 @@ def test_provider_sort_reads_the_env(
     else:
         monkeypatch.setenv("FISH_LLM_PROVIDER_SORT", raw)
     assert LlmTune.from_env().provider_sort == sort
+
+
+def _refused_once(status: int) -> Any:
+    def events(_call: Any) -> Any:
+        async def gen() -> AsyncIterator[ChatChunk]:
+            raise ChatHttpError(status, None, quota_exhausted=False)
+            yield ChatChunk()
+
+        return gen()
+
+    return events
+
+
+async def _drain(stream: AsyncIterator[str]) -> list[str]:
+    return [tok async for tok in stream]
+
+
+def _hi() -> AsyncIterator[str]:
+    return llm_token_stream(
+        [{"role": "user", "content": "hi"}],
+        base="https://api.example.com/v1",
+        key="sk-test",
+        model="org/gone",
+    )
+
+
+@pytest.mark.parametrize(
+    ("status", "says"),
+    [
+        (401, "the key was refused"),
+        (402, "out of credits"),
+        (404, "no provider serves model org/gone"),
+    ],
+)
+def test_a_refusal_that_every_turn_would_get_stops_the_stream(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], status: int, says: str
+) -> None:
+    monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", _refused_once(status))
+    with pytest.raises(ChatUnusableError, match=says):
+        asyncio.run(_drain(_hi()))
+    assert says in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("status", [400, 403, 500, 503])
+def test_a_refusal_of_one_request_ends_only_that_reply(
+    monkeypatch: pytest.MonkeyPatch, status: int
+) -> None:
+    monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", _refused_once(status))
+    assert asyncio.run(_drain(_hi())) == []
+
+
+def _lookup_client(*, endpoints: Any) -> Any:
+    async def get_async(**_kwargs: Any) -> Any:
+        return SimpleNamespace(data=SimpleNamespace(id="org/model", name="M", context_length=8))
+
+    return SimpleNamespace(
+        models=SimpleNamespace(get_async=get_async),
+        endpoints=SimpleNamespace(list_async=endpoints),
+    )
+
+
+def test_a_model_with_no_provider_is_refused_before_the_session_starts(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    seen: dict[str, str] = {}
+
+    async def none_serve(*, author: str, slug: str, **_kwargs: Any) -> Any:
+        seen.update(author=author, slug=slug)
+        return SimpleNamespace(data=SimpleNamespace(endpoints=[]))
+
+    with pytest.raises(ChatUnusableError, match="no provider serves model org/model"):
+        asyncio.run(check_openrouter_model(_lookup_client(endpoints=none_serve), _tune()))
+    # Asked about the model itself: :nitro is a way of routing, not a model.
+    assert seen == {"author": "org", "slug": "model"}
+    assert "no provider serves model org/model" in capsys.readouterr().err
+
+
+def test_a_model_with_a_provider_starts_and_a_failed_lookup_does_not_block() -> None:
+    async def one_serves(**_kwargs: Any) -> Any:
+        return SimpleNamespace(data=SimpleNamespace(endpoints=[SimpleNamespace(name="P")]))
+
+    async def lookup_fails(**_kwargs: Any) -> Any:
+        raise httpx.ConnectError("offline")
+
+    asyncio.run(check_openrouter_model(_lookup_client(endpoints=one_serves), _tune()))
+    asyncio.run(check_openrouter_model(_lookup_client(endpoints=lookup_fails), _tune()))
+
+
+def test_an_unknown_model_is_refused_before_the_session_starts() -> None:
+    async def get_async(**_kwargs: Any) -> Any:
+        req = httpx.Request("GET", "https://openrouter.ai/api/v1/model/org/missing")
+        raise OpenRouterError("missing", httpx.Response(404, request=req), body="nope")
+
+    client = SimpleNamespace(models=SimpleNamespace(get_async=get_async))
+    with pytest.raises(ChatUnusableError, match="unknown model org/missing"):
+        asyncio.run(check_openrouter_model(client, _tune(model="org/missing")))
