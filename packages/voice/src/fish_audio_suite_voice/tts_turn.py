@@ -8,11 +8,12 @@ import threading
 import time
 from collections.abc import AsyncIterator, Callable, Coroutine
 from dataclasses import dataclass
-from typing import Any, Final
+from typing import Any, Final, cast
 
 import httpx
 from fishaudio import AsyncFishAudio
 from fishaudio.exceptions import AuthenticationError
+from fishaudio.types import Model
 
 from fish_audio_suite_kit import (
     FISH_RETRY_ATTEMPTS,
@@ -25,6 +26,7 @@ from fish_audio_suite_voice.pause import sleep_unless
 from fish_audio_suite_voice.playback import PlaybackSink
 from fish_audio_suite_voice.wire import (
     AudioArrival,
+    FishSocket,
     SentText,
     TtsResult,
     TurnRun,
@@ -39,6 +41,7 @@ from fish_audio_suite_voice.wire import (
 _WS_TIMEOUT_S: Final = 240.0
 
 __all__ = [
+    "SdkSocket",
     "TtsResult",
     "TurnSpec",
     "as_async",
@@ -49,11 +52,39 @@ __all__ = [
 ]
 
 
-class _HeldClient:
-    def __init__(self) -> None:
+class SdkSocket:
+    """The Fish SDK's realtime websocket, with a fresh client for each attempt.
+
+    Parameters
+    ----------
+    headers : dict of str to str
+        Sent on the websocket upgrade, such as the trace headers.
+    """
+
+    def __init__(self, headers: dict[str, str]) -> None:
+        self.headers = headers
         self.client: AsyncFishAudio | None = None
 
-    def open(self, spec: TurnSpec, headers: dict[str, str]) -> AsyncFishAudio:
+    def stream(self, events: AsyncIterator[Any], spec: TurnSpec) -> AsyncIterator[bytes]:
+        """Open a client and its websocket for one attempt. See ``FishSocket.stream``.
+
+        Parameters
+        ----------
+        events : AsyncIterator
+            Text and flush events for this attempt.
+        spec : TurnSpec
+            Voice, model, format and key.
+
+        Returns
+        -------
+        AsyncIterator
+            Audio chunks from the SDK.
+
+        Raises
+        ------
+        AuthenticationError
+            The key is empty or holds a character a header cannot carry.
+        """
         # The SDK copies the key into Authorization. A newline makes the
         # websocket client raise before Fish can answer, so every later
         # turn fails the same way instead of stopping on 401.
@@ -62,7 +93,7 @@ class _HeldClient:
             raise AuthenticationError(401, "Invalid Token")
         http = httpx.AsyncClient(
             base_url=spec.base_url,
-            headers=headers,
+            headers=self.headers,
             timeout=httpx.Timeout(_WS_TIMEOUT_S),
             http2=False,
         )
@@ -71,9 +102,19 @@ class _HeldClient:
             base_url=spec.base_url,
             httpx_client=http,
         )
-        return self.client
+        # TTSConfig has no features. Quality-guard stays on the proxy HTTP path.
+        return self.client.tts.stream_websocket(
+            events,
+            reference_id=spec.voice_id,
+            format=spec.audio_format,
+            latency=spec.latency,
+            speed=spec.speed,
+            config=spec.config,
+            model=cast(Model, spec.model),
+        )
 
     async def close(self) -> None:
+        """Close the attempt's client, which ends its websocket."""
         client = self.client
         if client is None:
             return
@@ -88,8 +129,7 @@ class _HeldClient:
 @dataclass(slots=True)
 class _Turn:
     run: TurnRun
-    held: _HeldClient
-    headers: dict[str, str]
+    socket: FishSocket
 
 
 async def _retry_pause(cancel: threading.Event, attempt: int) -> bool:
@@ -105,10 +145,9 @@ async def _one_attempt(turn: _Turn, events: AsyncIterator[Any], attempt: int) ->
     if run.cancel.is_set():
         return True
     try:
-        client = turn.held.open(run.spec, turn.headers)
-        await send_turn(client, events, run, close_client=turn.held.close)
+        await send_turn(turn.socket, events, run)
     except (asyncio.CancelledError, GeneratorExit) as exc:
-        await turn.held.close()
+        await turn.socket.close()
         if run.cancel.is_set() or is_cancel_noise(exc):
             return True
         raise
@@ -120,7 +159,7 @@ async def _one_attempt(turn: _Turn, events: AsyncIterator[Any], attempt: int) ->
             got_audio=run.audio.got_audio,
             cancel=run.cancel,
         )
-        await turn.held.close()
+        await turn.socket.close()
         if not fate.retry:
             run.error_status = fate.error_status
             run.error_message = fate.error_message
@@ -152,6 +191,7 @@ async def run_turn(
     *,
     sent_text: str,
     on_first_audio: Callable[[], None] | None = None,
+    socket: FishSocket | None = None,
 ) -> TtsResult:
     """Play one Fish turn, retrying 429 and 5xx only before the first audio byte.
 
@@ -172,6 +212,8 @@ async def run_turn(
     on_first_audio : Callable or None, optional
         Called once, on the websocket's thread, when the first audio chunk
         arrives. It must not block.
+    socket : FishSocket or None, optional
+        Where each attempt streams. The Fish SDK when omitted.
 
     Returns
     -------
@@ -180,8 +222,8 @@ async def run_turn(
 
     Notes
     -----
-    The httpx client is closed here. The websocket iterator is not
-    ``aclose()``'d; closing the client ends the socket.
+    The socket is closed here. The websocket iterator is not ``aclose()``'d;
+    closing the socket ends it.
     """
     run = TurnRun(
         spec=spec,
@@ -193,7 +235,8 @@ async def run_turn(
         audio=AudioArrival(),
         on_first_audio=on_first_audio,
     )
-    turn = _Turn(run=run, held=_HeldClient(), headers=_turn_headers(spec, sent_text))
+    headers = _turn_headers(spec, sent_text)
+    turn = _Turn(run=run, socket=SdkSocket(headers) if socket is None else socket)
 
     try:
         # start() can open the DAC and then raise. finish() still has to
@@ -208,7 +251,7 @@ async def run_turn(
         finally:
             # A failed file write must not skip the client close. The socket
             # would stay open until the process exits.
-            await turn.held.close()
+            await turn.socket.close()
 
     return tts_result(run)
 

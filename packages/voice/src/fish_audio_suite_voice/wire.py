@@ -14,12 +14,12 @@ from collections.abc import (
     Mapping,
 )
 from dataclasses import dataclass, field
-from typing import Any, Final, cast
+from typing import Any, Final, Protocol
 
 import httpx
-from fishaudio import AsyncFishAudio, FlushEvent, TextEvent
+from fishaudio import FlushEvent, TextEvent
 from fishaudio.exceptions import APIError, ValidationError, WebSocketError
-from fishaudio.types import LatencyMode, Model, TTSConfig
+from fishaudio.types import LatencyMode, TTSConfig
 
 from fish_audio_suite_kit import (
     FISH_RETRY_ATTEMPTS,
@@ -42,6 +42,7 @@ from fish_audio_suite_voice.spoken import spoken_prefix
 
 __all__ = [
     "AudioArrival",
+    "FishSocket",
     "SentText",
     "TtsFailure",
     "TtsResult",
@@ -239,46 +240,57 @@ async def as_async(deltas: Iterable[str] | AsyncIterable[str]) -> AsyncIterator[
         yield item
 
 
-async def send_turn(
-    client: AsyncFishAudio,
-    events: AsyncIterator[Any],
-    run: TurnRun,
-    *,
-    close_client: Callable[[], Awaitable[None]],
-) -> None:
-    """Open one Fish realtime websocket and write audio to the sink.
+class FishSocket(Protocol):
+    """Where one Fish turn attempt sends its text and reads its audio.
+
+    Notes
+    -----
+    ``stream`` opens a realtime websocket for one attempt. ``close`` ends it, and
+    may be called again after it has closed. Closing is the only way to stop the
+    socket early: the audio iterator must not be ``aclose``'d.
+    """
+
+    def stream(self, events: AsyncIterator[Any], spec: TurnSpec) -> AsyncIterator[bytes]:
+        """Send ``events`` with the voice and format in ``spec``, yielding audio.
+
+        Parameters
+        ----------
+        events : AsyncIterator
+            Text and flush events for this attempt.
+        spec : TurnSpec
+            Voice, model, format and the key the socket opens with.
+
+        Returns
+        -------
+        AsyncIterator
+            Audio chunks as they arrive.
+        """
+        ...
+
+    async def close(self) -> None:
+        """End the socket. Safe to call more than once."""
+        ...
+
+
+async def send_turn(socket: FishSocket, events: AsyncIterator[Any], run: TurnRun) -> None:
+    """Run one attempt over ``socket`` and write its audio to the sink.
 
     Parameters
     ----------
-    client : AsyncFishAudio
-        Client whose base URL and trace headers are already set.
+    socket : FishSocket
+        Opens the websocket. Closed on barge-in or Ctrl+C, which ends it.
     events : AsyncIterator
         Text events. Ignored when ``run.sent_text`` is set, because the turn
         is replayed from that string.
     run : TurnRun
         Mutable turn state. First-audio time and flushed text land here.
-    close_client : Callable
-        Awaited on barge-in or Ctrl+C. This ends the socket. Do not also
-        ``aclose`` the stream iterator.
-
-    Notes
-    -----
-    ``TTSConfig`` has no ``features``. Quality-guard stays on the proxy HTTP path.
     """
     spec = run.spec
     run.acc.pieces.clear()
     run.acc.tts_first_text_ms = None
     replay = text_events(run.sent_text, run.cancel, spec.partial_chars) if run.sent_text else events
-    stream = client.tts.stream_websocket(
-        _tee_text_events(replay, run.t0, run.acc),
-        reference_id=spec.voice_id,
-        format=spec.audio_format,
-        latency=spec.latency,
-        speed=spec.speed,
-        config=spec.config,
-        model=cast(Model, spec.model),
-    )
-    await _pump_ws_audio(stream, run, close_client)
+    stream = socket.stream(_tee_text_events(replay, run.t0, run.acc), spec)
+    await _pump_ws_audio(stream, run, socket.close)
 
 
 def _note_first_audio(
