@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import sys
 import threading
 import time
@@ -57,29 +58,60 @@ def test_a_lone_yeah_answers_on_its_own_turn_but_not_over_a_reply() -> None:
     assert classify_transcript("hmm", "", over_reply=False) == "skip"
 
 
-def test_history_keeps_the_system_prompt_and_drops_the_oldest_turn() -> None:
+def test_history_keeps_the_system_prompt_and_drops_the_oldest_turns() -> None:
     history: list[ChatMessage] = [{"role": "system", "content": "be brief"}]
     for i in range(HISTORY_TURNS + 1):
         remember_user(history, f"u{i}", HISTORY_TURNS)
         history.append({"role": "assistant", "content": f"a{i}"})
     assert history[0] == {"role": "system", "content": "be brief"}
-    assert history[1]["content"] == "u1"
+    kept = [m["content"] for m in history[1::2]]
+    assert kept == [f"u{i}" for i in range(HISTORY_TURNS + 1 - len(kept), HISTORY_TURNS + 1)]
     assert history[-1]["content"] == f"a{HISTORY_TURNS}"
-    assert len(history) == 1 + HISTORY_TURNS * 2
+    assert len(history) <= 1 + HISTORY_TURNS * 2
 
 
-def test_history_drops_a_whole_turn_so_roles_stay_paired() -> None:
+def test_history_drops_whole_turns_so_roles_stay_paired() -> None:
     history: list[ChatMessage] = [{"role": "system", "content": "be brief"}]
     for i in range(HISTORY_TURNS):
         remember_user(history, f"u{i}", HISTORY_TURNS)
         history.append({"role": "assistant", "content": f"a{i}"})
     remember_user(history, "newest", HISTORY_TURNS)
-    assert history[1] == {"role": "user", "content": "u1"}
-    assert history[2] == {"role": "assistant", "content": "a1"}
     history.append({"role": "assistant", "content": "answer"})
-    assert history[-2] == {"role": "user", "content": "newest"}
-    assert history[-1] == {"role": "assistant", "content": "answer"}
-    assert len(history) == 1 + HISTORY_TURNS * 2
+    roles = [m["role"] for m in history[1:]]
+    assert roles == ["user", "assistant"] * (len(roles) // 2)
+    first = history[1]["content"]
+    assert history[2]["content"] == "a" + first.removeprefix("u")
+    assert history[-2:] == [
+        {"role": "user", "content": "newest"},
+        {"role": "assistant", "content": "answer"},
+    ]
+    assert len(history) <= 1 + HISTORY_TURNS * 2
+
+
+def test_the_history_is_trimmed_in_blocks_so_its_start_stays_the_same_between_trims() -> None:
+    history: list[ChatMessage] = [{"role": "system", "content": "be brief"}]
+    floor = HISTORY_TURNS - HISTORY_TURNS // 4
+    starts: list[list[ChatMessage]] = []
+    for i in range(HISTORY_TURNS * 3):
+        remember_user(history, f"u{i}", HISTORY_TURNS)
+        turns = (len(history) - 1) // 2  # whole pairs before the newest line
+        assert turns <= HISTORY_TURNS
+        if i >= HISTORY_TURNS:
+            assert turns >= floor - 1
+        starts.append([*history[:3]])
+        history.append({"role": "assistant", "content": f"a{i}"})
+    # A provider caches the start of the prompt. Dropping one turn at a time changed it
+    # on every turn once the cap was reached. Now it changes once per block.
+    changes = sum(1 for before, after in itertools.pairwise(starts) if before != after)
+    assert changes <= 2 * HISTORY_TURNS // (HISTORY_TURNS // 4)
+
+
+def test_a_small_history_cap_still_drops_one_turn_at_a_time() -> None:
+    history: list[ChatMessage] = [{"role": "system", "content": "be brief"}]
+    for i in range(4):
+        remember_user(history, f"u{i}", 3)
+        history.append({"role": "assistant", "content": f"a{i}"})
+    assert [m["content"] for m in history[1:]] == ["u1", "a1", "u2", "a2", "u3", "a3"]
 
 
 def test_after_speech_records_only_audio_that_was_played() -> None:

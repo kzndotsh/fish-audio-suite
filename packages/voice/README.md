@@ -378,7 +378,7 @@ LLM:
 | `FISH_LLM_CONTINUE` | off | Send one more request when a reply stops mid-sentence |
 | `FISH_VOICE_SYSTEM_PROMPT` | the kit default | System prompt text, used as written. Set but blank sends no system prompt |
 | `FISH_VOICE_SYSTEM_PROMPT_FILE` | none | A character file. The voice rules follow it, or go where `{{default_prompt}}` is in the file. Beats `FISH_VOICE_SYSTEM_PROMPT`. See characters above |
-| `FISH_VOICE_HISTORY_TURNS` | `20` | User and assistant pairs kept |
+| `FISH_VOICE_HISTORY_TURNS` | `20` | User and assistant pairs kept. Over it, the oldest quarter goes at once, so the start of the prompt stays the same for several turns and a provider's prompt cache keeps working |
 | `FISH_VOICE_STREAM_TTS` | off | Speak the reply while the model is still writing it. See streaming above |
 | `FISH_VOICE_REPEAT_WINDOW` | `1.5` | Seconds. A line equal to the previous one is dropped only if it ends this soon after the mic opens. 0 never drops a repeat |
 | `FISH_TTS_MOOD_LEAD`, `FISH_TTS_DROP_NARRATION` | off | See roleplay helpers |

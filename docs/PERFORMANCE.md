@@ -130,7 +130,7 @@ As Fish documents them in October 2026; check Fish's pricing page for today's nu
 | `FISH_LLM_SERVICE_TIER` | unset | `priority` for steadier speed at a higher price. `ultrafast` (select OpenAI models) is several times the standard price, and its gain is in generation speed more than the first token. `:nitro` never routes to it |
 | `FISH_LLM_REASONING_EFFORT` | unset | For a thinking model, `none` or `low` avoids seconds of hidden thinking before the first word |
 | `FISH_LLM_MAX_TOKENS` | `1200` | Lower keeps replies short, so turns end sooner |
-| `FISH_VOICE_HISTORY_TURNS` | `20` | Fewer turns mean a shorter prompt, which helps the first token slightly |
+| `FISH_VOICE_HISTORY_TURNS` | `20` | Fewer turns mean a shorter prompt, which helps the first token slightly. The history is trimmed a quarter at a time, so a provider that caches prompts (OpenAI, DeepSeek, Grok and Gemini 2.5 do it automatically on OpenRouter) can reuse the start of it. OpenAI caches only prompts of 1024 tokens or more |
 
 ## Choosing an LLM
 
@@ -206,6 +206,7 @@ Lines worth watching:
 | `listen speech_start` right after `listen open`, with no one talking | Echo after the reply. Raise `FISH_VOICE_COOLDOWN` |
 | `asr.skip backchannel` / `hallucination` | A clip was dropped after transcription, on purpose |
 | `llm stream_end ... provider=X` | Which provider served the reply |
+| `llm stream_end ... cached=N` | How many prompt tokens the provider read from its cache. 0 on every turn means the cache is not being used |
 | `llm stream_end ... tier=X` | Which service tier served it, when the response says. `ultrafast` that falls back shows `priority` |
 
 ## Proxy

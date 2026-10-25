@@ -24,6 +24,8 @@ _ROLES_PER_TURN: Final = 2
 # Unanswered user lines kept in one message. While the model keeps failing, the
 # oldest drop off, so the merged message cannot grow without bound.
 _UNANSWERED_LINES: Final = 4
+# Over the cap, 1/_TRIM_BLOCK of the turns are dropped at once.
+_TRIM_BLOCK: Final = 4
 
 
 def opening_history(
@@ -96,9 +98,20 @@ def trim_history(
     turns: int,
     pinned: int = KEEP_SYSTEM,
 ) -> None:
-    """Drop the oldest user and assistant pairs until the history fits ``turns``."""
+    """Keep at most ``turns`` user and assistant pairs, dropping the oldest in blocks.
+
+    Notes
+    -----
+    Over the cap, a quarter of ``turns`` goes at once, so the start of the prompt
+    stays the same for the next several turns. A provider that caches prompts
+    reuses that start; dropping one pair per turn changed it every time. A cap
+    under four still drops one pair at a time.
+    """
     cap = pinned + turns * _ROLES_PER_TURN
-    while len(history) > cap:
+    if len(history) <= cap:
+        return
+    target = cap - (turns // _TRIM_BLOCK) * _ROLES_PER_TURN
+    while len(history) > target:
         # Drop the oldest user and assistant together. Popping one message
         # leaves that assistant answering the next user.
         paired = (

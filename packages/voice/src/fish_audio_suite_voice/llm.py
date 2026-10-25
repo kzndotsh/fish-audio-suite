@@ -298,10 +298,13 @@ def _usage_brief(usage: object) -> str:
     if not isinstance(usage, dict):
         return "usage=?"
     fields = cast(dict[str, Any], usage)
-    parts = [
-        f"in={fields.get('prompt_tokens')}",
-        f"out={fields.get('completion_tokens')}",
-    ]
+    parts = [f"in={fields.get('prompt_tokens')}"]
+    details = fields.get("prompt_tokens_details")
+    if isinstance(details, dict):
+        cached = cast(dict[str, Any], details).get("cached_tokens")
+        if isinstance(cached, int):
+            parts.append(f"cached={cached}")
+    parts.append(f"out={fields.get('completion_tokens')}")
     cost = fields.get("cost")
     if isinstance(cost, (int, float)):
         parts.append(f"cost=${cost:.5f}")
