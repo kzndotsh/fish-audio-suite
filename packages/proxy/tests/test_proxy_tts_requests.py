@@ -95,6 +95,11 @@ def test_junk_pcm_and_wav_are_silence() -> None:
             "/v1/audio/speech",
             json={"input": "...", "response_format": "wav", "sample_rate": 2**32},
         )
+        # Fits the 32-bit rate field but not the byte rate (rate x 2).
+        over_byte_rate = client.post(
+            "/v1/audio/speech",
+            json={"input": "...", "response_format": "wav", "sample_rate": 2**31},
+        )
         mp3 = client.post("/v1/audio/speech", json={"input": "..."})
         opus = client.post(
             "/v1/audio/speech",
@@ -108,6 +113,8 @@ def test_junk_pcm_and_wav_are_silence() -> None:
     assert wav.content.startswith(b"RIFF")
     assert huge.status_code == 200
     assert huge.content.startswith(b"RIFF")
+    assert over_byte_rate.status_code == 200
+    assert over_byte_rate.content.startswith(b"RIFF")
     assert mp3.status_code == 200
     assert mp3.headers["content-type"].startswith("audio/mpeg")
     assert mp3.content.startswith(b"\xff\xfb")

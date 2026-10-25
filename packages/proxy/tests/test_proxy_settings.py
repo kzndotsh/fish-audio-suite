@@ -125,6 +125,15 @@ def test_pronunciation_dictionary_must_be_a_bounded_list(monkeypatch: pytest.Mon
         {"input": "Hello there friend", "pronunciation_dictionary": [{}] * 600},
     )
     assert too_many.status_code == 400
+    # An empty object is still not a list, so it is refused too, not ignored.
+    empty_object, _ = post_speech(
+        monkeypatch, {"input": "Hello there friend", "pronunciation_dictionary": {}}
+    )
+    assert empty_object.status_code == 400
+    empty_list, _ = post_speech(
+        monkeypatch, {"input": "Hello there friend", "pronunciation_dictionary": []}
+    )
+    assert empty_list.status_code == 200
 
 
 def test_speech_without_clips_is_json_and_with_clips_is_msgpack(
