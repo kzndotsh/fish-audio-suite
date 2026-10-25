@@ -1,8 +1,9 @@
-"""Optional in-process AEC3. Far-end is speaker PCM; near-end is the mic.
+"""Optional in-process mic cleanup through WebRTC's audio processor.
 
-Missing extra, ``AecTune.enabled`` False, empty far-end, or FileSink: return mic
-unchanged. Bleed delay stays the fallback. PipeWire echo-cancel is a host trick,
-not this module.
+Every mic frame gets a high-pass filter, automatic gain and noise suppression, and AEC3
+while the speaker plays (far-end is speaker PCM, near-end is the mic). A missing extra,
+or every stage turned off, returns the mic unchanged, and the bleed delay stays the
+fallback. PipeWire echo-cancel is a host trick, not this module.
 """
 
 from __future__ import annotations
@@ -34,6 +35,8 @@ _FAR_RECENT_S: Final = 0.4
 _RMS_FLOOR: Final = 1e-9
 FAR_SILENCE_RMS: Final = 40.0
 _FULL_WET: Final = 0.999
+# WebRTC's ns_level for each attenuation step in AecTune.noise_suppression_db.
+_NS_LEVELS: Final = {6: 0, 12: 1, 18: 2, 21: 3}
 
 
 def even_pcm(pcm: bytes) -> bytes:
@@ -186,7 +189,8 @@ class EchoCanceller:
         Any or None
             The processor, or None when AEC is off or the extra is missing.
         """
-        if not self.tune.enabled:
+        tune = self.tune
+        if not (tune.enabled or tune.auto_gain or tune.noise_suppression_db):
             return None
         with self._lock:
             if self._tried:
@@ -200,18 +204,25 @@ class EchoCanceller:
             self._proc = AudioProcessor(
                 sample_rate=AEC_RATE,
                 num_channels=1,
-                echo_cancellation=True,
-                noise_suppression=False,
+                echo_cancellation=tune.enabled,
+                noise_suppression=tune.noise_suppression_db > 0,
+                ns_level=_NS_LEVELS.get(tune.noise_suppression_db, 0),
                 high_pass_filter=True,
-                auto_gain_control=False,
+                auto_gain_control=tune.auto_gain,
                 stream_delay_ms=0,
             )
-            debug("aec.on AEC3 16k wet={}", self.tune.wet)
+            debug(
+                "aec.on 16k echo={} wet={} agc={} noise_db={}",
+                tune.enabled,
+                tune.wet,
+                tune.auto_gain,
+                tune.noise_suppression_db,
+            )
             return self._proc
 
     def available(self) -> bool:
         """Return whether AEC3 loaded and is enabled."""
-        return self.load() is not None
+        return self.tune.enabled and self.load() is not None
 
     def tap_playback(self, pcm: bytes, sample_rate: int) -> None:
         """Record speaker PCM as far-end, or only the playing mark when AEC is off.
@@ -269,7 +280,7 @@ class EchoCanceller:
         return bleed if bleed >= 0 else DEFAULT_AEC_BLEED_DELAY_S
 
     def clean(self, near: bytes) -> bytes:
-        """Cancel echo when far-end has energy; otherwise return ``near``.
+        """Run one mic frame through the processor, cancelling echo while the speaker plays.
 
         Parameters
         ----------
@@ -279,23 +290,28 @@ class EchoCanceller:
         Returns
         -------
         bytes
-            Cleaned frame, or ``near`` when AEC is off, far-end is silent, or
-            the processor failed.
+            The processed frame, or ``near`` when every stage is off, the extra is
+            missing, or the processor failed.
+
+        Notes
+        -----
+        Gain and noise suppression run on every frame, so their estimates follow the
+        room between replies. AEC3 needs a far-end frame every time, so silence stands
+        in while nothing plays. ``AecTune.wet`` mixes the raw mic back in only while the
+        speaker plays, as before.
         """
         proc = self.load()
         if proc is None or len(near) < SAMPLE_BYTES:
             return near
-        far = self.tap.pop(len(near))
-        if not far or pcm_rms(far) < FAR_SILENCE_RMS:
-            return near
-        wet = min(1.0, max(0.0, self.tune.wet))
         near_a = np.frombuffer(near, dtype=np.int16)
-        far_a = np.frombuffer(far, dtype=np.int16)
-        if near_a.size != far_a.size:
-            return near
+        far = self.tap.pop(len(near)) if self.tune.enabled else b""
+        far_a = np.frombuffer(far, dtype=np.int16) if far else None
+        echo = far_a is not None and far_a.size == near_a.size and pcm_rms(far) >= FAR_SILENCE_RMS
+        if self.tune.enabled and not echo:
+            far_a = np.zeros_like(near_a)
         try:
-            clean = proc.process(near_a, far_a)
-        except Exception as exc:  # noqa: BLE001 - native AEC boundary, any failure falls back to the raw mic
+            clean = proc.process(near_a, far_a) if self.tune.enabled else proc.process(near_a)
+        except Exception as exc:  # noqa: BLE001 - native processor boundary, any failure falls back to the raw mic
             debug("aec.fail {}", exc)
             return near
         clean_a = np.asarray(clean)
@@ -303,7 +319,8 @@ class EchoCanceller:
         if clean_a.shape != near_a.shape:
             debug("aec.fail shape {} != {}", clean_a.shape, near_a.shape)
             return near
-        if wet >= _FULL_WET:
+        wet = min(1.0, max(0.0, self.tune.wet))
+        if not echo or wet >= _FULL_WET:
             return _int16_bytes(clean_a)
         mixed = (1.0 - wet) * near_a.astype(np.float32) + wet * clean_a.astype(np.float32)
         return _int16_bytes(mixed)

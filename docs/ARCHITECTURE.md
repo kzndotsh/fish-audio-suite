@@ -135,7 +135,7 @@ flowchart LR
 
 | Module | Job |
 | --- | --- |
-| `aec` | AEC3 removes the bot's own voice from the mic, using what `playback` sends as the reference |
+| `aec` | WebRTC's processor cleans every mic frame: a high-pass filter, automatic gain and noise suppression, plus AEC3 removing the bot's own voice while `playback` sends it as the reference |
 | `mic` | The one microphone: `SessionMic` opens PortAudio once per session, cleans each 30 ms frame with the echo canceller as it arrives, numbers it and keeps the last two seconds. Listen, streaming and barge-in all read it, and a reader can pick up where another stopped |
 | `listen` | the voice detector and a loudness floor start and end the utterance |
 | `vad` | the `Vad` interface (`is_speech(frame, rate)`), the named engines (`webrtc`, `silero`) and `package.module:factory` plugins. Listen, barge-in and the cooldown log each open a fresh detector through `open_vad` |

@@ -90,7 +90,7 @@ class Mic(Protocol):
 
 
 def _no_aec() -> EchoCanceller:
-    return EchoCanceller(AecTune(enabled=False))
+    return EchoCanceller(AecTune.off())
 
 
 def _shut(stream: Any) -> None:

@@ -41,7 +41,7 @@ class ScriptedMic:
         aec: EchoCanceller | None = None,
     ) -> None:
         self._script = script
-        self.aec = aec or EchoCanceller(AecTune(enabled=False))
+        self.aec = aec or EchoCanceller(AecTune.off())
         self.opened = 0
         self.since: int | None = None
         self.released = 0

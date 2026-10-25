@@ -72,13 +72,15 @@ Look for `listen reject too_little_voice`, short clips that come back as `asr sk
 
 Measure before changing anything. `scripts/mic_levels.py` calls no API and saves no audio, and its summary gives your noise floor and speaking level in dB below full scale. Stay quiet for the first two seconds and then talk for the rest, or the "speech" figure is only room noise. Conversational speech usually averages around -26 to -20 dBFS. In one setup (a Yeti X) speech averaged -37.7 dBFS and soft words dipped under the gates. A gain increase of about 8 dB brought it to -31.4 and fixed the missed interruptions.
 
+The app raises a quiet voice itself: automatic gain (`FISH_VOICE_AGC`, on by default) lifts it to a steady level before the gates and speech recognition hear it. In one recording of quiet speech on a Yeti X it added about 12 dB. It cannot lift your voice above the room, so the steps below still matter when the room is loud.
+
 Things to consider:
 
 - **Order of fixes.** Move closer to the mic, then raise the mic's own gain, then the system input volume. Software gain amplifies the room noise by the same amount, so it cannot improve speech against noise. Moving closer is the only step that does.
 - **Do not overshoot.** Keep the noise floor below about -47 dBFS (an rms of roughly 140). Near the 200 rms gate the room itself starts to look like speech. In the same setup the floor rose from -55.4 to -48.8 dBFS with the extra gain.
 - **Volume scales are cubic.** In `pavucontrol` and `wpctl`, 60% is about -13 dB and 44% is about -21 dB (dB = 60 x log10 of the fraction). A linear setting such as WirePlumber's `default-source-volume` is the cube of that percentage, so 0.22 matches 60%.
 - **Other apps share the input.** A chat or call app on the same default source hears the change. On PipeWire the volume is remembered per device, so a value set in a config file applies only when nothing is saved.
-- **Echo cancellation takes some of your voice** while the speakers play, so your level during a reply is lower than in `mic_levels.py`. Headphones remove that. The measurement above is of the raw mic, not of what is left after cancellation.
+- **Echo cancellation takes some of your voice** while the speakers play, so your level during a reply is lower than in `mic_levels.py`. Headphones remove that. `mic_levels.py` measures the raw mic, before the app's gain and noise suppression.
 - **Lowering the gates instead** (for example `FISH_VOICE_MIN_RMS` near 120 and `FISH_VOICE_BARGE_RMS` near 150) is untested and relies on a quiet room, so prefer fixing the level first.
 
 ### Replies are too quiet, too loud or distorted with loudness normalisation

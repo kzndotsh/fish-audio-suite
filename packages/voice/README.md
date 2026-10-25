@@ -64,7 +64,14 @@ On NixOS use `./packages/voice/dev.sh` or `nix run .#fish-audio-suite-voice`. Bo
 
 ### Echo and barge-in
 
-The `cli` extra includes AEC3. Speaker audio is subtracted from the mic before voice activity detection. `FISH_VOICE_AEC=0` leaves the mic unchanged and keeps the longer bleed delay (0.9 s). With AEC loaded, that delay is 0.3 s.
+The `cli` extra includes WebRTC's audio processor, which cleans every mic frame before voice activity detection and speech recognition, as a call app does:
+
+- a high-pass filter removes rumble and breath below about 100 Hz,
+- automatic gain (`FISH_VOICE_AGC`) raises a quiet voice to a steady level,
+- noise suppression (`FISH_VOICE_NOISE_SUPPRESSION`) removes steady background noise such as a fan,
+- and while the bot speaks, AEC3 subtracts its voice from the mic. `FISH_VOICE_AEC=0` turns only that off and keeps the longer bleed delay (0.9 s). With AEC loaded, that delay is 0.3 s.
+
+Noise suppression does little against key clicks. `scripts/vad_compare.py --process` shows what the detectors make of a recording after this cleanup.
 
 A barge-in keeps the audio that tripped it and clears the speaker tap. The next listen starts from that clip.
 
@@ -438,6 +445,8 @@ Listen and interrupt. Times are approximate at 30 ms frames.
 | `FISH_VOICE_AEC` | on | `0` disables in-process echo cancellation |
 | `FISH_VOICE_AEC_WET` | `0.85` | Mix of cleaned mic into the raw mic, 0 to 1 |
 | `FISH_VOICE_AEC_BLEED_DELAY` | `0.3` | Bleed delay once AEC3 is loaded |
+| `FISH_VOICE_AGC` | on | Raise a quiet voice to a steady level before anything listens. `0` turns it off |
+| `FISH_VOICE_NOISE_SUPPRESSION` | `18` | Decibels of steady background noise (fans, hum) removed from the mic: `0` (off), `6`, `12`, `18` or `21` |
 | `FISH_VOICE_BARGE_FRAMES` | `10` | Loud voiced frames in a row that interrupt (about 300 ms) |
 | `FISH_VOICE_BARGE_RMS` | `220` | Barge floor seed. It follows the room, never below this |
 | `FISH_VOICE_BARGE_PLAYING_GAIN` | `2.2` | Floor multiplier while the speaker plays and AEC is off. At least 1 |

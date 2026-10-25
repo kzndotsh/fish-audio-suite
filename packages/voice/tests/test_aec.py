@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import wave
+from pathlib import Path
+
 import numpy as np
 import pytest
 
-from fish_audio_suite_voice.aec import EchoCanceller, FarEndTap, resample_int16
+from fish_audio_suite_voice.aec import EchoCanceller, FarEndTap, pcm_rms, resample_int16
 from fish_audio_suite_voice.floor import AdaptiveFloor
 from fish_audio_suite_voice.playback import (
     SounddeviceSink,
@@ -31,8 +34,8 @@ def test_far_end_pop_empty_until_enough() -> None:
     assert len(chunk) == 200
 
 
-def test_clean_mic_passthrough_when_aec_off() -> None:
-    aec = EchoCanceller(AecTune(enabled=False))
+def test_clean_mic_passthrough_when_every_stage_is_off() -> None:
+    aec = EchoCanceller(AecTune.off())
     near = b"\x01\x00" * 480
     assert aec.clean(near) == near
     assert not aec.available()
@@ -188,20 +191,41 @@ def test_clean_mic_mixes_when_the_processor_returns_silence(
     assert mixed.tolist() == [1_000] * 8
 
 
-def test_clean_mic_skips_a_quiet_far_end(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_with_the_speaker_quiet_every_frame_is_still_processed_against_silence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     near = _loud(8)
-    called = {"n": 0}
+    fars: list[list[int]] = []
 
     class Processor:
         def process(self, near_a: np.ndarray, far_a: np.ndarray) -> np.ndarray:
-            called["n"] += 1
-            return np.zeros_like(near_a)
+            fars.append(far_a.tolist())
+            return near_a * 2  # the gain stage at work
 
-    aec = EchoCanceller()
+    aec = EchoCanceller(AecTune(wet=0.5))
     monkeypatch.setattr(aec, "load", Processor)
-    monkeypatch.setattr(aec.tap, "pop", lambda _n: b"\x00\x00" * 8)
-    assert aec.clean(near) == near
-    assert called["n"] == 0
+    monkeypatch.setattr(aec.tap, "pop", lambda _n: b"\x05\x00" * 8)  # under the silence floor
+    # No echo to cancel, so none of the raw mic is mixed back in.
+    assert np.frombuffer(aec.clean(near), dtype=np.int16).tolist() == [4_000] * 8
+    assert fars == [[0] * 8]
+
+
+def test_with_echo_cancellation_off_gain_and_noise_suppression_still_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    near = _loud(8)
+    calls: list[tuple[int, ...]] = []
+
+    class Processor:
+        def process(self, *arrays: np.ndarray) -> np.ndarray:
+            calls.append(tuple(a.size for a in arrays))
+            return arrays[0] * 2
+
+    aec = EchoCanceller(AecTune(enabled=False))
+    monkeypatch.setattr(aec, "load", Processor)
+    assert np.frombuffer(aec.clean(near), dtype=np.int16).tolist() == [4_000] * 8
+    assert calls == [(8,)]  # no far end at all
+    assert not aec.available()  # so barge-in keeps the long bleed delay
 
 
 def test_sounddevice_sink_rejoins_odd_pcm_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -262,3 +286,38 @@ def test_the_sounddevice_sink_asks_for_the_buffer_size_it_was_given(
         assert isinstance(sink, SounddeviceSink)
         sink.start()
     assert [call["latency"] for call in asked] == ["low", "high"]
+
+
+def _quiet_speech_frames() -> list[bytes]:
+    # Three seconds of espeak-ng speech at about -50 dBFS, a quiet talker.
+    with wave.open(str(Path(__file__).parent / "data" / "quiet_speech.wav"), "rb") as wav:
+        pcm = wav.readframes(wav.getnframes())
+    return [pcm[i : i + 960] for i in range(0, len(pcm) - 959, 960)]
+
+
+def _level(frames: list[bytes]) -> float:
+    return pcm_rms(b"".join(frames))
+
+
+def test_the_default_cleanup_lifts_a_quiet_voice_and_off_leaves_it_alone() -> None:
+    pytest.importorskip("pywebrtc_audio")
+    frames = _quiet_speech_frames()
+    untouched = EchoCanceller(AecTune.off())
+    settle = 30  # the gain rises over the first second
+    for lifted in (EchoCanceller(), EchoCanceller(AecTune(enabled=False))):
+        out = [lifted.clean(frame) for frame in frames][settle:]
+        assert _level(out) > 4 * _level(frames[settle:])  # more than 12 dB louder
+    assert [untouched.clean(frame) for frame in frames] == frames
+
+
+@pytest.mark.parametrize(("raw", "expected"), [("12", 12), ("0", 0), ("10", 18), ("x", 18)])
+def test_noise_suppression_takes_only_the_processor_steps(
+    monkeypatch: pytest.MonkeyPatch, raw: str, expected: int
+) -> None:
+    monkeypatch.setenv("FISH_VOICE_NOISE_SUPPRESSION", raw)
+    assert AecTune.from_env().noise_suppression_db == expected
+
+
+def test_gain_can_be_turned_off(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FISH_VOICE_AGC", "0")
+    assert AecTune.from_env().auto_gain is False
