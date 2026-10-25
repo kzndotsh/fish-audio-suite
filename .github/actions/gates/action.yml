@@ -27,6 +27,10 @@ runs:
       # .github/verifytypes-floors.json. The justfile runs the same script.
       shell: bash
       run: uv run python .github/scripts/verifytypes.py
+    - name: Import contracts
+      # The layers and independence contracts in pyproject.toml [tool.importlinter].
+      shell: bash
+      run: uv run lint-imports --no-cache
     - name: Tests
       shell: bash
       env:
