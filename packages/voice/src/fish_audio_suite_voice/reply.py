@@ -229,8 +229,9 @@ def _keep_for_resume(ctx: DuplexContext, sent: str, result: TtsResult, captured:
     # A barge-in keeps the clip that tripped it. If that clip turns out to be
     # noise, the rest of the reply is spoken again.
     if result.cancelled and captured:
-        ctx.barge_prefix = captured
-        ctx.resume_text = unspoken_text(sent, result.spoken_so_far) if result.got_audio else ""
+        ctx.carry.keep(
+            captured, unspoken_text(sent, result.spoken_so_far) if result.got_audio else ""
+        )
 
 
 async def speak_reply(

@@ -47,7 +47,7 @@ def _turn(source: LiveInput, ctx: DuplexContext) -> HeardLine:
 
 def test_a_typed_line_is_answered_like_a_spoken_one() -> None:
     ctx = make_ctx()
-    ctx.barge_prefix = b"clip"
+    ctx.carry.prefix = b"clip"
     seen: list[Event] = []
     unsubscribe = EVENTS.subscribe(seen.append)
     source = LiveInput()
@@ -57,7 +57,7 @@ def test_a_typed_line_is_answered_like_a_spoken_one() -> None:
     finally:
         unsubscribe()
     assert (heard.kind, heard.text) == ("line", "hello there")
-    assert ctx.barge_prefix == b""
+    assert ctx.carry.prefix == b""
     assert seen == [Heard("hello there", 0.0)]
 
 

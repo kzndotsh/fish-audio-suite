@@ -261,14 +261,14 @@ def test_a_muted_mic_is_not_reopened_for_a_continuation(monkeypatch: pytest.Monk
 
 def test_a_barge_in_clip_goes_to_the_first_recording_only(monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = _ctx()
-    ctx.barge_prefix = b"pcm"
+    ctx.carry.prefix = b"pcm"
     _asr(monkeypatch, {b"clip1": "Wait,", b"clip2": "stop that please."})
     mic = ScriptedMic(b"clip2")
     heard, _ = _hear(monkeypatch, ctx, mic)
     assert heard.text == "Wait, stop that please."
     assert mic.calls[0]["prefix"] == b"pcm"
     assert "prefix" not in mic.calls[1]
-    assert ctx.barge_prefix == b""
+    assert ctx.carry.prefix == b""
 
 
 def test_a_joined_line_is_not_taken_for_a_stale_copy_of_the_last_one(

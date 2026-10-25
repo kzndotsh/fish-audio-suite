@@ -86,9 +86,9 @@ async def _settle(ctx: DuplexContext) -> int | None:
     quit_requested = ctx.session.quit_requested
     ctx.session.turn.fire()
     ctx.session.turn.clear()
-    barged = bool(ctx.barge_prefix)
     if quit_requested.is_set() or (
-        not barged and await asyncio.to_thread(quit_requested.wait, ctx.config.barge.cooldown_s)
+        not ctx.carry.barged
+        and await asyncio.to_thread(quit_requested.wait, ctx.config.barge.cooldown_s)
     ):
         return bye()
     return None
@@ -96,7 +96,7 @@ async def _settle(ctx: DuplexContext) -> int | None:
 
 async def _resume_reply(ctx: DuplexContext) -> int | None:
     """Speak again what a false barge-in cut off."""
-    text, ctx.resume_text = ctx.resume_text, ""
+    text = ctx.carry.take_resume()
     debug("barge.resume {} chars", len(text))
     cancel = threading.Event()
     ctx.session.turn.bind(cancel, asyncio.Event())
@@ -207,12 +207,12 @@ async def _session(
                 continue
             if heard.kind == "noise":
                 # The interrupt was not speech, so the cut-off reply goes on.
-                if ctx.resume_text:
+                if ctx.carry.resume:
                     code = await _resume_reply(ctx)
                     if code is not None:
                         return code
                 continue
-            ctx.resume_text = ""
+            ctx.carry.take_resume()  # real speech, so the cut reply stays cut
             last_user = heard.text
             remember_user(ctx.history, heard.text, c.history_turns, ctx.pinned)
             code = await _answer_line(ctx, heard)

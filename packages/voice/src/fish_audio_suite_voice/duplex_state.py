@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Final
 
 import httpx
@@ -21,6 +21,7 @@ __all__ = [
     "EXIT_CRASH",
     "EXIT_FATAL",
     "EXIT_OK",
+    "CarryOver",
     "DuplexContext",
 ]
 
@@ -35,6 +36,54 @@ def _never_muted() -> bool:
 
 
 @dataclass(slots=True)
+class CarryOver:
+    """What a barge-in leaves for the next turn.
+
+    Notes
+    -----
+    ``prefix`` is the speech that tripped the barge-in. The next listen starts from
+    it instead of waiting out the cooldown, and takes it. ``resume`` is the part of
+    the cut reply that was not heard. It is spoken again if the interrupt turns out
+    to be noise, and dropped once real speech is heard.
+    """
+
+    prefix: bytes = b""
+    resume: str = ""
+
+    @property
+    def barged(self) -> bool:
+        """Whether a barge-in left speech for the next listen."""
+        return bool(self.prefix)
+
+    def keep(self, prefix: bytes, resume: str) -> None:
+        """Hold the clip that cut a reply off, and what of the reply was not heard.
+
+        Parameters
+        ----------
+        prefix : bytes
+            The PCM that tripped the barge-in.
+        resume : str
+            The unheard rest of the reply. Empty when none of it played.
+        """
+        self.prefix = prefix
+        self.resume = resume
+
+    def take_prefix(self) -> bytes:
+        """Return the barge-in clip for the next listen and forget it."""
+        prefix, self.prefix = self.prefix, b""
+        return prefix
+
+    def hand_back(self, prefix: bytes) -> None:
+        """Keep ``prefix`` for the next listen, such as speech a failed stream already caught."""
+        self.prefix = prefix
+
+    def take_resume(self) -> str:
+        """Return the unheard rest of the cut reply and forget it."""
+        resume, self.resume = self.resume, ""
+        return resume
+
+
+@dataclass(slots=True)
 class DuplexContext:
     """Everything one duplex session shares between the listen, reply and history steps."""
 
@@ -46,12 +95,9 @@ class DuplexContext:
     session: DuplexSession
     asr_http: httpx.AsyncClient
     history: list[ChatMessage]
-    barge_prefix: bytes = b""
+    carry: CarryOver = field(default_factory=CarryOver)
     # Says whether the user has muted the mic. A source with a mute switch sets it.
     muted: Callable[[], bool] = _never_muted
     # A reply being written for a turn Flux thinks is probably over. Used if it is confirmed.
     speculation: Speculation | None = None
-    # What a barge-in cut off, kept until the next line shows the interrupt was
-    # real speech. If it was only noise, this is spoken again.
-    resume_text: str = ""
     pinned: int = KEEP_SYSTEM
