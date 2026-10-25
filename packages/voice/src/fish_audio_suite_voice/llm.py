@@ -80,6 +80,13 @@ def _model_author_slug(model: str) -> tuple[str, str] | None:
     return author, slug
 
 
+def _lookup_field(found: object, name: str) -> Any:
+    value = getattr(found, name, None)
+    if value is None and isinstance(found, dict):
+        return cast(dict[str, Any], found).get(name)
+    return value
+
+
 async def check_openrouter_model(client: Any, tune: LlmTune) -> None:
     """Resolve the configured model via ``models.get``. Warn on 404; never abort duplex.
 
@@ -108,12 +115,12 @@ async def check_openrouter_model(client: Any, tune: LlmTune) -> None:
     except Exception as e:  # noqa: BLE001 - best-effort lookup must never stop the session
         warn(f"[llm] models.get {e}")
         return
-    data = getattr(res, "data", None)
+    data = _lookup_field(res, "data")
     if data is None:
         data = res
-    mid = getattr(data, "id", None)
-    name = getattr(data, "name", None)
-    ctx = getattr(data, "context_length", None)
+    mid = _lookup_field(data, "id")
+    name = _lookup_field(data, "name")
+    ctx = _lookup_field(data, "context_length")
     routed = f", routed from {route}" if isinstance(mid, str) and mid and mid != route else ""
     # The ready line already names the model. A remap is announced below.
     trace("llm.model {} ({} token context){}", name or short_model(mid or route), ctx, routed)
@@ -201,6 +208,10 @@ async def _consume_chat_events(
         if not pending.done():
             pending.cancel()
             await reap(pending)
+        elif not pending.cancelled():
+            # A read that failed after the consumer stopped is not news. Taking
+            # its exception keeps asyncio from logging it as never retrieved.
+            pending.exception()
 
 
 async def _event_or_cancel(pending: asyncio.Task[ChatChunk], cancel: asyncio.Event | None) -> bool:

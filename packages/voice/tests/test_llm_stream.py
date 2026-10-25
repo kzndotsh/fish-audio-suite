@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import gc
 import json
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
@@ -788,6 +789,40 @@ def test_check_openrouter_model_calls_get_with_nitro() -> None:
     client = SimpleNamespace(models=SimpleNamespace(get_async=get_async))
     asyncio.run(check_openrouter_model(client, _tune()))
     assert seen == {"author": "org", "slug": "model:nitro"}
+
+
+def test_check_openrouter_model_reads_a_dict_reply() -> None:
+    async def get_async(**_kwargs: Any) -> Any:
+        return {"data": {"id": "org/other", "name": "Other", "context_length": 8000}}
+
+    seen: list[Event] = []
+    unsubscribe = EVENTS.subscribe(seen.append)
+    client = SimpleNamespace(models=SimpleNamespace(get_async=get_async))
+    try:
+        asyncio.run(check_openrouter_model(client, _tune()))
+    finally:
+        unsubscribe()
+    assert seen == [Notice("[llm model org/model:nitro → org/other]")]
+
+
+def test_a_failed_read_after_the_consumer_stops_is_not_logged() -> None:
+    async def events() -> AsyncIterator[ChatChunk]:
+        yield ChatChunk(text="one")
+        raise ChatHttpError(500, None, quota_exhausted=False)
+
+    async def run() -> list[dict[str, Any]]:
+        reported: list[dict[str, Any]] = []
+        asyncio.get_running_loop().set_exception_handler(lambda _loop, ctx: reported.append(ctx))
+        stream = _consume_chat_events(events(), None, _ChatStats())
+        assert await anext(stream) == "one"
+        await asyncio.sleep(0.01)
+        await stream.aclose()
+        del stream
+        gc.collect()
+        await asyncio.sleep(0)
+        return reported
+
+    assert asyncio.run(run()) == []
 
 
 def test_check_openrouter_model_404(capsys: pytest.CaptureFixture[str]) -> None:
