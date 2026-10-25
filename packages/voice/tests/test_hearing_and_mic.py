@@ -108,7 +108,7 @@ def test_a_batch_turn_reports_the_silence_it_waited_out(monkeypatch: pytest.Monk
 
 def test_a_barge_in_clip_is_never_a_stale_copy(monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = make_ctx()
-    ctx.barge_prefix = b"clip"
+    ctx.carry.prefix = b"clip"
     seen: dict[str, Any] = {}
 
     def record(*_args: object, **kwargs: object) -> bytes:
@@ -127,7 +127,7 @@ def test_a_barge_in_clip_is_never_a_stale_copy(monkeypatch: pytest.MonkeyPatch) 
     assert seen["prefix"] == b"clip"
     assert seen["stale"] is False
     assert seen["over_reply"] is True
-    assert ctx.barge_prefix == b""
+    assert ctx.carry.prefix == b""
 
 
 class _FakeStream:

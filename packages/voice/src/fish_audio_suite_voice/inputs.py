@@ -192,7 +192,7 @@ class LiveInput:
             return heard
 
     def _typed_line(self, ctx: DuplexContext, text: str) -> HeardLine:
-        ctx.barge_prefix = b""
+        ctx.carry.take_prefix()  # the typed line replaces what the mic caught
         mark_turn()
         EVENTS.emit(Heard(text, 0.0))
         return HeardLine("line", text=text, started=time.perf_counter())

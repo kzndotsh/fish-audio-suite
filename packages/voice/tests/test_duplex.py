@@ -354,7 +354,7 @@ def test_cancelled_speak_keeps_the_audio_that_tripped_barge(
         )
     )
     assert code is None
-    assert ctx.barge_prefix == b"clip"
+    assert ctx.carry.prefix == b"clip"
     assert ctx.history[-1]["content"] == "hello"
 
 
@@ -781,7 +781,7 @@ def test_a_cut_off_reply_is_remembered_for_resuming(monkeypatch: pytest.MonkeyPa
             trace_id=None,
         )
     )
-    assert ctx.resume_text == "[calm] How was your day today?"
+    assert ctx.carry.resume == "[calm] How was your day today?"
 
 
 def test_noise_after_a_barge_in_speaks_the_rest_and_joins_history(
@@ -808,8 +808,44 @@ def test_noise_after_a_barge_in_speaks_the_rest_and_joins_history(
     monkeypatch.setattr("fish_audio_suite_voice.duplex.DuplexContext", lambda **_kw: ctx)
     asyncio.run(duplex_turns(ctx.config, ctx.tts, None, ctx.backend, session=DuplexSession()))
     assert said[1] == "[calm] How was your day today?"
-    assert ctx.resume_text == ""
+    assert ctx.carry.resume == ""
     assert ctx.history[-1] == {"role": "assistant", "content": "Hello there. Hello there."}
+
+
+def test_a_real_line_after_a_barge_in_drops_the_rest_for_good(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx, said = _cut_off_ctx(monkeypatch, "Hello there.")
+    asyncio.run(
+        speak_reply(
+            ctx,
+            "Hello there. How was your day today?",
+            threading.Event(),
+            LatencySnapshot(),
+            started=0.0,
+            trace_id=None,
+        )
+    )
+    reads = iter(
+        [
+            HeardLine("line", text="Tell me a joke.", started=0.0),
+            HeardLine("noise"),
+            HeardLine("bye"),
+        ]
+    )
+
+    async def hear(_ctx: DuplexContext, _last: str) -> HeardLine:
+        return next(reads)
+
+    async def answer(_ctx: DuplexContext, _heard: HeardLine) -> int | None:
+        return None
+
+    monkeypatch.setattr("fish_audio_suite_voice.duplex.hear_line", hear)
+    monkeypatch.setattr("fish_audio_suite_voice.duplex._answer_line", answer)
+    monkeypatch.setattr("fish_audio_suite_voice.duplex.DuplexContext", lambda **_kw: ctx)
+    asyncio.run(duplex_turns(ctx.config, ctx.tts, None, ctx.backend, session=DuplexSession()))
+    # The noise after the joke request must not bring back the reply the user talked over.
+    assert said == ["[calm] Hello there. How was your day today?"]
 
 
 @pytest.mark.parametrize(("barge_prefix", "kind"), [(b"", "line"), (b"clip", "noise")])
@@ -817,7 +853,7 @@ def test_hear_line_answers_a_yeah_unless_it_was_said_over_the_reply(
     monkeypatch: pytest.MonkeyPatch, barge_prefix: bytes, kind: str
 ) -> None:
     ctx = make_ctx()
-    ctx.barge_prefix = barge_prefix
+    ctx.carry.prefix = barge_prefix
 
     def wav(*_args: object, **_kwargs: object) -> bytes:
         return b"RIFFwav"

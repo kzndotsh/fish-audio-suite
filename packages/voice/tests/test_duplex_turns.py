@@ -130,7 +130,7 @@ def test_a_barge_in_skips_the_cooldown(monkeypatch: pytest.MonkeyPatch) -> None:
 
     async def hear(ctx: DuplexContext, last_user: str) -> HeardLine:
         heard.last_user.append(last_user)
-        ctx.barge_prefix = b"clip"  # the user spoke over the reply
+        ctx.carry.prefix = b"clip"  # the user spoke over the reply
         return next(lines)
 
     monkeypatch.setattr("fish_audio_suite_voice.duplex.hear_line", hear)
@@ -149,7 +149,7 @@ def test_a_failing_resume_ends_the_loop_with_code_2(monkeypatch: pytest.MonkeyPa
     lines = iter([HeardLine("noise"), HeardLine("bye")])
 
     async def hear(ctx: DuplexContext, _last: str) -> HeardLine:
-        ctx.resume_text = "the rest of the reply"
+        ctx.carry.resume = "the rest of the reply"
         return next(lines)
 
     monkeypatch.setattr("fish_audio_suite_voice.duplex.hear_line", hear)

@@ -107,7 +107,7 @@ def test_a_streamed_transcript_is_judged_like_a_batch_one(monkeypatch: pytest.Mo
     assert asyncio.run(hear_line(_ctx(), "")) == HeardLine("bye")  # a quit word ends the session
     _stream_returns(monkeypatch, _turn("mm-hmm"))
     ctx = _ctx()
-    ctx.barge_prefix = b"\x01\x00" * 100  # said over the reply, so a lone "mm-hmm" means "go on"
+    ctx.carry.prefix = b"\x01\x00" * 100  # said over the reply, so a lone "mm-hmm" means "go on"
     assert asyncio.run(hear_line(ctx, "")) == HeardLine("noise")
     _stream_returns(monkeypatch, _turn("what is the weather"))
     assert asyncio.run(hear_line(_ctx(), "what is the weather")).kind == "noise"  # a stale copy
@@ -118,10 +118,10 @@ def test_the_barge_prefix_is_handed_to_the_stream_and_cleared(
 ) -> None:
     calls = _stream_returns(monkeypatch, _turn())
     ctx = _ctx()
-    ctx.barge_prefix = b"\x02\x00" * 50
+    ctx.carry.prefix = b"\x02\x00" * 50
     asyncio.run(hear_line(ctx, ""))
     assert calls[0]["prefix"] == b"\x02\x00" * 50
-    assert ctx.barge_prefix == b""
+    assert ctx.carry.prefix == b""
 
 
 def _eager_ctx() -> DuplexContext:

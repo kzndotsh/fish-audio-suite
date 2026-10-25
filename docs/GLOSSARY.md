@@ -9,6 +9,7 @@ Terms used across the fish-audio-suite docs and code.
 | **Backchannel** | A listener noise such as "mm-hmm" or "yeah". Over a reply it means "go on" and is ignored; on its own turn "yeah" is an answer |
 | **Barge-in** | Talking over the bot. Enough loud voiced frames in a row cancel the reply and start a new listen |
 | **Bleed delay** | Time after playback starts before barge-in listens, so the speaker's own sound is not taken for a user |
+| **Carry-over** | What a barge-in leaves for the next turn (`CarryOver`): the clip that tripped it, which the next listen starts from instead of waiting out the cooldown, and the unheard rest of the cut reply, spoken again if the interrupt turns out to be noise |
 | **Chunk length** | Fish's `chunk_length`: how much text Fish gathers before it starts synthesizing. Smaller starts sooner. The cloud allows 100 to 300 |
 | **Cooldown** | Seconds the mic stays shut after a reply ends |
 | **CORS** | Cross-origin resource sharing. A browser blocks a page from calling another server unless that server sends the right headers. The proxy sends none, so browser apps need a reverse proxy that adds them |

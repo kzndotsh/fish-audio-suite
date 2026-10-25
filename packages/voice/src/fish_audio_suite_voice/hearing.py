@@ -321,8 +321,7 @@ async def hear_line(
         return streamed
     drop_speculation(ctx)
     try:
-        prefix = ctx.barge_prefix
-        ctx.barge_prefix = b""
+        prefix = ctx.carry.take_prefix()
         opened = time.monotonic()
         first_tune = first_clip_tune(ctx.config.listen, ctx.config.turn)
         wav = await asyncio.to_thread(
@@ -487,7 +486,7 @@ async def _hear_streaming(
         turn is heard the usual way.
     """
     quit_requested = ctx.session.quit_requested
-    prefix = ctx.barge_prefix
+    prefix = ctx.carry.take_prefix()
     opened = time.monotonic()
     eager = ctx.config.stt.eager_eot_threshold > 0
     outcome = await stream_turn(
@@ -503,9 +502,8 @@ async def _hear_streaming(
     if isinstance(outcome, StreamFallback):
         # Deepgram failed once speech had started. The batch recogniser carries on from the
         # speech captured so far, the way it carries on from a barge-in.
-        ctx.barge_prefix = outcome.prefix
+        ctx.carry.hand_back(outcome.prefix)
         return None
-    ctx.barge_prefix = b""  # the stream had it
     if quit_requested.is_set():
         return HeardLine("bye")
     if isinstance(outcome, StreamedTurn):
