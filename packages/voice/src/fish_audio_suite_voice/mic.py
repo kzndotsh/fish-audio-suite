@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import queue
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -27,6 +28,9 @@ FRAME_SAMPLES: Final = SAMPLE_RATE * FRAME_MS // MS_PER_S
 FRAME_BYTES: Final = FRAME_SAMPLES * SAMPLE_BYTES
 # How long a read waits for audio before it checks the stop flag again.
 _POLL_S: Final = 0.2
+# About two seconds of PortAudio blocks. A reader further behind than this is
+# hearing the past, so the oldest block makes room for the newest.
+_MAX_BACKLOG: Final = 2 * MS_PER_S // FRAME_MS
 
 
 class StopFlag(Protocol):
@@ -114,11 +118,16 @@ class SounddeviceMic:
             One 30 ms int16 frame.
         """
         sd = load_sounddevice()
-        audio: queue.Queue[bytes] = queue.Queue()
+        audio: queue.Queue[bytes] = queue.Queue(maxsize=_MAX_BACKLOG)
 
         def callback(indata: Any, frames: int, time_info: Any, status: Any) -> None:
             del frames, time_info, status
-            audio.put(bytes(indata))
+            # PortAudio's thread is the only writer, so after one block is taken
+            # out there is room again.
+            if audio.full():
+                with contextlib.suppress(queue.Empty):
+                    audio.get_nowait()
+            audio.put_nowait(bytes(indata))
 
         with sd.RawInputStream(
             **pcm_stream_kwargs(SAMPLE_RATE, self.device),
