@@ -394,13 +394,14 @@ def _optional_tts(payload: dict[str, Any], body: dict[str, Any], *, quality_guar
     if _want_quality_guard(body, quality_guard):
         payload["features"] = ["quality-guard"]
     pd = body.get("pronunciation_dictionary")
-    if pd:
+    if pd is not None:
         if not isinstance(pd, list) or len(pd) > _MAX_PRONUNCIATION_ENTRIES:
             raise ProxyError(
                 400,
                 f"pronunciation_dictionary must be a list of at most {_MAX_PRONUNCIATION_ENTRIES} entries",
             )
-        payload["pronunciation_dictionary"] = _scrub_pronunciation_dictionary(pd)
+        if pd:
+            payload["pronunciation_dictionary"] = _scrub_pronunciation_dictionary(pd)
 
 
 def speech_controls(

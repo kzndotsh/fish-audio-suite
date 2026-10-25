@@ -265,18 +265,13 @@ class LlmTune:
             the OpenRouter SDK, and everything else the OpenAI-compatible client.
         """
         named = _named_provider()
-        if named is not None:
-            # Only FISH_LLM_BASE moves a named provider's base. The
-            # OPENROUTER_BASE_URL fallback must not send its key to another host.
-            base = _first_base("FISH_LLM_BASE") or named.base
-        else:
-            base = _first_base("FISH_LLM_BASE", "OPENROUTER_BASE_URL") or OPENROUTER_API_BASE
+        base = _first_base("FISH_LLM_BASE") or (
+            named.base if named is not None else OPENROUTER_API_BASE
+        )
         provider = provider_for_base(base)
         backend = _backend(base)
-        if provider is not None:
-            key_env = provider.key_env
-        else:
-            key_env = "OPENROUTER_API_KEY" if backend == "openrouter" else "OPENAI_API_KEY"
+        # An OpenRouter host is always a known provider, so an unknown host is OpenAI-compatible.
+        key_env = provider.key_env if provider is not None else "OPENAI_API_KEY"
         key_names = ["FISH_LLM_API_KEY"]
         if provider is None or _is_https(base):
             key_names.append(key_env)
@@ -287,8 +282,6 @@ class LlmTune:
             )
         model_names = [provider.model_env] if provider is not None else []
         model_names.append("FISH_LLM_MODEL")
-        if provider is None or provider.name == "openrouter":
-            model_names.append("OPENROUTER_MODEL")
         return cls(
             backend=backend,
             base=base,

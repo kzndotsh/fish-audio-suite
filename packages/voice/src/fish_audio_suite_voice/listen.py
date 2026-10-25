@@ -271,7 +271,7 @@ def cooldown_report(frames: Sequence[bytes], tune: ListenTune, vad: Vad) -> str:
     frames : Sequence of bytes
         The 30 ms frames from the end of a reply to the end of its cooldown.
     tune : ListenTune
-        Supplies the speech floor and how many frames start speech.
+        Supplies the floor's seed and how many frames start speech.
     vad : Vad
         A fresh voice-activity detector.
 
@@ -279,8 +279,10 @@ def cooldown_report(frames: Sequence[bytes], tune: ListenTune, vad: Vad) -> str:
     -------
     str
         ``frames=… peak_rms=… floor=… voiced=… over_floor=… speech_like=… start_needs=…``.
-        ``speech_like`` counts frames both over the floor and voiced, the ones that
-        count toward starting a turn. Near ``start_needs``, the bot's own echo could
+        Each frame is judged against the adaptive floor a listen opened at the end of
+        the reply would use, and ``floor`` is where it ended. ``speech_like`` counts
+        frames both over the floor and voiced, the ones that count toward starting a
+        turn. Near ``start_needs``, the bot's own echo could
         start a turn if the cooldown were shorter.
 
     Examples
@@ -293,10 +295,16 @@ def cooldown_report(frames: Sequence[bytes], tune: ListenTune, vad: Vad) -> str:
     """
     if not frames:
         return "frames=0"
-    floor = tune.min_speech_rms
     levels = [pcm_rms(frame) for frame in frames]
     voiced = [frame_is_speech(vad, frame) for frame in frames]
-    over = [level >= floor for level in levels]
+    # The same adaptive floor a listen opened at the end of the reply would use.
+    room = AdaptiveFloor(tune.min_speech_rms)
+    over: list[bool] = []
+    for level in levels:
+        need = room.value()
+        over.append(level >= need)
+        room.observe(level, quiet=level < need)
+    floor = room.value()
     speech_like = sum(1 for loud, said in zip(over, voiced, strict=True) if loud and said)
     return (
         f"frames={len(frames)} peak_rms={max(levels):.0f} floor={floor:.0f} "

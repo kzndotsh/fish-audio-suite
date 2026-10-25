@@ -99,13 +99,8 @@ def llm_setting_names(llm: LlmTune) -> tuple[str, str]:
     """Name the key and model variables the selected provider reads."""
     provider = provider_for_base(llm.base)
     if provider is None:
-        return (
-            "OPENROUTER_API_KEY" if llm.uses_openrouter_sdk else "OPENAI_API_KEY"
-        ), "OPENROUTER_MODEL"
-    models = [provider.model_env]
-    if provider.name == "openrouter":
-        models.append("OPENROUTER_MODEL")
-    return provider.key_env, " / ".join(models)
+        return "OPENAI_API_KEY", "FISH_LLM_MODEL"
+    return provider.key_env, f"{provider.model_env} / FISH_LLM_MODEL"
 
 
 def _blocker(label: str) -> int:

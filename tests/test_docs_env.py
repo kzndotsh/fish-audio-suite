@@ -45,8 +45,6 @@ DOC_ONLY = {
 # Variables read through a helper that .env.example leaves out on purpose, with the reason.
 # They are still documented in the README of the package that reads them.
 ENV_EXAMPLE_SKIP = {
-    "OPENROUTER_BASE_URL": "fallback name for FISH_LLM_BASE",
-    "OPENROUTER_MODEL": "fallback name for FISH_LLM_MODEL",
     "WEB_CONCURRENCY": "the standard uvicorn fallback for FISH_PROXY_WORKERS",
 }
 # Strings that look like a variable name but are not one, with the reason. Empty today.

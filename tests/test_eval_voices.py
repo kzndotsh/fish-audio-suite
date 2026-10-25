@@ -6,7 +6,7 @@ import threading
 import wave
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import eval_voices
 import pytest
@@ -17,7 +17,10 @@ from fish_audio_suite_voice.wire import TtsResult
 
 
 class _FakeSpeaker:
+    built: ClassVar[list[dict[str, Any]]] = []
+
     def __init__(self, **kwargs: Any) -> None:
+        _FakeSpeaker.built.append(kwargs)
         self.voice = str(kwargs["voice_id"])
         self.model = str(kwargs["model"])
 
@@ -30,7 +33,7 @@ class _FakeSpeaker:
         on_first_audio: Callable[[], None] | None = None,
     ) -> TtsResult:
         del cancel
-        assert text.startswith("[happy]")
+        assert text == eval_voices.TEXT  # the speaker does the app's cleanup, once
         if self.voice == "badvoice":
             return make_result("", error_status=404, error_message="voice not found")
         sink.start()
@@ -80,6 +83,7 @@ def test_every_voice_and_model_is_saved_and_a_failure_does_not_stop_the_run(
         assert clip.getnframes() == 44100
     table = capsys.readouterr().out
     assert "FAILED: voice not found" in table
+    assert all(kwargs["official_cues"] for kwargs in _FakeSpeaker.built)  # the app's default
     assert "voice1" in table
     assert "1.0" in table  # seconds
 

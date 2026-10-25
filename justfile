@@ -12,12 +12,12 @@ sync:
 
 # Ruff check and the format check, as CI runs them.
 lint:
-    uv run ruff check packages .github/scripts scripts
-    uv run ruff format --check packages .github/scripts scripts
+    uv run ruff check packages .github/scripts scripts tests
+    uv run ruff format --check packages .github/scripts scripts tests
 
 # Rewrite the code in the project's format.
 fmt:
-    uv run ruff format packages .github/scripts scripts
+    uv run ruff format packages .github/scripts scripts tests
 
 # Docstrings that match their signatures. Ruff's D rules already run in `lint`.
 docstrings:

@@ -96,6 +96,26 @@ def test_a_blank_provider_means_the_default(monkeypatch: pytest.MonkeyPatch) -> 
     assert SttTune.from_env().provider == "fish"
 
 
+@pytest.mark.parametrize(
+    ("name", "field", "default"),
+    [
+        ("FISH_VOICE_DEEPGRAM_MODEL", "deepgram_model", DEFAULT_DEEPGRAM_MODEL),
+        ("FISH_VOICE_DEEPGRAM_REGION", "deepgram_region", "global"),
+    ],
+)
+def test_a_blank_deepgram_setting_means_the_default_without_a_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    *,
+    name: str,
+    field: str,
+    default: str,
+) -> None:
+    monkeypatch.setenv(name, "  ")  # an uncommented line from .env.example
+    assert getattr(SttTune.from_env(), field) == default
+    assert name not in capsys.readouterr().err
+
+
 def test_the_early_end_of_turn_is_off_unless_set_and_is_kept_within_flux_limits(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],

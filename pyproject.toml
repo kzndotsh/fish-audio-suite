@@ -54,8 +54,8 @@ filterwarnings = [
     # older Starlette, so the filter stays while that floor does.
     "ignore:The anyio.abc.BlockingPortal alias is deprecated:DeprecationWarning:starlette.testclient",
 ]
-# Doctests run from kit's source, which holds the Examples in its docstrings. The root
-# conftest.py keeps proxy and voice out of doctest collection, since they have none.
+# Doctests run from the kit and voice sources, which hold Examples in their docstrings.
+# The root conftest.py keeps the proxy out of doctest collection, since it has none.
 doctest_optionflags = ["ELLIPSIS", "NORMALIZE_WHITESPACE"]
 addopts = [
     "--import-mode=importlib",

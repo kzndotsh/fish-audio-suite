@@ -41,9 +41,9 @@ _MEDIA: dict[ClientFormat, str] = {
 }
 
 _PCM16_RATE = 24_000
-# wave stores the rate as an unsigned 32-bit field and raises on a larger one,
-# so the silent WAV falls back to 24 kHz instead.
-_WAV_RATE_HI = 2**32 - 1
+# wave stores the byte rate (rate x 2 bytes for mono 16-bit) as an unsigned 32-bit
+# field and raises on a larger one, so the silent WAV falls back to 24 kHz above this.
+_WAV_RATE_HI = (2**32 - 1) // 2
 SUPPORTED_FORMATS: tuple[ClientFormat, ...] = tuple(_MEDIA)
 CLIENT_FORMATS: dict[str, ClientFormat] = {name: name for name in get_args(ClientFormat)}
 
@@ -88,8 +88,8 @@ def silent_speech(fmt: ClientFormat, sample_rate: int) -> tuple[bytes, str]:
     fmt : ClientFormat
         The requested format.
     sample_rate : int
-        Rate written into the WAV header. A rate outside 1 to 2**32 - 1 becomes
-        24 kHz. Other formats ignore it.
+        Rate written into the WAV header. A rate outside 1 to (2**32 - 1) // 2
+        becomes 24 kHz. Other formats ignore it.
 
     Returns
     -------
