@@ -1086,6 +1086,12 @@ def test_log_briefs_show_the_provider_and_the_token_counts() -> None:
     usage = {"prompt_tokens": 203, "completion_tokens": 20, "cost": 5.86e-05}
     assert _usage_brief(usage) == "in=203 out=20 cost=$0.00006"
     assert _usage_brief(None) == "usage=?"
+    # A cache hit shows how much of the prompt the provider read back, so a change
+    # that breaks the cache can be seen.
+    cached = {**usage, "prompt_tokens_details": {"cached_tokens": 180}}
+    assert _usage_brief(cached) == "in=203 cached=180 out=20 cost=$0.00006"
+    no_hit = {**usage, "prompt_tokens_details": {"cached_tokens": 0}}
+    assert _usage_brief(no_hit) == "in=203 cached=0 out=20 cost=$0.00006"
 
 
 def test_a_retry_wait_in_the_error_body_is_read_the_way_a_header_is() -> None:

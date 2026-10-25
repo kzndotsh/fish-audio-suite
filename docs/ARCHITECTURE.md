@@ -218,7 +218,7 @@ There is no frontend. The user-facing parts are an HTTP API (the proxy) and a te
 > [!IMPORTANT]
 > There is no database and nothing is written to disk.
 
-- **Chat history:** a list of messages in memory (`DuplexContext.history`). It is trimmed to `FISH_VOICE_HISTORY_TURNS` user and assistant pairs, keeps the system prompt (and the default prompt's opening example) pinned, and is lost when `fish-voice` exits.
+- **Chat history:** a list of messages in memory (`DuplexContext.history`). It is trimmed to `FISH_VOICE_HISTORY_TURNS` user and assistant pairs, a quarter at a time so the cached start of the prompt survives several turns, keeps the system prompt (and the default prompt's opening example) pinned, and is lost when `fish-voice` exits.
 - **Settings:** read from the environment and an optional `.env` file once at startup. The proxy keeps them in one object on `app.state.settings`.
 - **Audio:** streamed through memory. A `FileSink` writes a file only when a library caller asks for one.
 
