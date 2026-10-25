@@ -24,11 +24,15 @@ uv run ruff format --check packages .github/scripts scripts
 uv run pydoclint --config=pyproject.toml packages
 uv run basedpyright
 uv run python .github/scripts/verifytypes.py
+uv run lint-imports --no-cache
 uv run pytest
 ```
 
 `verifytypes.py` scores how fully typed each package's public API is and fails
 under the floors in `.github/verifytypes-floors.json` (`just types-public`).
+`lint-imports` checks the import contracts in `pyproject.toml` (`just layers`): the proxy
+and voice never import each other, kit imports neither, and voice modules import only
+the layers below their own. A new voice module goes in the lowest layer it fits.
 `pytest` also runs the `>>>` examples in kit's docstrings as doctests.
 
 `just fmt` (or `uv run ruff format packages .github/scripts scripts`) rewrites the formatting. `uvx pre-commit install`
