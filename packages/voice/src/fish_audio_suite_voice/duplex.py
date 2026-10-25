@@ -24,6 +24,7 @@ from fish_audio_suite_voice.mic import SessionMic
 from fish_audio_suite_voice.reply import collect_reply, speak_reply, stream_turn
 from fish_audio_suite_voice.signals import DuplexSession
 from fish_audio_suite_voice.speaker import FishSpeaker
+from fish_audio_suite_voice.vad import open_vad
 
 __all__ = [
     "EXIT_FATAL",
@@ -104,12 +105,12 @@ async def _settle(ctx: DuplexContext) -> int | None:
 def _log_cooldown(ctx: DuplexContext, since: int) -> None:
     # The mic stays open through the cooldown, so this shows whether the bot's
     # echo ever comes near starting a turn, which is what the cooldown guards.
+    tune = ctx.config.listen
     try:
-        import webrtcvad  # noqa: PLC0415 - optional extra, as in listen
-    except ImportError:
+        vad = open_vad(tune.vad_engine, tune.vad_aggressiveness)
+    except Exception:  # noqa: BLE001 - a debug line must never end the session
         return
-    vad = webrtcvad.Vad(ctx.config.listen.vad_aggressiveness)
-    debug("listen.cooldown {}", cooldown_report(ctx.mic.recent(since), ctx.config.listen, vad))
+    debug("listen.cooldown {}", cooldown_report(ctx.mic.recent(since), tune, vad))
 
 
 async def _resume_reply(ctx: DuplexContext) -> int | None:

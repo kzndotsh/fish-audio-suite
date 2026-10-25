@@ -129,11 +129,12 @@ Flux was not sure enough that you had finished (its `confidence` was below `FISH
 
 The log shows `barge interrupt` after hits from short, loud noises. Raise `FISH_VOICE_BARGE_FRAMES` (default 10, about 300 ms) before raising `FISH_VOICE_BARGE_RMS`. A noise that interrupts but holds no words is treated as a false alarm: the reply resumes where it was cut.
 
-Hits do not have to be in a row. The count falls by one only after 3 missed frames, so a run of small sounds such as sniffs or breathing can add up to an interruption. The default voice detection (`FISH_VOICE_VAD=1`) is lenient enough to call those sounds voiced.
+Hits do not have to be in a row. The count falls by one only after 3 missed frames, so a run of small sounds such as sniffs, breathing or typing can add up to an interruption. The default voice detector (`FISH_VOICE_VAD_ENGINE=webrtc`) is lenient enough to call those sounds voiced.
 
-Two things help:
+These help:
 
-- `FISH_VOICE_VAD=2` makes the detector pickier. In one setup (a Yeti X, about 8 dB of extra input gain) it stopped sniffs and mic bumps from interrupting, and nothing else changed. It also applies to normal listening, so check that your first words are not clipped and that soft speech still arrives. If it is, go back to `1`.
+- `FISH_VOICE_VAD_ENGINE=silero` (the `silero` extra) uses a neural detector that tells speech from clicks and noise. Check it first with `scripts/vad_compare.py`: record some typing and some talking, and it shows where each detector would have interrupted.
+- `FISH_VOICE_VAD=2` makes the detector pickier. Listening and barge-in both use it, so check that your first words are not clipped and that soft speech still arrives. If they are, go back to `1`.
 - `FISH_VOICE_BARGE_RMS` set above the level of those sounds and below your voice. Compare the `barge hit ... rms=` lines for a sniff and for a real interruption first. In that setup sniffs read 245 to 650 and real interruptions 740 or more, but your mic will differ.
 
 ### The bot interrupts itself

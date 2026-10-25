@@ -116,6 +116,25 @@ uv run python scripts/mic_levels.py --seconds 12
 Stay quiet for the first two seconds, then talk as you would to the assistant. On NixOS,
 set `LD_LIBRARY_PATH=$NIX_LD_LIBRARY_PATH` first.
 
+## vad_compare.py
+
+Plays one recording through each voice detector and the real barge-in gate, and shows
+where each would have interrupted the bot. For every engine and strictness it prints a
+timeline of the frames called speech, a caret under each interruption and a one-line
+summary. Typing, coughs and chairs should leave the timeline empty and trip nothing. It
+calls no API and sends nothing. `--record` saves the WAV it records, so every detector
+hears the same take.
+
+```bash
+uv run python scripts/vad_compare.py --record 30 take.wav
+uv run python scripts/vad_compare.py take.wav --engines webrtc,silero --strictness 1,2
+```
+
+A useful take is ten seconds of typing, ten of talking, then typing while you talk. The
+gate runs as if the bot were silent, with no echo cancellation. Silero needs the `silero`
+extra, and a plugin can be named as `package.module:factory`. On NixOS, set
+`LD_LIBRARY_PATH=$NIX_LD_LIBRARY_PATH` first.
+
 
 ## deepgram_check.py
 

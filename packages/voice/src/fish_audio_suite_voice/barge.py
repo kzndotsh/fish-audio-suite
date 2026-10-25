@@ -6,13 +6,13 @@ import threading
 from collections import deque
 from collections.abc import Callable
 from dataclasses import replace
-from typing import Any, Final
+from typing import Final
 
 from fish_audio_suite_voice.aec import EchoCanceller, pcm_rms
 from fish_audio_suite_voice.debug import debug, heartbeat_due, trace, warn
 from fish_audio_suite_voice.events import EVENTS, BargedIn, MicLevel
 from fish_audio_suite_voice.floor import AdaptiveFloor
-from fish_audio_suite_voice.mic import SAMPLE_RATE, Mic
+from fish_audio_suite_voice.mic import Mic
 from fish_audio_suite_voice.tune import (
     DEFAULT_BARGE_HIT_FRAMES,
     DEFAULT_BARGE_PLAYING_GAIN,
@@ -20,7 +20,9 @@ from fish_audio_suite_voice.tune import (
     DEFAULT_BLEED_DELAY_S,
     DEFAULT_POST_SPEAK_COOLDOWN_S,
     BargeTune,
+    ListenTune,
 )
+from fish_audio_suite_voice.vad import frame_is_speech, open_vad
 
 __all__ = [
     "BARGE_MISS_DECAY_FRAMES",
@@ -33,7 +35,6 @@ __all__ = [
     "MIC_LEVEL_EVERY_FRAMES",
     "BargeGate",
     "barge_rms_need",
-    "frame_is_speech",
 ]
 
 LISTEN_HEARTBEAT_FRAMES: Final = 20
@@ -41,8 +42,6 @@ LISTEN_HEARTBEAT_FRAMES: Final = 20
 MIC_LEVEL_EVERY_FRAMES: Final = 3
 BARGE_MISS_DECAY_FRAMES: Final = 3
 BARGE_LOOKBACK_FRAMES: Final = 20
-# Mode 3 dropped frames listen already accepted (RMS above the floor, hit stayed 0).
-_BARGE_VAD: Final = 1
 
 
 def _barge_step(
@@ -127,6 +126,9 @@ class BargeGate:
         Gate settings. None uses the defaults.
     bleed_delay_s, hit_frames, min_rms : optional
         Per-gate overrides of the matching ``tune`` fields.
+    listen : ListenTune or None, optional
+        Supplies the voice detector and its strictness. Barge-in uses listen's, so it
+        never rejects speech that listen would accept. None uses the defaults.
     muted : Callable or None, optional
         Says whether the user has muted the mic. While it is true the mic stays closed: a
         reply that starts muted is not watched, and muting during a reply ends the watch
@@ -140,8 +142,8 @@ class BargeGate:
     ``min_rms``. It is multiplied by ``playing_gain`` while audio is playing only when
     AEC is off. A trip keeps the last 20 frames; the next listen starts from
     that clip and skips the post-speak cooldown. Speech is scored with the same
-    VAD mode as listen. Hits decay after 3 missed frames so a short gap does
-    not reset the phrase.
+    voice detector and strictness as listen. Hits decay after 3 missed frames so a
+    short gap does not reset the phrase.
     """
 
     def __init__(
@@ -152,6 +154,7 @@ class BargeGate:
         bleed_delay_s: float | None = None,
         hit_frames: int | None = None,
         min_rms: float | None = None,
+        listen: ListenTune | None = None,
         muted: Callable[[], bool] | None = None,
     ) -> None:
         base = tune or BargeTune()
@@ -179,6 +182,7 @@ class BargeGate:
         self.resume_at: int | None = None
         self.failure: Exception | None = None
         self._muted: Callable[[], bool] = muted or _never
+        self._listen: ListenTune = listen or ListenTune()
 
     def _bleed_wait(self) -> float:
         if self._bleed_override is not None:
@@ -193,9 +197,7 @@ class BargeGate:
         cancel : threading.Event
             Set by the caller to stop watching. Set here on a trip.
         """
-        import webrtcvad
-
-        vad = webrtcvad.Vad(_BARGE_VAD)
+        vad = open_vad(self._listen.vad_engine, self._listen.vad_aggressiveness)
         hit = 0
         miss = 0
         floor = AdaptiveFloor(self.min_rms)
@@ -321,8 +323,3 @@ class _CancelOrMuted:
 
 def _never() -> bool:
     return False
-
-
-def frame_is_speech(vad: Any, frame: bytes) -> bool:
-    """Return whether WebRTC VAD scores this 16 kHz frame as speech."""
-    return bool(vad.is_speech(frame, SAMPLE_RATE))

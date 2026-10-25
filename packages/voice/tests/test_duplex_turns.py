@@ -4,17 +4,21 @@ from __future__ import annotations
 
 import threading
 from collections.abc import AsyncIterator
+from dataclasses import replace
+from typing import cast
 
 import pytest
 from session_fakes import ScriptedHearing, heard_line, quick_config, run_session, speak_with_fakes
-from voice_fakes import ScriptedMic, install_audio, install_vad, set_tts
+from voice_fakes import FakeGate, ScriptedMic, install_audio, install_vad, set_tts
 
+from fish_audio_suite_voice import reply
 from fish_audio_suite_voice.duplex_state import DuplexContext
 from fish_audio_suite_voice.hearing import HeardLine
 from fish_audio_suite_voice.llm import ChatUnusableError
 from fish_audio_suite_voice.playback import PortAudioMissingError
 from fish_audio_suite_voice.signals import DuplexSession
 from fish_audio_suite_voice.speaker import FishSpeaker
+from fish_audio_suite_voice.tune import ListenTune
 from fish_audio_suite_voice.wire import TtsResult
 
 
@@ -251,3 +255,40 @@ def test_a_reply_cut_off_by_a_barge_in_has_no_cooldown_to_log(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     assert _logged_cooldowns(monkeypatch, barged=True) == []
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_a_reply_watches_for_barge_in_with_the_listen_detector(
+    monkeypatch: pytest.MonkeyPatch, stream: bool
+) -> None:
+    tts = FishSpeaker(api_key="k", voice_id="voice")
+    gate, _sink = install_audio(monkeypatch)
+    speak_with_fakes(monkeypatch, tts, stream=stream)
+    built: list[ListenTune | None] = []
+
+    def make_gate(**kwargs: object) -> FakeGate:
+        built.append(cast("ListenTune | None", kwargs.get("listen")))
+        return gate
+
+    monkeypatch.setattr(reply, "BargeGate", make_gate)
+    ScriptedHearing(monkeypatch, heard_line("hi there"))
+    config = quick_config(stream=stream)
+    listen = replace(config.listen, vad_engine="silero", vad_aggressiveness=3)
+    assert run_session(replace(config, listen=listen), tts) == 0
+    assert built == [listen]
+
+
+def test_a_detector_that_fails_in_the_cooldown_log_does_not_end_the_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tts = FishSpeaker(api_key="k", voice_id="voice")
+    install_audio(monkeypatch)
+    speak_with_fakes(monkeypatch, tts)
+    ScriptedHearing(monkeypatch, heard_line("hi there"))
+    monkeypatch.setattr(
+        "fish_audio_suite_voice.duplex.SessionMic", lambda *_a, **_k: ScriptedMic([b"\x00" * 960])
+    )
+    monkeypatch.setattr("fish_audio_suite_voice.duplex.debug_enabled", lambda: True)
+    config = quick_config()
+    broken = replace(config, listen=replace(config.listen, vad_engine="not-an-engine"))
+    assert run_session(broken, tts) == 0
