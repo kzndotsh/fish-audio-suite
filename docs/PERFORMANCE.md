@@ -127,6 +127,7 @@ As Fish documents them in October 2026; check Fish's pricing page for today's nu
 | --- | --- | --- |
 | `FISH_LLM_PROVIDER_SORT` | `latency` | `throughput` or `price` instead, or `off` for OpenRouter's own price-weighted routing. It matters only for a model served by more than one provider |
 | `FISH_LLM_NITRO` | off | Adds `:nitro` (OpenRouter's fast-provider tier) |
+| `FISH_LLM_SERVICE_TIER` | unset | `priority` for steadier speed at a higher price. `ultrafast` (select OpenAI models) is several times the standard price, and its gain is in generation speed more than the first token. `:nitro` never routes to it |
 | `FISH_LLM_REASONING_EFFORT` | unset | For a thinking model, `none` or `low` avoids seconds of hidden thinking before the first word |
 | `FISH_LLM_MAX_TOKENS` | `1200` | Lower keeps replies short, so turns end sooner |
 | `FISH_VOICE_HISTORY_TURNS` | `20` | Fewer turns mean a shorter prompt, which helps the first token slightly |
@@ -205,6 +206,7 @@ Lines worth watching:
 | `listen speech_start` right after `listen open`, with no one talking | Echo after the reply. Raise `FISH_VOICE_COOLDOWN` |
 | `asr.skip backchannel` / `hallucination` | A clip was dropped after transcription, on purpose |
 | `llm stream_end ... provider=X` | Which provider served the reply |
+| `llm stream_end ... tier=X` | Which service tier served it, when the response says. `ultrafast` that falls back shows `priority` |
 
 ## Proxy
 

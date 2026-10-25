@@ -195,6 +195,7 @@ class _ChatStats:
     last_model: str = ""
     last_provider: str = ""
     last_native: str = ""
+    last_tier: str = ""
     aborted: bool = False
     refused: ChatHttpError | None = None
 
@@ -218,6 +219,7 @@ def _note_chat_event(chunk: ChatChunk, stats: _ChatStats) -> str:
     if chunk.finish is not None:
         stats.last_finish = chunk.finish
     stats.last_native = chunk.native_finish or stats.last_native
+    stats.last_tier = chunk.service_tier or stats.last_tier
     piece = _delta_content(chunk, already=stats.yielded > 0)
     if piece:
         stats.yielded += 1
@@ -310,12 +312,13 @@ def _finish_llm(stats: _ChatStats, route_model: str) -> None:
     if stats.aborted:
         return
     debug(
-        "llm.stream_end finish={} {} chunks={} provider={} model={}",
+        "llm.stream_end finish={} {} chunks={} provider={} model={}{}",
         stats.last_finish,
         _usage_brief(stats.last_usage),
         stats.yielded,
         _provider_brief(stats.last_provider),
         short_model(stats.last_model or route_model),
+        f" tier={stats.last_tier}" if stats.last_tier else "",
     )
     if stats.yielded == 0:
         warn(f"[llm] empty reply (model={route_model} finish={stats.last_finish!r})")

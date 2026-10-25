@@ -19,6 +19,7 @@ __all__ = [
     "OPENROUTER_API_BASE",
     "PROVIDER_SORTS",
     "REASONING_EFFORTS",
+    "SERVICE_TIERS",
     "LlmBackendName",
     "LlmProvider",
     "LlmProviderName",
@@ -41,6 +42,10 @@ REASONING_EFFORTS: Final = frozenset({"none", "minimal", "low", "medium", "high"
 # default is latency; OpenRouter's own default weighs price.
 PROVIDER_SORTS: Final = frozenset({"latency", "throughput", "price"})
 DEFAULT_LLM_PROVIDER_SORT: Final = "latency"
+# OpenRouter's service_tier values. Unset leaves the tier to OpenRouter. priority
+# costs more for steadier speed, and ultrafast (select OpenAI models only) far
+# more, falling back to priority and then default where it is not offered.
+SERVICE_TIERS: Final = frozenset({"default", "flex", "priority", "ultrafast"})
 
 
 DEFAULT_LLM_MAX_TOKENS: Final = 1200
@@ -198,6 +203,9 @@ class LlmTune:
         ``throughput`` or ``price``. Empty sends no sort, so OpenRouter's own
         price-weighted routing applies. It only matters for a model that more
         than one provider serves.
+    service_tier : str
+        OpenRouter only. Sent as ``service_tier``: ``default``, ``flex``,
+        ``priority`` or ``ultrafast``. Empty sends none, and OpenRouter picks.
     referer, title, categories : str
         OpenRouter attribution. Empty disables the field.
     continuation : bool
@@ -218,6 +226,7 @@ class LlmTune:
     max_tokens: int = DEFAULT_LLM_MAX_TOKENS
     nitro: bool = False
     provider_sort: str = DEFAULT_LLM_PROVIDER_SORT
+    service_tier: str = ""
     referer: str = DEFAULT_LLM_REFERER
     title: str = DEFAULT_LLM_TITLE
     categories: str = DEFAULT_LLM_CATEGORIES
@@ -287,6 +296,7 @@ class LlmTune:
             max_tokens=read_int("FISH_LLM_MAX_TOKENS", DEFAULT_LLM_MAX_TOKENS, lo=1),
             nitro=read_flag("FISH_LLM_NITRO", default=False),
             provider_sort=_provider_sort(),
+            service_tier=_service_tier(),
             referer=read_text("FISH_LLM_REFERER", DEFAULT_LLM_REFERER),
             title=read_text("FISH_LLM_TITLE", DEFAULT_LLM_TITLE),
             categories=read_text("FISH_LLM_CATEGORIES", DEFAULT_LLM_CATEGORIES),
@@ -325,6 +335,18 @@ def _reasoning_effort() -> str:
         return low
     values = ", ".join(sorted(REASONING_EFFORTS))
     warn(f"fish-voice: FISH_LLM_REASONING_EFFORT={raw!r} is not one of {values}, leaving it unset")
+    return ""
+
+
+def _service_tier() -> str:
+    raw = read_raw("FISH_LLM_SERVICE_TIER")
+    if raw is None:
+        return ""
+    low = raw.lower()
+    if low in SERVICE_TIERS:
+        return low
+    values = ", ".join(sorted(SERVICE_TIERS))
+    warn(f"fish-voice: FISH_LLM_SERVICE_TIER={raw!r} is not one of {values}, leaving it unset")
     return ""
 
 
