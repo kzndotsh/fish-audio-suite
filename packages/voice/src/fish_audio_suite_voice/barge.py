@@ -158,7 +158,7 @@ class BargeGate:
         base = tune or BargeTune()
         # No mic means no AEC. A default EchoCanceller would load AEC3 and
         # shorten the bleed delay without ever receiving the sink's far-end audio.
-        self.mic: Mic = mic or SounddeviceMic()
+        self.mic: Mic = mic if mic is not None else SounddeviceMic()
         self.tune: BargeTune = replace(
             base,
             bleed_delay_s=base.bleed_delay_s
