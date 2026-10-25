@@ -3,13 +3,13 @@ from __future__ import annotations
 import asyncio
 import threading
 from collections.abc import AsyncIterator
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from fish_audio_suite_voice.cancel import is_own_cancel, reap
 from fish_audio_suite_voice.llm import llm_token_stream
+from fish_audio_suite_voice.transports import ChatChunk
 
 
 def test_is_own_cancel_needs_a_set_flag() -> None:
@@ -112,20 +112,9 @@ def test_reap_gives_up_after_the_wait_and_leaves_the_task_running() -> None:
     asyncio.run(run())
 
 
-def _chunk(text: str) -> SimpleNamespace:
-    return SimpleNamespace(
-        choices=[SimpleNamespace(delta=SimpleNamespace(content=text), finish_reason=None)],
-        usage=None,
-        id="gen-1",
-        model="org/model",
-        error=None,
-        provider=None,
-    )
-
-
 def _events_then(exc: BaseException, cancel: asyncio.Event | None = None) -> Any:
-    async def events() -> AsyncIterator[Any]:
-        yield _chunk("Hello")
+    async def events() -> AsyncIterator[ChatChunk]:
+        yield ChatChunk(text="Hello")
         if cancel is not None:
             cancel.set()
         raise exc
@@ -173,9 +162,9 @@ def test_llm_stream_lets_an_unrelated_cancellation_propagate(
 
 
 def test_llm_stream_lets_asyncio_timeout_fire(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def stalled() -> AsyncIterator[Any]:
+    async def stalled() -> AsyncIterator[ChatChunk]:
         await asyncio.sleep(30)
-        yield None
+        yield ChatChunk()
 
     stream = _stream(monkeypatch, stalled(), asyncio.Event())
 

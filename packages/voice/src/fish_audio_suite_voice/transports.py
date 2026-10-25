@@ -6,7 +6,7 @@ import json
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, Final, Protocol, cast
+from typing import Any, Final, cast
 
 import httpx
 
@@ -24,6 +24,8 @@ from fish_audio_suite_voice.tune import HTTP_KEEPALIVE_S
 
 __all__ = [
     "ChatCall",
+    "ChatChunk",
+    "ChatHttpError",
     "chat_completions_url",
     "chat_events",
     "describe_http_error",
@@ -38,11 +40,52 @@ _ERROR_LINE_CHARS: Final = 220
 _SSE_DATA: Final = "data:"
 
 
-class _AbortStats(Protocol):
-    aborted: bool
-    http_status: int | None
-    retry_after_s: float | None
-    quota_exhausted: bool
+@dataclass(frozen=True, slots=True)
+class ChatChunk:
+    """One streamed chat event, read the same way from the SDK and from SSE.
+
+    Notes
+    -----
+    Only the first choice is read. ``text`` is None when that choice's delta has
+    no content, and empty when the content holds nothing speakable, such as
+    only reasoning parts. ``error`` is None unless the event reports a stream
+    error. A field the event does not carry is empty.
+    """
+
+    text: str | None = None
+    refusal: str = ""
+    message: str = ""
+    message_refusal: str = ""
+    finish: str | None = None
+    native_finish: str = ""
+    usage: dict[str, Any] | None = None
+    id: str = ""
+    model: str = ""
+    provider: str = ""
+    provider_summary: str = ""
+    error: str | None = None
+
+
+class ChatHttpError(Exception):
+    """The chat server refused the request. ``warn`` has already reported it.
+
+    Parameters
+    ----------
+    status : int or None
+        HTTP status, or None when the SDK gave something else.
+    retry_after_s : float or None
+        The wait a 429 asked for, from its header or its body.
+    quota_exhausted : bool
+        True for a 429 that says the quota is spent, where waiting does not help.
+    """
+
+    def __init__(
+        self, status: int | None, retry_after_s: float | None, quota_exhausted: bool
+    ) -> None:
+        super().__init__(f"HTTP {status}")
+        self.status = status
+        self.retry_after_s = retry_after_s
+        self.quota_exhausted = quota_exhausted
 
 
 @dataclass(slots=True)
@@ -52,9 +95,8 @@ class ChatCall:
     Notes
     -----
     ``route_model`` may already include ``:nitro``. ``tune.uses_openrouter_sdk`` picks the
-    SDK path. ``stats`` is filled while events are consumed and is how a HTTP
-    error aborts the stream. ``http`` is the session's pooled client for the
-    OpenAI-compatible path.
+    SDK path. ``http`` is the session's pooled client for the OpenAI-compatible
+    path.
     """
 
     messages: list[ChatMessage]
@@ -64,7 +106,6 @@ class ChatCall:
     http: httpx.AsyncClient | None
     session_id: str | None
     trace_id: str | None
-    stats: _AbortStats
 
 
 def http_client(tune: LlmTune) -> httpx.AsyncClient:
@@ -185,7 +226,7 @@ def _send_kwargs(call: ChatCall) -> dict[str, Any]:
     return _json_ready(send_kw)
 
 
-async def _iter_openrouter_events(call: ChatCall) -> AsyncIterator[object]:
+async def _iter_openrouter_events(call: ChatCall) -> AsyncIterator[ChatChunk]:
     from openrouter.errors import OpenRouterError
 
     try:
@@ -193,15 +234,9 @@ async def _iter_openrouter_events(call: ChatCall) -> AsyncIterator[object]:
             res = await or_client.chat.send_async(**_send_kwargs(call))
             async with res as event_stream:
                 async for event in event_stream:
-                    yield event
+                    yield _chunk_of(event)
     except OpenRouterError as e:
-        _abort_http(
-            call.stats,
-            e.status_code,
-            call.route_model,
-            _abort_text(e.body),
-            e.headers,
-        )
+        raise _abort_http(e.status_code, call.route_model, _abort_text(e.body), e.headers) from e
 
 
 def _note_usage(payload: dict[str, Any]) -> None:
@@ -277,21 +312,21 @@ def describe_http_error(status: object, model: str, body: str) -> str:
 
 
 def _abort_http(
-    stats: _AbortStats,
     status: object,
     model: str,
     body: str,
     headers: httpx.Headers | None = None,
-) -> None:
+) -> ChatHttpError:
     warn(f"[llm] {describe_http_error(status, model, body)}")
     debug("llm.error body={}", body[:_ABORT_CHARS])
-    stats.aborted = True
-    stats.http_status = status if isinstance(status, int) else None
-    if stats.http_status == 429:
-        stats.retry_after_s = _retry_after_seconds(headers, body)
-        # A spent quota (Experiential's insufficient_quota, a daily free limit) is
-        # also a 429, but waiting a second does not refill it.
-        stats.quota_exhausted = "quota" in body.lower()
+    code = status if isinstance(status, int) else None
+    if code != 429:
+        return ChatHttpError(code, None, quota_exhausted=False)
+    # A spent quota (Experiential's insufficient_quota, a daily free limit) is
+    # also a 429, but waiting a second does not refill it.
+    return ChatHttpError(
+        code, _retry_after_seconds(headers, body), quota_exhausted="quota" in body.lower()
+    )
 
 
 def _retry_after_seconds(headers: httpx.Headers | None, body: str) -> float | None:
@@ -407,7 +442,7 @@ async def _pooled(call: ChatCall) -> AsyncGenerator[httpx.AsyncClient, None]:
         yield owned
 
 
-async def _iter_httpx_sse_events(call: ChatCall) -> AsyncIterator[object]:
+async def _iter_httpx_sse_events(call: ChatCall) -> AsyncIterator[ChatChunk]:
     url = chat_completions_url(call.tune.base)
     # No Referer or X-Title: those attribute an app to OpenRouter and should
     # not leak to an arbitrary chat-completions server.
@@ -428,22 +463,103 @@ async def _iter_httpx_sse_events(call: ChatCall) -> AsyncIterator[object]:
     ):
         if resp.status_code >= 400:
             body = _abort_text(await resp.aread())
-            _abort_http(call.stats, resp.status_code, call.route_model, body, resp.headers)
-            return
+            raise _abort_http(resp.status_code, call.route_model, body, resp.headers)
         debug("llm.response status={}{}", resp.status_code, _gateway_note(resp.headers))
         buf = ""
         async for line in resp.aiter_lines():
             buf, parsed, stop = _feed_sse(buf, line)
             if parsed is not None:
                 trace("llm.event {}", json.dumps(parsed, ensure_ascii=False)[:_EVENT_TRACE_CHARS])
-                yield parsed
+                yield _chunk_of(parsed)
             if stop:
                 trace("llm.event [DONE]")
                 return
         trace("llm.event stream closed without [DONE]")
 
 
-def chat_events(call: ChatCall) -> AsyncIterator[object]:
+def _field(event: object, name: str) -> Any:
+    # The SDK gives objects and SSE gives dicts, with the same field names.
+    value = getattr(event, name, None)
+    if value is None and isinstance(event, dict):
+        return event.get(name)
+    return value
+
+
+def _text_field(event: object, name: str) -> str:
+    value = _field(event, name)
+    return value if isinstance(value, str) else ""
+
+
+_TEXT_PARTS: Final = frozenset({"text", "output_text"})
+
+
+def _part_text(part: object) -> str:
+    if isinstance(part, str):
+        return part
+    kind = _field(part, "type")
+    # Reasoning and image parts are not speech.
+    if isinstance(kind, str) and kind not in _TEXT_PARTS:
+        return ""
+    return _text_field(part, "text")
+
+
+def _content_text(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(_part_text(part) for part in content)
+    # One part object is the same payload as a one-item list. Dropping it
+    # speaks nothing for that token.
+    if content is None:
+        return ""
+    return _part_text(content)
+
+
+def _finish_text(value: object) -> str | None:
+    if isinstance(value, str) and value:
+        return value
+    if value is not None and not isinstance(value, str):
+        return str(value)
+    return None
+
+
+def _usage_dict(usage: object) -> dict[str, Any] | None:
+    dump = getattr(usage, "model_dump", None)
+    if callable(dump):
+        dumped = dump(mode="json")
+        if isinstance(dumped, dict):
+            return cast(dict[str, Any], dumped)
+    if isinstance(usage, dict):
+        return cast(dict[str, Any], usage)
+    return None
+
+
+def _chunk_of(event: object) -> ChatChunk:
+    error = _field(event, "error")
+    choices = _field(event, "choices")
+    choice = choices[0] if isinstance(choices, list) and choices else None
+    delta = _field(choice, "delta")
+    content = _field(delta, "content")
+    message = _field(choice, "message")
+    return ChatChunk(
+        text=None if content is None else _content_text(content),
+        # A refusal is the reply. Content is null, so reading only content
+        # speaks nothing and the next turn has no record of what was said.
+        refusal=_text_field(delta, "refusal"),
+        message=_content_text(_field(message, "content")),
+        message_refusal=_text_field(message, "refusal"),
+        finish=_finish_text(_field(choice, "finish_reason")),
+        native_finish=_text_field(choice, "native_finish_reason"),
+        usage=_usage_dict(_field(event, "usage")),
+        id=_text_field(event, "id"),
+        model=_text_field(event, "model"),
+        provider=_text_field(event, "provider"),
+        provider_summary=_text_field(_field(event, "openrouter_metadata"), "summary"),
+        error=str(error) if error else None,
+    )
+
+
+def chat_events(call: ChatCall) -> AsyncIterator[ChatChunk]:
     """Pick the OpenRouter or httpx event stream for one chat call.
 
     Parameters
@@ -454,8 +570,7 @@ def chat_events(call: ChatCall) -> AsyncIterator[object]:
     Returns
     -------
     AsyncIterator
-        Raw chat events. ``llm_token_stream`` is the only consumer and applies
-        the same field reads to both transports.
+        One ``ChatChunk`` per event. A refused request raises ``ChatHttpError``.
     """
     if call.tune.uses_openrouter_sdk:
         return _iter_openrouter_events(call)
