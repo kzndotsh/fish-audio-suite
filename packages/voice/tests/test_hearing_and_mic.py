@@ -213,6 +213,30 @@ def test_the_mic_waits_out_an_empty_queue_until_stopped(
         timer.cancel()
 
 
+def test_a_reader_that_falls_behind_keeps_only_the_newest_audio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Ten seconds of frames arrive before the reader takes any. A backlog that size
+    # is stale, and an unbounded one grows for as long as the reader is held up.
+    buffers = [index.to_bytes(4, "little") * (FRAME_BYTES // 4) for index in range(333)]
+
+    class Sd:
+        @staticmethod
+        def RawInputStream(**kwargs: Any) -> _FakeStream:  # noqa: N802 - mirrors sounddevice
+            return _FakeStream(buffers, **kwargs)
+
+    monkeypatch.setattr(mic, "load_sounddevice", lambda: Sd)
+    stop = threading.Event()
+    timer = threading.Timer(0.3, stop.set)
+    timer.start()
+    try:
+        got = list(SounddeviceMic().frames(stop))
+    finally:
+        timer.cancel()
+    assert 0 < len(got) <= 2_000 // mic.FRAME_MS  # at most about two seconds
+    assert got == buffers[-len(got) :]  # the newest frames, in order, with no gap
+
+
 def test_the_barge_heartbeat_only_logs_at_trace_level(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
