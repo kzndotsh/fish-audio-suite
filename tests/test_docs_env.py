@@ -139,6 +139,11 @@ DEFAULTS = {
     ),
     "FISH_VOICE_BLEED_DELAY": ("fish_audio_suite_voice.tune", "DEFAULT_BLEED_DELAY_S", "voice"),
     "FISH_VOICE_AEC_WET": ("fish_audio_suite_voice.tune", "DEFAULT_AEC_WET", "voice"),
+    "FISH_VOICE_NOISE_SUPPRESSION": (
+        "fish_audio_suite_voice.tune",
+        "DEFAULT_NOISE_SUPPRESSION_DB",
+        "voice",
+    ),
     "FISH_VOICE_AEC_BLEED_DELAY": (
         "fish_audio_suite_voice.tune",
         "DEFAULT_AEC_BLEED_DELAY_S",

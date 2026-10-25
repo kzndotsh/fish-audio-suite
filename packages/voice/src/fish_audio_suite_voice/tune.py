@@ -28,6 +28,7 @@ __all__ = [
     "DEFAULT_LOUDNESS_TARGET_DB",
     "DEFAULT_MIN_SPEECH_RMS",
     "DEFAULT_MIN_VOICED_FRAMES",
+    "DEFAULT_NOISE_SUPPRESSION_DB",
     "DEFAULT_POST_SPEAK_COOLDOWN_S",
     "DEFAULT_TURN_EXTENSIONS",
     "DEFAULT_TURN_SILENCE_FRAMES",
@@ -90,6 +91,10 @@ DEFAULT_POST_SPEAK_COOLDOWN_S: Final = 0.8
 
 DEFAULT_AEC_BLEED_DELAY_S: Final = 0.3
 DEFAULT_AEC_WET: Final = 0.85
+# WebRTC's noise suppressor works in these steps of attenuation. 21 dB made typing louder than
+# a quiet voice in a measured recording; 18 dB did not.
+NOISE_SUPPRESSION_STEPS_DB: Final = (0, 6, 12, 18, 21)
+DEFAULT_NOISE_SUPPRESSION_DB: Final = 18
 # Fade-in, in milliseconds, at each sound that starts out of silence, so a sentence does
 # not click when it begins. 0 turns it off.
 DEFAULT_FADE_MS: Final = 4.0
@@ -419,32 +424,51 @@ class BargeTune:
 
 @dataclass(frozen=True, slots=True)
 class AecTune:
-    """In-process echo cancellation.
+    """In-process mic cleanup: echo cancellation, automatic gain and noise suppression.
 
     Attributes
     ----------
     enabled : bool
-        False passes the mic through untouched.
+        Echo cancellation. False leaves the speaker's echo in the mic.
     wet : float
-        Mix of cleaned audio, 0 to 1.
+        Mix of echo-cancelled audio, 0 to 1, while the speaker plays.
     bleed_delay_s : float
         Seconds to ignore the mic after TTS starts when AEC3 is loaded. Named
         like ``BargeTune.bleed_delay_s``.
+    auto_gain : bool
+        Raise a quiet voice to a steady level, as a call app does.
+    noise_suppression_db : int
+        Attenuation of steady background noise: 0 (off), 6, 12, 18 or 21.
     """
 
     enabled: bool = True
     wet: float = DEFAULT_AEC_WET
     bleed_delay_s: float = DEFAULT_AEC_BLEED_DELAY_S
+    auto_gain: bool = True
+    noise_suppression_db: int = DEFAULT_NOISE_SUPPRESSION_DB
 
     @classmethod
     def from_env(cls) -> Self:
-        """Build from ``FISH_VOICE_AEC``, ``FISH_VOICE_AEC_WET``, ``FISH_VOICE_AEC_BLEED_DELAY``.
+        """Build from ``FISH_VOICE_AEC*``, ``FISH_VOICE_AGC`` and ``FISH_VOICE_NOISE_SUPPRESSION``.
 
         Returns
         -------
         AecTune
             Validated tune. A bad value is replaced by its default with a warning.
         """
+        noise = read_int(
+            "FISH_VOICE_NOISE_SUPPRESSION",
+            DEFAULT_NOISE_SUPPRESSION_DB,
+            lo=0,
+            hi=NOISE_SUPPRESSION_STEPS_DB[-1],
+        )
+        if noise not in NOISE_SUPPRESSION_STEPS_DB:
+            steps = ", ".join(map(str, NOISE_SUPPRESSION_STEPS_DB))
+            warn(
+                f"fish-voice: FISH_VOICE_NOISE_SUPPRESSION takes {steps}, "
+                f"using {DEFAULT_NOISE_SUPPRESSION_DB}"
+            )
+            noise = DEFAULT_NOISE_SUPPRESSION_DB
         return cls(
             enabled=read_flag("FISH_VOICE_AEC", default=True),
             wet=read_float("FISH_VOICE_AEC_WET", DEFAULT_AEC_WET, lo=0.0, hi=1.0),
@@ -453,7 +477,20 @@ class AecTune:
                 DEFAULT_AEC_BLEED_DELAY_S,
                 lo=0.0,
             ),
+            auto_gain=read_flag("FISH_VOICE_AGC", default=True),
+            noise_suppression_db=noise,
         )
+
+    @classmethod
+    def off(cls) -> Self:
+        """Return a tune with every stage off, so the mic passes through untouched.
+
+        Returns
+        -------
+        AecTune
+            No echo cancellation, gain or noise suppression.
+        """
+        return cls(enabled=False, auto_gain=False, noise_suppression_db=0)
 
 
 def _eager_threshold(eot: float) -> float:
