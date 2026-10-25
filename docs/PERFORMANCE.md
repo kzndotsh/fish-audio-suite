@@ -50,7 +50,9 @@ You get these without changing any settings.
 
 ### Listening
 
-- **Echo cancellation.** WebRTC AEC3 removes the bot's own voice from the mic, so the barge-in gate can listen while it talks.
+- **One mic for the whole session.** The mic opens once. A reader thread cleans each frame and keeps the last 2 s, so the listen after a barge-in reads on from the frame after the clip that tripped it and loses no words.
+- **Mic cleanup.** WebRTC's audio processor runs on every frame: a high-pass filter, automatic gain (`FISH_VOICE_AGC`) and noise suppression (`FISH_VOICE_NOISE_SUPPRESSION`, 18 dB), so a quiet voice reaches the detectors and speech recognition at a steady level.
+- **Echo cancellation.** While the bot talks, the same processor adds AEC3, which removes the bot's own voice from the mic. The barge-in gate can then listen 0.3 s into a reply instead of 0.9 s.
 - **Barge-in resume.** If a noise interrupts a reply and Fish hears no words in it (a cough, a tap, a lone "mm-hmm"), the reply picks up where it was cut, with the mood cue that was active.
 - **Short answers count.** A lone "yeah", "yep" or "uh-huh" on its own turn is an answer and gets a reply. Said over the bot, it means "go on" and is ignored. A hesitation ("um", "hmm") is always ignored.
 
@@ -58,7 +60,7 @@ You get these without changing any settings.
 
 - **Warm connections.** The ASR and LLM clients keep idle connections open for 120 s, so a new turn skips the TLS handshake. The httpx default of 5 s is shorter than the gap between turns, so every turn used to reconnect. On a live run this cut ASR from about 0.3–0.7 s to about 0.2 s, and the LLM's first token from about 1.0 s to about 0.5 s.
 - **Latency routing.** On OpenRouter, every request sends `provider.sort: "latency"`, so a model served by several providers goes to the one with the fastest first token.
-- **Retries only where they help.** A rate-limited (429) LLM request is retried once after about 1 s, but not when the account's quota is exhausted. Fish retries 429 and 5xx errors only before the first audio byte, so a retry never replays words you already heard.
+- **Retries only where they help.** A rate-limited (429) LLM request is retried once, after the provider's `Retry-After` (up to 15 s) or about 1 s, but not when the account's quota is exhausted. Fish retries 429 and 5xx errors only before the first audio byte, so a retry never replays words you already heard.
 
 ### Text processing
 
@@ -67,7 +69,7 @@ All text helpers run in linear time on hostile input. Two were quadratic and are
 - **Unclosed quotes.** Extracting dialogue from 20,000 characters of unclosed quotes took 9.8 s. It now takes about 0.1 s.
 - **Held spans.** While streaming, a long `<think>` block or an unclosed `(` re-ran every hold check over the whole buffer on every token. 8,000 held characters took 1.4 to 2.1 s; they now take 12 to 146 ms.
 
-In normal use, scrubbing costs about 50 µs per token. Per-frame mic work (VAD, AEC, level tracking) stays under 1 ms per 30 ms frame. CPU is not a bottleneck.
+In normal use, scrubbing costs about 50 µs per token. Per-frame mic work stays well under 1 ms per 30 ms frame: on the owner's machine the mic cleanup takes about 0.34 ms, the `webrtc` detector a few µs and `silero` under 0.1 ms. CPU is not a bottleneck.
 
 ## Settings and their trade-offs
 
@@ -105,7 +107,7 @@ As Fish documents them in October 2026; check Fish's pricing page for today's nu
 | Setting | Default | Faster | Trade-off |
 | --- | --- | --- | --- |
 | `FISH_VOICE_SILENCE_FRAMES` | `40` (1.2 s) | `25` (0.75 s) | The single biggest fixed cost per turn. Production voice agents use 0.4 to 0.5 s, but they pair it with a turn-detection model. With silence alone, a pause mid-sentence longer than this ends your turn. `30` (0.9 s) is a middle ground |
-| `FISH_VOICE_TURN_CHECK` | off | `1` | Ends the first clip after `FISH_VOICE_TURN_SILENCE_FRAMES` (12, about 0.36 s) instead of 1.2 s, and the words decide whether you were done. A turn that ends on a full stop or a question mark is answered about 0.8 s sooner. One that stops on "and", a comma or the like waits for a continuation, at most as long in all as the ordinary silence, and the mic stays open meanwhile so nothing you say is lost. Fish ASR only, English words. The check costs one extra mic open per turn while the clip is transcribed, and no extra requests unless you do continue |
+| `FISH_VOICE_TURN_CHECK` | off | `1` | Ends the first clip after `FISH_VOICE_TURN_SILENCE_FRAMES` (12, about 0.36 s) instead of 1.2 s, and the words decide whether you were done. A turn that ends on a full stop or a question mark is answered about 0.8 s sooner. One that stops on "and", a comma or the like waits for a continuation, at most as long in all as the ordinary silence, and the mic stays open meanwhile so nothing you say is lost. Fish ASR only, English words. The check runs one extra listen per turn while the clip is transcribed, and no extra requests unless you do continue |
 | `FISH_VOICE_COOLDOWN` | `0.8` | `0.3` | How long the mic stays shut after a reply. Anything said in this gap is lost, so a quick "yes" can vanish. Too short, and echo from loud speakers in an echoey room can open a junk turn |
 | `FISH_VOICE_MIN_VOICED_FRAMES` | `12` (360 ms) | `7` (210 ms) | A one-word answer is about 200 to 250 ms of voice. Lower lets "yes" and "no" through, but some coughs and desk taps reach speech-to-text too, where they usually come back empty |
 | `FISH_VOICE_SPEECH_FRAMES` | `4` (120 ms) | | How long a sound must last before it starts a turn |
@@ -117,9 +119,10 @@ As Fish documents them in October 2026; check Fish's pricing page for today's nu
 
 | Setting | Default | Notes |
 | --- | --- | --- |
-| `FISH_VOICE_BARGE_FRAMES` | `10` (300 ms) | Loud voiced frames in a row needed to interrupt. If coughs or chair noises cut replies off, raise this before raising the volume floor. Below 8, speaker echo can interrupt the bot |
-| `FISH_VOICE_BARGE_RMS` | `220` | The loudness floor. It follows the room and never drops below this |
-| `FISH_VOICE_AEC` | on | Leave it on. Without echo cancellation, barge-in has to wait out the speaker's bleed (`FISH_VOICE_BLEED_DELAY`, 0.9 s) |
+| `FISH_VOICE_BARGE_FRAMES` | `10` (300 ms) | Loud voiced frames needed to interrupt. They need not be in a row: the count falls by one after every 3 frames that miss. If coughs or chair noises cut replies off, raise this before raising the volume floor. Below 8, speaker echo can interrupt the bot |
+| `FISH_VOICE_BARGE_RMS` | `220` | The loudness floor. It follows the room and never drops below this. With automatic gain on, typing can pass it; see [issue #58](https://github.com/kzndotsh/fish-audio-suite/issues/58) and [TROUBLESHOOTING](TROUBLESHOOTING.md#coughs-chairs-sniffs-or-keyboard-noise-interrupt-the-bot) |
+| `FISH_VOICE_VAD_ENGINE` | `webrtc` | `silero` tells speech from clicks and noise better, for under 0.1 ms a frame. Listening and barge-in both use it |
+| `FISH_VOICE_AEC` | on | Leave it on. Barge-in waits out the speaker's bleed before it listens: `FISH_VOICE_AEC_BLEED_DELAY` (0.3 s) with echo cancellation, `FISH_VOICE_BLEED_DELAY` (0.9 s) without |
 
 ### LLM
 
@@ -190,7 +193,7 @@ turn summary since you stopped 1.54s · first audio 1.18s · asr 0.15s · llm fi
 - **first audio:** from the end of your speech to the first sound, not counting the end-of-speech silence. This is the wait you feel.
 - **asr:** Fish speech-to-text.
 - **llm first token:** the model's first token.
-- **tts first audio:** from opening the Fish socket to the first audio, so it includes waiting for the LLM. Fish's own delay is the gap between `tts_first_text` and `tts_first_audio` on the `turn timing` line.
+- **tts first audio:** from opening the Fish socket to the first audio, so it includes waiting for the LLM. Fish's own delay is the gap between `tts_first_text` and `tts_first_audio` on the `turn timing` line (in `--trace`).
 - **total:** until the reply finished playing.
 
 When the session ends, one line sums up all its turns: the middle value (p50) and the slow one in ten (p90) of each wait. With `--debug` it is the `session summary` log line instead.
@@ -206,17 +209,18 @@ Lines worth watching:
 | Line | Meaning |
 | --- | --- |
 | `tts underrun after N kB played (chunk_wait X ms, in_python Y ms, write Z ms)` | The speaker ran dry between chunks, heard as a click or gap. A large `chunk_wait` means the audio arrived late (Fish was slow to deliver it). A large `in_python` means the playback thread itself was stalled before the write. A `write` far above the length of a slice (about 30 ms) means the call itself waited, usually to get Python's lock back from a busy thread. Should not happen with current code |
-| `barge hit 3/10 ...` then `barge decay` | Something loud nearly interrupted the bot. Frequent near-misses with no one talking mean echo is leaking |
-| `stt end trigger=model confidence=0.8` | Flux ended the turn itself. `trigger=manual` means the silence limit ended it, usually because Flux was not sure |
-| `stt.empty ...` / `stt.gave_up ...` / `stt.noise ...` | A streamed turn with no words in it, dropped on purpose. The text says how much audio was sent, if any |
-| `llm.speculate hit` / `miss` / `dropped` | With the early reply on: the reply written ahead of time was used, replaced because the words changed, or thrown away |
+| `barge hit 3/10 ...` then `barge decay` (`--trace`) | Something loud nearly interrupted the bot. Frequent near-misses with no one talking mean echo is leaking |
+| `stt end trigger=model confidence=0.80` | Flux ended the turn itself. `trigger=manual` means the silence limit ended it, usually because Flux was not sure |
+| `stt empty ...` / `stt gave_up ...` / `stt noise ...` | A streamed turn with no words in it, dropped on purpose. The text says how much audio was sent, if any |
+| `llm speculate hit` / `miss` / `dropped` | With the early reply on: the reply written ahead of time was used, replaced because the words changed, or thrown away |
 | `listen reject too_little_voice` | A sound too short to be a turn. If real words show up here, lower `FISH_VOICE_MIN_VOICED_FRAMES` |
-| `listen speech_start` right after `listen open`, with no one talking | Echo after the reply. Raise `FISH_VOICE_COOLDOWN` |
-| `asr.skip backchannel` / `hallucination` | A clip was dropped after transcription, on purpose |
+| `listen speech_start` right after `listen waiting for you`, with no one talking | Echo after the reply. Raise `FISH_VOICE_COOLDOWN` |
+| `asr skip backchannel` / `hallucination` | A clip was dropped after transcription, on purpose |
 | `llm stream_end ... provider=X` | Which provider served the reply |
 | `listen cooldown frames=... speech_like=N start_needs=M` | What the mic heard during the cooldown after a reply. `speech_like` counts frames loud and voiced enough to start a turn. If it stays well under `start_needs` on every reply, the bot's echo never comes close, and a shorter `FISH_VOICE_COOLDOWN` is safe on this setup |
 | `llm stream_end ... cached=N` | How many prompt tokens the provider read from its cache. 0 on every turn means the cache is not being used |
 | `llm stream_end ... tier=X` | Which service tier served it, when the response says. `ultrafast` that falls back shows `priority` |
+| `aec on 16k echo=True wet=0.85 agc=True noise_db=18` | The mic cleanup loaded, with the stages in use. `aec skip ...` or `aec fail ...` instead means the mic goes to the detectors raw |
 
 ## Proxy
 

@@ -1,7 +1,7 @@
-"""OpenAI-shaped caption files from timed ASR cues. No network.
+"""SubRip and WebVTT caption files from timed ASR cues. No network.
 
-Times are compared as integer milliseconds, never as formatted clocks, so two
-cues that print the same second are still ordered correctly.
+Times are compared as integer milliseconds, never as formatted clocks, because
+clock strings stop sorting as text once the hours reach three digits.
 """
 
 from __future__ import annotations
@@ -27,7 +27,8 @@ class CaptionCue(NamedTuple):
     start : float
         Start in seconds. Non-finite values render as ``00:00:00``.
     end : float
-        End in seconds. A value before ``start`` is raised to ``start``.
+        End in seconds. A value that is not after ``start``, or is non-finite,
+        becomes ``start`` plus one millisecond.
     text : str
         Spoken text. A blank cue is left out of the file.
     """
@@ -62,11 +63,11 @@ def _clock(ms: int, decimal: str) -> str:
 def _cue_body(text: str, *, escape: bool) -> str:
     flat = text.replace("\r\n", "\n").replace("\r", "\n").strip()
     flat = _CUE_BLANK_RE.sub("\n", flat)
-    # "-->" inside the transcript is a second timing line. Players then
-    # drop or retimes the words after it.
+    # "-->" inside the transcript reads as a second timing line, and players
+    # drop or retime the words after it.
     flat = flat.replace("-->", "->")
-    # "&" and "<" start a WebVTT escape or tag. The words after them drop.
-    # SubRip shows those entities as the letters amp and lt.
+    # In WebVTT "&" and "<" start an escape or a tag, and the words after them
+    # drop. SubRip shows entities literally, so it keeps the raw characters.
     if not escape:
         return flat
     return flat.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -79,8 +80,7 @@ def _span(cue: CaptionCue, decimal: str, *, escape: bool) -> tuple[str, str, str
     start_ms = _ms(cue.start)
     end_ms = _ms(cue.end) if math.isfinite(cue.end) else start_ms
     # WebVTT drops a cue whose end is not later than its start, so an inverted
-    # or zero-length segment gets one millisecond. The comparison is on integers:
-    # formatted clocks do not sort as text once the hours reach three digits.
+    # or zero-length segment gets one millisecond.
     end_ms = max(end_ms, start_ms + 1)
     return _clock(start_ms, decimal), _clock(end_ms, decimal), body
 

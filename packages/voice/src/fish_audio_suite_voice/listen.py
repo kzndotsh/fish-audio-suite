@@ -36,19 +36,25 @@ __all__ = [
     "trailing_start_hits",
 ]
 
+# Once speech has started, a voiced frame at 55% of the floor still counts as
+# speech, so soft word endings add to the voiced total.
 HOLD_RMS_RATIO: Final = 0.55
+# 120 ms. Anything shorter is a click, not a word.
 MIN_UTTERANCE_FRAMES: Final = 4
 # One quiet frame is 30 ms, a normal dip inside a word. Ending on that dip
 # after the cap sends a cut-off sentence to ASR.
 _CAP_QUIET_FRAMES: Final = 4
-_WAV_HEADER_BYTES: Final = 44
+# A peak this many times the floor is a bang (a door, a desk knock) until
+# proven otherwise. Such a clip is dropped unless it holds this many voiced
+# frames beyond the minimum, and it cannot start while the current frame is
+# under this share of the peak.
 IMPULSE_PEAK_RATIO: Final = 8.0
 IMPULSE_EXTRA_VOICED: Final = 12
 IMPULSE_NOW_RATIO: Final = 0.5
 
 
 def start_hit(rms: float, min_rms: float, *, vad_speech: bool) -> bool:
-    """Count a listen-start frame. Score VAD once per capture; do not replay the ring.
+    """Return whether a frame counts toward starting speech.
 
     Parameters
     ----------
@@ -67,7 +73,8 @@ def start_hit(rms: float, min_rms: float, *, vad_speech: bool) -> bool:
     Notes
     -----
     The hold ratio is only for staying in an utterance after it has already
-    started, so it does not apply here.
+    started, so it does not apply here. The caller scores each frame with the
+    detector once, as it arrives, because a detector keeps state between frames.
     """
     if not vad_speech:
         return False
@@ -90,8 +97,9 @@ def listen_reject_reason(
     """Drop coughs and spikes. None means send the clip to ASR."""
     if clip_frames < MIN_UTTERANCE_FRAMES:
         return "too_short"
-    # Barge trips at 10 frames. The listen minimum is 12, so the same
-    # interrupt was discarded when the user stopped talking.
+    # A barge-in trips on fewer voiced frames than a listen needs (10 and 12 by
+    # default). The frames it credited are enough, or the words that stopped the
+    # reply would be thrown away when the user stops talking.
     need_voice = min(min_voiced_frames, credited_hits) if credited_hits > 0 else min_voiced_frames
     if speech_hits < need_voice:
         return "too_little_voice"
@@ -114,7 +122,7 @@ def start_frames_needed(peak_rms: float, min_rms: float, start_speech_frames: in
 
 
 def trailing_start_hits(ring: collections.deque[tuple[bytes, bool]]) -> int:
-    """Count scored frames at the newest end of the pre-pad. Gaps do not count."""
+    """Count the unbroken run of start hits at the newest end of the pre-pad."""
     n = 0
     for _, counted in reversed(ring):
         if not counted:
@@ -183,8 +191,8 @@ class _Listen:
         """
         self.clip_frames.append(frame)
         self.speech_flags.append(hit)
-        # A talker who never pauses used to keep every frame. The cap is the
-        # last 15 seconds, and the hit count has to match those frames.
+        # A talker who never pauses would grow the clip without bound. Keep the
+        # last 15 seconds, and count hits over only those frames.
         extra = len(self.clip_frames) - MAX_UTTERANCE_FRAMES
         if extra > 0:
             del self.clip_frames[:extra]
@@ -332,8 +340,9 @@ def _prime_listen(heard: _Listen, pcm: bytes) -> None:
     if not frames:
         return
     heard.triggered = True
-    # The interrupt gate already accepted this clip. A higher listen floor
-    # used to score every frame as silence, so the utterance never reached ASR.
+    # The interrupt gate already accepted this clip. Scored against a listen
+    # floor above the barge floor, every frame would be silence and the
+    # utterance would never reach ASR.
     floor = min(heard.min_speech_now, DEFAULT_BARGE_RMS)
     for frame in frames:
         heard.remember(frame, pcm_rms(frame) >= floor)
@@ -379,11 +388,13 @@ def record_utterance(
 
     Notes
     -----
-    Speech must hold VAD and RMS at the newest pre-pad end. A peak at least
-    8 times the floor also needs this frame to be at least half the peak and
-    10 trailing hits. An impulse (peak >= 8 times the floor and at most 24
-    voiced hits) is dropped. Silence of about 1.2 seconds ends the turn.
-    The detector is opened here, so the voice package imports without its extra.
+    With the defaults, speech starts after 4 frames in a row that the detector
+    calls speech and that reach the adaptive floor. When the pre-pad holds a
+    peak at least 8 times the floor, the run must be 10 frames and this frame
+    at least half the peak. A clip with such a peak and at most 24 voiced
+    frames is an impulse and is dropped. About 1.2 seconds of silence ends the
+    turn. Each call opens a fresh detector from ``tune.vad_engine``, because a
+    detector keeps state between frames.
     """
     tune = tune or ListenTune()
     heard = _Listen(tune, open_vad(tune.vad_engine, tune.vad_aggressiveness))
@@ -451,7 +462,7 @@ def stream_utterance(
         Ends the listen when set.
     sink : Callable
         Called with ``(frame, voiced)`` for every frame of the utterance, in order: first
-        the pre-roll and any ``prefix``, then each frame as it is captured. It runs on this
+        any ``prefix`` and the pre-pad, then each frame as it is captured. It runs on this
         thread and has to return quickly. Nothing is passed while the mic is waiting for
         speech to start, so only the speech leaves the machine.
     prefix : bytes, optional

@@ -58,8 +58,7 @@ def _extends_tail(tail: str, nxt: str) -> bool:
     # "there" is finished when the next character is "." or a space.
     # "ther" is not finished when the next character is "e". A Cyrillic
     # letter continues the word too. "there.Friend" has finished "there":
-    # the period is not part of the next word. Keeping only "Hello" made
-    # the next turn say "there" again.
+    # the period is not part of the next word.
     if not tail or _cjk_char(nxt):
         return False
     last = tail[-1]
@@ -93,10 +92,9 @@ def _word_prefix(text: str, n: int) -> str:
     if n >= len(text):
         return text.strip()
     cut = text[:n]
-    # A newline or a non-breaking space is a word boundary. Splitting on
-    # ASCII space only kept "Hello there" and dropped "friend." once the
-    # next line had started. "Hello\u00a0there" has no ASCII space, so a
-    # cut in "there" forgot "Hello" and the next turn said it again.
+    # A word dropped here is spoken again next turn, and a half word kept is
+    # recorded as heard. Any whitespace is a boundary, so a newline or the
+    # non-breaking space in "Hello\u00a0there" still separates two words.
     last = -1
     for index, ch in enumerate(cut):
         if ch.isspace():
@@ -104,8 +102,7 @@ def _word_prefix(text: str, n: int) -> str:
     if last < 0:
         # A cut with no space is the middle of the first English word. History
         # should not record that fragment. CJK has no spaces, including after
-        # an English word ("Hello你好"). Dropping that cut forgot speech the
-        # speaker had already played, so the next turn said it again.
+        # an English word ("Hello你好"), so there the cut is kept.
         stripped = cut.strip()
         if any(_cjk_char(ch) for ch in stripped):
             if _cjk_char(stripped[-1]) or _boundary_finished(stripped, text[n]):
@@ -117,24 +114,21 @@ def _word_prefix(text: str, n: int) -> str:
                 end -= 1
             return stripped[:end].strip()
         # "Hello there" cut on the last letter of "Hello" has no space yet.
-        # The next character is the space, so that word was played. Dropping
-        # it made the next turn say "Hello" again.
+        # The next character is the space, so that word was played.
         if _boundary_finished(stripped, text[n]):
             return stripped
-        # "Hello.Friend" has no space yet. The cut is inside "Friend",
-        # so the finished "Hello." was dropped and the next turn said it again.
+        # "Hello.Friend" has no space yet. The cut is inside "Friend", but
+        # "Hello." was played.
         return _finished_prefix(stripped, text[n])
     head = cut[:last].strip()
     tail = cut[last + 1 :]
     if not tail:
         return head
     # "Hello there" has finished "there" when the next character is a space
-    # or a period. Stopping at the space before it made the next turn say
-    # "there" again. "Hello 你" has finished "你" even when "好" is still coming.
+    # or a period. "Hello 你" has finished "你" even when "好" is still coming.
     if _boundary_finished(tail, text[n]):
         return f"{head} {tail}".strip()
     # "there.Frien" still extends into "d", but "there." was already played.
-    # Returning only "Hello" made the next turn say "there" again.
     for index in range(len(tail) - 1, 0, -1):
         if _boundary_finished(tail[:index], tail[index]):
             return f"{head} {tail[:index]}".strip()
@@ -187,9 +181,9 @@ def spoken_prefix(
     -------
     str
         The full text without ``[clear]`` when the turn finished. After a
-        cancel or failure, a word-aligned prefix with every cue removed. Empty when nothing was
-        played, or when the format cannot be cut by length, so history never
-        records a reply the listener did not hear.
+        cancel or failure, a word-aligned prefix with every cue removed. Empty
+        when nothing was played, or when the format cannot be cut by length,
+        so history never records a reply the listener did not hear.
     """
     if not sent_text.strip() or not got_audio or bytes_played <= 0:
         # Fish can deliver a chunk the sink then drops, such as a dead mpv

@@ -1,4 +1,4 @@
-"""Fish ASR over httpx. Retries 429 and 5xx."""
+"""Fish ASR over httpx. Retries 429, 5xx and network errors."""
 
 from __future__ import annotations
 
@@ -173,7 +173,7 @@ async def fish_asr(
     client: httpx.AsyncClient | None = None,
     hear_tone: bool = False,
 ) -> AsrResult:
-    """Transcribe one WAV with Fish ASR, retrying 429 and 5xx.
+    """Transcribe one WAV with Fish ASR, retrying 429, 5xx and network errors.
 
     Parameters
     ----------
@@ -192,8 +192,8 @@ async def fish_asr(
     extra_headers : dict or None, optional
         Usually a ``traceparent`` shared with the following TTS turn.
     cancel : threading.Event or None, optional
-        When set during a request or a retry pause, return an empty string
-        instead of posting again.
+        When set before an attempt or during a retry pause, return an empty
+        ``AsrResult`` instead of posting again. A request already sent is not cut short.
     client : httpx.AsyncClient or None, optional
         A session-scoped client from ``asr_client``. A new one is opened for
         this call when omitted.
@@ -215,9 +215,8 @@ async def fish_asr(
     Notes
     -----
     Connect times out in 10 seconds. Read, write, and pool wait 60 seconds,
-    so a dead host fails before the read budget. ``cancel`` during a retry
-    pause returns an empty result instead of posting again. A 429 or 5xx waits
-    with jitter and honours ``Retry-After``.
+    so a dead host fails before the read budget. A 429 or 5xx waits with
+    jitter and honours ``Retry-After``.
     """
     headers = {
         "Authorization": bearer(api_key),
@@ -266,14 +265,14 @@ async def fish_asr(
 
 def _clean_text(raw_text: str, parsed: AsrBody) -> str:
     text = scrub_asr(raw_text.strip(), strip_cues=True)
-    # Duplex only hears this string. A blank field or a caption watermark
-    # still drops words that Fish put in segments.
+    # The loop answers only this string. When ``text`` is blank or a caption
+    # watermark, the segments may still hold the words, so use them instead.
     if is_asr_hallucination(text):
         alt = _segment_text(parsed)
         if alt and not is_asr_hallucination(alt):
             return alt
-    # The whole transcript is real speech plus a watermark sentence. The
-    # hallucination check keeps that text, and the next turn answers it.
+    # Real speech plus a watermark sentence passes the hallucination check, so
+    # the watermark would be answered too. Drop the segments that are watermarks.
     trimmed = without_watermark_segments(text, parsed.get("segments"), strip_cues=True)
     if trimmed != text and trimmed and not is_asr_hallucination(trimmed):
         return trimmed

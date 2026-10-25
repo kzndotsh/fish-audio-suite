@@ -208,9 +208,9 @@ class FishSpeaker:
         Any other error the sink raises is re-raised too, so a sink that fails
         to open never looks like a silent turn. A Fish failure is not raised: it
         comes back in ``TtsResult``. Safe to call from ``asyncio.run`` or
-        ``to_thread``. The Fish websocket
-        must not share the LLM's event loop. On cancel, close the httpx client.
-        Do not ``aclose()`` the websocket iterator.
+        ``to_thread``. The Fish websocket must not share the LLM's event loop.
+        On cancel, close the httpx client. Do not ``aclose()`` the websocket
+        iterator.
         """
         stop = cancel or threading.Event()
         return self._run_on_thread(
@@ -304,7 +304,7 @@ class FishSpeaker:
         cancel: threading.Event,
         on_first_audio: Callable[[], None] | None = None,
     ) -> TtsResult:
-        """Speak one full string on the caller's loop.
+        """Speak one full string on the loop this runs on.
 
         Parameters
         ----------
@@ -329,12 +329,10 @@ class FishSpeaker:
         free for the LLM.
         """
         prepared = _spoken(text, lead=self.mood_lead, official=self.official_cues)
-        # The full reply is known here, so use its length as the partial-cut
-        # window. This prevents comma cuts from splitting short orphan fragments
-        # like "honey?" off the end of a sentence — fragments that drama-3-preview
-        # renders with inconsistent prosody. Sentence-boundary cuts still fire.
-        # partial_chars flows into TurnSpec so send_turn's replay path uses the
-        # same window (it rebuilds text_events from sent_text + spec.partial_chars).
+        # The whole reply is known, so its length is the partial-cut window. A
+        # comma then never splits a short tail such as "honey?" off a sentence,
+        # which drama-3-preview speaks with uneven prosody. Sentence ends still
+        # cut. The window rides in TurnSpec, so a replay cuts the same way.
         partial = len(prepared) or self.partial_chars
         return await run_turn(
             self._spec(partial_chars=partial),

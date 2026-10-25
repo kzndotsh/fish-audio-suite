@@ -18,14 +18,14 @@ result = tts.speak("Hello there.", FileSink(Path("turn.wav")))
 
 `speak` runs the websocket on a private thread and event loop, so it is safe under `asyncio.run` or `to_thread`. Retry of 429 and 5xx happens only before the first audio byte. There is no default `voice_id`.
 
-`speak(text, sink, *, cancel=None, on_first_audio=None)` takes `cancel` (a `threading.Event`) by keyword. The returned `TtsResult` carries `error`, a kit error such as `FishAuthError` (401, 402, 403), `FishRateLimitError` (429) or `FishUpstreamError` (5xx), when the turn failed with a status. Test it with `isinstance`; `error_status` and `error_message` stay for display. Its timings use the kit's `LatencySnapshot` names: `tts_first_text_ms` (TTS start to the first text sent to Fish) and `tts_first_audio_ms` (TTS start to the first audio from Fish, Fish's time-to-first-audio). `speak_stream(deltas, sink, ...)` does the same for a token stream while the model is still writing. The package root exports the types its signatures use: `FishSpeaker`, `TtsResult`, `PlaybackSink`, `PlaybackKind`, `make_sink`, `BargeGate`, `EchoCanceller`, `DuplexSession`, `ChatBackend`, `ListenTune`, `BargeTune`, `AecTune`, `LlmTune` and `PortAudioMissingError`. Each module lists its own exports in `__all__`.
+`speak(text, sink, *, cancel=None, on_first_audio=None)` takes `cancel` (a `threading.Event`) by keyword. The returned `TtsResult` carries `error`, a kit error such as `FishAuthError` (401, 402, 403), `FishRateLimitError` (429) or `FishUpstreamError` (5xx), when the turn failed with a status. Test it with `isinstance`; `error_status` and `error_message` stay for display. Its timings use the kit's `LatencySnapshot` names: `tts_first_text_ms` (TTS start to the first text sent to Fish) and `tts_first_audio_ms` (TTS start to the first audio from Fish, Fish's time-to-first-audio). `speak_stream(deltas, sink, ...)` does the same for a token stream while the model is still writing. The package root exports the types its signatures use: `FishSpeaker`, `TtsResult`, `PlaybackSink`, `PlaybackKind`, `make_sink`, the four sinks (`SounddeviceSink`, `FileSink`, `StdoutSink`, `MpvSink`), `BargeGate`, `EchoCanceller`, `DuplexSession`, `ChatBackend`, `ListenTune`, `BargeTune`, `AecTune`, `LlmTune` and `PortAudioMissingError`. Each module lists its own exports in `__all__`.
 
 ```bash
 cp .env.example .env
 ./packages/voice/dev.sh --smoke    # writes a new temp wav, or pass --out PATH
 ./packages/voice/dev.sh            # duplex
 ./packages/voice/dev.sh --debug    # or FISH_VOICE_DEBUG=1; --trace (or 2) adds heartbeats
-./packages/voice/dev.sh --prompt-file characters/mira.md   # a character, see below
+./packages/voice/dev.sh --prompt-file my-character.md     # a character, see below
 ```
 
 `--smoke` exits 2 if `FISH_API_KEY` or `FISH_VOICE_ID` is missing. The same entry point from anywhere the extra is installed:
@@ -43,9 +43,9 @@ uv run --package fish-audio-suite-voice --extra cli fish-voice --smoke
 | `stdout` | Raw chunks on stdout |
 | `mpv` | Optional. Plays mp3 from stdin. Not required for the other sinks |
 
-Duplex is mic, then Fish ASR (or Deepgram Flux, see below), then an LLM, then one Fish turn. Settings are environment variables. Process env wins, then `--env-file`, then `./.env`.
+Duplex is mic, then Fish ASR (or Deepgram Flux, see below), then an LLM, then one Fish turn. Settings are environment variables. Process env wins over `--env-file`. Without `--env-file`, `./.env` is read when it exists. See [Command line](#command-line) for the flags and exit codes.
 
-`--debug` logs VAD, barge-in, Fish websocket metadata, and LLM metadata on stderr. What was said stays on stdout. To keep a whole run, set `FISH_VOICE_LOG_DIR=logs` (or pass `--log-dir logs`): each run writes a complete log there, with what you said and what the model answered, to a file only you can read. Duplex exits 2 when playback is `file`, unknown, or `mpv` is not on `PATH`. It also exits 2 on ASR or TTS 401, 402, or 403.
+`--debug` logs VAD, barge-in, Fish websocket metadata, and LLM metadata on stderr. What was said stays on stdout. To keep a whole run, set `FISH_VOICE_LOG_DIR=logs` (or pass `--log-dir logs`). Each run then writes a complete log there, with what you said and what the model answered, to a file only you can read.
 
 ### PortAudio
 
@@ -69,13 +69,15 @@ The `cli` extra includes WebRTC's audio processor, which cleans every mic frame 
 - a high-pass filter removes rumble and breath below about 100 Hz,
 - automatic gain (`FISH_VOICE_AGC`) raises a quiet voice to a steady level,
 - noise suppression (`FISH_VOICE_NOISE_SUPPRESSION`) removes steady background noise such as a fan,
-- and while the bot speaks, AEC3 subtracts its voice from the mic. `FISH_VOICE_AEC=0` turns only that off and keeps the longer bleed delay (0.9 s). With AEC loaded, that delay is 0.3 s.
+- and while the bot speaks, AEC3 subtracts its voice from the mic. `FISH_VOICE_AEC=0` turns only that off. Gain and noise suppression stay on.
+
+After a reply starts, the mic is ignored for a bleed delay so the bot's first words are not taken for yours: 0.3 s (`FISH_VOICE_AEC_BLEED_DELAY`) with AEC3 loaded, and 0.9 s (`FISH_VOICE_BLEED_DELAY`) when AEC is off or the extra is missing. Without the extra the mic is used as it comes.
 
 Noise suppression does little against key clicks. `scripts/vad_compare.py --process` shows what the detectors make of a recording after this cleanup.
 
-A barge-in keeps the audio that tripped it and clears the speaker tap. The next listen starts from that clip.
+One mic stream stays open for the whole session, and a reader thread cleans every frame and keeps about the last 2 s. A barge-in keeps the audio that tripped it, clears the speaker tap and skips the post-reply cooldown. The next listen starts from that clip and reads on from where it ended, so no words are lost. Mute closes the stream, and the next listen opens it again.
 
-The barge floor follows the room: it is the quiet-percentile of recent mic frames, never below `FISH_VOICE_BARGE_RMS`. If barge-in fires on a cough or a chair, raise `FISH_VOICE_BARGE_FRAMES` (30 ms each) before raising the RMS. If sniffs, breathing, typing or a bumped mic interrupt it, try `FISH_VOICE_VAD_ENGINE=silero`, or `FISH_VOICE_VAD=2`, which counts fewer of those sounds as speech. It also affects normal listening, so check that soft speech and the first word of a sentence still come through. See [Troubleshooting](../../docs/TROUBLESHOOTING.md#coughs-chairs-sniffs-or-keyboard-noise-interrupt-the-bot).
+The barge floor follows the room: it is the quiet-percentile of recent mic frames, never below `FISH_VOICE_BARGE_RMS`. If barge-in fires on a cough or a chair, raise `FISH_VOICE_BARGE_FRAMES` (30 ms each) before raising the RMS. Automatic gain lifts key clicks along with your voice, so typing can pass the default floor of 220 ([issue #58](https://github.com/kzndotsh/fish-audio-suite/issues/58)). If it does, raise `FISH_VOICE_BARGE_RMS` to sit between your typing and your voice, which the `barge hit ... rms=` lines in `--trace` show. If sniffs, breathing or a bumped mic interrupt it, try `FISH_VOICE_VAD=2`, which counts fewer of those sounds as speech, or `FISH_VOICE_VAD_ENGINE=silero` after checking it hears your voice with `scripts/vad_compare.py --process`. Both also affect normal listening, so check that soft speech and the first word of a sentence still come through. See [Troubleshooting](../../docs/TROUBLESHOOTING.md#coughs-chairs-sniffs-or-keyboard-noise-interrupt-the-bot).
 
 If talking over the bot does nothing, your voice may be reaching the gate quietly after echo cancellation. `scripts/mic_levels.py` prints your noise floor and speaking level, and raising the mic's own gain (not only software volume) helps more than lowering the thresholds. See [Troubleshooting](../../docs/TROUBLESHOOTING.md#soft-speech-is-missed-or-talking-over-the-bot-does-nothing-because-the-mic-is-quiet) for the numbers and the order to fix things in.
 
@@ -102,13 +104,14 @@ Free-form cues are risky on some voices: a description of a face or a voice (`[s
 Put a character or scene in a file and point the session at it:
 
 ```bash
-./packages/voice/dev.sh --prompt-file characters/mira.md     # or FISH_VOICE_SYSTEM_PROMPT_FILE=...
+./packages/voice/dev.sh --prompt-file my-character.md       # or FISH_VOICE_SYSTEM_PROMPT_FILE=...
 ```
 
 The file is UTF-8 text, up to 64 KiB. Its text comes first, then a blank line, then the default voice
 rules (spoken replies, `[cue]` tags), and the opening cue example is pinned as usual. So a file only
-has to describe who is talking. If the file is missing, empty, too large or not UTF-8, fish-voice warns
-and uses the default prompt. The flag beats the variable, and the file beats `FISH_VOICE_SYSTEM_PROMPT`.
+has to describe who is talking. If the file is missing, empty, too large or not UTF-8, fish-voice warns.
+From `FISH_VOICE_SYSTEM_PROMPT_FILE` it then uses the default prompt, and from `--prompt-file` it exits 2.
+The flag beats the variable, and the file beats `FISH_VOICE_SYSTEM_PROMPT`.
 
 **Choose where the voice rules go.** Put `{{default_prompt}}` in the file and the default voice rules
 are inserted right there, instead of after the file. Use it to put the rules first and the character
@@ -129,10 +132,10 @@ no voice rules and no cue example, so ask for `[emotion]` cue tags in it if you 
 
 ### LLM providers
 
-`FISH_LLM_PROVIDER` names the chat provider: `openrouter` (the default) or `experiential`. It
-supplies the default base URL, and `FISH_LLM_BASE` overrides it. The provider is always read from
-the host of the final base URL, and each provider has its own key variable, so a key never goes
-to the wrong host.
+`FISH_LLM_PROVIDER` names the chat provider: `openrouter` or `experiential`. It supplies the
+default base URL, and `FISH_LLM_BASE` overrides it. Unset or `custom`, the base is `FISH_LLM_BASE`,
+which defaults to OpenRouter. The provider is always read from the host of the final base URL, and
+each provider has its own key variable, so a key never goes to the wrong host.
 
 | Provider | Default base | Key variable | Model variable |
 | --- | --- | --- | --- |
@@ -153,7 +156,8 @@ chat-completions API. What to know about Experiential, from its published contra
   Reasoning models can be slow to a first word, so a low effort suits voice. Which values a model
   accepts depends on its route, and the value is passed through unchanged. Empty omits the field.
 - **Fields.** Experiential answers 400 to a request field it does not know, so the request carries
-  only `model`, `messages`, `stream`, `temperature` and `max_tokens`, plus `reasoning_effort` when set.
+  only `model`, `messages`, `stream`, `temperature` and `max_tokens`, plus `reasoning_effort` when set
+  and `stream_options` (to report token usage) with `--debug`.
 - **No `:nitro`.** That suffix is OpenRouter-only (`FISH_LLM_NITRO` never applies to Experiential).
 - **Errors.** A spent free allowance is a 429 `insufficient_quota` with no `Retry-After`. It is
   printed with its code and not retried.
@@ -348,9 +352,33 @@ For Silero, `FISH_VOICE_VAD` sets the speech probability a frame must reach: 0.3
 
 To compare detectors on your own room and keyboard, record once and play it through each: `uv run python scripts/vad_compare.py --record 30 take.wav`. See [scripts/README.md](../../scripts/README.md#vad_comparepy).
 
+## Command line
+
+| Flag | Does |
+| --- | --- |
+| `--smoke` | Speak one line to a WAV file and exit. Opens no mic and needs no LLM |
+| `--out PATH` | Where `--smoke` writes. Default: a new file in the temp directory |
+| `--playback NAME` | `sounddevice`, `file`, `stdout` or `mpv`. Overrides `FISH_VOICE_PLAYBACK` |
+| `--prompt-file PATH` | A character file. Overrides `FISH_VOICE_SYSTEM_PROMPT_FILE` |
+| `--env-file PATH` | A dotenv file to load, repeatable. For a key in two files, the first wins. Default: `./.env` when it exists |
+| `--tui` | The [full-screen app](#the-full-screen-app). Needs the `tui` extra |
+| `--debug` | Event log on stderr. Same as `FISH_VOICE_DEBUG=1` |
+| `--trace` | `--debug` plus mic heartbeats, raw audio events and HTTP lines. Same as `FISH_VOICE_DEBUG=2` |
+| `--log-dir DIR` | Write a complete log of the run to a new file in `DIR`. Overrides `FISH_VOICE_LOG_DIR` |
+
+`fish-voice` exits 0 on quit. `--smoke` exits 1 when Fish fails or sends less than 1 kB of audio. Exit 2 means the run could not start or cannot go on:
+
+- `FISH_API_KEY`, `FISH_VOICE_ID`, the LLM key or the model is missing,
+- the playback sink cannot play a reply (`file`, an unknown name, or `mpv` not on `PATH`),
+- the voice detector cannot load, or Deepgram is chosen without its key or extra,
+- `--prompt-file` cannot be read, or `--tui` is used without the `tui` extra,
+- PortAudio is missing,
+- Fish ASR or TTS answers 401, 402 or 403,
+- the LLM answers 401, 402 or 404, or no provider serves the model.
+
 ## Settings
 
-Every variable is read once at startup into frozen settings objects. A value that is not a number, or is out of range, is ignored with a warning on stderr and the default is used.
+Every variable is read once at startup into frozen settings objects. A `FISH_VOICE_*`, `FISH_LLM_*` or Deepgram value that is not a number, not one of the listed words, or out of range is ignored with a warning on stderr, and the default is used. The Fish speech numbers in the Speech table are clamped into their range instead, and one that is not a number falls back to its default without a warning.
 
 Required:
 
@@ -359,7 +387,7 @@ Required:
 | `FISH_API_KEY` | none |
 | `FISH_VOICE_ID` | none |
 | `FISH_LLM_API_KEY` (fallback: the provider's own key variable, see above) | none. Duplex only |
-| `FISH_LLM_MODEL` (the provider's model variable first; `OPENROUTER_MODEL` for OpenRouter and custom hosts) | none. Duplex only |
+| `FISH_LLM_MODEL` (the provider's model variable first, then this, then `OPENROUTER_MODEL` for OpenRouter and other hosts) | none. Duplex only |
 
 Speech:
 
@@ -367,30 +395,30 @@ Speech:
 | --- | --- |
 | `FISH_BASE` | `https://api.fish.audio` |
 | `FISH_TTS_MODEL` | `s2.1-pro` (or `s2.1-pro-free`, the same model free for testing under fair use, with no latency guarantee) |
-| `FISH_LATENCY` | `normal` (or `balanced`) |
-| `FISH_SPEED` | `1` |
+| `FISH_LATENCY` | `normal` (or `balanced`). `low` is sent as `balanced` with a warning, because the Fish SDK rejects it |
+| `FISH_SPEED` | `1`. 0.5 to 2 |
 | `FISH_VOLUME` | `0` (dB) |
-| `FISH_TEMPERATURE`, `FISH_TOP_P` | `0.7`, `0.7` |
+| `FISH_TEMPERATURE`, `FISH_TOP_P` | `0.7`, `0.7`. 0 to 1 |
 | `FISH_REPETITION_PENALTY` | `1.2` |
-| `FISH_CHUNK_LENGTH` | `200` (cloud max 300) |
-| `FISH_MIN_CHUNK_LENGTH` | `50` |
+| `FISH_CHUNK_LENGTH` | `200`. 100 to 300 on the cloud API, up to 1000 self-hosted |
+| `FISH_MIN_CHUNK_LENGTH` | `50`. 0 to 100 |
 | `FISH_SAMPLE_RATE` | `44100` |
-| `FISH_ASR_LANGUAGE` | omitted |
-| `FISH_ASR_MODEL` | `transcribe-1-pro` (or `transcribe-1`) |
-| `FISH_VOICE_PLAYBACK` | `sounddevice` |
-| `FISH_VOICE_DEVICE` | host default. A PortAudio index or name |
+| `FISH_ASR_LANGUAGE` | omitted, so Fish detects the language |
+| `FISH_ASR_MODEL` | `transcribe-1-pro` (or `transcribe-1`). Any other id uses the default |
+| `FISH_VOICE_PLAYBACK` | `sounddevice`, or `file`, `stdout`, `mpv`. Duplex exits 2 on `file`, an unknown name, or `mpv` when it is not on `PATH` |
+| `FISH_VOICE_DEVICE` | host default. A PortAudio index or name, used for both the mic and the speaker |
 | `FISH_VOICE_OUTPUT_LATENCY` | `auto`, or `low` / `high`. A bigger playback buffer (`high`) stops clicks when the machine is busy, and starts the sound a little later. `auto` is `high` in `--tui` and `low` otherwise |
 
 LLM:
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `FISH_LLM_PROVIDER` | `openrouter` | `openrouter` or `experiential`. Sets the default base, key variable and model variable. See above |
-| `FISH_LLM_BASE` (fallback `OPENROUTER_BASE_URL`) | `https://openrouter.ai/api/v1` | API origin |
+| `FISH_LLM_PROVIDER` | unset | `openrouter` or `experiential`. Sets the default base, key variable and model variable. Unset or `custom` follows `FISH_LLM_BASE`. See above |
+| `FISH_LLM_BASE` (fallback `OPENROUTER_BASE_URL`, ignored when `FISH_LLM_PROVIDER` names a provider) | the provider's base, else `https://openrouter.ai/api/v1` | API base URL, including the version path |
 | `FISH_LLM_REASONING_EFFORT` | unset | `none`, `minimal`, `low`, `medium`, `high` or `max`. Which values work depends on the model's route |
 | `FISH_LLM_TEMPERATURE` | `0.8` | 0 to 2 |
-| `FISH_LLM_TIMEOUT` | `120` | Seconds per request |
-| `FISH_LLM_MAX_TOKENS` | `1200` | Completion cap |
+| `FISH_LLM_TIMEOUT` | `120` | Seconds per request. Above 0 |
+| `FISH_LLM_MAX_TOKENS` | `1200` | Completion cap. At least 1 |
 | `FISH_LLM_NITRO` | off | OpenRouter only. Adds `:nitro` to the model |
 | `FISH_LLM_PROVIDER_SORT` | `latency` | OpenRouter only. `latency`, `throughput`, `price` or `off` |
 | `FISH_LLM_SERVICE_TIER` | unset | OpenRouter only. `default`, `flex`, `priority` or `ultrafast`. Unset lets OpenRouter pick. Higher tiers cost more |
@@ -398,7 +426,7 @@ LLM:
 | `FISH_LLM_CONTINUE` | off | Send one more request when a reply stops mid-sentence |
 | `FISH_VOICE_SYSTEM_PROMPT` | the kit default | System prompt text, used as written. Set but blank sends no system prompt |
 | `FISH_VOICE_SYSTEM_PROMPT_FILE` | none | A character file. The voice rules follow it, or go where `{{default_prompt}}` is in the file. Beats `FISH_VOICE_SYSTEM_PROMPT`. See characters above |
-| `FISH_VOICE_HISTORY_TURNS` | `20` | User and assistant pairs kept. Over it, the oldest quarter goes at once, so the start of the prompt stays the same for several turns and a provider's prompt cache keeps working |
+| `FISH_VOICE_HISTORY_TURNS` | `20` | User and assistant pairs kept, at least 1. Over it, the oldest quarter goes at once, so the start of the prompt stays the same for several turns and a provider's prompt cache keeps working |
 | `FISH_VOICE_STREAM_TTS` | off | Speak the reply while the model is still writing it. See streaming above |
 | `FISH_VOICE_REPEAT_WINDOW` | `1.5` | Seconds. A line equal to the previous one is dropped only if it ends this soon after the mic opens. 0 never drops a repeat |
 | `FISH_TTS_MOOD_LEAD`, `FISH_TTS_DROP_NARRATION` | off | See roleplay helpers |
@@ -410,7 +438,7 @@ Speech recognition. See [Streaming speech recognition](#streaming-speech-recogni
 | --- | --- | --- |
 | `FISH_VOICE_STT` | `fish` | `fish` sends a clip to Fish ASR when you stop. `deepgram` streams your speech to Deepgram Flux |
 | `DEEPGRAM_API_KEY` | none | Your Deepgram key. Required when `FISH_VOICE_STT=deepgram` |
-| `FISH_VOICE_DEEPGRAM_MODEL` | `flux-general-en` | `flux-general-multi` for ten languages |
+| `FISH_VOICE_DEEPGRAM_MODEL` | `flux-general-en` | `flux-general-multi` for ten languages. Only Flux models stream turns, so any other name uses the default |
 | `FISH_VOICE_DEEPGRAM_REGION` | `global` | `eu`, `au` or `in` to have Deepgram process the audio inside the European Union, Australia or India. A regional request fails instead of going elsewhere |
 | `FISH_VOICE_EOT_THRESHOLD` | `0.7` | How sure Flux must be that you have finished, 0.5 to 1. Higher waits a little longer and cuts in less often |
 | `FISH_VOICE_EAGER_EOT_THRESHOLD` | `0` (off) | 0.3 to 0.9, and no higher than `FISH_VOICE_EOT_THRESHOLD`. Flux says when a turn is probably over a little before it is sure, and the reply starts being written then, held back until Flux confirms it. Saves about 150 to 250 ms, and costs 50 to 70 percent more model calls. See the streaming section |
@@ -421,8 +449,8 @@ Sounding more human. All off by default. See [Sounding more human](#sounding-mor
 | Variable | Default | Effect |
 | --- | --- | --- |
 | `FISH_VOICE_TURN_CHECK` | off | End the first clip on a short silence and let the words decide whether the turn is over. Fish ASR only |
-| `FISH_VOICE_TURN_SILENCE_FRAMES` | `12` | About 0.36 s of quiet that ends the first clip while the check is on. Never more than `FISH_VOICE_SILENCE_FRAMES` |
-| `FISH_VOICE_TURN_EXTEND_FRAMES` | `40` | Quiet frames that end a continuation, about 1.2 s. The wait for it to begin is this minus `FISH_VOICE_TURN_SILENCE_FRAMES` |
+| `FISH_VOICE_TURN_SILENCE_FRAMES` | `12` | About 0.36 s of quiet that ends the first clip while the check is on. At least 1, and never more than `FISH_VOICE_SILENCE_FRAMES` |
+| `FISH_VOICE_TURN_EXTEND_FRAMES` | `40` | Quiet frames that end a continuation, about 1.2 s. At least 1. The wait for it to begin is this minus `FISH_VOICE_TURN_SILENCE_FRAMES` |
 | `FISH_VOICE_TURN_EXTENSIONS` | `1` | Continuations one turn may have, 1 or 2 |
 | `FISH_VOICE_HEAR_TONE` | off | Experimental. Tell the model how you sounded (`laughter`, `tired`) for that turn only, from the marks Fish ASR puts in its text |
 | `FISH_VOICE_NORMALIZE_LOUDNESS` | off | Bring each reply to a steady level, with a soft limiter, before it plays |
@@ -432,25 +460,25 @@ Listen and interrupt. Times are approximate at 30 ms frames.
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `FISH_VOICE_SPEECH_FRAMES` | `4` | About 120 ms before speech counts |
-| `FISH_VOICE_PRE_PAD_FRAMES` | `20` | Frames kept before the start |
-| `FISH_VOICE_MIN_RMS` | `200` | Listen floor seed. It can rise in a loud room |
-| `FISH_VOICE_MIN_VOICED_FRAMES` | `12` | About 360 ms of voice. Drops a cough |
-| `FISH_VOICE_SILENCE_FRAMES` | `40` | About 1.2 s of quiet ends the turn |
-| `FISH_VOICE_VAD` | `1` | Voice detector strictness, 0–3. Higher is pickier. Listening and barge-in both use it |
+| `FISH_VOICE_SPEECH_FRAMES` | `4` | About 120 ms of voiced frames before speech counts. At least 1 |
+| `FISH_VOICE_PRE_PAD_FRAMES` | `20` | Frames kept before the start. Raised to at least `FISH_VOICE_SPEECH_FRAMES` plus 6 |
+| `FISH_VOICE_MIN_RMS` | `200` | Listen floor seed, above 0. It can rise in a loud room |
+| `FISH_VOICE_MIN_VOICED_FRAMES` | `12` | About 360 ms of voice before a clip is sent to speech recognition. Drops a cough. 1 to 500 |
+| `FISH_VOICE_SILENCE_FRAMES` | `40` | About 1.2 s of quiet ends the turn. At least 1 |
+| `FISH_VOICE_VAD` | `1` | Voice detector strictness, 0 to 3. Higher is pickier. Listening and barge-in both use it |
 | `FISH_VOICE_VAD_ENGINE` | `webrtc` | The voice detector: `webrtc`, `silero` (the `silero` extra) or a plugin as `package.module:factory`. See [Voice detectors](#voice-detectors) |
-| `FISH_VOICE_COOLDOWN` | `0.8` | Seconds after playback |
+| `FISH_VOICE_COOLDOWN` | `0.8` | Seconds after a reply before the next listen starts. A barge-in skips it |
 | `FISH_VOICE_FADE_MS` | `4` | Milliseconds of fade at each sentence start and end (a sound next to silence), so it does not click. 0 turns it off. Up to 50 |
-| `FISH_VOICE_BLEED_DELAY` | `0.9` | Used when AEC is off or missing |
-| `FISH_VOICE_AEC` | on | `0` disables in-process echo cancellation |
-| `FISH_VOICE_AEC_WET` | `0.85` | Mix of cleaned mic into the raw mic, 0 to 1 |
-| `FISH_VOICE_AEC_BLEED_DELAY` | `0.3` | Bleed delay once AEC3 is loaded |
+| `FISH_VOICE_BLEED_DELAY` | `0.9` | Seconds the mic is ignored after a reply starts, when AEC is off or missing |
+| `FISH_VOICE_AEC` | on | `0` turns off echo cancellation. Gain and noise suppression stay |
+| `FISH_VOICE_AEC_WET` | `0.85` | While the speaker plays, the share of echo-cancelled mic mixed with the raw mic, 0 to 1 |
+| `FISH_VOICE_AEC_BLEED_DELAY` | `0.3` | Seconds the mic is ignored after a reply starts, once AEC3 is loaded |
 | `FISH_VOICE_AGC` | on | Raise a quiet voice to a steady level before anything listens. `0` turns it off |
 | `FISH_VOICE_NOISE_SUPPRESSION` | `18` | Decibels of steady background noise (fans, hum) removed from the mic: `0` (off), `6`, `12`, `18` or `21` |
-| `FISH_VOICE_BARGE_FRAMES` | `10` | Loud voiced frames in a row that interrupt (about 300 ms) |
-| `FISH_VOICE_BARGE_RMS` | `220` | Barge floor seed. It follows the room, never below this |
+| `FISH_VOICE_BARGE_FRAMES` | `10` | Loud voiced frames that interrupt (about 300 ms). They need not be in a row: three missed frames take one hit back. At least 1 |
+| `FISH_VOICE_BARGE_RMS` | `220` | Barge floor seed, above 0. It follows the room, never below this. With automatic gain on, typing can pass 220 ([#58](https://github.com/kzndotsh/fish-audio-suite/issues/58)) |
 | `FISH_VOICE_BARGE_PLAYING_GAIN` | `2.2` | Floor multiplier while the speaker plays and AEC is off. At least 1 |
-| `FISH_VOICE_DEBUG` | off | `1` or `--debug` logs events. `2`, `trace` or `--trace` adds mic heartbeats, raw audio events, HTTP lines and each raw chat event (`llm.event`) |
+| `FISH_VOICE_DEBUG` | off | `1` or `--debug` logs events. `2`, `trace` or `--trace` adds mic heartbeats, raw audio events, HTTP lines and each raw chat event (`llm event`) |
 | `FISH_VOICE_LOG_DIR` | unset | A folder. Each run writes a complete log to a new `fish-voice-<time>.log` there, at the most detailed level (events, mic heartbeats, raw traffic), whatever the screen shows. It also holds what you said and what the model answered, and is readable only by you. `--log-dir DIR` does the same |
 
 `dev.sh` also reads `FISH_VOICE_ENV_FILE` (env file path), `FISH_VOICE_PORTAUDIO_LIB` (library directories), and `FISH_VOICE_NIX=1` (build PortAudio with nix on a host that is not NixOS).

@@ -22,7 +22,8 @@ fish-audio-suite/
 │       ├── src/fish_audio_suite_voice/
 │       ├── tests/
 │       └── dev.sh                 # runs fish-voice from the checkout
-├── tests/                         # repo-wide: documented env defaults
+├── tests/                         # repo-wide: env docs, repo rules, scripts
+├── scripts/                       # dev tools: vad_compare, mic_levels, evals
 ├── docs/                          # INDEX.md lists them all
 ├── nix/module.nix                 # NixOS module for the proxy service
 ├── flake.nix, flake.lock          # Nix packages, apps, checks
@@ -30,10 +31,11 @@ fish-audio-suite/
 ├── .github/
 │   ├── workflows/                 # ci, release, audit, dependency-submission
 │   ├── actions/gates/             # the shared lint, type and test steps
-│   └── scripts/verifytypes.py     # public API type-completeness floors
+│   ├── scripts/verifytypes.py     # public API type completeness
+│   └── verifytypes-floors.json    # its floors, one per package
 ├── .agents/skills/                # agent skills: finalize, Fish API refs
-├── pyproject.toml, uv.lock        # workspace and tool config
-├── justfile                       # just check, just types-public, ...
+├── pyproject.toml, uv.lock        # workspace, tool config, import contracts
+├── justfile                       # just check, just layers, ...
 ├── .env.example                   # every setting, documented
 ├── AGENTS.md, CONTRIBUTING.md, SECURITY.md, README.md
 ```
@@ -114,7 +116,10 @@ Module by module:
 
 ```mermaid
 flowchart LR
-    mic([mic]) --> aec --> listen --> asr --> hearing --> history --> llm["llm / transports"] --> reply
+    dev([microphone]) --> mic["mic + aec"] --> listen --> asr --> hearing --> history --> llm["llm / transports"] --> reply
+    subgraph capture[mic thread]
+        mic
+    end
     subgraph main[main event loop]
         listen
         asr
@@ -128,7 +133,8 @@ flowchart LR
         scrub[stream_scrub] --> wire["speaker / wire"]
     end
     wire --> playback --> spk([speakers])
-    playback -. far end .-> aec
+    playback -. far end .-> mic
+    mic --> barge
     barge -. cancel .-> wire
     wire -. heard text .-> spoken -.-> history
 ```
@@ -136,17 +142,17 @@ flowchart LR
 | Module | Job |
 | --- | --- |
 | `aec` | WebRTC's processor cleans every mic frame: a high-pass filter, automatic gain and noise suppression, plus AEC3 removing the bot's own voice while `playback` sends it as the reference |
-| `mic` | The one microphone: `SessionMic` opens PortAudio once per session, cleans each 30 ms frame with the echo canceller as it arrives, numbers it and keeps the last two seconds. Listen, streaming and barge-in all read it, and a reader can pick up where another stopped |
-| `listen` | the voice detector and a loudness floor start and end the utterance |
-| `vad` | the `Vad` interface (`is_speech(frame, rate)`), the named engines (`webrtc`, `silero`) and `package.module:factory` plugins. Listen, barge-in and the cooldown log each open a fresh detector through `open_vad` |
+| `mic` | The one microphone: `SessionMic` opens PortAudio on the first read and keeps it open until mute or the end of the session. A `mic` thread cleans each 30 ms frame with the echo canceller as it arrives, numbers it and keeps the last two seconds. Listen, streaming and barge-in all read it, and a reader can pick up where another stopped (`position`, `frames(since=...)`) |
+| `listen` | Starts and ends an utterance with the voice detector and a loudness floor (`floor`), and logs what the mic heard in the post-reply cooldown (`cooldown_report`) |
+| `vad` | The `Vad` interface (`is_speech(frame, sample_rate)`), the named engines (`webrtc`, `silero`) and `package.module:factory` plugins, chosen by `FISH_VOICE_VAD_ENGINE`. Listen, barge-in and the cooldown log each open a fresh detector through `open_vad` |
 | `asr` | Sends the WAV clip to Fish ASR. With `FISH_VOICE_HEAR_TONE` it also returns the tone marks Fish heard (`AsrResult`) |
 | `deepgram` | Deepgram Flux's protocol and connection: the address, the turn messages, a connection a test can fake |
 | `streaming` | One turn streamed to Flux: the mic gate feeds frames to the connection, and Flux says when the turn is over |
 | `speculate` | A reply written ahead of time for a turn Flux thinks is probably over: held back, then used if the same words are confirmed, or thrown away |
 | `hearing` | Skips hallucinations, fillers and stale repeats; detects quit. Transcribes each clip (`transcribe`) and, with the turn check on, carries a turn across clips |
 | `turn_check` | The end-of-turn check on the Fish path: `OpenTurn` (the words so far across clips), the short and long silence tunes, and `Reopened`, the mic listening for a continuation while a clip is transcribed |
-| `history` | Appends the user line and trims to `FISH_VOICE_HISTORY_TURNS` |
-| `llm` / `transports` | Streams tokens from the chat model |
+| `history` | Appends the user line and trims to `FISH_VOICE_HISTORY_TURNS`, a quarter at a time |
+| `llm` / `transports` | Streams tokens from the chat model, with retry. A request no retry can fix (401, 402, 404, no providers) raises `ChatUnusableError` and ends the session |
 | `reply` | `_TokenPipe` hands tokens to the TTS thread |
 | `stream_scrub` | Kit helpers scrub markup, hold open spans, cut sentences, normalize cues |
 | `speaker` / `tts_turn` / `wire` | One Fish websocket per turn: text and flush out, audio chunks back |
@@ -156,7 +162,7 @@ flowchart LR
 | `spoken` | Records only what was heard (`spoken_so_far`) for history |
 
 > [!TIP]
-> Two threads matter. The LLM streams on the main asyncio loop. The Fish websocket runs on its own loop in a `fish-tts` thread, so a slow or cancelled Fish stream can never stall the LLM, and the SDK's anyio cancel scopes stay on the loop that created them. Microphone capture uses PortAudio callbacks, and the barge-in gate watches the mic on a thread of its own.
+> Two threads matter. The LLM streams on the main asyncio loop. The Fish websocket runs on its own loop in a `fish-tts` thread, so a slow or cancelled Fish stream can never stall the LLM, and the SDK's anyio cancel scopes stay on the loop that created them. Around them, PortAudio's callback only queues raw blocks, and the `mic` thread cleans and keeps every frame. A recording runs in a worker thread that the main loop awaits, and the barge-in gate watches the mic on a thread of its own.
 
 ### The proxy request
 
@@ -199,16 +205,17 @@ There is no frontend. The user-facing parts are an HTTP API (the proxy) and a te
 
 - **Description:** two things in one package.
   - A **library**: `FishSpeaker.speak(text, sink)` and `speak_stream(tokens, sink)` run one Fish TTS websocket turn on a private thread and loop, and write audio to a `PlaybackSink` (speakers, a file, stdout or mpv).
-  - **`fish-voice`**: a full-duplex voice chat built on the library, with mic, VAD, echo cancellation, Fish ASR, an LLM, streamed Fish TTS and barge-in.
-- **Technologies:** fish-audio-sdk (websocket TTS), httpx (ASR, OpenAI-compatible SSE), the openrouter SDK, numpy, loguru. The `cli` extra adds sounddevice (PortAudio), webrtcvad-wheels and pywebrtc-audio (AEC3). The `tui` extra adds textual, and the `deepgram` extra adds websockets (Deepgram Flux).
+  - **`fish-voice`**: a full-duplex voice chat built on the library, with mic cleanup (echo cancellation, automatic gain, noise suppression), a voice detector, Fish ASR or Deepgram Flux, an LLM, streamed Fish TTS and barge-in.
+- **Technologies:** fish-audio-sdk (websocket TTS), httpx (ASR, OpenAI-compatible SSE), numpy, loguru. The `cli` extra adds sounddevice (PortAudio), webrtcvad-wheels, pywebrtc-audio (WebRTC's audio processor) and the openrouter SDK. The `silero` extra adds pysilero-vad (`FISH_VOICE_VAD_ENGINE=silero`), the `tui` extra adds textual, and the `deepgram` extra adds websockets (Deepgram Flux).
 - **Deployment:** runs on the user's machine: `uv run --package fish-audio-suite-voice --extra cli fish-voice`, `./packages/voice/dev.sh`, or the flake app `fish-audio-suite-voice`.
-- **Key modules by layer:**
+- **Key modules by job** (the import order between them is the `voice-direction` contract in `pyproject.toml`; see [the invariants](#package-boundaries)):
 
-| Layer | Modules |
+| Job | Modules |
 | --- | --- |
-| Settings | `config` (`VoiceCliConfig`), `tune` (listen, barge and AEC tunes, env readers), `llm_tune` (`LlmTune`, provider table) |
-| Duplex loop | `duplex` (the loop), `duplex_state` (`DuplexContext`), `hearing` (listen and ASR), `turn_check` (end-of-turn check), `reply` (answer and speak), `history`, `signals` (cancel and quit flags) |
-| Audio in | `mic`, `listen`, `barge`, `floor`, `aec` |
+| Settings | `config` (`VoiceCliConfig`), `tune` (listen, barge, turn and AEC tunes, env readers), `llm_tune` (`LlmTune`, provider table) |
+| Duplex loop | `duplex` (the loop), `duplex_state` (`DuplexContext`, `CarryOver`), `hearing` (listen and ASR), `turn_check` (end-of-turn check), `reply` (answer and speak), `history`, `signals` (cancel and quit flags) |
+| Audio in | `mic` (`SessionMic`), `aec` (`EchoCanceller`), `vad`, `listen`, `barge`, `floor` |
+| Streaming STT | `deepgram` (Flux protocol and connection), `streaming` (one turn streamed to Flux), `speculate` (a reply written ahead of time) |
 | Speech out | `speaker` (`FishSpeaker`), `tts_turn` (one turn with retry, and `SdkSocket`, the Fish SDK behind the `FishSocket` seam), `wire` (`FishSocket`, websocket pump, `TtsResult`), `declick` (fades the start and end of each sentence that meets silence), `loudness` (levels the reply), `stream_scrub`, `playback`, `spoken` |
 | LLM | `llm` (`ChatBackend`, retry, stats), `transports` (OpenRouter SDK or httpx SSE, each event read into one `ChatChunk`; a refused request raises `ChatHttpError`) |
 | Events | `events` (`EVENTS`, the typed events a display follows, `StateTracker`, `EventQueue`, `forward_logs`, `mirror_conversation`), `console_sink` (the plain terminal display, one subscriber), `inputs` (`TurnSource`, and `LiveInput` for typed lines and mute), `session_view` (`reduce_view` folds events into one immutable `SessionView`), `tui` (the Textual app, `fish-voice --tui`, needs the `tui` extra) |
@@ -217,7 +224,7 @@ There is no frontend. The user-facing parts are an HTTP API (the proxy) and a te
 ## 4. Data stores
 
 > [!IMPORTANT]
-> There is no database and nothing is written to disk.
+> There is no database. Nothing is written to disk unless you ask for it: a log file per run with `FISH_VOICE_LOG_DIR`, or audio through a library `FileSink`.
 
 - **Chat history:** a list of messages in memory (`DuplexContext.history`). It is trimmed to `FISH_VOICE_HISTORY_TURNS` user and assistant pairs, a quarter at a time so the cached start of the prompt survives several turns, keeps the system prompt (and the default prompt's opening example) pinned, and is lost when `fish-voice` exits.
 - **Settings:** read from the environment and an optional `.env` file once at startup. The proxy keeps them in one object on `app.state.settings`.
@@ -240,7 +247,7 @@ Keys stay with their own host. Each named LLM provider reads only its own key va
 - **Packaging:** wheels built with `uv build --all` (hatchling); a Docker image (`python:3.12-slim-bookworm`, non-root user, `/health` healthcheck); and Nix packages, apps and a NixOS module from `flake.nix`.
 - **Releases:** none until 1.0.0. Versions stay at 0.1.0 and nothing is published to PyPI. `release.yml` publishes on a `v*` tag only when the repository variable `PYPI_PUBLISH` is `true`.
 - **CI/CD:** GitHub Actions.
-  - `ci.yml` runs the shared gates on Python 3.12, 3.13 and 3.14: ruff, pydoclint, basedpyright, type-completeness floors, and pytest with coverage floors.
+  - `ci.yml` runs the shared gates on Python 3.12, 3.13 and 3.14: ruff, pydoclint, basedpyright, type-completeness floors, the import-linter contracts, and pytest with coverage floors.
   - It also tests the lowest supported dependency versions, lints the workflows with zizmor, builds the wheels (`twine check`), runs `nix flake check`, and builds the Docker image and checks `/health`.
   - Separately, CodeQL scans the code. `audit.yml` runs pip-audit on the exported lock for pull requests that touch it, and weekly. `dependency-submission.yml` feeds GitHub's dependency graph on a push to `main` when `uv.lock` changes. Dependabot updates actions, uv, Docker and Nix with a 7-day cooldown.
 - **Monitoring and logging:**
@@ -271,7 +278,7 @@ Keys stay with their own host. Each named LLM provider reads only its own key va
 ## 8. Development and testing
 
 - **Setup:** `uv sync --all-packages --extra cli --group dev --group test`. Details in [CONTRIBUTING.md](../CONTRIBUTING.md).
-- **All gates:** `just check` runs lint, docstrings, types and tests with the CI coverage floors.
+- **All gates:** `just check` runs lint, docstrings, types, public API types, the import contracts (`just layers`) and tests with the CI coverage floors.
 - **Testing:**
   - pytest with random ordering, warnings as errors, and the network blocked (`--disable-socket`; Unix sockets are allowed for asyncio).
   - Hypothesis property tests for streaming and spoken-prefix logic.
@@ -282,8 +289,9 @@ Keys stay with their own host. Each named LLM provider reads only its own key va
   - ruff (lint and format, including docstring rules).
   - pydoclint for NumPy-style docstrings.
   - basedpyright in strict mode, plus `verifytypes.py`, which keeps public API type completeness at 100%.
+  - import-linter, which checks the package and module import order in `pyproject.toml`.
   - The golden file `packages/kit/tests/golden/kit_api.json` makes every kit API change visible in review.
-- **Without hardware:** tests fake the microphone, speakers, Fish and the LLM. `fish-voice --smoke` synthesizes one line with Fish into a WAV file, which checks the key, voice and network without a microphone or speakers.
+- **Without hardware:** tests fake the microphone, speakers, Fish and the LLM. `scripts/vad_compare.py` plays a saved recording through the barge-in gate with each voice detector, and with `--process` runs it through the app's mic cleanup first. `fish-voice --smoke` synthesizes one line with Fish into a WAV file, which checks the key, voice and network without a microphone or speakers.
 
 ## 9. Invariants
 
@@ -291,12 +299,16 @@ The rules most easily broken, each with its reason. A test or a lint rule enforc
 
 ### Package boundaries
 
-- **Three distributions only: `fish-audio-suite-kit`, `-proxy` and `-voice`.** The CLI stays in voice. There is no fourth package, no OpenTelemetry SDK (kit parses W3C trace headers itself; FastAPI 0.142+ pulls in `opentelemetry-api`, which does nothing unless a deployment installs the SDK) and no VAD package of our own (voice uses `webrtcvad-wheels`).
-- **Shared logic lives in kit.** Scrubbing, cues, sentence cuts, W3C parsing, the Fish error shape and captions are written once there. Proxy and voice must not copy those regexes, and they import kit only through its root, never a private module.
+- **Three distributions only: `fish-audio-suite-kit`, `-proxy` and `-voice`.** The CLI stays in voice. There is no fourth package, no OpenTelemetry SDK (kit parses W3C trace headers itself; FastAPI 0.142+ pulls in `opentelemetry-api`, which does nothing unless a deployment installs the SDK) and no VAD package of our own (voice wraps `webrtcvad-wheels` or `pysilero-vad` behind its `Vad` interface).
+- **Shared logic lives in kit.** Scrubbing, cues, sentence cuts, W3C parsing, the Fish error shape and captions are written once there. Proxy and voice must not copy those regexes, and they import kit only through its root, never a submodule or a private module. `test_repo_rules` fails on a submodule import.
 - **Kit is pure text.** No network, no audio, no HTTP client, no `fishaudio`, no OpenTelemetry. `dependencies = []` keeps that honest, and a test checks that its sources import only the standard library.
+- **Imports point one way.** The import-linter contracts in `pyproject.toml` (`just layers`, run by `just check` and CI) encode the layering. Kit imports neither program, and the proxy and voice never import each other (`kit-is-the-base`, `apps-are-independent`), so what both need moves to kit. Inside voice, `voice-direction` lists the modules in rows: the CLI, then the session and its displays, then a turn, capture and speech, adapters, and settings at the bottom. A module may import its own row and the rows below it, never a row above. A new module goes in the lowest row it fits.
 
 ### Listening
 
+- **One mic stream for the session, and every reader goes through it.** `SessionMic` opens the input on the first read and keeps it open between readers. Listen, streaming, the turn check's continuation, barge-in and the cooldown log all read its frames, picking up by `position` where another stopped. Opening a stream per read lost the audio between readers, such as the start of the words that tripped a barge-in. Do not open a second input stream.
+- **Every frame is cleaned once, in order, as it arrives.** The `mic` thread runs `EchoCanceller.clean` on each frame whether or not anyone is reading, so AEC3 sees the mic and the speaker in step and the gain and noise estimates follow the room between replies. A reader never cleans a frame again. Every level a gate measures (`FISH_VOICE_BARGE_RMS`, the listen floor) is therefore after automatic gain, and changing `FISH_VOICE_AGC` moves them (issue #58).
+- **Each listen and each barge-in watch opens a fresh detector.** A `Vad` may keep state between frames (Silero rebuffers 30 ms frames into its own chunks and keeps the last score), so `open_vad` returns a new one each time and none is shared. `FISH_VOICE_VAD` sets the strictness for both. When the chosen engine cannot open, start-up stops and says why (`vad_problem`). There is no fallback to another engine.
 - **With a streaming recogniser, only speech leaves the machine.** Nothing is connected or sent while the mic waits for speech to start, nor until the turn has `min_voiced_frames` voiced frames (a knock or a cough passes the start gate too, and the batch path drops them only after recording, so `streaming._hold_until_voiced` does it before connecting) (Deepgram closes a connection left without audio, about 10 s on its general STT API, so connecting early would only fail). The same gate (`listen._Listen`) as the batch path decides when it starts, the pre-roll and any barge-in prefix go first, and every connection sets `mip_opt_out=true`. A recogniser that streamed all the time would send a room's worth of audio nobody meant to share. A test checks that nothing is sent before speech.
 - **The batch path stays the default and the fallback.** `FISH_VOICE_STT` is `fish` unless set, and a turn Deepgram cannot serve (an outage, not a bad key) is heard with Fish ASR: `StreamFallback.prefix` carries the speech captured so far into the batch path as the barge-in prefix, so the first words are kept. A bad or missing key is fatal at startup instead, because falling back would hide it.
 - **Mute closes every mic path.** `LiveInput.mute` releases the session's `SessionMic` at once, closing the device and dropping the two seconds it kept; the next unmuted read opens it again. `LiveInput.next_turn` gives the context its mute switch (`DuplexContext.muted`), and `BargeGate` takes it as `muted`: a reply that starts muted opens no mic at all, and muting mid-reply ends the watch through `_CancelOrMuted` without setting the cancel flag. Typing a line or Escape still interrupts. Do not add a mic reader that ignores the switch.
@@ -313,7 +325,6 @@ The rules most easily broken, each with its reason. A test or a lint rule enforc
 - **History records only what was heard** (`spoken_so_far`), or nothing when no audio played. Storing the full reply would teach the next turn about words the user never heard.
 - **Playback never blocks the TTS loop.** Each chunk is written on a worker thread, and cancel and tokens wake the loop instead of being polled. A blocked loop stalls text going to Fish and audio coming back.
 - **`CancelledError` ends a stream quietly only when `is_own_cancel(flag)` is true.** Anything else (`asyncio.timeout`, an outer `task.cancel()`) must propagate. Reap a cancelled child with `reap(task)`, never `suppress(BaseException)`, so Ctrl+C and `SystemExit` are not swallowed. Ctrl+C must cancel the TTS turn (`session.turn`), not only the mic.
-
 - **The reply is levelled between the fade and the sink.** `wire._Shaper` runs `EdgeFade` and then `LoudnessMatch` on each PCM chunk before `sink.write`, and `SounddeviceSink` taps the far end from what it is given, so the echo canceller sees the level the speaker plays. The gain comes from the first chunk and then drifts slowly, silence is not counted, it is bounded to 12 dB and a soft limiter keeps peaks below full scale. The Fish websocket `TTSConfig` has no `normalize_loudness`, so this cannot be left to Fish. It adds no delay and is off unless `FISH_VOICE_NORMALIZE_LOUDNESS` is set.
 - **Cues are shaped before Fish sees them.** `normalize_cues(..., official=True)` (`FISH_TTS_CUES`, default `official`) maps any cue Fish does not list to the nearest official one with `cues.official_cue`, and drops one with no match, because a description of a face or a voice is acted out as a sound by some voices. `cues.MoodCarry` then puts the last emotion on any sentence that starts without one, in both `stream_scrub._StreamScrubber._emit` and `wire.text_events`, because each piece is sent on its own. A piece that continues a sentence gets no cue. Keep both in kit, with the stem table in `cues._CUE_STEMS`; never copy it.
 
@@ -349,7 +360,7 @@ The rules most easily broken, each with its reason. A test or a lint rule enforc
 ### Settings and secrets
 
 - **Env vars are read at startup, never at import.** `FISH_API_KEY` is read in the proxy's lifespan, the CLI, or `FishSpeaker(...)`, so importing the app and `GET /health` work with no key. There is no default voice id.
-- **Voice reads settings only in `config.load_config()` and the `*.from_env()` tunes**, once, with validation (a bad value warns and uses the default). Library classes take their settings as arguments. Two exceptions are not settings: `debug.debug_level()` reads `FISH_VOICE_DEBUG`, and `envfile` writes `os.environ` when it loads a dotenv file.
+- **Voice reads settings only in `config.load_config()` and the `*.from_env()` tunes**, once, with validation (a bad value warns and uses the default). Library classes take their settings as arguments. Two exceptions are not settings: `debug.debug_level()` reads `FISH_VOICE_DEBUG`, and `envfile` writes `os.environ` when it loads a dotenv file. `test_repo_rules` fails when any other voice module reads the environment.
 - **Key fields use `repr=False`.** Keys never reach a log or `/health`. A key goes only to its own host: each LLM provider reads only its own key variable, and the host of the final base URL decides which provider that is.
 
 ### The proxy
@@ -362,7 +373,7 @@ The rules most easily broken, each with its reason. A test or a lint rule enforc
 
 Known architectural debt and likely changes, roughly in order of value:
 
-- **Speech in the post-reply cooldown.** The mic now stays open for the session, and a listen after a barge-in reads on from the frame after the clip that tripped it, so that gap is closed. Speech in the cooldown is still not used: the cooldown keeps the bot's own echo from starting a turn. Feeding its last part to the next listen as pre-roll that cannot start a turn on its own would keep the first word of a quick reply.
+- **Speech in the post-reply cooldown.** The cooldown keeps the bot's own echo from starting a turn, so what the mic hears in it is only logged (`listen.cooldown`, with `--debug`), never used. Feeding its last part to the next listen as pre-roll that cannot start a turn on its own would keep the first word of a quick reply.
 - **A trained end-of-turn model on the Fish ASR path.** `FISH_VOICE_TURN_CHECK` judges the words with a small English heuristic (`judge_turn`). A small model (for example Pipecat's Smart Turn) that also hears the voice would judge pauses and other languages better. It is unmeasured on real speech.
 - **Trimming trailing silence** from ASR clips.
 - **`latency: "low"` for Fish speech.** Fish's compatible APIs default to it, but the Python SDK's `LatencyMode` accepts only `normal` and `balanced` and rejects `low` before the socket opens, so `speaker._sdk_latency` coerces it. Building the config without validation might reach the native realtime socket; it is untested, and Fish gives no figure for the saving.
@@ -380,7 +391,7 @@ Known architectural debt and likely changes, roughly in order of value:
 - **Repository:** https://github.com/kzndotsh/fish-audio-suite
 - **Maintainer:** kzndotsh
 - **License:** MIT ([LICENSE](../LICENSE))
-- **Last updated:** 2026-10-14
+- **Last updated:** 2026-10-25
 
 ## 12. Glossary
 

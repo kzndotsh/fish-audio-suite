@@ -1,4 +1,9 @@
-"""Mic barge-in gate: lookback, energy, min-speech, speaker-bleed delay."""
+"""Barge-in gate: stop a reply when the user talks over it.
+
+After the bleed delay the gate reads the session mic and counts frames that are both
+over an adaptive floor and voiced by the voice detector. Enough of them in a row stop
+the reply, and the frames that did it are kept for the next listen.
+"""
 
 from __future__ import annotations
 
@@ -37,10 +42,15 @@ __all__ = [
     "barge_rms_need",
 ]
 
+# One heartbeat trace line every this many frames (about 600 ms).
 LISTEN_HEARTBEAT_FRAMES: Final = 20
 # One MicLevel event every this many frames (about 90 ms), so a display can draw a meter.
 MIC_LEVEL_EVERY_FRAMES: Final = 3
+# Unvoiced frames in a row that take one hit back, so a short pause between words does
+# not reset the count.
 BARGE_MISS_DECAY_FRAMES: Final = 3
+# Frames (about 600 ms) kept for the next listen when the gate trips, so the words
+# that interrupted the reply reach speech recognition.
 BARGE_LOOKBACK_FRAMES: Final = 20
 
 
@@ -84,7 +94,8 @@ def barge_rms_need(
 ) -> float:
     """Raise the barge floor only when speaker bleed is still in the mic.
 
-    AEC3 already subtracts far-end. Stacking over-gain on cleaned RMS blocks real speech.
+    With echo cancellation on, the far-end is already subtracted, so raising the floor
+    on the cleaned mic would also block real speech.
     """
     if far_playing and not aec_on:
         # Below 1 the floor drops while the speaker is on, so bleed trips barge-in.
@@ -115,7 +126,7 @@ def _barge_heartbeat(
 
 
 class BargeGate:
-    """Interrupt TTS when the mic stays above the floor for enough frames.
+    """Interrupt TTS when the mic hears speech over the floor for enough frames.
 
     Parameters
     ----------
@@ -130,20 +141,21 @@ class BargeGate:
         Supplies the voice detector and its strictness. Barge-in uses listen's, so it
         never rejects speech that listen would accept. None uses the defaults.
     muted : Callable or None, optional
-        Says whether the user has muted the mic. While it is true the mic stays closed: a
-        reply that starts muted is not watched, and muting during a reply ends the watch
-        without interrupting it. Unmuting does not restart a watch that ended.
+        Says whether the user has muted the mic. A reply that starts muted is not
+        watched, and muting during a reply ends the watch without interrupting it.
+        Unmuting does not restart a watch that ended.
 
     Notes
     -----
-    The bleed delay is short when AEC3 is loaded and ``BargeTune.bleed_delay_s``
-    otherwise, so the speaker's own voice is not treated as the user. The floor
-    follows the room: it is the quiet-percentile of recent frames, never below
-    ``min_rms``. It is multiplied by ``playing_gain`` while audio is playing only when
-    AEC is off. A trip keeps the last 20 frames; the next listen starts from
-    that clip and skips the post-speak cooldown. Speech is scored with the same
-    voice detector and strictness as listen. Hits decay after 3 missed frames so a
-    short gap does not reset the phrase.
+    The bleed delay is ``AecTune.bleed_delay_s`` when echo cancellation is loaded and
+    ``BargeTune.bleed_delay_s`` otherwise, so the speaker's own voice is not taken for
+    the user. An explicit ``bleed_delay_s`` wins over both. The floor follows the room:
+    it is the quiet-percentile of recent frames, never below ``min_rms``. It is
+    multiplied by ``playing_gain`` while audio plays, only when AEC3 is not running. A frame counts only when it is over the floor and the voice detector calls it
+    speech. A trip keeps the last 20 frames and the mic position after them; the next
+    listen starts from that clip, reads on from that position, and skips the post-reply
+    cooldown. Three missed frames in a row take one hit back, so a short gap does not
+    reset the phrase.
     """
 
     def __init__(
@@ -292,16 +304,17 @@ class BargeGate:
                 if self._muted():
                     debug("barge.muted the mic is muted, so there is no barge-in watch")
                     return
-                # sleep() ignores cancel. A finished turn would wait out the rest
-                # of the bleed, or the next listen would open the mic twice.
+                # Wait on cancel, not sleep(), so a reply that ends during the bleed
+                # starts no watch and the thread ends at once.
                 if cancel.wait(timeout=delay):
                     debug("barge.bleed skipped (already cancelled)")
                     return
                 self.watch(cancel)
             except Exception as e:  # noqa: BLE001 - daemon-thread boundary, kept in self.failure and reported
                 # Setup can fail before watch() has its own handler, for
-                # example loading AEC or the VAD. Without this the thread
-                # would die silently and the reply would play with no barge-in.
+                # example loading the processor or the voice detector. Without
+                # this the thread would die silently and the reply would play
+                # with no barge-in.
                 self.failure = e
                 warn(f"[barge-in] off for this reply: {e}")
 

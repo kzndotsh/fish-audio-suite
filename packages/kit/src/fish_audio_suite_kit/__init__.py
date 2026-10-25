@@ -1,4 +1,9 @@
-"""Unofficial Fish Audio text helpers. Not affiliated with Fish Audio."""
+"""Shared Fish Audio helpers for proxy and voice.
+
+Cue tags, TTS and ASR scrubbing, sentence cuts, turn judging, shared defaults,
+environment readers, the Fish error shape and retry policy, and W3C trace headers.
+No HTTP client, no audio, no API key. Unofficial. Not affiliated with Fish Audio.
+"""
 
 from fish_audio_suite_kit._version import read_version
 from fish_audio_suite_kit.asr_text import (

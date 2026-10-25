@@ -42,6 +42,7 @@ __all__ = [
 
 PRO_ASR_MODEL: Final = "transcribe-1-pro"
 _DIARIZE_VALUES: Final = ("auto", "true", "false")
+# No speaker count needs more digits, and the cap keeps int() off a huge string.
 _MAX_COUNT_DIGITS: Final = 6
 _TRUE_WORDS: Final = frozenset({"true", "1"})
 _FALSE_WORDS: Final = frozenset({"false", "0"})
@@ -512,10 +513,10 @@ def transcription_body(
     data : AsrBody
         Decoded Fish JSON, used for ``duration`` (seconds) and language. The
         ``verbose_json`` language is Fish's ``language`` name in lowercase, as
-        OpenAI sends it (``english``), else ``language_code``, else
-        ``language`` below. With
-        ``word`` granularity, ``verbose_json`` adds ``words``: one row per Fish
-        word segment, or the body's own ``words`` array when it has one.
+        OpenAI sends it (``english``), else ``language_code``, else the
+        ``language`` argument. With ``word`` granularity, ``verbose_json`` adds
+        ``words``: one row per Fish word segment, or the body's own ``words``
+        array when it has one.
     language : str or None
         The language hint sent to Fish, used when Fish names none.
     granularities : sequence of str
@@ -590,8 +591,8 @@ def asr_upload(
     """
     want_ts = fmt in _TIMED_FORMATS or bool(granularities)
     form = {"ignore_timestamps": "false" if want_ts else "true"}
-    # A newline in a form value starts another part. "en\r\n..." was sent
-    # to Fish as a second field, and the language itself was only "en".
+    # A newline in a form value would start another part, so each hint is cut
+    # at its first control character.
     lang = asr_language_hint(_single_line(inbound.language, "")) or asr_language_hint(
         _single_line(defaults.asr_language, "")
     )

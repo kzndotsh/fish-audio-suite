@@ -108,7 +108,7 @@ def _drop_orphan_closer(stable: str, ready: str) -> str:
     if not ready or not ready[-1].isalnum():
         return stable
     # "~~~" then a newline is a code fence, not a leftover closer.
-    # Stripping it spoke the code.
+    # Stripping it would speak the code.
     if stable.startswith(("~~~", "```")):
         return stable
     return _ORPHAN_CLOSER_RE.sub("", stable)
@@ -124,7 +124,7 @@ def _continues_sentence(ready: str, incoming: str = "") -> bool:
         return False
     if ends_sentence(ready):
         return False
-    # "Hello؟" + " Excited" — the space is still in this token, not in ready.
+    # "Hello؟" + " Excited": the space is still in this token, not in ready.
     # "Dr." + " Happy" is not a new sentence.
     return not (incoming[:1].isspace() and ends_sentence(ready + incoming[:1]))
 

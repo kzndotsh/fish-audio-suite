@@ -230,7 +230,7 @@ class _Capture:
 
     async def captured(self) -> bytes:
         """Stop the mic thread and return every frame it captured that was not taken yet."""
-        self._decided.set()  # a fallback listens afresh, so this thread has to let go of the mic
+        self._decided.set()
         # Frames the thread handed over are still callbacks on the loop until it has
         # stopped. The thread's own failure is not this turn's to report. The shield
         # keeps a cancelled turn from cancelling the pump, which cleanup still awaits.
@@ -401,7 +401,7 @@ async def stream_turn(
     on_eager: Callable[[str], None] | None = None,
     on_resumed: Callable[[], None] | None = None,
 ) -> StreamedTurn | StreamFallback | Stopped:
-    """Open the mic, stream one turn to Flux, and return what it heard.
+    """Read one turn from the mic, stream it to Flux, and return what it heard.
 
     Parameters
     ----------
@@ -410,7 +410,7 @@ async def stream_turn(
     listen : ListenTune
         The voice-activity settings that decide when speech starts.
     mic : Mic
-        Where the frames come from, already cleaned of echo.
+        Where the frames come from, already cleaned by the session's audio processor.
     quit_requested : StopFlag
         Set when the session is ending.
     stop : StopFlag

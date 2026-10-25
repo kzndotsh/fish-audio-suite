@@ -44,8 +44,8 @@ __all__ = [
     "turn_summary",
 ]
 
-# watch() polls the mic for 0.2 s. The join has to cover that poll so the
-# stream is closed before the next listen opens the device.
+# The barge watch notices its stop flag within one mic poll (0.2 s). The join
+# waits that out, so the watch has stopped reading before the next listen starts.
 _BARGE_JOIN_S: Final = 1.0
 
 
@@ -138,7 +138,10 @@ async def collect_reply(
     on_token: Callable[[str], None] | None = None,
     tone: tuple[str, ...] = (),
 ) -> tuple[str, float | None]:
-    """Stream the model's reply into one string, timing its first token."""
+    """Stream the model's reply into one string, timing its first token.
+
+    A ``ChatUnusableError`` from the backend propagates to the caller.
+    """
     parts: list[str] = []
     ttft_ms: float | None = None
     tokens = _tokens_for(ctx, llm_cancel, trace_id, tone)
@@ -297,8 +300,8 @@ async def speak_reply(
             resumes=resumes,
         )
     finally:
-        # watch() holds the mic until this event is set. The next listen
-        # opens the same device as soon as this function returns.
+        # The barge watch reads the mic until this is set. The next listen
+        # starts as soon as this function returns.
         cancel.set()
         thread.join(timeout=_BARGE_JOIN_S)
 
@@ -345,7 +348,8 @@ async def stream_turn(
     Tokens go to the TTS thread as they arrive. The barge-in gate arms at the
     first audio chunk, not at the start, so it does not listen to a silent
     speaker. A Fish failure before any audio falls back to speaking the
-    finished reply.
+    finished reply. A ``ChatUnusableError`` lets the Fish turn end, then
+    returns ``EXIT_FATAL``.
     """
     c = ctx.config
     pipe = _TokenPipe()
@@ -394,7 +398,7 @@ async def stream_turn(
                 tone=heard.tone,
             )
         except ChatUnusableError:
-            # Fish is already listening, so the turn ends the usual way first.
+            # The Fish turn is already open, so it ends the usual way first.
             unusable = True
         finally:
             pipe.close()

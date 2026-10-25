@@ -10,7 +10,7 @@
 
 ## Checklist
 
-- [ ] `just check` passes (ruff, pydoclint, basedpyright, pytest with the coverage floors)
+- [ ] `just check` passes (ruff, pydoclint, basedpyright, public API types, import contracts, pytest with the coverage floors)
 - [ ] New behavior or a bug fix has a test
 - [ ] Public signatures have matching NumPy docstrings
 - [ ] README, docs or CONTRIBUTING updated if a setting, command or boundary changed

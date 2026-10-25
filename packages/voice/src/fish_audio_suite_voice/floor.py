@@ -11,8 +11,12 @@ __all__ = [
     "AdaptiveFloor",
 ]
 
+# Quiet 30 ms frames remembered (about 2.4 s), and how many (about 0.75 s) before the
+# estimate replaces the seed.
 _FLOOR_WINDOW: Final = 80
 _FLOOR_FILL: Final = 25
+# The floor is this percentile of the quiet frames times the gain, so speech has to be
+# well above the room's hiss. The estimate is then held between the low and high bounds.
 _FLOOR_PERCENTILE: Final = 20.0
 _FLOOR_GAIN: Final = 2.5
 _FLOOR_LO: Final = 80.0
@@ -20,7 +24,23 @@ _FLOOR_HI: Final = 450.0
 
 
 class AdaptiveFloor:
-    """Quiet-percentile RMS gate. ``default`` is the seed until the window fills."""
+    """Quiet-percentile RMS floor that follows the room.
+
+    Parameters
+    ----------
+    default : float
+        The seed, used until enough quiet frames are seen. The floor never drops below it.
+    window : int, optional
+        Quiet frames remembered.
+    percentile : float, optional
+        Percentile of the quiet frames the estimate starts from.
+    gain : float, optional
+        Multiplier on that percentile.
+    lo : float, optional
+        Lowest estimate.
+    hi : float, optional
+        Highest estimate. The seed still wins when it is higher.
+    """
 
     def __init__(
         self,
@@ -51,7 +71,7 @@ class AdaptiveFloor:
             return self.default
         quiet = np.fromiter(self.window, dtype=np.float64)
         est = float(np.percentile(quiet, self.percentile) * self.gain)
-        # The high cap limits the estimate. It must not undercut the seed,
-        # or a loud FISH_VOICE_MIN_RMS starts accepting quieter frames.
+        # The high cap limits the estimate. It must not undercut the seed, or a seed
+        # set above it (FISH_VOICE_MIN_RMS, FISH_VOICE_BARGE_RMS) would accept quieter frames.
         capped = min(self.hi, max(self.lo, est))
         return float(max(self.default, capped))

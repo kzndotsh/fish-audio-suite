@@ -670,7 +670,8 @@ def _parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--reasoning-effort",
-        help="none, minimal, low, medium, high or max. Default FISH_LLM_REASONING_EFFORT.",
+        help="none, minimal, low, medium, high, max, or off to send none. "
+        "Default FISH_LLM_REASONING_EFFORT.",
     )
     parser.add_argument(
         "--provider-sort",

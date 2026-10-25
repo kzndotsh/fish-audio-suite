@@ -1,4 +1,4 @@
-"""Importable Fish live TTS toolkit. Duplex CLI is one recipe."""
+"""Fish live TTS, playback, mic cleanup and barge-in as a library. The CLI is one recipe."""
 
 from fish_audio_suite_voice.aec import EchoCanceller
 from fish_audio_suite_voice.barge import BargeGate

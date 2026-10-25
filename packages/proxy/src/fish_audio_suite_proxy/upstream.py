@@ -287,8 +287,8 @@ async def fish_send(
             if not isinstance(exc, _RETRY_TRANSPORT):
                 return last_error
         else:
-            # 3xx is not audio. A redirect body was streamed to the client
-            # as a 200 file, so the reply was never spoken.
+            # Only 2xx is audio. A 3xx redirect body streamed through would
+            # reach the client as a 200 file with no speech in it.
             if 200 <= upstream.status_code < 300:
                 return upstream
             try:

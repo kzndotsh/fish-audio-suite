@@ -151,8 +151,8 @@ async def openrouter_client(tune: LlmTune) -> AsyncGenerator[Any, None]:
 
     # The SDK's own client keeps idle connections for 5 s, so pass one that
     # lives across turns. The SDK does not close a client it was given. It
-    # writes the key into Authorization and adds Bearer itself, and a newline
-    # raises before the request is sent, so the reply is empty.
+    # adds "Bearer " to the key itself, so ``bearer`` is used only to blank a
+    # key with a newline, which would raise before the request is sent.
     async with (
         httpx.AsyncClient(
             follow_redirects=True, limits=httpx.Limits(keepalive_expiry=HTTP_KEEPALIVE_S)
@@ -390,8 +390,8 @@ def _sse_object(data: str) -> dict[str, Any] | None:
 
 
 def _data_line(line: str) -> str | None:
-    # A leading BOM is not part of the field name. The first token was
-    # ignored, so a one-event reply never started.
+    # A leading BOM is not part of the field name. Left on, it hides the
+    # first event, and a one-event reply never starts.
     if line.startswith("\ufeff"):
         line = line.removeprefix("\ufeff")
     if not line or line.startswith(":") or not line.startswith(_SSE_DATA):

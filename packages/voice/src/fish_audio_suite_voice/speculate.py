@@ -59,7 +59,7 @@ class Speculation:
     ----------
     backend : ChatBackend
         The model.
-    messages : list of dict
+    messages : list of ChatMessage
         The chat so far, with ``text`` already added as the user's last line.
     text : str
         The words the reply answers.

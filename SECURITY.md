@@ -5,13 +5,13 @@ API key and spends its credits, so reports about it are taken seriously.
 
 ## Supported versions
 
+Nothing is released yet: there are no tags and nothing is on PyPI until 1.0.0.
+Until then the supported code is the `main` branch, and a security fix lands there.
+From 1.0.0, security fixes go into the newest release.
+
 | Version | Supported |
 | --- | --- |
-| 0.1.x | Yes. Security fixes land here. |
-| Older than 0.1 | No |
-
-While the packages are 0.x, a minor release may change behavior. A security fix
-goes into the newest 0.x release first.
+| `main` (0.1.0, unreleased) | Yes |
 
 ## Report a vulnerability
 

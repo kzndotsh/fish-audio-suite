@@ -82,7 +82,7 @@ class SessionView:
     turns : int
         How many turns have finished.
     mic_rms : float
-        The latest mic level.
+        The latest mic level, after mic cleanup.
     mic_need : float
         The level that counts as speech.
     last_notice : str
@@ -121,7 +121,7 @@ class SessionView:
 
 
 def level_fraction(rms: float) -> float:
-    """Map a mic RMS level to how full a meter should be, from 0 to 1.
+    """Map an RMS level, from the mic or the speaker, to how full a meter should be, from 0 to 1.
 
     Parameters
     ----------

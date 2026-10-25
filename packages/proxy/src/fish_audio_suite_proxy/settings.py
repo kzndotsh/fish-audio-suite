@@ -189,7 +189,9 @@ class ProxySettings:
         Returns
         -------
         dict
-            Defaults, flags, limits, and retry knobs. ``tts_model``,
+            Models, language, latency, chunk length, format, speed, the text
+            flags, the body and input limits, and the retry and ASR timeout
+            knobs. No key value appears, only ``auth_required``.
         """
         d = self.defaults
         return {

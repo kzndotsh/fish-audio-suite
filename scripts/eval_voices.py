@@ -14,6 +14,7 @@ line.
     uv run python scripts/eval_voices.py            # the VOICES and TTS_MODELS at the top
     uv run python scripts/eval_voices.py -t "[happy] Hello there, how are you?"
     uv run python scripts/eval_voices.py --find "narrator" --language en
+    uv run python scripts/eval_voices.py --dry-run  # list the files, make no requests
 
 `--find` lists public Fish voices (id, title, popularity) so you can copy ids into
 `VOICES`. Your key comes from `.env` (`FISH_API_KEY`), and `FISH_VOICE_ID` is used when
@@ -326,7 +327,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         text = args.text_file.read_text(encoding="utf-8").strip()
     else:
         text = (args.text or TEXT).strip()
-    # The same cleanup the voice app applies before it sends text to Fish.
+    # FishSpeaker.speak cleans the text again, in the app's order (scrub_tts, then
+    # normalize_cues). Unlike the app's default, unsupported cues are not filtered out
+    # (official_cues is off), so a clip can carry a cue the app would drop.
     spoken = scrub_tts(normalize_cues(text))
     out_dir = Path(args.out_dir) if args.out_dir else ROOT / OUT_DIR
     stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")

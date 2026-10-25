@@ -1,9 +1,9 @@
-"""Optional in-process mic cleanup through WebRTC's audio processor.
+"""Mic cleanup through WebRTC's audio processor, from the optional ``aec`` extra.
 
 Every mic frame gets a high-pass filter, automatic gain and noise suppression, and AEC3
 while the speaker plays (far-end is speaker PCM, near-end is the mic). A missing extra,
-or every stage turned off, returns the mic unchanged, and the bleed delay stays the
-fallback. PipeWire echo-cancel is a host trick, not this module.
+or every stage turned off, returns the mic unchanged, and barge-in falls back to the
+longer bleed delay. PipeWire echo-cancel is a host setting, not this module.
 """
 
 from __future__ import annotations
@@ -31,9 +31,14 @@ AEC_RATE: Final = 16_000
 SAMPLE_BYTES: Final = 2
 _FAR_HOLD_S: Final = 2
 FAR_HOLD_SAMPLES: Final = AEC_RATE * _FAR_HOLD_S
+# Playback that ended this recently still counts as playing: its tail is still in the
+# device buffer and the room.
 _FAR_RECENT_S: Final = 0.4
 _RMS_FLOOR: Final = 1e-9
+# A far-end frame quieter than this has no echo worth cancelling, so the mic frame is
+# treated as if nothing played.
 FAR_SILENCE_RMS: Final = 40.0
+# A wet mix this close to 1 skips the blend with the raw mic.
 _FULL_WET: Final = 0.999
 # WebRTC's ns_level for each attenuation step in AecTune.noise_suppression_db.
 _NS_LEVELS: Final = {6: 0, 12: 1, 18: 2, 21: 3}
@@ -154,23 +159,26 @@ def pcm_rms(frame: bytes) -> float:
     return float(np.sqrt(np.mean(samples * samples)) + _RMS_FLOOR)
 
 
+# ``align`` keeps the output latency, at least this much, plus the margin.
 _ALIGN_MIN_S: Final = 0.06
 _ALIGN_MARGIN_S: Final = 0.06
 _DEFAULT_OUTPUT_LATENCY_S: Final = 0.0
 
 
 class EchoCanceller:
-    """One session's far-end tap, AEC3 processor, and tuning.
+    """One session's mic cleanup: the far-end tap, WebRTC's processor and its settings.
 
     Parameters
     ----------
     tune : AecTune or None, optional
-        Echo settings. None uses the defaults.
+        Mic cleanup settings. None uses the defaults, every stage on.
+        ``AecTune.off()`` leaves the mic untouched.
 
     Notes
     -----
-    The processor loads on first use. A missing ``pywebrtc-audio`` extra is
-    remembered for this instance and the mic passes through unchanged.
+    The processor loads on first use. A missing ``pywebrtc-audio`` package, or a
+    processor that fails to start, is remembered for this instance and the mic
+    passes through unchanged.
     """
 
     def __init__(self, tune: AecTune | None = None) -> None:
@@ -182,12 +190,13 @@ class EchoCanceller:
         self._lock = threading.Lock()
 
     def load(self) -> Any | None:
-        """Load the optional AEC3 processor once.
+        """Load the processor once.
 
         Returns
         -------
         Any or None
-            The processor, or None when AEC is off or the extra is missing.
+            The processor, or None when every stage is off, the extra is missing or
+            the processor failed to start.
         """
         tune = self.tune
         if not (tune.enabled or tune.auto_gain or tune.noise_suppression_db):
@@ -225,15 +234,16 @@ class EchoCanceller:
             ns_level=_NS_LEVELS.get(tune.noise_suppression_db, 0),
             high_pass_filter=True,
             auto_gain_control=tune.auto_gain,
+            # ``align`` trims the far-end ring to the speaker's latency instead.
             stream_delay_ms=0,
         )
 
     def available(self) -> bool:
-        """Return whether AEC3 loaded and is enabled."""
+        """Return whether echo cancellation is on and the processor loaded."""
         return self.tune.enabled and self.load() is not None
 
     def tap_playback(self, pcm: bytes, sample_rate: int) -> None:
-        """Record speaker PCM as far-end, or only the playing mark when AEC is off.
+        """Record speaker PCM as far-end, or only the playing mark when echo cancellation is off.
 
         Parameters
         ----------
@@ -306,7 +316,7 @@ class EchoCanceller:
         Gain and noise suppression run on every frame, so their estimates follow the
         room between replies. AEC3 needs a far-end frame every time, so silence stands
         in while nothing plays. ``AecTune.wet`` mixes the raw mic back in only while the
-        speaker plays, as before.
+        speaker plays.
         """
         proc = self.load()
         if proc is None or len(near) < SAMPLE_BYTES:

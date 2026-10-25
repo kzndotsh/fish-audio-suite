@@ -257,7 +257,8 @@ def fish_attempt_exhausted(attempt: int) -> bool:
     Parameters
     ----------
     attempt : int
-        Index into ``FISH_RETRY_ATTEMPTS`` (5), so attempt 4 is the last.
+        Zero-based attempt number. ``FISH_RETRY_ATTEMPTS`` is 5, so attempt 4
+        is the last.
 
     Returns
     -------
@@ -517,7 +518,7 @@ class FishErrorBody:
         return {"message": self.message, "status": self.status}
 
     def __getitem__(self, key: Literal["status", "message"]) -> str | int:
-        """Read a field by name, for code that still treats the body as a dict.
+        """Read a field by name, for code that reads the body as a dict.
 
         Parameters
         ----------

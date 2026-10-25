@@ -54,8 +54,9 @@ uv run python scripts/eval_models.py --prompts-file prompts.txt --runs 5 --warmu
 | `--quiet` | Do not print each reply as it arrives, only the summary table |
 | `--dry-run` | List what would run and make no requests |
 
-Settings come from the environment and `--env-file` (default `.env`): the same
-`OPENROUTER_API_KEY`, `FISH_LLM_*` variables `fish-voice` reads. Requests run one at
+Settings come from the environment and `--env-file` (default `.env`), the same
+variables `fish-voice` reads: the provider's key (such as `OPENROUTER_API_KEY`) or
+`FISH_LLM_API_KEY`, and the `FISH_LLM_*` settings. Requests run one at
 a time, so they do not compete for a rate limit.
 
 ## eval_voices.py
@@ -96,11 +97,13 @@ uv run python scripts/eval_voices.py --dry-run             # list the files, mak
 | `--latency` | Fish latency mode (default `normal`) |
 | `--sample-rate` | Sample rate of the clips (default 44100) |
 | `--out-dir` | Write the clips elsewhere |
-| `--find WORDS` | List public voices whose title matches, most used first, then stop. Use `--language` and `--count` to narrow it |
+| `--env-file` | Settings file (default `.env`) |
+| `--find WORDS` | List public voices whose title matches, most used first, then stop. `--language` keeps one language, such as `en`, and `--count` sets how many (default 15) |
 | `--dry-run` | List the files that would be written and make no requests |
 
-The text goes through the same cleanup the voice app applies (`scrub_tts`, then
-`normalize_cues`) before it is sent to Fish. Your key comes from `.env` (`FISH_API_KEY`).
+The text goes through the voice app's speech cleanup (`FishSpeaker.speak` runs `scrub_tts`,
+then `normalize_cues`) before it is sent to Fish. Unlike the app's default, cues Fish does
+not support are not filtered out, so a clip can carry a cue the app would drop. Your key is `FISH_API_KEY`, from `.env` or the environment.
 
 ## mic_levels.py
 
@@ -108,9 +111,12 @@ Records your mic for a few seconds and prints its level about every 90 ms, then 
 summary: the noise floor, the average level while you talk, the loudest moment and how
 far a plosive or bump sits above your speech. It is for tuning how the waveform in
 `fish-voice --tui` scales a real mic. It calls no API, sends nothing and saves no audio.
+It needs the `speakers` extra. It reads the raw mic: `fish-voice` adds automatic gain and
+noise suppression, so a quiet voice reads louder in the app than here.
 
 ```bash
-uv run python scripts/mic_levels.py --seconds 12
+uv run python scripts/mic_levels.py --seconds 12   # the default length
+uv run python scripts/mic_levels.py --device 3     # a PortAudio device number
 ```
 
 Stay quiet for the first two seconds, then talk as you would to the assistant. On NixOS,
@@ -122,23 +128,27 @@ Plays one recording through each voice detector and the real barge-in gate, and 
 where each would have interrupted the bot. For every engine and strictness it prints a
 timeline of the frames called speech, a caret under each interruption and a one-line
 summary. Typing, coughs and chairs should leave the timeline empty and trip nothing. It
-calls no API and sends nothing. `--record` saves the WAV it records, so every detector
-hears the same take.
+calls no API and sends nothing.
 
 ```bash
-uv run python scripts/vad_compare.py --record 30 take.wav
+uv run python scripts/vad_compare.py --record 30 take.wav   # record, then compare
 uv run python scripts/vad_compare.py take.wav --engines webrtc,silero --strictness 1,2
 uv run python scripts/vad_compare.py take.wav --process
 ```
 
-The WAV is the raw mic. `--process` first runs it through the app's mic cleanup (automatic
-gain and noise suppression), so the detectors hear what `fish-voice` hears.
+| Flag | Meaning |
+| --- | --- |
+| `wav` | A 16 kHz mono 16-bit WAV. `--record` writes one in that format |
+| `--record SECONDS` | Record the mic this long and save it to `wav` first, so every detector hears the same take. Needs the `speakers` extra |
+| `--device` | A PortAudio input device number, for `--record` |
+| `--engines` | Comma-separated engines (default `webrtc,silero`). A plugin is named as `package.module:factory`. An engine that cannot load is reported as skipped |
+| `--strictness` | Comma-separated levels from 0 to 3 (default `1`), as in `FISH_VOICE_VAD` |
+| `--process` | Run the take through the app's mic cleanup first (automatic gain and noise suppression, set by `FISH_VOICE_AGC` and `FISH_VOICE_NOISE_SUPPRESSION`), so the detectors hear what `fish-voice` hears. Needs the `aec` extra |
 
-A useful take is ten seconds of typing, ten of talking, then typing while you talk. The
-gate runs as if the bot were silent, with no echo cancellation. Silero needs the `silero`
-extra, and a plugin can be named as `package.module:factory`. On NixOS, set
+The WAV is the raw mic. A useful take is ten seconds of typing, ten of talking, then
+typing while you talk. The gate runs as if the bot were silent, with no echo
+cancellation and the default barge-in settings (`FISH_VOICE_BARGE_*` are not read). Silero needs the `silero` extra. On NixOS, set
 `LD_LIBRARY_PATH=$NIX_LD_LIBRARY_PATH` first.
-
 
 ## deepgram_check.py
 
@@ -146,8 +156,14 @@ Streams your mic to Deepgram's Flux the way `FISH_VOICE_STT=deepgram` does, and 
 turn: the words as they arrive, the final text, and the time from your last speech to the
 final text. Use it to try Deepgram, and to see what streaming saves, before turning it on.
 It calls the live Deepgram API and spends a little credit, but no Fish or language-model
-calls. It needs `DEEPGRAM_API_KEY` and the `deepgram` extra.
+calls. It needs `DEEPGRAM_API_KEY` (in `.env` or the environment) and the `speakers`,
+`vad` and `deepgram` extras. It sends the raw mic, without the app's automatic gain and noise
+suppression.
 
 ```bash
 uv run python scripts/deepgram_check.py --turns 3
+uv run python scripts/deepgram_check.py --device 3   # a PortAudio device number
 ```
+
+Say a sentence, then stop. Ctrl+C ends it. On NixOS, set
+`LD_LIBRARY_PATH=$NIX_LD_LIBRARY_PATH` first.

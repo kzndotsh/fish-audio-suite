@@ -19,7 +19,7 @@ __all__ = [
     "split_tts_piece",
 ]
 
-# Flush a long clause when no sentence end has arrived. Default is 40.
+# Flush a long clause when no sentence end has arrived.
 _PARTIAL_CHARS = SuiteDefaults().tts_partial_chars
 # A partial cut at the last space is used only when that space is at least this
 # far in. Earlier than that, a hard cut at the window beats a tiny first piece.
@@ -224,9 +224,9 @@ def _partial_cut(buf: str, partial_chars: int) -> int:
     if partial_chars < 1 or len(buf) < partial_chars:
         return -1
     # Search only the window. The last space in the whole buffer would send
-    # the entire clause once it passes the threshold. A newline is a word
-    # boundary too: a line-broken reply was cut inside "golf". A non-breaking
-    # space is the same boundary. Leaving it out cut "door" in half.
+    # the entire clause once it passes the threshold. Any whitespace counts,
+    # newline and non-breaking space included, so a word next to one is not
+    # cut in half.
     cut = -1
     for index, ch in enumerate(buf[:partial_chars]):
         if ch.isspace():
@@ -237,7 +237,7 @@ def _partial_cut(buf: str, partial_chars: int) -> int:
 
 
 def _cut_outside_brackets(buf: str, cut: int) -> int:
-    # The 40-character cut can land inside [whispering]. Fish then hears
+    # A partial cut can land inside [whispering]. Fish then hears
     # "[whi" and "spering]" as two pieces and speaks the markup.
     if cut <= 0:
         return cut
@@ -274,7 +274,7 @@ def next_tts_cut(buf: str, *, partial_chars: int = _PARTIAL_CHARS) -> int:
         Text buffered from the model so far.
     partial_chars : int, optional
         Flush near this length when no sentence end is in the buffer.
-        Default is about 40 characters.
+        Default ``SuiteDefaults().tts_partial_chars``, 40 characters.
 
     Returns
     -------
@@ -286,7 +286,8 @@ def next_tts_cut(buf: str, *, partial_chars: int = _PARTIAL_CHARS) -> int:
     A sentence end wins, except ``Dr.``, a one-letter initial, and ``1.``.
     An ideographic full stop ends a sentence with no space required. A space
     that is already after it stays on that sentence, so the next cue is not
-    glued to the stop. A stop can also be glued to the next word. A finished
+    glued to the stop. An ASCII stop glued to the next word (``Done.Next``)
+    still ends the sentence, unless it is a decimal or an abbreviation. A finished
     sentence longer than the window still cuts early, or the first audio
     would wait for the whole sentence. Otherwise the cut is the last space
     or newline before ``partial_chars``, or ``partial_chars`` itself when

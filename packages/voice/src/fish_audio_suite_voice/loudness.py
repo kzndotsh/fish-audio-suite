@@ -56,9 +56,9 @@ class LoudnessMatch:
     target_db : float
         The level to bring speech to, in dB below full scale (RMS), such as ``-18``.
     max_boost_db : float, optional
-        The most the audio may be made louder.
+        The most the audio may be made louder, in dB.
     max_cut_db : float, optional
-        The most the audio may be made quieter.
+        The most the audio may be made quieter, in dB.
 
     Notes
     -----

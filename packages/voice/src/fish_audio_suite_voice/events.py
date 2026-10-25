@@ -74,14 +74,15 @@ class Listening:
 
 @dataclass(frozen=True, slots=True)
 class Heard:
-    """A line will be answered: Fish ASR returned it, or the user typed it.
+    """A line will be answered: speech recognition returned it, or the user typed it.
 
     Attributes
     ----------
     text : str
         The transcript, or the typed text.
     asr_ms : float
-        How long the ASR request took. 0 for typed text.
+        How long recognition took: the Fish ASR request, or from the last speech until
+        Deepgram's text was final. 0 for typed text.
     at : float
         ``time.monotonic()`` when the event was made. Not part of equality.
     """
@@ -172,12 +173,12 @@ class BargedIn:
 
 @dataclass(frozen=True, slots=True)
 class MicLevel:
-    """How loud the mic is, a few times a second while it is open.
+    """How loud the mic is, about every 90 ms while listen or barge-in reads it.
 
     Attributes
     ----------
     rms : float
-        RMS of the latest frame, after echo cancellation.
+        RMS of the latest frame, after mic cleanup.
     need : float
         The level a frame has to reach to count as speech.
     source : {"listen", "barge"}

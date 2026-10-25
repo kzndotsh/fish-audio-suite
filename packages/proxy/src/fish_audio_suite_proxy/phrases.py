@@ -25,6 +25,8 @@ __all__ = [
 # many of them ahead of the last match. A word the transcript lacks is used as
 # Fish sent it, and the search does not move.
 _ALIGN_WINDOW: Final = 24
+# Longest cue body read beside a word, and the most openers, closers or spaces
+# taken from either side of it.
 _CUE_MAX: Final = 64
 _EDGE_MAX: Final = 8
 # A ``<|speaker:0|>`` marker or ``[laughter]`` cue in the transcript is not
@@ -82,15 +84,16 @@ def word_cues(data: AsrBody, *, strip_speakers: bool, strip_cues: bool) -> list[
     data : AsrBody
         The Fish ASR response. Its segments are word-level.
     strip_speakers : bool
-        Drop inline ``<|speaker:N|>`` marks from the words.
+        Drop ``Speaker 1:`` labels from the words. Passed to ``scrub_asr``.
     strip_cues : bool
-        Drop inline emotion cues such as ``[calm]`` from the words.
+        Drop annotations such as ``[laughter]`` from the words. Passed to
+        ``scrub_asr``.
 
     Returns
     -------
     list of CaptionCue
-        Words with their start and end in milliseconds. Segments that are not
-        well-formed are skipped.
+        Words with their start and end in seconds. A segment that is not an
+        object with string ``text``, or is empty after scrubbing, is skipped.
     """
     # Fish JSON is checked only for ``text``, so a segment list can hold anything.
     raw_segments: object = dict(data).get("segments") or []

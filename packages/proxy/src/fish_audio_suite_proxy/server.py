@@ -1,11 +1,14 @@
-"""Fish Audio → OpenAI Audio proxy (TTS + STT).
+"""OpenAI-compatible audio API in front of Fish Audio.
 
-OpenAI-compatible:
-  POST /v1/audio/speech          → Fish POST /v1/tts
-  POST /v1/audio/transcriptions  → Fish POST /v1/asr
+Routes:
 
-Unofficial. Not affiliated with Fish Audio.
-Docs: https://docs.fish.audio/llms.txt
+- ``POST /v1/audio/speech`` calls Fish ``POST /v1/tts``.
+- ``POST /v1/audio/transcriptions`` calls Fish ``POST /v1/asr``.
+- ``GET /v1/models`` lists the model ids the routes accept.
+- ``GET /health`` reports liveness and the runtime defaults.
+
+Unofficial. Not affiliated with Fish Audio. Fish API docs:
+https://docs.fish.audio/llms.txt
 """
 
 from __future__ import annotations
@@ -70,8 +73,8 @@ __all__ = ["app", "lifespan", "main"]
 log: Final[logging.Logger] = logging.getLogger("fish-audio-suite-proxy")
 _PREVIEW_CHARS = 160
 _MAX_CONNECTIONS = 100
-# Keep every pooled connection warm, so a burst over the old limit of 20 did
-# not pay new TLS handshakes to Fish on the next burst.
+# Keep every pooled connection alive, so the next burst reuses them instead of
+# paying new TLS handshakes to Fish.
 _MAX_KEEPALIVE = _MAX_CONNECTIONS
 _KEEPALIVE_EXPIRY_S = 30.0
 _STARTED_AT = int(time.time())
@@ -221,9 +224,9 @@ def _asr_text(
     )
     detected_lang = data.get("language") or data.get("language_code") or lang
     if is_asr_hallucination(text):
-        # A watermark or blank text still drops words that Fish put only in
-        # segments. A watermark segment next to real speech is left out, or
-        # the caption line is spoken with the sentence.
+        # Fish can put real words only in segments, so rebuild the text from
+        # the segments before dropping the turn. Watermark segments are left
+        # out, or the caption line would be answered with the speech.
         cues = [
             cue
             for cue in caption_cues(data, "", strip_speakers=strip_speakers, strip_cues=strip_cues)
@@ -235,16 +238,14 @@ def _asr_text(
         log.info("asr drop hallucination lang=%r chars=%d", detected_lang, len(text))
         return "", []
     cues = caption_cues(data, text, strip_speakers=strip_speakers, strip_cues=strip_cues)
-    # A watermark segment is omitted from the captions. The top-level text
-    # still contains that phrase, so JSON says "thanks for watching" and
-    # the SRT file does not.
+    # The captions already omit a watermark segment, but the top-level text
+    # still holds the phrase. Trim it so the JSON and caption formats agree.
     trimmed = without_watermark_segments(
         text, data.get("segments"), strip_speakers=strip_speakers, strip_cues=strip_cues
     )
     if trimmed != text and trimmed and not is_asr_hallucination(trimmed):
-        # Segment cues already omit the watermark. When every segment was
-        # one, the fallback cue was the untrimmed text, so the SRT file
-        # still said "thanks for watching".
+        # Rebuild the cues from the trimmed text. When every segment was a
+        # watermark, the fallback cue would otherwise carry the untrimmed text.
         return trimmed, caption_cues(
             data, trimmed, strip_speakers=strip_speakers, strip_cues=strip_cues
         )
@@ -506,7 +507,6 @@ def main() -> None:
     processes. Websockets are disabled. ``forwarded-allow-ips`` is left
     at uvicorn's default, not ``*``. The default host is ``127.0.0.1``.
     """
-    # Import string so --workers / FISH_PROXY_WORKERS can spawn processes.
     uvicorn.run("fish_audio_suite_proxy.server:app", **_uvicorn_run_kwargs())
 
 

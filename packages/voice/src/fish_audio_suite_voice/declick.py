@@ -19,8 +19,8 @@ __all__ = [
     "EdgeFade",
 ]
 
-# Samples this small count as silence (about -62 dBFS for 16-bit audio).
 _MS_PER_S: Final = 1000
+# Samples this small count as silence (about -62 dBFS for 16-bit audio).
 _QUIET: Final = 24
 # Silence this long around a sound makes its edge a sentence edge. Sentence gaps are
 # far longer; the closure before a plosive inside a word is far shorter, so those stay

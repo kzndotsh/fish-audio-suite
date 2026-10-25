@@ -1,4 +1,7 @@
-"""Playback sinks for Fish PCM (and optional mpv mp3)."""
+"""Playback sinks for Fish audio: the sound card, a file, stdout, or mpv for mp3.
+
+Also the PortAudio loader the mic shares, and the WAV writer for recorded clips.
+"""
 
 from __future__ import annotations
 
@@ -93,7 +96,7 @@ class PlaybackSink(Protocol):
     ``start`` opens the device or file. ``write`` accepts encoded or PCM
     chunks. ``finish`` closes them; ``kill=True`` means barge-in, so mpv
     should stop instead of playing out the buffer. ``bytes_played`` is what
-    actually reached the device, which ``spoken_so_far`` is cut to.
+    the sink accepted for playback, which ``spoken_so_far`` is cut to.
     """
 
     def start(self) -> None:
@@ -249,9 +252,8 @@ class FileSink(_Played):
         pcm = even_pcm(bytes(self._buf))
         if not pcm:
             return
-        # Count only after the file is on disk. A full disk used to report
-        # the whole reply as played, then raise, so history said the user
-        # heard audio the file never received.
+        # Count only after the file is on disk, so a full disk that raises
+        # does not leave history saying the user heard the reply.
         if self.wav:
             write_mono_wav(str(self.path), pcm, self.sample_rate)
         else:
@@ -294,8 +296,10 @@ class StdoutSink(_Played):
 
 
 DAC_SLICE_MS: Final = 30
+# A normal finish lets mpv play out what it holds, up to this long.
 _MPV_WAIT_S: Final = 90
 _MPV_KILL_S: Final = 2
+# A small buffer keeps the first words quick.
 _MPV_BUFFER_S: Final = 0.2
 
 
@@ -615,7 +619,7 @@ def make_sink(
     Parameters
     ----------
     name : str
-        ``sounddevice``, ``file``, ``stdout``, or ``mpv``.
+        A ``PlaybackKind`` value, such as ``sounddevice``, ``file``, ``stdout`` or ``mpv``.
     path : Path or None, optional
         Required for ``file``.
     sample_rate : int, optional
@@ -627,7 +631,7 @@ def make_sink(
     aec : EchoCanceller or None, optional
         Far-end tap filled by the sounddevice sink.
     latency : str, optional
-        ``low`` or ``high``: the sounddevice sink's buffer size.
+        The sounddevice sink's buffer size, ``low`` or ``high``.
 
     Returns
     -------

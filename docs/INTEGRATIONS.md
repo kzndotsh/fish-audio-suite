@@ -335,7 +335,7 @@ result = await asyncio.to_thread(tts.speak_stream, token_list, sink)
 
 - **`speak` and `speak_stream` block until the turn ends**, and run Fish's websocket on their own thread and event loop. They are safe under `asyncio.run` or `asyncio.to_thread`.
 - **Stopping early:** pass `cancel=threading.Event()` and set it from anywhere, for example when your user starts talking.
-- **Knowing when sound starts:** `on_first_audio=callback` runs once, at the first audio chunk.
+- **Knowing when sound starts:** `on_first_audio=callback` runs once, at the first audio chunk, on the speaker's own thread.
 - **The result is a `TtsResult`:**
   - `spoken_so_far` is the text the listener heard, cut to what was played. Store that in your chat history, not the full reply.
   - `error` is a kit error class you can test with `isinstance`, such as `FishAuthError` or `FishRateLimitError`.
@@ -361,10 +361,10 @@ The audio format follows `FishSpeaker(audio_format=..., sample_rate=...)`. The d
 
 The package root also exports:
 - **`BargeGate`:** interruption detection.
-- **`EchoCanceller`:** WebRTC AEC3.
+- **`EchoCanceller`:** WebRTC's mic cleanup: a high-pass filter, automatic gain and noise suppression on every frame, and AEC3 echo cancellation while the speaker plays (the `aec` extra).
 - **`DuplexSession`:** the cancel and quit flags.
 - **`ChatBackend`:** a streaming LLM interface.
-- **The tune dataclasses.**
+- **The tune dataclasses:** `AecTune`, `BargeTune`, `ListenTune` and `LlmTune`.
 
 Together they are what `fish-voice` is built from, if you want to assemble your own loop.
 
@@ -408,7 +408,7 @@ Install it as described in [INSTALL.md](INSTALL.md#the-voice-app), then set your
 | Ollama | `FISH_LLM_PROVIDER=custom`, `FISH_LLM_BASE=http://127.0.0.1:11434/v1`, `FISH_LLM_API_KEY=ollama`, `FISH_LLM_MODEL=...` |
 | Any other OpenAI-compatible server (LM Studio, vLLM, llama.cpp's server, a hosted API) | `FISH_LLM_PROVIDER=custom`, `FISH_LLM_BASE=<server>/v1`, `FISH_LLM_API_KEY`, `FISH_LLM_MODEL` |
 
-Give it a personality with a character file: `--prompt-file characters/mira.md`, or `FISH_VOICE_SYSTEM_PROMPT_FILE`. The voice rules (cue tags, short spoken replies) are added after it. Model choice and latency tuning are in [PERFORMANCE.md](PERFORMANCE.md).
+Give it a personality with a character file: `--prompt-file my-character.md`, or `FISH_VOICE_SYSTEM_PROMPT_FILE`. The voice rules (cue tags, short spoken replies) are added after it. Model choice and latency tuning are in [PERFORMANCE.md](PERFORMANCE.md).
 
 ## Running the proxy as a service
 

@@ -41,8 +41,8 @@ _MEDIA: dict[ClientFormat, str] = {
 }
 
 _PCM16_RATE = 24_000
-# wave stores the rate as an unsigned 32-bit field. A larger junk-WAV rate
-# raises before the silence response is sent.
+# wave stores the rate as an unsigned 32-bit field and raises on a larger one,
+# so the silent WAV falls back to 24 kHz instead.
 _WAV_RATE_HI = 2**32 - 1
 SUPPORTED_FORMATS: tuple[ClientFormat, ...] = tuple(_MEDIA)
 CLIENT_FORMATS: dict[str, ClientFormat] = {name: name for name in get_args(ClientFormat)}
@@ -81,7 +81,21 @@ _SILENT_OPUS = bytes.fromhex(
 
 
 def silent_speech(fmt: ClientFormat, sample_rate: int) -> tuple[bytes, str]:
-    """Return one silent buffer in the format the client asked to play."""
+    """Return one silent buffer in the format the client asked to play.
+
+    Parameters
+    ----------
+    fmt : ClientFormat
+        The requested format.
+    sample_rate : int
+        Rate written into the WAV header. A rate outside 1 to 2**32 - 1 becomes
+        24 kHz. Other formats ignore it.
+
+    Returns
+    -------
+    tuple of bytes and str
+        The silent audio and its media type.
+    """
     # An MP3 frame played as PCM is loud garbage, and it is not a WAV or Opus file.
     if fmt in {"pcm", "pcm16"}:
         return _SILENT_PCM, media_type(fmt)
@@ -125,8 +139,7 @@ class AudioDecodeError(ProxyError):
 
 def _b64_audio(value: str, field: str) -> bytes:
     raw = "".join(value.strip().split())
-    # The data-URI scheme is case-insensitive. "DATA:" failed the base64
-    # check, so the request was rejected before Fish heard the audio.
+    # The data-URI scheme is case-insensitive, so "DATA:" is a prefix too.
     head, sep, tail = raw.partition(",")
     if sep and head.lower().startswith(_DATA_URI):
         raw = tail

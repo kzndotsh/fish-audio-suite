@@ -92,7 +92,7 @@ class TurnSignals:
 
 @dataclass
 class DuplexSession:
-    """Cancel flags and echo state for one duplex run.
+    """Cancel flags and the mic processor for one duplex run.
 
     Attributes
     ----------
@@ -101,7 +101,8 @@ class DuplexSession:
     turn : TurnSignals
         Handles for the reply in flight.
     aec : EchoCanceller
-        Far-end tap and processor shared by the sink and the barge gate.
+        Far-end tap and processor. The mic cleans every frame with it, the sink feeds
+        it what plays, and the barge gate asks it whether the speaker is on.
     """
 
     aec: EchoCanceller = field(default_factory=EchoCanceller)
@@ -109,7 +110,7 @@ class DuplexSession:
     turn: TurnSignals = field(default_factory=TurnSignals)
 
     def request_quit(self) -> None:
-        """Stop mic listen and cancel in-flight LLM and TTS. Safe from a signal handler."""
+        """Stop listening and cancel the LLM and TTS in flight. Safe from a signal handler."""
         self.quit_requested.set()
         self.turn.fire()
 

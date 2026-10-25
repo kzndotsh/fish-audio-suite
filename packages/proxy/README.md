@@ -11,7 +11,7 @@ Part of [fish-audio-suite](../../README.md). Unofficial.
 | `POST` | `/v1/audio/speech` | Audio bytes |
 | `POST` | `/v1/audio/transcriptions` | JSON, or an `srt` / `vtt` file |
 
-Default bind is `127.0.0.1:8849`. One worker. Fish 429 and 5xx are retried. Other 4xx are returned as-is.
+Default bind is `127.0.0.1:8849`. One worker. With `FISH_PROXY_API_KEYS` set, every route except `/health` needs one of the keys as a Bearer token. Fish 429 and 5xx are retried. Other 4xx are returned as-is.
 
 **Security.** With no `FISH_PROXY_API_KEYS`, the proxy accepts any client. Anyone who can reach the port spends your Fish credits. Keep the default loopback bind, or set `FISH_PROXY_API_KEYS` before you listen on another address. The proxy logs a warning at startup when it does not. If `FISH_PROXY_API_KEYS` is set but holds no key (for example `" , "`), the proxy refuses to start instead of silently running without auth. Unset it, or leave it empty, to run without client auth. A `FISH_BASE` that is plain `http` to a non-loopback host also logs a warning, because the Fish key would travel in cleartext.
 
@@ -36,8 +36,10 @@ From the repository root:
 
 ```bash
 docker build -t fish-audio-suite-proxy:latest .
-docker run --rm -p 127.0.0.1:8849:8849 -e FISH_PROXY_HOST=0.0.0.0 --env-file /path/to/env fish-audio-suite-proxy:latest
+docker run --rm -p 127.0.0.1:8849:8849 --env-file /path/to/env --stop-timeout 130 fish-audio-suite-proxy:latest
 ```
+
+The image already listens on every interface inside the container. [INSTALL.md](../../docs/INSTALL.md#docker) covers Compose and the stop timeout.
 
 ## Open WebUI
 
@@ -86,7 +88,7 @@ Errors use `{error: {code, message, type}}`. A Fish body is `type: provider_erro
 
 ### Request fields
 
-Beyond the OpenAI fields, a speech request may set `latency`, `chunk_length`, `min_chunk_length`, `format`, `temperature`, `top_p`, `repetition_penalty`, `max_new_tokens`, `normalize`, `normalize_loudness`, `volume`, `sample_rate`, `mp3_bitrate`, `opus_bitrate`, `quality_guard`, and `dialogue_only`.
+Beyond the OpenAI fields, a speech request may set `latency`, `chunk_length`, `min_chunk_length`, `format`, `temperature`, `top_p`, `repetition_penalty`, `max_new_tokens`, `early_stop_threshold`, `condition_on_previous_chunks`, `normalize`, `normalize_loudness`, `volume`, `sample_rate`, `mp3_bitrate`, `opus_bitrate`, `quality_guard` (or `features: ["quality-guard"]`), `pronunciation_dictionary` (at most 512 entries), and `dialogue_only`. `temperature`, `top_p` and `early_stop_threshold` are clamped to 0–1, and the chunk lengths to the ranges under [Settings](#settings).
 
 A transcription request may also set the `transcribe-1-pro` fields, as form fields or JSON keys. They are sent to Fish only when the request resolves to `transcribe-1-pro` (the default model) and are dropped for `transcribe-1`, which does not take them. An invalid value is a 400.
 
@@ -133,12 +135,12 @@ Read once at startup. `GET /health` shows the values in effect under `defaults`,
 | `FISH_ASR_MODEL` | `transcribe-1-pro` | Or `transcribe-1`. Both cost the same; pro adds speaker turns, emotion and event cues, and takes recordings up to 60 minutes |
 | `FISH_ASR_LANGUAGE` | omitted | |
 | `FISH_LATENCY` | `normal` | `low`, `balanced`, `normal` |
-| `FISH_SPEED` | `1` | Multiplies a request's `speed` |
-| `FISH_CHUNK_LENGTH` | `200` | |
+| `FISH_SPEED` | `1` | Multiplies a request's `speed`. 0.5–2.0 |
+| `FISH_CHUNK_LENGTH` | `200` | 100–300 on Fish's cloud, up to 1000 self-hosted |
 | `FISH_MIN_CHUNK_LENGTH` | `50` | 0–100 |
 | `FISH_TTS_FORMAT` | `mp3` | Format when a request names none: `mp3`, `opus`, `wav`, `pcm` or `pcm16` (24 kHz PCM, sent to Fish as `pcm`). Anything else is `mp3` |
 | `FISH_MP3_BITRATE` | `128` | 64, 128, 192 |
-| `FISH_QUALITY_GUARD` | off | |
+| `FISH_QUALITY_GUARD` | off | Ask Fish for its quality guard by default. A request's `quality_guard` overrides it |
 | `FISH_PROXY_ASR_STRIP_SPEAKERS` | on | Drop speaker labels such as `Speaker 1:` from the transcript. `transcribe-1-pro` labels speakers even when one person talks. `0` keeps them |
 | `FISH_PROXY_ASR_STRIP_CUES` | off | Drop `[laughter]` style annotations |
 | `FISH_TTS_DIALOGUE_ONLY` | off | |
@@ -159,7 +161,7 @@ Read once at startup. `GET /health` shows the values in effect under `defaults`,
 | `FISH_PROXY_WORKERS` or `WEB_CONCURRENCY` | `1` | |
 | `FISH_PROXY_KEEP_ALIVE` | `5` | Seconds |
 | `FISH_PROXY_GRACEFUL_SHUTDOWN` | `120` | Seconds |
-| `FISH_PROXY_LIMIT_CONCURRENCY` | unset | No 503 cap |
+| `FISH_PROXY_LIMIT_CONCURRENCY` | unset | Past this many open connections, new requests get 503. Unset or 0 means no cap |
 
 ## License
 

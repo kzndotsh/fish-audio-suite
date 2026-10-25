@@ -129,16 +129,18 @@ def resolve_asr_model(model: object, default: str) -> str:
     Parameters
     ----------
     model : object
-        Client ``model``. ``whisper-1`` and other aliases are not native.
+        Client ``model``. A ``fish-audio/`` prefix is stripped. ``whisper-1``
+        and any other id that is not native fall back to ``default``.
     default : str
         Used when ``model`` is not ``transcribe-1`` or ``transcribe-1-pro``.
 
     Returns
     -------
     str
-        A native id when the client or the default names one. Otherwise the
-        default when it is a single header token, so an unknown alias still
-        reaches Fish as that id. A blank or illegal default is ``transcribe-1-pro``.
+        The client's native id, lowercased. Otherwise the default: lowercased
+        when native, or as written when it is a single header token, so a
+        custom ASR model set in the environment still reaches Fish. A blank or
+        illegal default becomes ``transcribe-1-pro``.
     """
     chosen = _header_model(_native_model_id(_model_name(model, default))).lower()
     if chosen in _ASR_NATIVE:

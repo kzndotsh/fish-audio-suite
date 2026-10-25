@@ -67,7 +67,7 @@ class TurnJudgement:
     ----------
     finished : bool
         True when the speaker looks done. False when the text stops mid-thought.
-    reason : str
+    reason : TurnReason
         What decided it: ``empty``, ``open_punctuation``, ``dangling_word``,
         ``number_list``, ``terminal_punctuation``, ``short_answer`` or ``complete``.
     """
@@ -93,7 +93,8 @@ def judge_turn(text: str) -> TurnJudgement:
     TurnJudgement
         ``finished`` is False when the text ends on a comma, a colon, a dash or an
         ellipsis, on a word that cannot end a sentence ("and", "because", "the",
-        "um", a preposition), on ", so", or on a comma-separated run of numbers with no full stop.
+        "um", a preposition), on "so" or "then" after a comma or "and", or on a
+        comma-separated run of numbers with no full stop.
         A full stop, question mark or exclamation mark finishes a turn, and so does a
         short answer of one or two words. English only. Other languages are judged
         by their punctuation alone.

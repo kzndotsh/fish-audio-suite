@@ -1,4 +1,4 @@
-"""Listen for one utterance and turn it into a line of text through Fish ASR."""
+"""Listen for one turn and turn it into a line of text, through Fish ASR or Deepgram."""
 
 from __future__ import annotations
 
@@ -291,14 +291,14 @@ def accept_transcript(
 async def hear_line(
     ctx: DuplexContext, last_user: str, *, stop: StopFlag | None = None
 ) -> HeardLine:
-    """Open the mic, record one utterance, and return what was heard.
+    """Listen for one turn and return what was heard.
 
     Parameters
     ----------
     ctx : DuplexContext
         The session.
     last_user : str
-        The previous line, used to drop an echo of it.
+        The previous user line, to drop a stale copy of it.
     stop : StopFlag or None, optional
         Ends the recording when set, in place of the session's quit flag. Pass one
         that is set on quit too, or Ctrl+C will not stop the mic.
@@ -363,8 +363,8 @@ async def hear_line(
             over_reply=bool(clip.pcm),
             end_wait_ms=_silence_ms(first_tune.end_silence_frames),
         )
-    # Quit during the Fish request used to come back as a normal line, so
-    # the LLM still answered after Ctrl+C.
+    # A quit during the Fish request must not come back as a line, or the
+    # model answers after Ctrl+C.
     if ctx.session.quit_requested.is_set():
         return HeardLine("bye")
     return heard
@@ -476,7 +476,7 @@ async def _hear_streaming(
     ctx : DuplexContext
         The session.
     last_user : str
-        The previous line, used to drop an echo of it.
+        The previous user line, to drop a stale copy of it.
     stop : StopFlag or None
         Ends the turn early, in place of the session's quit flag.
 

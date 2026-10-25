@@ -57,7 +57,7 @@ The [index](docs/INDEX.md) explains every doc and who it is for.
 
 ```mermaid
 flowchart LR
-    mic["microphone"] --> ear["echo cancel + voice detection"]
+    mic["microphone"] --> ear["mic cleanup: echo cancel, gain, noise suppression<br/>then voice detection"]
     ear --> asr["Fish ASR<br/>or Deepgram Flux, streamed while you speak"]
     asr --> llm["LLM<br/>OpenRouter, Experiential, or any OpenAI-compatible server"]
     llm --> kit["kit: scrub, cues, sentence cuts"]
@@ -68,7 +68,7 @@ flowchart LR
 
 With `FISH_VOICE_STREAM_TTS=1` the first sentence goes to Fish as soon as it is complete, so you hear it while the model is still writing. The flush waits for the end of the sentence, because a flush earlier makes Fish speak half a sentence as if it were finished. Without that setting the reply is spoken after the model finishes.
 
-You can talk over it. Echo cancellation removes the speaker from the mic signal, and a barge-in stops the reply and keeps the audio that tripped it, so your interruption becomes the next turn. The chat history records a word-aligned estimate of the part that was played, not the full reply you cut off.
+You can talk over it. One mic stream stays open for the whole session, and every frame is cleaned with automatic gain, noise suppression and, while the bot speaks, echo cancellation that removes the speaker from the mic signal. A barge-in stops the reply and keeps the audio that tripped it, so your interruption becomes the next turn. The chat history records a word-aligned estimate of the part that was played, not the full reply you cut off.
 
 ## Quick start
 
@@ -223,17 +223,10 @@ Compose, the full NixOS option list, reverse proxies and updating are in [docs/I
 
 ```bash
 uv sync --all-packages --extra cli --group dev --group test
-just check        # lint, docstrings, types and tests with the CI coverage floors
+just check        # every Python gate CI runs: lint, docstrings, types, import contracts, tests with coverage floors
 ```
 
-Without `just`, the same gates by hand:
-
-```bash
-uv run ruff check packages && uv run ruff format --check packages
-uv run pydoclint --config=pyproject.toml packages
-uv run basedpyright
-uv run pytest
-```
+The same gates without `just`, and what each one checks, are in [CONTRIBUTING.md](CONTRIBUTING.md#run-the-checks).
 
 ```text
 packages/
@@ -241,6 +234,7 @@ packages/
 ├── proxy/    OpenAI audio over HTTP
 └── voice/    websocket turn, sinks, barge-in, the fish-voice CLI
 nix/          NixOS module        Dockerfile    proxy image
+scripts/      developer tools: model and voice evals, mic and VAD checks (scripts/README.md)
 ```
 
 Before you change code, read the [invariants](docs/ARCHITECTURE.md#9-invariants) for the boundaries between the packages, and [CONTRIBUTING.md](CONTRIBUTING.md) for commits and pull requests. Report vulnerabilities privately, as described in [SECURITY.md](SECURITY.md).
