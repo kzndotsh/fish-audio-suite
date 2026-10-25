@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import sys
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterable, Iterator
 from types import ModuleType
 from typing import Any
 
@@ -16,8 +16,42 @@ import pytest
 
 from fish_audio_suite_kit import FishHttpError
 from fish_audio_suite_voice import reply
+from fish_audio_suite_voice.aec import EchoCanceller
+from fish_audio_suite_voice.mic import StopFlag
 from fish_audio_suite_voice.speaker import FishSpeaker
+from fish_audio_suite_voice.tune import AecTune
 from fish_audio_suite_voice.wire import TtsResult
+
+
+class ScriptedMic:
+    """A ``Mic`` that plays a script of frames, then goes quiet.
+
+    Parameters
+    ----------
+    script : Iterable of bytes or Callable, optional
+        The frames each read yields, or a function of the stop flag that yields them.
+    aec : EchoCanceller or None, optional
+        What ``aec`` reports. AEC off when omitted.
+    """
+
+    def __init__(
+        self,
+        script: Iterable[bytes] | Callable[[StopFlag | None], Iterator[bytes]] = (),
+        *,
+        aec: EchoCanceller | None = None,
+    ) -> None:
+        self._script = script
+        self.aec = aec or EchoCanceller(AecTune(enabled=False))
+        self.opened = 0
+
+    def frames(self, stop: StopFlag | None) -> Iterator[bytes]:
+        """Yield the script, ending early once ``stop`` is set."""
+        self.opened += 1
+        script = self._script(stop) if callable(self._script) else self._script
+        for frame in script:
+            if stop is not None and stop.is_set():
+                return
+            yield frame
 
 
 class FakeGate:

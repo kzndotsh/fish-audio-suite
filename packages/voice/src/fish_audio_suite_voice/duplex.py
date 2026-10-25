@@ -19,6 +19,7 @@ from fish_audio_suite_voice.hearing import HeardLine, hear_line
 from fish_audio_suite_voice.history import opening_history, remember_user
 from fish_audio_suite_voice.inputs import TurnSource
 from fish_audio_suite_voice.llm import ChatBackend
+from fish_audio_suite_voice.mic import SounddeviceMic
 from fish_audio_suite_voice.reply import collect_reply, speak_reply, stream_turn
 from fish_audio_suite_voice.signals import DuplexSession
 from fish_audio_suite_voice.speaker import FishSpeaker
@@ -186,6 +187,7 @@ async def _session(
             config=c,
             tts=tts,
             device=device,
+            mic=SounddeviceMic(device, session.aec),
             backend=backend,
             session=session,
             asr_http=asr_http,

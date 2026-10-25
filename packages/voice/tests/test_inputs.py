@@ -10,11 +10,11 @@ import pytest
 from session_fakes import hello_tokens, make_ctx, quick_config, run_session_with, speak_with_fakes
 from voice_fakes import install_audio
 
-from fish_audio_suite_voice.barge import StopFlag
 from fish_audio_suite_voice.duplex_state import DuplexContext
 from fish_audio_suite_voice.events import EVENTS, Event, Heard
 from fish_audio_suite_voice.hearing import HeardLine
 from fish_audio_suite_voice.inputs import LiveInput
+from fish_audio_suite_voice.mic import StopFlag
 from fish_audio_suite_voice.speaker import FishSpeaker
 
 

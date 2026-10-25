@@ -22,7 +22,6 @@ from fish_audio_suite_kit import (
     trace_id_of,
 )
 from fish_audio_suite_voice.asr import fish_asr
-from fish_audio_suite_voice.barge import FRAME_MS, StopFlag
 from fish_audio_suite_voice.debug import (
     clear_turn,
     debug,
@@ -35,6 +34,7 @@ from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexContext
 from fish_audio_suite_voice.events import EVENTS, Heard, Listening
 from fish_audio_suite_voice.history import remember_user
 from fish_audio_suite_voice.listen import record_utterance
+from fish_audio_suite_voice.mic import FRAME_MS, StopFlag
 from fish_audio_suite_voice.playback import PortAudioMissingError
 from fish_audio_suite_voice.speculate import Speculation
 from fish_audio_suite_voice.streaming import StreamedTurn, StreamFallback, stream_turn
@@ -327,11 +327,10 @@ async def hear_line(
         first_tune = first_clip_tune(ctx.config.listen, ctx.config.turn)
         wav = await asyncio.to_thread(
             record_utterance,
-            ctx.device,
+            ctx.mic,
             ctx.session.quit_requested if stop is None else stop,
             prefix=prefix,
             tune=first_tune,
-            aec=ctx.session.aec,
         )
     except PortAudioMissingError as e:
         warn(str(e))
@@ -446,9 +445,7 @@ def _reopen(ctx: DuplexContext, stop: StopFlag, open_turn: OpenTurn) -> Reopened
     wait = wait_frames(turn)
 
     def record(flag: StopFlag) -> bytes | None:
-        return record_utterance(
-            ctx.device, flag, tune=tune, aec=ctx.session.aec, give_up_frames=wait
-        )
+        return record_utterance(ctx.mic, flag, tune=tune, give_up_frames=wait)
 
     return Reopened(record, stop)
 
@@ -496,8 +493,7 @@ async def _hear_streaming(
     outcome = await stream_turn(
         stt=ctx.config.stt,
         listen=ctx.config.listen,
-        device=ctx.device,
-        aec=ctx.session.aec,
+        mic=ctx.mic,
         quit_requested=quit_requested,
         stop=quit_requested if stop is None else stop,
         prefix=prefix,

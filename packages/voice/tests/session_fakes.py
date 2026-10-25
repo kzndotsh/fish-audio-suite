@@ -14,7 +14,7 @@ from dataclasses import replace
 
 import httpx
 import pytest
-from voice_fakes import FakeSink, make_result, set_tts
+from voice_fakes import FakeSink, ScriptedMic, make_result, set_tts
 
 from fish_audio_suite_kit import ChatMessage
 from fish_audio_suite_voice.config import VoiceCliConfig
@@ -78,12 +78,14 @@ def make_ctx(
     tokens: Callable[..., AsyncIterator[str]] | None = None,
     session: DuplexSession | None = None,
 ) -> DuplexContext:
+    session = session or DuplexSession()
     return DuplexContext(
         config=make_config(),
         tts=FishSpeaker(api_key="k", voice_id="voice"),
         device=None,
+        mic=ScriptedMic(aec=session.aec),
         backend=FakeBackend(tokens),
-        session=session or DuplexSession(),
+        session=session,
         asr_http=httpx.AsyncClient(),
         history=[{"role": "system", "content": "be brief"}],
     )

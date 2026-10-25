@@ -27,6 +27,7 @@ from pathlib import Path
 
 from fish_audio_suite_voice.envfile import apply_cli_env_files
 from fish_audio_suite_voice.events import EVENTS, Event, Interim
+from fish_audio_suite_voice.mic import SounddeviceMic
 from fish_audio_suite_voice.streaming import StreamedTurn, StreamFallback, stream_turn
 from fish_audio_suite_voice.tune import ListenTune, SttTune
 
@@ -63,8 +64,7 @@ async def run(turns: int, device: str | int | None) -> int:
             outcome = await stream_turn(
                 stt=stt,
                 listen=ListenTune.from_env(),
-                device=device,
-                aec=None,
+                mic=SounddeviceMic(device),
                 quit_requested=quit_requested,
                 stop=quit_requested,
             )

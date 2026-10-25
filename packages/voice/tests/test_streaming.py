@@ -11,9 +11,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from voice_fakes import ScriptedMic
 
 from fish_audio_suite_voice import streaming
-from fish_audio_suite_voice.barge import FRAME_BYTES, StopFlag
 from fish_audio_suite_voice.deepgram import (
     DeepgramError,
     EagerTurnEnd,
@@ -27,6 +27,7 @@ from fish_audio_suite_voice.deepgram import (
     TurnUpdate,
 )
 from fish_audio_suite_voice.events import EVENTS, Event, Interim
+from fish_audio_suite_voice.mic import FRAME_BYTES, Mic, StopFlag
 from fish_audio_suite_voice.streaming import StreamedTurn, StreamFallback, stream_turn
 from fish_audio_suite_voice.tune import ListenTune, SttTune
 
@@ -105,13 +106,12 @@ def _mic(
     """
 
     def listen(
-        _device: object,
+        _mic: Mic,
         stop: StopFlag,
         sink: Callable[[bytes, bool], None],
         *,
         prefix: bytes,
         tune: ListenTune,
-        aec: object,
     ) -> bool:
         if seen is not None:
             seen.update(prefix=prefix, tune=tune)
@@ -142,8 +142,7 @@ def _run(
         return await stream_turn(
             stt=stt,
             listen=listen,
-            device=None,
-            aec=None,
+            mic=ScriptedMic(),
             quit_requested=quit_flag,
             stop=stop or threading.Event(),
             prefix=prefix,
@@ -327,14 +326,13 @@ def test_the_mic_gate_sends_nothing_until_speech_starts_and_then_the_pre_roll_fi
     def frames(*_args: Any, **_kwargs: Any) -> Any:
         yield from quiet_then_speech
 
-    monkeypatch.setattr(listen, "mic_frames", frames)
     tune = ListenTune(
         start_speech_frames=2, pre_pad_frames=8, end_silence_frames=4, min_speech_rms=100.0
     )
     got: list[tuple[bytes, bool]] = []
     try:
         local_end = listen.stream_utterance(
-            None,
+            ScriptedMic(frames),
             None,
             lambda frame, voiced: got.append((frame, voiced)),
             tune=tune,
@@ -360,10 +358,9 @@ def test_the_mic_gate_returns_false_when_it_is_stopped_before_any_speech(
     def frames(*_args: Any, **_kwargs: Any) -> Any:
         yield b"\x00\x00" * (FRAME_BYTES // 2)
 
-    monkeypatch.setattr(listen, "mic_frames", frames)
     got: list[bytes] = []
     assert not listen.stream_utterance(
-        None, None, lambda frame, _voiced: got.append(frame), vad=_EnergyVad()
+        ScriptedMic(frames), None, lambda frame, _voiced: got.append(frame), vad=_EnergyVad()
     )
     assert got == []
 
@@ -381,8 +378,7 @@ def test_the_connection_goes_to_the_regional_endpoint_that_was_chosen() -> None:
         return await stream_turn(
             stt=replace(STT, deepgram_region=region),
             listen=ONE_VOICED,
-            device=None,
-            aec=None,
+            mic=ScriptedMic(),
             quit_requested=threading.Event(),
             stop=threading.Event(),
             make_stream=make,

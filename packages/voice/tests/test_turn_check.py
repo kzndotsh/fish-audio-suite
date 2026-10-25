@@ -13,10 +13,10 @@ from session_fakes import make_ctx
 
 from fish_audio_suite_kit import FishHttpError
 from fish_audio_suite_voice.asr import AsrResult
-from fish_audio_suite_voice.barge import FRAME_MS
 from fish_audio_suite_voice.duplex_state import DuplexContext
 from fish_audio_suite_voice.events import EVENTS, Event, Heard
 from fish_audio_suite_voice.hearing import HeardLine, hear_line
+from fish_audio_suite_voice.mic import FRAME_MS
 from fish_audio_suite_voice.tune import ListenTune, TurnTune
 from fish_audio_suite_voice.turn_check import (
     OpenTurn,

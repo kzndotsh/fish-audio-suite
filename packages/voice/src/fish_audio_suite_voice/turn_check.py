@@ -16,7 +16,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 from fish_audio_suite_kit import TurnJudgement, judge_turn
-from fish_audio_suite_voice.barge import StopFlag
+from fish_audio_suite_voice.mic import StopFlag
 from fish_audio_suite_voice.tune import ListenTune, TurnTune
 
 __all__ = [

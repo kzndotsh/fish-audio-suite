@@ -28,7 +28,8 @@ import time
 from collections.abc import Sequence
 
 from fish_audio_suite_voice.aec import pcm_rms
-from fish_audio_suite_voice.barge import MIC_LEVEL_EVERY_FRAMES, mic_frames
+from fish_audio_suite_voice.barge import MIC_LEVEL_EVERY_FRAMES
+from fish_audio_suite_voice.mic import SounddeviceMic
 
 _FULL_SCALE = 32768.0
 _SILENCE_DB = -90.0
@@ -143,7 +144,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     levels: list[float] = []
     started = time.monotonic()
     print("t(s)    rms     dB  level", file=sys.stderr)
-    for index, frame in enumerate(mic_frames(device, stop, timeout=1.0)):
+    for index, frame in enumerate(SounddeviceMic(device).frames(stop)):
         if index % MIC_LEVEL_EVERY_FRAMES == 0:
             rms = pcm_rms(frame)
             level = to_db(rms)

@@ -6,7 +6,7 @@ import threading
 import wave
 
 import pytest
-from voice_fakes import install_vad
+from voice_fakes import ScriptedMic, install_vad
 
 from fish_audio_suite_voice.aec import EchoCanceller
 from fish_audio_suite_voice.barge import (
@@ -17,10 +17,8 @@ from fish_audio_suite_voice.barge import (
     DEFAULT_BARGE_RMS,
     DEFAULT_BLEED_DELAY_S,
     DEFAULT_POST_SPEAK_COOLDOWN_S,
-    FRAME_BYTES,
     BargeGate,
     _barge_step,
-    _take_full_frames,
     barge_rms_need,
 )
 from fish_audio_suite_voice.listen import (
@@ -36,6 +34,7 @@ from fish_audio_suite_voice.listen import (
     start_hit,
     trailing_start_hits,
 )
+from fish_audio_suite_voice.mic import FRAME_BYTES, StopFlag, _take_full_frames
 from fish_audio_suite_voice.tune import (
     DEFAULT_END_SILENCE_FRAMES,
     DEFAULT_MIN_SPEECH_RMS,
@@ -244,11 +243,14 @@ def test_barge_tune_reads_env_once(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_barge_bleed_delay_cannot_be_negative(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FISH_VOICE_BLEED_DELAY", "-1")
     no_aec = EchoCanceller(AecTune(enabled=False))
-    gate = BargeGate(tune=BargeTune.from_env(), aec=no_aec)
+    gate = BargeGate(mic=ScriptedMic(aec=no_aec), tune=BargeTune.from_env())
     assert gate.bleed_delay_s == DEFAULT_BLEED_DELAY_S
     assert gate._bleed_wait() == DEFAULT_BLEED_DELAY_S
-    assert BargeGate(bleed_delay_s=-0.5, aec=no_aec)._bleed_wait() == DEFAULT_BLEED_DELAY_S
-    assert BargeGate(bleed_delay_s=0.0, aec=no_aec)._bleed_wait() == 0.0
+    assert (
+        BargeGate(mic=ScriptedMic(aec=no_aec), bleed_delay_s=-0.5)._bleed_wait()
+        == DEFAULT_BLEED_DELAY_S
+    )
+    assert BargeGate(mic=ScriptedMic(aec=no_aec), bleed_delay_s=0.0)._bleed_wait() == 0.0
 
 
 def test_barge_hit_frames_must_be_positive(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -430,19 +432,12 @@ def test_barge_watch_logs_a_mic_failure_without_cancelling(
         def __init__(self, mode: int) -> None:
             self.mode = mode
 
-    def boom(
-        device: str | int | None,
-        stop: threading.Event | None,
-        *,
-        timeout: float,
-        aec: object = None,
-    ) -> collections.abc.Iterator[bytes]:
-        del device, stop, timeout, aec
+    def boom(stop: StopFlag | None) -> collections.abc.Iterator[bytes]:
+        del stop
         raise OSError("no device")
 
     install_vad(monkeypatch, SpeechVad)
-    monkeypatch.setattr("fish_audio_suite_voice.barge.mic_frames", boom)
-    gate = BargeGate(hit_frames=2, min_rms=1.0, bleed_delay_s=0)
+    gate = BargeGate(mic=ScriptedMic(boom), hit_frames=2, min_rms=1.0, bleed_delay_s=0)
     cancel = threading.Event()
     gate.watch(cancel)
     assert not cancel.is_set()
@@ -509,7 +504,7 @@ def _pcm(level: int) -> bytes:
 def _install_listen_fakes(
     monkeypatch: pytest.MonkeyPatch,
     frames: list[bytes],
-) -> ListenTune:
+) -> tuple[ScriptedMic, ListenTune]:
     monkeypatch.setenv("FISH_VOICE_SILENCE_FRAMES", "2")
     monkeypatch.setenv("FISH_VOICE_MIN_VOICED_FRAMES", "2")
     monkeypatch.setenv("FISH_VOICE_SPEECH_FRAMES", "2")
@@ -525,18 +520,11 @@ def _install_listen_fakes(
 
     install_vad(monkeypatch, SpeechVad)
 
-    def fake_mic(
-        device: str | int | None,
-        stop: threading.Event | None,
-        *,
-        timeout: float,
-        aec: object = None,
-    ) -> collections.abc.Iterator[bytes]:
-        del device, stop, timeout, aec
+    def fake_mic(stop: StopFlag | None) -> collections.abc.Iterator[bytes]:
+        del stop
         yield from frames
 
-    monkeypatch.setattr("fish_audio_suite_voice.listen.mic_frames", fake_mic)
-    return ListenTune.from_env()
+    return ScriptedMic(fake_mic), ListenTune.from_env()
 
 
 def test_record_utterance_writes_a_wav_for_a_held_phrase(
@@ -544,8 +532,8 @@ def test_record_utterance_writes_a_wav_for_a_held_phrase(
 ) -> None:
     loud = _pcm(500)
     quiet = _pcm(0)
-    tune = _install_listen_fakes(monkeypatch, [loud, loud, quiet, quiet])
-    wav = record_utterance(tune=tune)
+    mic, tune = _install_listen_fakes(monkeypatch, [loud, loud, quiet, quiet])
+    wav = record_utterance(mic, tune=tune)
     assert wav is not None
     assert wav.startswith(b"RIFF")
     assert len(wav) > 44
@@ -556,17 +544,17 @@ def test_record_utterance_drops_a_finished_clip_when_quit_is_set(
 ) -> None:
     loud = _pcm(500)
     quiet = _pcm(0)
-    tune = _install_listen_fakes(monkeypatch, [loud, loud, quiet, quiet])
+    mic, tune = _install_listen_fakes(monkeypatch, [loud, loud, quiet, quiet])
     stop = threading.Event()
     stop.set()
-    assert record_utterance(quit_requested=stop, tune=tune) is None
+    assert record_utterance(mic, quit_requested=stop, tune=tune) is None
 
 
 def test_record_utterance_drops_a_clip_that_never_starts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _install_listen_fakes(monkeypatch, [_pcm(0), _pcm(0)])
-    assert record_utterance() is None
+    mic, _tune = _install_listen_fakes(monkeypatch, [_pcm(0), _pcm(0)])
+    assert record_utterance(mic) is None
 
 
 def test_record_utterance_gives_up_when_speech_has_not_started_in_time(
@@ -574,11 +562,11 @@ def test_record_utterance_gives_up_when_speech_has_not_started_in_time(
 ) -> None:
     loud = _pcm(500)
     quiet = _pcm(0)
-    tune = _install_listen_fakes(monkeypatch, [quiet] * 6 + [loud] * 6 + [quiet] * 2)
-    assert record_utterance(tune=tune, give_up_frames=3) is None
+    mic, tune = _install_listen_fakes(monkeypatch, [quiet] * 6 + [loud] * 6 + [quiet] * 2)
+    assert record_utterance(mic, tune=tune, give_up_frames=3) is None
     # Once speech has started, the limit no longer applies.
-    assert record_utterance(tune=tune, give_up_frames=8) is not None
-    assert record_utterance(tune=tune) is not None
+    assert record_utterance(mic, tune=tune, give_up_frames=8) is not None
+    assert record_utterance(mic, tune=tune) is not None
 
 
 def _watch_with(
@@ -599,18 +587,11 @@ def _watch_with(
 
     install_vad(monkeypatch, Vad)
 
-    def fake_mic(
-        device: str | int | None,
-        stop: threading.Event | None,
-        *,
-        timeout: float,
-        aec: object = None,
-    ) -> collections.abc.Iterator[bytes]:
-        del device, stop, timeout, aec
+    def fake_mic(stop: StopFlag | None) -> collections.abc.Iterator[bytes]:
+        del stop
         yield from frames
 
-    monkeypatch.setattr("fish_audio_suite_voice.barge.mic_frames", fake_mic)
-    return BargeGate(tune=tune, aec=aec), threading.Event()
+    return BargeGate(mic=ScriptedMic(fake_mic, aec=aec), tune=tune), threading.Event()
 
 
 def test_barge_watch_aligns_the_far_end_before_reading_the_mic(
@@ -621,18 +602,12 @@ def test_barge_watch_aligns_the_far_end_before_reading_the_mic(
     monkeypatch.setattr(aec, "align", lambda: order.append("align"))
     gate, cancel = _watch_with(monkeypatch, [_pcm(0)], aec=aec, tune=BargeTune())
 
-    def mic(
-        device: str | int | None,
-        stop: threading.Event | None,
-        *,
-        timeout: float,
-        aec: object = None,
-    ) -> collections.abc.Iterator[bytes]:
-        del device, stop, timeout, aec
+    def mic(stop: StopFlag | None) -> collections.abc.Iterator[bytes]:
+        del stop
         order.append("mic")
         yield _pcm(0)
 
-    monkeypatch.setattr("fish_audio_suite_voice.barge.mic_frames", mic)
+    gate = BargeGate(mic=ScriptedMic(mic, aec=aec), tune=BargeTune())
     gate.watch(cancel)
     assert order == ["align", "mic"]
 
@@ -704,23 +679,16 @@ def test_speech_between_the_floor_and_the_boosted_need_does_not_raise_the_floor(
             del frame, rate
             return False
 
-    def mic(
-        device: str | int | None,
-        stop: threading.Event | None,
-        *,
-        timeout: float,
-        aec: object = None,
-    ) -> collections.abc.Iterator[bytes]:
-        del device, stop, timeout, aec
+    def mic(stop: StopFlag | None) -> collections.abc.Iterator[bytes]:
+        del stop
         yield from [_constant_frame(300)] * 5
 
     install_vad(monkeypatch, SilentVad)
-    monkeypatch.setattr("fish_audio_suite_voice.barge.mic_frames", mic)
     monkeypatch.setattr("fish_audio_suite_voice.barge.AdaptiveFloor", Floor)
     aec = EchoCanceller(AecTune(enabled=False))
     # The speaker is playing and AEC is off, so ``need`` is 220 x 2.2 = 484.
     aec.tap_playback(b"\x00\x00" * 16000, 16000)
-    gate = BargeGate(tune=BargeTune(min_rms=220.0, playing_gain=2.2), aec=aec)
+    gate = BargeGate(mic=ScriptedMic(mic, aec=aec), tune=BargeTune(min_rms=220.0, playing_gain=2.2))
     gate.watch(threading.Event())
     assert len(seen) == 5
     assert all(not quiet for _, quiet in seen)
@@ -737,10 +705,11 @@ def test_an_explicit_bleed_delay_wins_over_the_aec_default(
 ) -> None:
     aec = EchoCanceller(AecTune(enabled=True, bleed_delay_s=0.3))
     monkeypatch.setattr(aec, "available", lambda: True)
-    assert BargeGate(aec=aec)._bleed_wait() == 0.3
-    assert BargeGate(aec=aec, bleed_delay_s=1.5)._bleed_wait() == 1.5
-    assert BargeGate(aec=aec, bleed_delay_s=0.0)._bleed_wait() == 0.0
-    assert BargeGate(aec=aec, bleed_delay_s=-1.0)._bleed_wait() == 0.3
+    mic = ScriptedMic(aec=aec)
+    assert BargeGate(mic=mic)._bleed_wait() == 0.3
+    assert BargeGate(mic=mic, bleed_delay_s=1.5)._bleed_wait() == 1.5
+    assert BargeGate(mic=mic, bleed_delay_s=0.0)._bleed_wait() == 0.0
+    assert BargeGate(mic=mic, bleed_delay_s=-1.0)._bleed_wait() == 0.3
 
 
 def test_a_small_floor_window_still_warms_up() -> None:
@@ -781,16 +750,10 @@ def test_a_setup_failure_in_the_watcher_thread_is_reported(
 def test_a_reply_that_starts_muted_is_not_watched_and_the_mic_is_not_opened(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    gate = BargeGate(bleed_delay_s=0, muted=lambda: True)
-    opened: list[str] = []
-
-    def mic(*_args: object, **_kwargs: object) -> collections.abc.Iterator[bytes]:
-        opened.append("mic")
-        yield from ()
-
-    monkeypatch.setattr("fish_audio_suite_voice.barge.mic_frames", mic)
+    mic = ScriptedMic()
+    gate = BargeGate(mic=mic, bleed_delay_s=0, muted=lambda: True)
     gate.start_after_bleed(threading.Event()).join(timeout=1)
-    assert opened == []
+    assert mic.opened == 0
     assert gate.failure is None
 
 
@@ -800,14 +763,7 @@ def test_muting_during_a_reply_ends_the_watch_without_interrupting_it(
     muted = threading.Event()
     read: list[int] = []
 
-    def mic(
-        device: str | int | None,
-        stop: threading.Event | None,
-        *,
-        timeout: float,
-        aec: object = None,
-    ) -> collections.abc.Iterator[bytes]:
-        del device, timeout, aec
+    def mic(stop: StopFlag | None) -> collections.abc.Iterator[bytes]:
         assert stop is not None
         while not stop.is_set():  # the stream closes as soon as the stop flag is set
             read.append(1)
@@ -817,8 +773,7 @@ def test_muting_during_a_reply_ends_the_watch_without_interrupting_it(
 
     aec = EchoCanceller(AecTune(enabled=False))
     gate, cancel = _watch_with(monkeypatch, [], aec=aec, tune=BargeTune())
-    gate = BargeGate(tune=BargeTune(), aec=aec, muted=muted.is_set)
-    monkeypatch.setattr("fish_audio_suite_voice.barge.mic_frames", mic)
+    gate = BargeGate(mic=ScriptedMic(mic, aec=aec), tune=BargeTune(), muted=muted.is_set)
     gate.watch(cancel)
     assert len(read) == 2  # it stopped reading when muted
     assert not cancel.is_set()  # and the reply was not interrupted
