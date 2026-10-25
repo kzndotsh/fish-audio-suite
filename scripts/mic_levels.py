@@ -1,17 +1,19 @@
 r"""Record your mic level for a few seconds and print it, to tune the waveform in `fish-voice --tui`.
 
-It opens the default mic (or `--device`), reads it the way `fish-voice` does, and prints one
-line about every 90 ms, the rate of the app's `MicLevel` events: the time, the RMS on the
+It opens the default mic (or `--device`), reads it in the 30 ms frames `fish-voice` uses, and
+prints one line about every 90 ms, the rate of the app's `MicLevel` events: the time, the RMS on the
 int16 scale, the level in dB below full scale and a small bar. It ends with a summary of
 what the room and your voice look like in numbers: the noise floor, the typical level
-while you speak, the loudest moment and how far apart they are.
+while you speak, the loudest moment and how far apart they are. The levels are the raw mic.
+The app's automatic gain and noise suppression are not applied, so with `FISH_VOICE_AGC` on
+the app hears a quiet voice louder than this shows.
 
 It calls no API and sends nothing anywhere, and it does not save any audio. It needs the
 `speakers` extra (PortAudio).
 
     uv run python scripts/mic_levels.py                 # 12 seconds
     uv run python scripts/mic_levels.py --seconds 20
-    uv run python scripts/mic_levels.py --device 3      # a PortAudio device number
+    uv run python scripts/mic_levels.py --device 3      # a PortAudio device name or number
 
 Stay quiet for the first two seconds, then talk as you normally do to the assistant: a few
 sentences with some pauses, as if answering "Hey, can you hear me?". On NixOS, set

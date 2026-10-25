@@ -1,9 +1,10 @@
 r"""Try Deepgram Flux with your mic: see the words arrive, and how long after you stop the turn ends.
 
 It streams your speech to Deepgram the way `FISH_VOICE_STT=deepgram` does, with the same mic
-gate, and prints each turn: the words as they come in, the final text, and the time from your
+gate and `FISH_VOICE_*` listen settings, and prints each turn: the words as they come in, the final text, and the time from your
 last bit of speech to the turn being final. That last number is what streaming saves you, so
-compare it with the "asr" figure and the silence wait of the batch path.
+compare it with the "asr" figure and the silence wait of the batch path. The mic is sent raw:
+the app's automatic gain and noise suppression are not applied here.
 
 It calls the live Deepgram API and spends a little of your credit (a few tenths of a cent a
 minute), but nothing else: no Fish, no language model. It needs `DEEPGRAM_API_KEY` (in `.env`
@@ -11,9 +12,10 @@ or the environment) and the `speakers`, `vad` and `deepgram` extras.
 
     uv run python scripts/deepgram_check.py             # three turns
     uv run python scripts/deepgram_check.py --turns 5
-    uv run python scripts/deepgram_check.py --device 3  # a PortAudio device number
+    uv run python scripts/deepgram_check.py --device 3  # a PortAudio device name or number
 
-Say a sentence, then stop. Ctrl+C ends it. On NixOS, set `LD_LIBRARY_PATH=$NIX_LD_LIBRARY_PATH`.
+Say a sentence, then stop. Ctrl+C ends it. On NixOS, set `LD_LIBRARY_PATH=$NIX_LD_LIBRARY_PATH`
+first (see docs/INSTALL.md).
 """
 
 from __future__ import annotations

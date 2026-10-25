@@ -1,7 +1,7 @@
 r"""Play one recording through each voice detector and show where each would interrupt the bot.
 
-Each detector hears the same audio through the real barge-in gate, with the same loudness
-floor and hit count `fish-voice` uses. For each one it prints a timeline of the frames it
+Each detector hears the same audio through the real barge-in gate, with the default loudness
+floor and hit count (the FISH_VOICE_BARGE_* settings are not read). For each one it prints a timeline of the frames it
 called speech and the moments the gate would have stopped a reply. Sounds that are not you
 talking (typing, a cough, a chair) should leave the timeline empty and trip nothing.
 
@@ -16,8 +16,8 @@ and saves the WAV it records. Silero needs the `silero` extra.
 A useful take: ten seconds of typing, ten of talking, then typing while you talk. The WAV
 is the raw mic. `--process` first runs it through the app's mic cleanup (automatic gain and
 noise suppression, with FISH_VOICE_AGC and FISH_VOICE_NOISE_SUPPRESSION from the environment),
-so the detectors hear what `fish-voice` hears. The gate runs as if the bot were silent. On NixOS, set `LD_LIBRARY_PATH=$NIX_LD_LIBRARY_PATH`
-first (see docs/INSTALL.md).
+so the detectors hear what `fish-voice` hears. The gate runs as if the bot were silent. On
+NixOS, set `LD_LIBRARY_PATH=$NIX_LD_LIBRARY_PATH` first (see docs/INSTALL.md).
 """
 
 from __future__ import annotations
@@ -117,7 +117,7 @@ def read_wav(path: Path) -> list[bytes]:
 
 
 def record(path: Path, seconds: float, device: int | None) -> None:
-    """Record the mic the way ``fish-voice`` reads it and save it as a WAV."""
+    """Record the raw mic in the frames ``fish-voice`` reads, with no cleanup, and save a WAV."""
     stop = threading.Event()
     timer = threading.Timer(seconds, stop.set)
     timer.daemon = True  # a mic that fails to open must not leave the script waiting
