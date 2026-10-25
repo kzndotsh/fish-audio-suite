@@ -183,8 +183,9 @@ def prepare_tts_text(
     Returns
     -------
     str
-        ``normalize_cues(scrub_tts(...))``. Cue-only junk is detected later
-        by ``is_tts_junk``.
+        ``scrub_tts``, then ``extract_quoted_speech`` when ``dialogue_only``,
+        then ``normalize_cues``. Cue-only junk is detected later by
+        ``is_tts_junk``.
     """
     cleaned = scrub_tts(raw_input)
     if dialogue_only:

@@ -179,7 +179,7 @@ def _clips_from_input_references(items: list[Any]) -> list[dict[str, Any]]:
                     raise
                 continue
             # Text before this audio belongs to it. A second good part is
-            # another clip; replacing the first spoke with only the last voice.
+            # another clip, so every voice is kept, not only the last.
             clip_text = pending if pending_set else ""
             pending = ""
             pending_set = False
@@ -371,8 +371,8 @@ def _seed(value: Any) -> int | None:
         return None
     if isinstance(value, str) and not value.strip():
         return None
-    # int("42.0") raises, so a whole-number decimal was omitted and Fish
-    # picked a different seed than the one the client asked for.
+    # int("42.0") raises. parse_number accepts a whole decimal, so the seed
+    # the client asked for reaches Fish instead of being dropped.
     parsed = parse_number(value, _MSGPACK_INT_LO - 1, int)
     if parsed < _MSGPACK_INT_LO or parsed > _MSGPACK_INT_HI:
         return None
@@ -524,12 +524,20 @@ def pack_tts(
     spoken : str
         Scrubbed text. This is what Fish speaks, not the raw ``input``.
     quality_guard : bool, optional
-        Default for the Fish quality-guard feature when the request is silent.
+        Default for the Fish quality-guard feature when the request neither
+        sets ``quality_guard`` nor lists ``quality-guard`` in ``features``.
 
     Returns
     -------
     PackedTts or JSONResponse
-        Headers, body, and response media type, or a 400 when a clip fails.
+        Headers, body, and response media type, or a 400 when a clip cannot
+        be read or a number cannot be MessagePacked.
+
+    Raises
+    ------
+    ProxyError
+        With status 400 when ``pronunciation_dictionary`` is not a list or
+        holds more than 512 entries.
 
     Notes
     -----
