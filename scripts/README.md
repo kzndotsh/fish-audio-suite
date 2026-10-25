@@ -128,7 +128,11 @@ hears the same take.
 ```bash
 uv run python scripts/vad_compare.py --record 30 take.wav
 uv run python scripts/vad_compare.py take.wav --engines webrtc,silero --strictness 1,2
+uv run python scripts/vad_compare.py take.wav --process
 ```
+
+The WAV is the raw mic. `--process` first runs it through the app's mic cleanup (automatic
+gain and noise suppression), so the detectors hear what `fish-voice` hears.
 
 A useful take is ten seconds of typing, ten of talking, then typing while you talk. The
 gate runs as if the bot were silent, with no echo cancellation. Silero needs the `silero`

@@ -11,10 +11,12 @@ and saves the WAV it records. Silero needs the `silero` extra.
     uv run python scripts/vad_compare.py --record 30 take.wav    # record, then compare
     uv run python scripts/vad_compare.py take.wav                # compare a 16 kHz mono WAV
     uv run python scripts/vad_compare.py take.wav --engines webrtc,silero --strictness 1,2
+    uv run python scripts/vad_compare.py take.wav --process      # as the app hears it
 
-A useful take: ten seconds of typing, ten of talking, then typing while you talk. The gate
-here runs as if the bot were silent, with no echo cancellation, so it shows what your room
-and your keyboard do on their own. On NixOS, set `LD_LIBRARY_PATH=$NIX_LD_LIBRARY_PATH`
+A useful take: ten seconds of typing, ten of talking, then typing while you talk. The WAV
+is the raw mic. `--process` first runs it through the app's mic cleanup (automatic gain and
+noise suppression, with FISH_VOICE_AGC and FISH_VOICE_NOISE_SUPPRESSION from the environment),
+so the detectors hear what `fish-voice` hears. The gate runs as if the bot were silent. On NixOS, set `LD_LIBRARY_PATH=$NIX_LD_LIBRARY_PATH`
 first (see docs/INSTALL.md).
 """
 
@@ -43,7 +45,7 @@ class _FileMic:
 
     def __init__(self, frames: Sequence[bytes]) -> None:
         self._frames = frames
-        self.aec = EchoCanceller(AecTune(enabled=False))
+        self.aec = EchoCanceller(AecTune.off())
         self.start = 0
 
     @property
@@ -118,19 +120,28 @@ def record(path: Path, seconds: float, device: int | None) -> None:
     """Record the mic the way ``fish-voice`` reads it and save it as a WAV."""
     stop = threading.Event()
     timer = threading.Timer(seconds, stop.set)
+    timer.daemon = True  # a mic that fails to open must not leave the script waiting
     frames: list[bytes] = []
     print(f"recording {seconds:g} s ...", file=sys.stderr)
-    with SessionMic(device) as mic:
-        timer.start()
-        started = time.monotonic()
-        frames.extend(mic.frames(stop))
-    timer.cancel()
+    try:
+        with SessionMic(device) as mic:
+            timer.start()
+            started = time.monotonic()
+            frames.extend(mic.frames(stop))
+    finally:
+        timer.cancel()
     with wave.open(str(path), "wb") as wav:
         wav.setnchannels(1)
         wav.setsampwidth(2)
         wav.setframerate(SAMPLE_RATE)
         wav.writeframes(b"".join(frames))
     print(f"saved {time.monotonic() - started:.1f} s to {path}", file=sys.stderr)
+
+
+def processed(frames: Sequence[bytes]) -> list[bytes]:
+    """Run frames through the app's mic cleanup, with no speaker playing."""
+    cleanup = EchoCanceller(AecTune.from_env())
+    return [cleanup.clean(frame) for frame in frames]
 
 
 def compare(frames: Sequence[bytes], engines: Sequence[str], strictness: Sequence[int]) -> None:
@@ -185,6 +196,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("wav", type=Path, help="16 kHz mono 16-bit WAV (written by --record)")
     parser.add_argument("--record", type=float, metavar="SECONDS", help="record this long first")
     parser.add_argument("--device", type=int, help="PortAudio input device number")
+    parser.add_argument(
+        "--process", action="store_true", help="hear it through the app's mic cleanup first"
+    )
     parser.add_argument("--engines", default="webrtc,silero", help="comma-separated engines")
     parser.add_argument(
         "--strictness",
@@ -196,7 +210,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.record:
         record(args.wav, args.record, args.device)
     engines = [e.strip() for e in args.engines.split(",") if e.strip()]
-    compare(read_wav(args.wav), engines, args.strictness)
+    frames = read_wav(args.wav)
+    compare(processed(frames) if args.process else frames, engines, args.strictness)
     return 0
 
 
