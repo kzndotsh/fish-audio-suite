@@ -108,7 +108,7 @@ def _log_cooldown(ctx: DuplexContext, since: int) -> None:
     tune = ctx.config.listen
     try:
         vad = open_vad(tune.vad_engine, tune.vad_aggressiveness)
-    except ImportError:
+    except Exception:  # noqa: BLE001 - a debug line must never end the session
         return
     debug("listen.cooldown {}", cooldown_report(ctx.mic.recent(since), tune, vad))
 

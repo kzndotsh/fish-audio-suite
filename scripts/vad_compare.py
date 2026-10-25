@@ -156,6 +156,18 @@ def compare(frames: Sequence[bytes], engines: Sequence[str], strictness: Sequenc
             print(f"{'':{width}}  speech {share:.0f}% of frames, barge-ins at: {at}")
 
 
+def strictness_levels(text: str) -> list[int]:
+    """Parse ``--strictness``: comma-separated levels from 0 to 3."""
+    try:
+        levels = [int(part) for part in text.split(",") if part.strip()]
+    except ValueError:
+        levels = []
+    if not levels or any(not 0 <= level <= 3 for level in levels):
+        msg = f"expected levels from 0 to 3 separated by commas, got {text!r}"
+        raise argparse.ArgumentTypeError(msg)
+    return levels
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Parse the arguments, record if asked, then compare.
 
@@ -174,13 +186,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--record", type=float, metavar="SECONDS", help="record this long first")
     parser.add_argument("--device", type=int, help="PortAudio input device number")
     parser.add_argument("--engines", default="webrtc,silero", help="comma-separated engines")
-    parser.add_argument("--strictness", default="1", help="comma-separated levels, 0 to 3")
+    parser.add_argument(
+        "--strictness",
+        type=strictness_levels,
+        default=[1],
+        help="comma-separated levels, 0 to 3",
+    )
     args = parser.parse_args(argv)
     if args.record:
         record(args.wav, args.record, args.device)
     engines = [e.strip() for e in args.engines.split(",") if e.strip()]
-    levels = [int(s) for s in args.strictness.split(",") if s.strip()]
-    compare(read_wav(args.wav), engines, levels)
+    compare(read_wav(args.wav), engines, args.strictness)
     return 0
 
 

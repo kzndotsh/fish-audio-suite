@@ -276,3 +276,19 @@ def test_a_reply_watches_for_barge_in_with_the_listen_detector(
     listen = replace(config.listen, vad_engine="silero", vad_aggressiveness=3)
     assert run_session(replace(config, listen=listen), tts) == 0
     assert built == [listen]
+
+
+def test_a_detector_that_fails_in_the_cooldown_log_does_not_end_the_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tts = FishSpeaker(api_key="k", voice_id="voice")
+    install_audio(monkeypatch)
+    speak_with_fakes(monkeypatch, tts)
+    ScriptedHearing(monkeypatch, heard_line("hi there"))
+    monkeypatch.setattr(
+        "fish_audio_suite_voice.duplex.SessionMic", lambda *_a, **_k: ScriptedMic([b"\x00" * 960])
+    )
+    monkeypatch.setattr("fish_audio_suite_voice.duplex.debug_enabled", lambda: True)
+    config = quick_config()
+    broken = replace(config, listen=replace(config.listen, vad_engine="not-an-engine"))
+    assert run_session(broken, tts) == 0
