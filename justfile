@@ -42,8 +42,12 @@ cov:
     uv run coverage report --include="packages/proxy/*" --fail-under=94 --skip-covered
     uv run coverage report --include="packages/voice/*" --fail-under=85 --skip-covered
 
+# The import contracts in pyproject.toml: which package and voice module may import which.
+layers:
+    uv run lint-imports --no-cache
+
 # Every Python gate CI runs, in CI's order (the steps of .github/actions/gates).
-check: lint docstrings types types-public cov
+check: lint docstrings types types-public layers cov
 
 # Lint the GitHub workflows. Set GH_TOKEN to include the online checks.
 workflows:

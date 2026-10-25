@@ -17,6 +17,7 @@ dev = [
     "ruff>=0.13",
     "basedpyright==1.40.2",
     "pydoclint>=0.7.3",
+    "import-linter>=2.15",
 ]
 test = [
     "textual>=8.2.8",
@@ -256,6 +257,38 @@ docstring-code-line-length = "dynamic"
 indent-style = "space"
 line-ending = "lf"
 quote-style = "double"
+
+[tool.importlinter]
+root_packages = ["fish_audio_suite_kit", "fish_audio_suite_proxy", "fish_audio_suite_voice"]
+
+[[tool.importlinter.contracts]]
+id = "apps-are-independent"
+name = "the proxy and voice never import each other; what they share lives in kit"
+type = "independence"
+modules = ["fish_audio_suite_proxy", "fish_audio_suite_voice"]
+
+[[tool.importlinter.contracts]]
+id = "kit-is-the-base"
+name = "kit imports neither the proxy nor voice"
+type = "forbidden"
+source_modules = ["fish_audio_suite_kit"]
+forbidden_modules = ["fish_audio_suite_proxy", "fish_audio_suite_voice"]
+
+[[tool.importlinter.contracts]]
+id = "voice-direction"
+name = "voice imports point down: the CLI, the session and displays, a turn, capture and speech, adapters, settings"
+type = "layers"
+containers = ["fish_audio_suite_voice"]
+# Each row may import the rows below it, never the rows above. Modules in one row may
+# import each other. A new module goes in the lowest row it fits.
+layers = [
+    "cli",
+    "duplex : tui : console_sink : inputs",
+    "reply : hearing : streaming",
+    "listen : barge : speaker : duplex_state : speculate : stream_scrub : tts_turn : turn_check",
+    "config : mic : wire : llm : playback : transports : deepgram : asr : aec : loudness : spoken : signals : session_view",
+    "tune : llm_tune : events : debug : envfile : cancel : ws_tap : console : declick : floor : history : pause",
+]
 
 [tool.basedpyright]
 pythonVersion = "3.12"
