@@ -226,9 +226,14 @@ class _Capture:
         """Stop the mic thread: the turn has its answer."""
         self._decided.set()
 
-    def captured(self) -> bytes:
-        """Return every frame captured so far that has not been taken from the queue."""
+    async def captured(self) -> bytes:
+        """Stop the mic thread and return every frame it captured that was not taken yet."""
         self._decided.set()  # a fallback listens afresh, so this thread has to let go of the mic
+        # Frames the thread handed over are still callbacks on the loop until it has
+        # stopped. The thread's own failure is not this turn's to report. The shield
+        # keeps a cancelled turn from cancelling the pump, which cleanup still awaits.
+        with contextlib.suppress(Exception):
+            await asyncio.shield(self.pump)
         pieces = [frame for frame, _voiced, _at in self.held]
         while not self.frames.empty():
             item = self.frames.get_nowait()
@@ -306,7 +311,7 @@ async def _connect(
         warn(f"[stt] {exc}")
         if exc.fatal:
             return "fatal"
-        return StreamFallback(capture.captured())
+        return StreamFallback(await capture.captured())
     debug("stt.open connected, sending speech")
     return None
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
 import time
 import wave
@@ -244,6 +245,76 @@ def test_a_missing_key_and_a_refused_connection_are_fatal_but_an_outage_hands_ov
     assert isinstance(outage, StreamFallback)
     assert outage.prefix.startswith(FRAME)
     assert len(outage.prefix) >= FRAME_BYTES
+
+
+def test_an_outage_hands_over_the_frames_the_mic_was_still_passing_on() -> None:
+    tail = b"\x02\x00" * (FRAME_BYTES // 2)
+
+    def listen(
+        _mic: Mic,
+        stop: StopFlag,
+        sink: Callable[[bytes, bool], None],
+        *,
+        prefix: bytes,
+        tune: ListenTune,
+    ) -> bool:
+        del prefix, tune
+        for _ in range(3):
+            sink(FRAME, True)
+        while not stop.is_set():
+            time.sleep(0.005)
+        # Frames the mic thread had already handed over when the turn let go of it.
+        sink(tail, True)
+        sink(tail, True)
+        return False
+
+    outage = _run(_FakeFlux(open_errors=[DeepgramError("no route")]), listen)
+    assert isinstance(outage, StreamFallback)
+    assert outage.prefix == FRAME * 3 + tail * 2
+
+
+def test_a_turn_cancelled_while_the_mic_lets_go_still_closes_the_stream() -> None:
+    released = threading.Event()
+
+    def listen(
+        _mic: Mic,
+        stop: StopFlag,
+        sink: Callable[[bytes, bool], None],
+        *,
+        prefix: bytes,
+        tune: ListenTune,
+    ) -> bool:
+        del prefix, tune
+        for _ in range(3):
+            sink(FRAME, True)
+        while not stop.is_set():
+            time.sleep(0.005)
+        released.wait(5)  # a mic thread slow to let go
+        return False
+
+    fake = _FakeFlux(open_errors=[DeepgramError("no route")])
+
+    async def go() -> None:
+        turn = asyncio.create_task(
+            stream_turn(
+                stt=STT,
+                listen=ONE_VOICED,
+                mic=ScriptedMic(),
+                quit_requested=threading.Event(),
+                stop=threading.Event(),
+                make_stream=lambda _url, _key: fake,
+                listen_fn=listen,
+            )
+        )
+        await asyncio.sleep(0.1)  # the outage has happened and the mic is being released
+        turn.cancel()
+        await asyncio.sleep(0.05)
+        released.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await turn
+
+    asyncio.run(asyncio.wait_for(go(), 10))
+    assert fake.closed
 
 
 def test_nothing_is_connected_until_speech_starts_and_then_it_is_connected_once() -> None:
