@@ -475,10 +475,10 @@ Listen and interrupt. Times are approximate at 30 ms frames.
 | `FISH_VOICE_AEC_BLEED_DELAY` | `0.3` | Seconds the mic is ignored after a reply starts, once AEC3 is loaded |
 | `FISH_VOICE_AGC` | on | Raise a quiet voice to a steady level before anything listens. `0` turns it off |
 | `FISH_VOICE_NOISE_SUPPRESSION` | `18` | Decibels of steady background noise (fans, hum) removed from the mic: `0` (off), `6`, `12`, `18` or `21` |
-| `FISH_VOICE_BARGE_FRAMES` | `10` | Loud voiced frames in a row that interrupt (about 300 ms). At least 1 |
+| `FISH_VOICE_BARGE_FRAMES` | `10` | Loud voiced frames that interrupt (about 300 ms). They need not be in a row: three missed frames take one hit back. At least 1 |
 | `FISH_VOICE_BARGE_RMS` | `220` | Barge floor seed, above 0. It follows the room, never below this. With automatic gain on, typing can pass 220 ([#58](https://github.com/kzndotsh/fish-audio-suite/issues/58)) |
 | `FISH_VOICE_BARGE_PLAYING_GAIN` | `2.2` | Floor multiplier while the speaker plays and AEC is off. At least 1 |
-| `FISH_VOICE_DEBUG` | off | `1` or `--debug` logs events. `2`, `trace` or `--trace` adds mic heartbeats, raw audio events, HTTP lines and each raw chat event (`llm.event`) |
+| `FISH_VOICE_DEBUG` | off | `1` or `--debug` logs events. `2`, `trace` or `--trace` adds mic heartbeats, raw audio events, HTTP lines and each raw chat event (`llm event`) |
 | `FISH_VOICE_LOG_DIR` | unset | A folder. Each run writes a complete log to a new `fish-voice-<time>.log` there, at the most detailed level (events, mic heartbeats, raw traffic), whatever the screen shows. It also holds what you said and what the model answered, and is readable only by you. `--log-dir DIR` does the same |
 
 `dev.sh` also reads `FISH_VOICE_ENV_FILE` (env file path), `FISH_VOICE_PORTAUDIO_LIB` (library directories), and `FISH_VOICE_NIX=1` (build PortAudio with nix on a host that is not NixOS).

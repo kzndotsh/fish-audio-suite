@@ -214,7 +214,7 @@ That is the model's own content policy, and settings will not change it. [PERFOR
 
 ### `HTTP 400 ... provider rejected the request` and the bot says nothing
 
-`llm HTTP 400, model=...: provider rejected the request; verify the request fields against the model alias capabilities`, then `tts stream empty reply, nothing to speak`. The wording points at the request fields, but a hosted model can send the same 400 when its safety filter refuses the prompt text. In one setup every field and message shape returned 200 for the model with a plain test prompt, and only the real character prompt was rejected.
+`llm HTTP 400, model=...: provider rejected the request; verify the request fields against the model alias capabilities` (with `from <provider>` after the status when the reply names one), then `tts stream empty reply, nothing to speak`. The wording points at the request fields, but a hosted model can send the same 400 when its safety filter refuses the prompt text. In one setup every field and message shape returned 200 for the model with a plain test prompt, and only the real character prompt was rejected.
 
 To tell them apart, send the same fields with a plain prompt, or the default prompt (`fish-voice` without `--prompt-file`). A 200 there means the content was refused, and no setting will change that. Use a model that accepts the prompt, such as a roleplay-tuned one ([PERFORMANCE.md](PERFORMANCE.md#choosing-an-llm)).
 

@@ -328,7 +328,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         text = (args.text or TEXT).strip()
     # FishSpeaker.speak cleans the text again, in the app's order (scrub_tts, then
-    # normalize_cues), so what Fish receives matches the app.
+    # normalize_cues). Unlike the app's default, unsupported cues are not filtered out
+    # (official_cues is off), so a clip can carry a cue the app would drop.
     spoken = scrub_tts(normalize_cues(text))
     out_dir = Path(args.out_dir) if args.out_dir else ROOT / OUT_DIR
     stamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
