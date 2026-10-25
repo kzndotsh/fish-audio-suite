@@ -29,6 +29,7 @@ from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexContext
 from fish_audio_suite_voice.events import EVENTS, ReplyEnd, ReplyToken, Speaking, notice
 from fish_audio_suite_voice.hearing import HeardLine
 from fish_audio_suite_voice.history import with_tone_hint
+from fish_audio_suite_voice.llm import ChatUnusableError
 from fish_audio_suite_voice.playback import PortAudioMissingError, make_sink
 from fish_audio_suite_voice.spoken import unspoken_text
 from fish_audio_suite_voice.wire import TtsResult
@@ -376,6 +377,8 @@ async def stream_turn(
     )
     tts_task.add_done_callback(lambda task: _end_llm_when_tts_stops(task, llm_cancel))
     reply = ""
+    ttft_ms: float | None = None
+    unusable = False
     try:
         try:
             reply, ttft_ms = await collect_reply(
@@ -386,6 +389,9 @@ async def stream_turn(
                 on_token=pipe.push,
                 tone=heard.tone,
             )
+        except ChatUnusableError:
+            # Fish is already listening, so the turn ends the usual way first.
+            unusable = True
         finally:
             pipe.close()
         snapshot = replace(snapshot, llm_first_token_ms=ttft_ms)
@@ -414,7 +420,7 @@ async def stream_turn(
         # Nothing to say. The non-streaming path never opens a Fish turn for an
         # empty reply, so skip the "silent" report and the history entry too.
         debug("tts.stream empty reply, nothing to speak")
-        return snapshot, None
+        return snapshot, EXIT_FATAL if unusable else None
     failed_early = (
         not result.got_audio
         and not result.cancelled

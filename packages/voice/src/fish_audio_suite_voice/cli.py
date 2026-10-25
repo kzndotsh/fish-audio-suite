@@ -38,7 +38,7 @@ from fish_audio_suite_voice.duplex import EXIT_FATAL, EXIT_OK, bye, duplex_turns
 from fish_audio_suite_voice.envfile import apply_cli_env_files
 from fish_audio_suite_voice.events import forward_logs, mirror_conversation
 from fish_audio_suite_voice.inputs import LiveInput
-from fish_audio_suite_voice.llm import open_chat_backend
+from fish_audio_suite_voice.llm import ChatUnusableError, open_chat_backend
 from fish_audio_suite_voice.llm_tune import LlmTune, provider_for_base
 from fish_audio_suite_voice.playback import (
     FileSink,
@@ -257,8 +257,11 @@ async def run_loop(c: VoiceCliConfig) -> int:
         sys.stderr.flush()
 
     session.install_sigint(asyncio.get_running_loop(), before=_before_quit)
-    async with open_chat_backend(c.llm, session_id=uuid.uuid4().hex) as backend:
-        return await duplex_turns(c, tts, device, backend, session)
+    try:
+        async with open_chat_backend(c.llm, session_id=uuid.uuid4().hex) as backend:
+            return await duplex_turns(c, tts, device, backend, session)
+    except ChatUnusableError:
+        return EXIT_FATAL
 
 
 async def run_tui(c: VoiceCliConfig, *, debug: DebugLevel) -> int:
@@ -319,6 +322,11 @@ async def run_tui(c: VoiceCliConfig, *, debug: DebugLevel) -> int:
             )
             app = VoiceApp(runner, live=live, session=session, info=info)
             code = await app.run_async()
+    except ChatUnusableError as exc:
+        # The log had moved into the screen, which never opened.
+        configure_voice_logging(debug=debug, to_stderr=True)
+        warn(f"[llm] stopping: {exc}")
+        return EXIT_FATAL
     finally:
         sys.setswitchinterval(switch_interval)
         gc.set_threshold(*gc_threshold)

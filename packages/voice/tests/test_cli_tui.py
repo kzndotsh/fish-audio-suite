@@ -16,6 +16,7 @@ from fish_audio_suite_voice.cli import EXIT_FATAL, _can_draw_a_screen, load_conf
 from fish_audio_suite_voice.config import VoiceCliConfig
 from fish_audio_suite_voice.debug import DebugLevel
 from fish_audio_suite_voice.inputs import LiveInput
+from fish_audio_suite_voice.llm import ChatUnusableError
 from fish_audio_suite_voice.signals import DuplexSession
 
 
@@ -255,3 +256,42 @@ def test_choosing_deepgram_needs_its_key_and_its_extra(
     monkeypatch.setattr("importlib.util.find_spec", lambda name, *_a: None)
     assert _preflight(ready) == EXIT_FATAL
     assert "deepgram extra" in capsys.readouterr().err
+
+
+class _UnusableBackend:
+    """``open_chat_backend`` when the model check finds nothing that can answer."""
+
+    def __init__(self, *_a: object, **_k: object) -> None:
+        pass
+
+    async def __aenter__(self) -> object:
+        raise ChatUnusableError("no provider serves model org/model")
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+
+@pytest.mark.parametrize("tui", [False, True])
+def test_a_model_that_cannot_answer_stops_before_the_session_and_says_why(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tui: bool
+) -> None:
+    c = _configured(monkeypatch)
+    calls: dict[str, Any] = {}
+    _patch_session(monkeypatch, calls)
+    monkeypatch.setattr(cli, "open_chat_backend", _UnusableBackend)
+    logging: list[bool] = []
+
+    def configure(*, to_stderr: bool = True, **_kw: object) -> None:
+        logging.append(to_stderr)
+
+    monkeypatch.setattr(cli, "configure_voice_logging", configure)
+    if tui:
+        code = asyncio.run(run_tui(c, debug=DebugLevel.OFF))
+        # The log had moved into the screen, which never opened, so the reason is put
+        # back on the terminal.
+        assert logging[-1] is True
+        assert "no provider serves model org/model" in capsys.readouterr().err
+    else:
+        code = asyncio.run(cli.run_loop(c))
+    assert code == EXIT_FATAL
+    assert _FakeApp.instances == []
