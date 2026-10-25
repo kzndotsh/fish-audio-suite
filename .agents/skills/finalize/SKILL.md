@@ -8,7 +8,7 @@ description: >-
   or when the user names one specific command (e.g. "run pytest").
 metadata:
   owner: fish-audio-suite
-  sources: AGENTS.md, CONTRIBUTING.md, .github/workflows/ci.yml, pyproject.toml, README.md
+  sources: AGENTS.md, CONTRIBUTING.md, justfile, .github/actions/gates/action.yml, .github/workflows/ci.yml, pyproject.toml, README.md
 ---
 
 # Finalize
@@ -25,8 +25,8 @@ and **stops for approval**.
 
 ## Edit scope
 
-May edit the README, the files under `docs/`, `CONTRIBUTING.md`, tests for the dirty behavior, and
-files a failing gate points at. May `git commit` only after the user
+May edit the README, the package READMEs, the files under `docs/`, `CONTRIBUTING.md`,
+`.env.example`, `scripts/README.md`, tests for the dirty behavior, and files a failing gate points at. May `git commit` only after the user
 approves the posted plan. Does not push or change CI unless asked.
 
 ## Instructions
@@ -42,8 +42,8 @@ approves the posted plan. Does not push or change CI unless asked.
 
 ## Gotchas
 
-- CI is GitHub Actions. Ruff, pydoclint, basedpyright, and pytest gate every change; the wheel, nix, and Docker jobs run on every CI run, but you only need to run their commands locally when packaging, `flake.nix`, `nix/`, or the `Dockerfile` changed.
-- Format with `uv run ruff format packages` so `ruff format --check` in CI passes.
+- CI is GitHub Actions. Ruff, pydoclint, basedpyright, the public API type floors, the import contracts and pytest with the coverage floors gate every change (`just check` runs them all). The wheel, lowest-versions, zizmor, nix and Docker jobs run on every CI run, but you only need their commands locally when packaging, workflows, `flake.nix`, `nix/` or the `Dockerfile` changed.
+- Format with `just fmt` (it covers `packages`, `.github/scripts` and `scripts`, as CI's format check does).
 - Pytest: `--import-mode=importlib`; prefer `uv run pytest packages/<member>` over the whole suite.
 - Dist names stay `fish-audio-suite-{kit,proxy,voice}` only.
 - Do not start this while implementation is still in progress.

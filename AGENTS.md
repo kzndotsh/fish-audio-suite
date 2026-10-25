@@ -25,7 +25,7 @@ Unofficial Fish Audio toolkit, not affiliated with Fish Audio. Three distributio
 
 ## Commands
 
-- `uv sync --all-packages --extra cli --group dev --group test`, then `just check` (ruff, pydoclint, basedpyright, public-API types, pytest with the CI coverage floors). `just --list` shows the rest.
+- `uv sync --all-packages --extra cli --group dev --group test`, then `just check` (ruff, pydoclint, basedpyright, public-API types, import contracts, pytest with the CI coverage floors). `just --list` shows the rest.
 - One package: `uv run pytest packages/<kit|proxy|voice>`.
 - Do not call the live Fish or LLM APIs, or run `fish-voice --smoke`, unless the user asks. Tests run with the network blocked and must not need a key.
 

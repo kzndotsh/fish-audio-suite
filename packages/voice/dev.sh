@@ -11,7 +11,7 @@ env_file="${FISH_VOICE_ENV_FILE:-}"
 local_env="${env_file:-$root/.env}"
 if [[ ! -f "$local_env" ]]; then
   cp "$example" "$local_env"
-  echo "wrote $local_env — set FISH_API_KEY, FISH_VOICE_ID, and for duplex FISH_LLM_API_KEY + FISH_LLM_MODEL" >&2
+  echo "wrote $local_env: set FISH_API_KEY and FISH_VOICE_ID, and for duplex an LLM key and model (OPENROUTER_API_KEY and FISH_LLM_MODEL_OPENROUTER by default)" >&2
   exit 2
 fi
 

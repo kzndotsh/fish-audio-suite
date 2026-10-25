@@ -31,14 +31,16 @@ Every doc in this repository, what is in it, and who it is for. Start with the r
 | [README.md](../README.md) | What the project is, the three packages, and a quick start |
 | [packages/kit/README.md](../packages/kit/README.md) | The text helpers: every function group and its settings |
 | [packages/proxy/README.md](../packages/proxy/README.md) | The OpenAI-compatible server: the request field map, text options, retries and every setting |
-| [packages/voice/README.md](../packages/voice/README.md) | The library and `fish-voice`: LLM providers, characters, streaming, echo and barge-in, and every setting |
+| [packages/voice/README.md](../packages/voice/README.md) | The library and `fish-voice`: LLM providers, characters, streaming, echo and barge-in, the full-screen app, Deepgram, the extras, the voice detectors, and every setting |
 | [CONTRIBUTING.md](../CONTRIBUTING.md) | Setup, the checks, docstrings, the public API, env-var names, versioning, releases and commits |
 | [SECURITY.md](../SECURITY.md) | Supported versions and how to report a vulnerability privately |
 | [AGENTS.md](../AGENTS.md) | The short list of rules for coding agents, with pointers to the docs above |
+| [scripts/README.md](../scripts/README.md) | The developer tools in `scripts/`: comparing chat models and Fish voices, measuring a mic, comparing voice detectors on a recording, and trying Deepgram Flux |
 | [.env.example](../.env.example) | Every setting, with its default |
 
 ## Keeping the docs true
 
 - **The settings tables are checked.** `tests/test_docs_env.py` fails when a variable the code reads is missing from the READMEs or `.env.example`, or the other way round, and when a documented default differs from the code.
-- **The repo rules are checked.** `tests/test_repo_rules.py` covers the coverage floors, kit's purity, kit imports and where the voice package reads the environment.
+- **The repo rules are checked.** `tests/test_repo_rules.py` covers the coverage floors, kit's purity, kit imports, where the voice package reads the environment, that the voice session never writes to the terminal, the NixOS module's drain time and the extras' version bounds.
+- **The import boundaries are checked.** `just layers` (`lint-imports`) enforces the contracts in `pyproject.toml`: the proxy and voice never import each other, kit imports neither, and voice modules import only the layers below their own.
 - **Everything else is reviewed by hand.** When a module moves or an invariant changes, update [ARCHITECTURE.md](ARCHITECTURE.md). When a log line or an error message changes, update [TROUBLESHOOTING.md](TROUBLESHOOTING.md), which quotes them.

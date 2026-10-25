@@ -55,7 +55,7 @@ fish-voice --env-file ~/.config/fish-voice.env --smoke
 fish-voice --env-file ~/.config/fish-voice.env
 ```
 
-Without `--env-file`, `fish-voice` reads `.env` in the current directory if there is one, then the environment. Copy [`.env.example`](../.env.example) as a starting point: it lists every setting.
+Without `--env-file`, `fish-voice` reads `.env` in the current directory if there is one. A variable already set in the environment wins over the file. Copy [`.env.example`](../.env.example) as a starting point: it lists every setting.
 
 ### With Nix
 
@@ -63,7 +63,7 @@ Without `--env-file`, `fish-voice` reads `.env` in the current directory if ther
 nix run github:kzndotsh/fish-audio-suite#fish-audio-suite-voice -- --env-file ./.env
 ```
 
-The Nix build bundles PortAudio, so nothing else is needed.
+The Nix build bundles PortAudio (and PulseAudio on Linux), so nothing else is needed.
 
 ### PortAudio
 
@@ -83,9 +83,9 @@ The `cli` extra pulls in what `fish-voice` needs to talk and listen. The full-sc
 
 | Extra | Adds | Without it |
 | --- | --- | --- |
-| `speakers` | `sounddevice` (PortAudio playback and mic) | Only file, stdout and mpv output |
-| `vad` | `webrtcvad-wheels` | No voice activity detection |
-| `aec` | `pywebrtc-audio` (WebRTC AEC3) | No echo cancellation, so barge-in waits out the speaker bleed |
+| `speakers` | `sounddevice` (PortAudio playback and mic) | No mic, and output only to a file, stdout or mpv |
+| `vad` | `webrtcvad-wheels`, the default detector (`FISH_VOICE_VAD_ENGINE=webrtc`) | The start-up check stops with a message naming the extra |
+| `aec` | `pywebrtc-audio`, WebRTC's audio processor: gain control, noise suppression and AEC3 echo cancellation on every mic frame | The mic is used raw, and barge-in waits out the speaker bleed |
 | `cli` | All three, plus the `openrouter` SDK | |
 | `silero` | `pysilero-vad`, for `FISH_VOICE_VAD_ENGINE=silero` | The start-up check stops with a message naming the extra |
 | `tui` | `textual`, for `fish-voice --tui` | `--tui` says how to install it and exits 2 |
@@ -189,7 +189,7 @@ This runs the proxy as a hardened systemd service on `127.0.0.1:8849`.
 | `backend` | `"native"` | `"native"` (systemd) or `"oci"` (a container) |
 | `package` | this flake's proxy | The proxy package for `native` |
 | `image` | none | The container image for `oci` (required there) |
-| `host` | `"127.0.0.1"` | Listen address (`native` only; the image sets its own) |
+| `host` | `"127.0.0.1"` | Listen address for `native`, or the host address the container port is published on for `oci` |
 | `port` | `8849` | Listen port |
 | `openFirewall` | `false` | Open `port` in the firewall |
 | `autoStart` | `true` | Start at boot |

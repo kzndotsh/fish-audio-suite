@@ -33,7 +33,8 @@ under the floors in `.github/verifytypes-floors.json` (`just types-public`).
 `lint-imports` checks the import contracts in `pyproject.toml` (`just layers`): the proxy
 and voice never import each other, kit imports neither, and voice modules import only
 the layers below their own. A new voice module goes in the lowest layer it fits.
-`pytest` also runs the `>>>` examples in kit's docstrings as doctests.
+`pytest` also runs the `>>>` examples in kit's docstrings as doctests. `just check` runs
+the tests through `just cov`, which adds branch coverage and the CI floors.
 
 `just fmt` (or `uv run ruff format packages .github/scripts scripts`) rewrites the formatting. `uvx pre-commit install`
 runs the fast checks on every commit.
@@ -47,7 +48,8 @@ test fails when they differ.
 
 ## Tests
 
-Tests live in `packages/<member>/tests/`. They run in random order with every
+Tests live in `packages/<member>/tests/`. The root `tests/` holds the repo-wide checks
+(the settings tables, the repo rules) and the tests for `scripts/`. They run in random order with every
 warning turned into an error and with network sockets disabled, so a test must
 not depend on another test or on the real Fish API. Add a test with every
 behavior change, and put a regression test beside every bug fix. Do not call the
@@ -96,7 +98,7 @@ the build when they do not. Tests do not need docstrings.
 
 Kit docstrings may carry an `Examples` section. It runs as a doctest on every
 `pytest` run, so a stale example fails the build. Keep the output exact. Proxy and
-voice have no doctests.
+voice docstrings are not collected as doctests, so an example there is not run.
 
 ## The public API
 

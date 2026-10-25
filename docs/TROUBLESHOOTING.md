@@ -9,7 +9,9 @@ Find your symptom, check the log line it names, and apply the fix.
 
 1. **Turn on the debug log.** Run `./packages/voice/dev.sh --debug`, or `fish-voice --debug`. Use `--trace` to also see mic levels every 20 frames, raw websocket events and HTTP lines. Logs go to stderr, and the conversation goes to stdout.
 2. **Check Fish on its own.** `fish-voice --smoke` synthesizes one line into a WAV file. If that fails, the problem is the key, the voice or the network, not your audio setup.
-3. **Check what was loaded.** The first line printed shows which env file was read (`env: /path/.env`). The `fish-voice ready | ...` line shows the TTS model, voice, latency mode, playback and LLM in use.
+3. **Check what was loaded.** The first line printed shows which env file was read (`env: /path/.env`). The `fish-voice ready | ...` line shows the TTS model, voice, ASR language, latency mode, playback and LLM in use.
+
+Each log line has a short tag in its own column (`listen`, `barge`, `aec`, `asr`, `stt`, `tts`, `llm`), then the message. Warnings are yellow. This page quotes a line as tag and message, for example `barge hit 3/10 rms=812`.
 
 ## Audio devices
 
@@ -33,26 +35,26 @@ List the devices, then set `FISH_VOICE_DEVICE` to an index or a name:
 uv run --package fish-audio-suite-voice --extra cli python -m sounddevice
 ```
 
-In `--trace`, `listen mic ... peak_rms=` sits around 50–100 in a quiet room, and speech reaches several hundred. A value of exactly `0` on every line means no signal at all: the mic is muted (many USB mics have a mute button) or muted in the OS mixer.
+In `--trace`, `listen mic ... peak_rms=` shows the level after the app's gain and noise suppression. A quiet room reads well under the 200 gate, and speech reaches a thousand or more. A value of exactly `0` on every line means no signal at all: the mic is muted (many USB mics have a mute button) or muted in the OS mixer.
 
 ### `BLOCKER: ...` and exit code 2
 
-Something required is missing. The line names it: `FISH_API_KEY`, `FISH_VOICE_ID`, the LLM key or model, or a playback mode that cannot work in duplex (`file`, or `mpv` not on your PATH). Set it in `.env` and run again.
+Something required is missing. The line names it: `FISH_API_KEY`, `FISH_VOICE_ID`, the LLM key or model, a playback mode that cannot work in duplex (`file`, or `mpv` not on your PATH), or a voice detector that cannot load (`FISH_VOICE_VAD_ENGINE=silero needs the silero extra`). Set it in `.env`, or install the extra the line names, and run again.
 
 ## Fish
 
-### Exit code 2 after `[asr] 401`, `402` or `403`, or `[tts] 401`, `402` or `403`
+### Exit code 2 after `asr 401`, `402` or `403`, or `tts 401`, `402` or `403`
 
 Fish refused the key. 401 means a wrong key, 402 an empty balance and 403 a key without access. Check `FISH_API_KEY` and your Fish account.
 
 > [!NOTE]
 > These stop the program on purpose, because no later turn can succeed.
 
-### `[tts silent] voice=... model=...` or `[tts] no audio`
+### `[tts silent] voice=... model=...` or `tts no audio`
 
 Fish accepted the request but sent no audio. Usually `FISH_VOICE_ID` is wrong, private, or not available on the chosen model. Try the voice on fish.audio, or switch `FISH_TTS_MODEL`.
 
-### `[tts] retry status=429 attempt=...` or `5xx`
+### `tts retry status=429 attempt=...` or `5xx`
 
 Fish is rate-limiting you or is having trouble. Retries happen only before the first audio byte, so you never hear a sentence twice. If it keeps happening, slow down or check Fish's status page.
 
@@ -68,20 +70,22 @@ Look for `listen reject too_little_voice frames=... voiced_hits=7`. A one-word a
 
 ### Soft speech is missed, or talking over the bot does nothing, because the mic is quiet
 
-Look for `listen reject too_little_voice`, short clips that come back as `asr skip hallucination (0 chars)`, and `barge hit` lines that sit just above the floor (about 220 to 330 rms) and fall back before they reach `FISH_VOICE_BARGE_FRAMES`. The default gates are `FISH_VOICE_MIN_RMS=200` and `FISH_VOICE_BARGE_RMS=220`, about -44 dBFS. They assume your voice is well above that and the room is well below it.
+Look for `listen reject too_little_voice`, short clips that come back as `asr skip hallucination (0 chars)`, and `barge hit` lines that fall back (`barge decay` in `--trace`) before they reach `FISH_VOICE_BARGE_FRAMES`.
 
-Measure before changing anything. `scripts/mic_levels.py` calls no API and saves no audio, and its summary gives your noise floor and speaking level in dB below full scale. Stay quiet for the first two seconds and then talk for the rest, or the "speech" figure is only room noise. Conversational speech usually averages around -26 to -20 dBFS. In one setup (a Yeti X) speech averaged -37.7 dBFS and soft words dipped under the gates. A gain increase of about 8 dB brought it to -31.4 and fixed the missed interruptions.
+The app raises a quiet voice itself. Every mic frame goes through automatic gain (`FISH_VOICE_AGC`, on by default) and noise suppression (`FISH_VOICE_NOISE_SUPPRESSION`, 18 dB) before the gates and speech recognition hear it. On a recording of quiet speech from a Yeti X the gain added about 12 dB. So first check that the cleanup runs. With `--debug`, an `aec on 16k echo=True wet=0.85 agc=True noise_db=18` line appears when the mic first opens. `aec skip extra pywebrtc-audio not installed` means no gain, noise suppression or echo cancellation at all: install the `cli` extra, which includes it. `aec fail could not start the audio processor: ...` says why the processor did not start.
 
-The app raises a quiet voice itself: automatic gain (`FISH_VOICE_AGC`, on by default) lifts it to a steady level before the gates and speech recognition hear it. In one recording of quiet speech on a Yeti X it added about 12 dB. It cannot lift your voice above the room, so the steps below still matter when the room is loud.
+The gates, `FISH_VOICE_MIN_RMS=200` and `FISH_VOICE_BARGE_RMS=220` (about -44 dBFS), apply to the cleaned frames. With the gain on, speech usually peaks at a thousand or more, well above them. The gain cannot lift your voice above the room, because it raises the room noise too. If speech is still missed, fix the level at the mic.
+
+Measure first. `scripts/mic_levels.py` calls no API and saves no audio, and its summary gives your noise floor and speaking level in dB below full scale. It reads the raw mic, before the app's gain and noise suppression. Stay quiet for the first two seconds and then talk for the rest, or the "speech" figure is only room noise. Conversational speech usually averages around -26 to -20 dBFS. In one setup (a Yeti X, before the app had automatic gain) speech averaged -37.7 dBFS and soft words dipped under the gates. Raising the input volume about 8 dB on the slider lifted speech 6.3 dB, to -31.4 dBFS, and fixed the missed interruptions.
 
 Things to consider:
 
 - **Order of fixes.** Move closer to the mic, then raise the mic's own gain, then the system input volume. Software gain amplifies the room noise by the same amount, so it cannot improve speech against noise. Moving closer is the only step that does.
-- **Do not overshoot.** Keep the noise floor below about -47 dBFS (an rms of roughly 140). Near the 200 rms gate the room itself starts to look like speech. In the same setup the floor rose from -55.4 to -48.8 dBFS with the extra gain.
+- **Do not overshoot.** Keep the noise floor in `mic_levels.py` below about -47 dBFS (an rms of roughly 140). In the same setup the floor rose from -55.4 to -48.8 dBFS with the extra gain. Noise suppression removes steady noise such as a fan, but not typing or voices, and the app's gain raises those along with you.
 - **Volume scales are cubic.** In `pavucontrol` and `wpctl`, 60% is about -13 dB and 44% is about -21 dB (dB = 60 x log10 of the fraction). A linear setting such as WirePlumber's `default-source-volume` is the cube of that percentage, so 0.22 matches 60%.
 - **Other apps share the input.** A chat or call app on the same default source hears the change. On PipeWire the volume is remembered per device, so a value set in a config file applies only when nothing is saved.
-- **Echo cancellation takes some of your voice** while the speakers play, so your level during a reply is lower than in `mic_levels.py`. Headphones remove that. `mic_levels.py` measures the raw mic, before the app's gain and noise suppression.
-- **Lowering the gates instead** (for example `FISH_VOICE_MIN_RMS` near 120 and `FISH_VOICE_BARGE_RMS` near 150) is untested and relies on a quiet room, so prefer fixing the level first.
+- **Echo cancellation takes some of your voice** while the speakers play, so your level during a reply is lower than when the bot is silent. Headphones remove that.
+- **Do not lower the gates.** With the gain on, a quiet voice is already well above them, and a lower `FISH_VOICE_BARGE_RMS` lets more typing interrupt (see [below](#coughs-chairs-sniffs-or-keyboard-noise-interrupt-the-bot)). With `FISH_VOICE_AGC=0` the log shows the raw mic level again, and the gates assume a voice well above 200.
 
 ### Replies are too quiet, too loud or distorted with loudness normalisation
 
@@ -97,13 +101,13 @@ Run with `--debug` and look for `turn.extend <reason> clip=1 '...'`. The reason 
 
 ### My quick reply right after the bot finishes is lost
 
-The mic stays shut for `FISH_VOICE_COOLDOWN` seconds (default 0.8) after a reply, and anything said then is not recorded. Set `0.3`. If that makes the bot hear itself (see below), use `0.4` or `0.5`.
+The app ignores the mic for `FISH_VOICE_COOLDOWN` seconds (default 0.8) after a reply, and anything said then is not used. A reply you interrupted has no cooldown. Set `0.3`. If that makes the bot hear itself (see below), use `0.4` or `0.5`.
 
 ### A turn starts with no one talking, right after the bot finishes
 
-In the log, `listen speech_start` comes within a few hundred ms of `listen open`, and the transcript is empty, junk, or the bot's own last words. The speaker's echo reached the mic before the room went quiet. Raise `FISH_VOICE_COOLDOWN`, lower the speaker volume, or move the mic away from the speaker. With `--debug`, the `listen cooldown` line after each reply shows how close the echo came: `speech_like` near `start_needs` means it could start a turn.
+In the log, `listen speech_start` comes within a few hundred ms of `listen waiting for you`, and the transcript is empty, junk, or the bot's own last words. The speaker's echo reached the mic before the room went quiet. Raise `FISH_VOICE_COOLDOWN`, lower the speaker volume, or move the mic away from the speaker. With `--debug`, the `listen cooldown` line after each reply shows how close the echo came: `speech_like` near `start_needs` means it could start a turn.
 
-### `asr.skip backchannel` or `asr.skip hallucination`
+### `asr skip backchannel` or `asr skip hallucination`
 
 These are deliberate. A transcript that is only a hesitation ("um", "hmm") is skipped, as are lines speech-to-text invents in silence, such as "Thanks for watching". Said over the bot, "yeah" and "mm-hmm" are skipped as well, because they mean "go on". On a turn of its own, "yeah" is answered.
 
@@ -113,13 +117,13 @@ These are deliberate. A transcript that is only a hesitation ("um", "hmm") is sk
 
 Set `DEEPGRAM_API_KEY`, and install the `deepgram` extra (`uv sync --extra deepgram`, or `pip install 'fish-audio-suite-voice[deepgram]'`). The Nix package already includes it.
 
-### `[stt] could not reach Deepgram: ... CERTIFICATE_VERIFY_FAILED`
+### `stt could not reach Deepgram: ... CERTIFICATE_VERIFY_FAILED`
 
 The WebSocket could not verify Deepgram's certificate. The connection uses `certifi`'s certificates, so this means `certifi` is missing or a proxy is rewriting TLS. That turn is heard with Fish ASR instead, from the speech already captured.
 
-### `stt.empty Flux was sent N kB (X s of audio) and found no speech`
+### `stt empty Flux was sent N kB (X s of audio) and found no speech`
 
-Flux heard the audio and recognised no words, so it never started a turn. The usual cause is a quiet mic: speech around -50 to -40 dBFS (an rms of roughly 100 to 300) was missed in testing. Raise the input volume or the mic's gain, and set `FISH_VOICE_STT_SAVE_DIR=tmp/stt` to save what was sent and listen to it. A `stt.noise` line instead means the local gate dropped a knock or a cough before anything was sent. A `stt.gave_up` line means Flux returned no words within 1.2 s of streaming starting, so the turn was dropped as noise early, as with repeated taps.
+Flux heard the audio and recognised no words, so it never started a turn. The usual cause is a quiet mic: speech around -50 to -40 dBFS (an rms of roughly 100 to 300) was missed in testing, before the app had automatic gain. Check that the gain is on (see [the quiet mic](#soft-speech-is-missed-or-talking-over-the-bot-does-nothing-because-the-mic-is-quiet)), raise the input volume or the mic's gain, and set `FISH_VOICE_STT_SAVE_DIR=tmp/stt` to save what was sent and listen to it. A `stt noise` line instead means the local gate dropped a knock or a cough before anything was sent. A `stt gave_up` line means Flux returned no words within 1.2 s of streaming starting, so the turn was dropped as noise early, as with repeated taps.
 
 ### Turns end late, with `stt end trigger=manual`
 
@@ -131,21 +135,21 @@ Flux was not sure enough that you had finished (its `confidence` was below `FISH
 
 The log shows `barge interrupt` after hits from short, loud noises. Raise `FISH_VOICE_BARGE_FRAMES` (default 10, about 300 ms) before raising `FISH_VOICE_BARGE_RMS`. A noise that interrupts but holds no words is treated as a false alarm: the reply resumes where it was cut.
 
-Hits do not have to be in a row. The count falls by one only after 3 missed frames, so a run of small sounds such as sniffs, breathing or typing can add up to an interruption. The default voice detector (`FISH_VOICE_VAD_ENGINE=webrtc`) is lenient enough to call those sounds voiced.
+Hits do not have to be in a row. The count falls by one only after 3 missed frames, so a run of small sounds such as sniffs, breathing or typing can add up to an interruption. The default voice detector (`FISH_VOICE_VAD_ENGINE=webrtc`) is lenient enough to call those sounds voiced. Automatic gain (`FISH_VOICE_AGC`) raises them along with your voice, and noise suppression does little against key clicks.
 
 These help:
 
-- `FISH_VOICE_VAD_ENGINE=silero` (the `silero` extra) uses a neural detector that tells speech from clicks and noise. Check it first with `scripts/vad_compare.py`: record some typing and some talking, and it shows where each detector would have interrupted.
+- `FISH_VOICE_VAD_ENGINE=silero` (the `silero` extra) uses a neural detector that tells speech from clicks and noise. Check it first with `scripts/vad_compare.py`: record some typing and some talking, and it shows where each detector would have interrupted. Pass `--process` so the detectors hear the take after the app's gain and noise suppression, as `fish-voice` does. The script uses the default barge floor, not `FISH_VOICE_BARGE_RMS`.
 - `FISH_VOICE_VAD=2` makes the detector pickier. Listening and barge-in both use it, so check that your first words are not clipped and that soft speech still arrives. If they are, go back to `1`.
-- `FISH_VOICE_BARGE_RMS` set above the level of those sounds and below your voice. Compare the `barge hit ... rms=` lines for a sniff and for a real interruption first. In that setup sniffs read 245 to 650 and real interruptions 740 or more, but your mic will differ.
+- `FISH_VOICE_BARGE_RMS` set above the level of those sounds and below your voice. The default of 220 was chosen for a mic without gain, and with the gain on most typing is louder than that. In one setup with the gain on, typing read 250 to 1,400 rms with peaks near 3,000, and speech 4,400 to 4,960. There `FISH_VOICE_BARGE_RMS=1200` seemed to stop typing from interrupting, though no log confirms it yet. Compare the `barge hit ... rms=` lines for the noise and for a real interruption on your own mic first. A better default is tracked in [issue #58](https://github.com/kzndotsh/fish-audio-suite/issues/58).
 
 ### The bot interrupts itself
 
-`barge hit` lines appear while no one is talking, with `far=True`. Echo cancellation is missing the speaker's sound. Check that `aec on AEC3` appears at start. `aec skip extra pywebrtc-audio not installed` means it is missing: install the `cli` extra, which includes it. Also check that `FISH_VOICE_AEC` is not `0`. Lower the volume, or raise `FISH_VOICE_BARGE_FRAMES`. Values below about 8 let echo through.
+`barge hit` lines appear while no one is talking, and in `--trace` the `barge mic` lines around them show `far=True` (the speaker is playing). Echo cancellation is missing the speaker's sound. Check that the `aec on` line at start shows `echo=True`. `aec skip extra pywebrtc-audio not installed` means it is missing: install the `cli` extra, which includes it. `echo=False` means `FISH_VOICE_AEC` is `0`. Lower the volume, or raise `FISH_VOICE_BARGE_FRAMES`. Values below about 8 let echo through.
 
 ### Talking over the bot does nothing
 
-You were not loud enough for long enough. Check `barge mic rms=... need=...` in `--trace`: your voice has to beat `need` for `FISH_VOICE_BARGE_FRAMES` frames in a row. Lower `FISH_VOICE_BARGE_FRAMES` a little, or speak up. Without echo cancellation, barge-in also waits out the speaker bleed (`FISH_VOICE_BLEED_DELAY`, 0.9 s).
+You were not loud enough for long enough. Check `barge mic rms=... need=...` in `--trace`: your voice has to beat `need` on `FISH_VOICE_BARGE_FRAMES` voiced frames, and the count falls back by one after every 3 frames that miss. Lower `FISH_VOICE_BARGE_FRAMES` a little, or speak up. If you raised `FISH_VOICE_BARGE_RMS` or `FISH_VOICE_VAD`, or switched to Silero, check that your voice still passes. With `FISH_VOICE_AGC=0` a quiet voice may not reach `need` at all (see [the quiet mic](#soft-speech-is-missed-or-talking-over-the-bot-does-nothing-because-the-mic-is-quiet)). Barge-in starts listening only after the speaker bleed delay: 0.3 s with echo cancellation (`FISH_VOICE_AEC_BLEED_DELAY`), 0.9 s without it (`FISH_VOICE_BLEED_DELAY`).
 
 ## Playback
 
@@ -153,7 +157,7 @@ You were not loud enough for long enough. Check `barge mic rms=... need=...` in 
 
 Look for `tts underrun after N kB played`. The speaker ran out of audio between chunks. Playback runs on its own thread, so this should be rare. If it shows up, a very slow model is the usual cause: Fish is waiting for text. Use streaming (`FISH_VOICE_STREAM_TTS=1`) and a faster model.
 
-Not every audio system reports underruns: on PipeWire the line can be missing even when the speaker briefly ran dry. If you hear a blip at sentence ends with no underrun line, compare the `tts audio` arrival times with how long each chunk plays (bytes ÷ 88,200 per second at 44.1 kHz). A chunk that arrives just as the previous one ends is the cause. `FISH_LATENCY=balanced` makes Fish deliver sooner.
+Not every audio system reports underruns: on PipeWire the line can be missing even when the speaker briefly ran dry. If you hear a blip at sentence ends with no underrun line, compare the `tts audio` arrival times (in `--trace`) with how long each chunk plays (bytes ÷ 88,200 per second at 44.1 kHz). A chunk that arrives just as the previous one ends is the cause. `FISH_LATENCY=balanced` makes Fish deliver sooner.
 
 In `--tui` the screen shares the process with playback. It asks for a bigger sound-card buffer (`FISH_VOICE_OUTPUT_LATENCY`, `high` there by default), lets the playback thread in sooner, and collects garbage less often. An underrun line now also shows `chunk_wait` (the audio arrived late), `in_python` (the thread was busy before the write) and `write` (the call itself waited, usually for Python's lock).
 
@@ -181,13 +185,13 @@ A small model read an earlier `[whispering]` cue in the chat history as somethin
 
 ## The LLM
 
-The warning line reads `[llm] HTTP <status> from <provider>, model=<model>: <message>`, with the provider's own message unwrapped.
+The warning line reads `llm HTTP <status> from <provider>, model=<model>: <message>`, with the provider's own message unwrapped.
 
-### `[llm] stopping: ...` and exit code 2
+### `llm stopping: ...` and exit code 2
 
 The model cannot answer any turn until a setting changes, so the app stops instead of going back to listening in silence. The line says what to fix:
 
-- `unknown model ...` or `no provider serves model ...`: OpenRouter has no such model, or keeps its page but no provider hosts it any more. A model can still be listed while its endpoints list is empty. Choose another `FISH_LLM_MODEL` that shows at least one provider. The app checks this at start on the OpenRouter backend, and on any backend when a reply gets HTTP 404.
+- `unknown model ...` or `no provider serves model ...`: OpenRouter has no such model, or keeps its page but no provider hosts it any more. A model can still be listed while its endpoints list is empty. Check the spelling on openrouter.ai, including the `author/` prefix, or choose another `FISH_LLM_MODEL` that shows at least one provider. The app checks this at start on the OpenRouter backend, and on any backend when a reply gets HTTP 404.
 - `the key was refused`: HTTP 401. Check `FISH_LLM_API_KEY` or the provider's key variable.
 - `the account is out of credits`: HTTP 402. Add credits.
 
@@ -195,7 +199,7 @@ A 400, 403, 429 or 5xx ends only that reply, since the next request can succeed.
 
 ### `HTTP 429` (rate limited)
 
-- **"temporarily rate-limited upstream":** the model's shared provider pool is busy. It is retried once after about 1 s. Single-provider models such as `thedrummer/cydonia-24b-v4.1` hit this most. Pick a model served by several providers.
+- **"temporarily rate-limited upstream":** the model's shared provider pool is busy. It is retried once, after the wait the provider asks for (up to 15 s) or about 1 s when it names none. Single-provider models such as `thedrummer/cydonia-24b-v4.1` hit this most. Pick a model served by several providers.
 - **A quota or credit message** (`insufficient_quota` on Experiential): your account is out of credit. This is not retried; top up.
 
 ### `HTTP 403` before the model even runs
@@ -210,19 +214,16 @@ That is the model's own content policy, and settings will not change it. [PERFOR
 
 ### `HTTP 400 ... provider rejected the request` and the bot says nothing
 
-`W llm HTTP 400, model=...: provider rejected the request; verify the request fields against the model alias capabilities`, then `tts stream empty reply, nothing to speak`. The wording points at the request fields, but a hosted model can send the same 400 when its safety filter refuses the prompt text. In one setup every field and message shape returned 200 for the model with a plain test prompt, and only the real character prompt was rejected.
+`llm HTTP 400, model=...: provider rejected the request; verify the request fields against the model alias capabilities`, then `tts stream empty reply, nothing to speak`. The wording points at the request fields, but a hosted model can send the same 400 when its safety filter refuses the prompt text. In one setup every field and message shape returned 200 for the model with a plain test prompt, and only the real character prompt was rejected.
 
 To tell them apart, send the same fields with a plain prompt, or the default prompt (`fish-voice` without `--prompt-file`). A 200 there means the content was refused, and no setting will change that. Use a model that accepts the prompt, such as a roleplay-tuned one ([PERFORMANCE.md](PERFORMANCE.md#choosing-an-llm)).
 
-### `[llm] empty reply (model=... finish=...)`
+### `llm empty reply (model=... finish=...)`
 
 The model returned no text.
-- **`finish=length`:** a thinking model may have spent the whole `FISH_LLM_MAX_TOKENS` budget thinking. A provider's usage page shows it as nearly all reasoning tokens (for example `1,500 · 1,492 reasoning`) and an "incomplete" status. Set `FISH_LLM_REASONING_EFFORT=low`, or `none` where the route accepts it. Raising `FISH_LLM_MAX_TOKENS` alone rarely helps, and a long roleplay prompt can still draw heavy reasoning at `low`, so a model without hidden reasoning is the reliable fix.
+
+- **`finish='length'`:** a thinking model may have spent the whole `FISH_LLM_MAX_TOKENS` budget thinking. A provider's usage page shows it as nearly all reasoning tokens (for example `1,500 · 1,492 reasoning`) and an "incomplete" status. Set `FISH_LLM_REASONING_EFFORT=low`, or `none` where the route accepts it. Raising `FISH_LLM_MAX_TOKENS` alone rarely helps, and a long roleplay prompt can still draw heavy reasoning at `low`, so a model without hidden reasoning is the reliable fix.
 - **Local models:** some community builds ship an empty chat template and answer nothing. Use another build.
-
-### `[llm] unknown model ...`
-
-OpenRouter does not know the model id. Check the spelling on openrouter.ai, including the `author/` prefix.
 
 ### `unsupported_parameter` naming the reasoning effort
 
@@ -247,11 +248,11 @@ time curl -s https://openrouter.ai/api/v1/chat/completions \
 
 The last `tts say` line is a fragment such as `'[calm] Just'`, and `llm stream_end finish=stop` shows a small `chunks=` count (2 or 3, where other servers show 20 to 50). `finish=stop` means the server ended the reply, not a length limit (that is `finish=length`).
 
-To see who cut it, run with `--trace` (or `FISH_VOICE_LOG_DIR`, which keeps the lines in a file). Each chunk the server sent is logged as `llm.event {...}`, and a stream that closed without the end marker logs `llm.event stream closed without [DONE]`.
+To see who cut it, run with `--trace` (or `FISH_VOICE_LOG_DIR`, which keeps the lines in a file). Each chunk the server sent is logged as `llm event {...}`, and a stream that closed without the end marker logs `llm event stream closed without [DONE]`.
 
-- The last `llm.event` has `finish_reason: "stop"` and the text on screen also stops there: the model or the server ended the reply. Nothing here cut it.
+- The last `llm event` has `finish_reason: "stop"` and the text on screen also stops there: the model or the server ended the reply. Nothing here cut it.
 - The events hold more text than was spoken: the cleanup removed it, for example an unclosed `(`, `*` or `[`.
-- The stream closed without `[DONE]`, or a `llm.event` line is missing words that arrived: the connection ended early.
+- The stream closed without `[DONE]`, or an `llm event` line is missing words that arrived: the connection ended early.
 
 Compare `out=` with the characters spoken. About 3.5 to 4 characters per token is normal for English. A much lower ratio means text went missing after the model wrote it. `FISH_LLM_CONTINUE=1` sends one more request when a reply stops mid-sentence with `finish=stop`.
 
