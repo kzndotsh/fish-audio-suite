@@ -19,7 +19,7 @@ from fish_audio_suite_voice.hearing import HeardLine, hear_line
 from fish_audio_suite_voice.history import opening_history, remember_user
 from fish_audio_suite_voice.inputs import TurnSource
 from fish_audio_suite_voice.llm import ChatBackend, ChatUnusableError
-from fish_audio_suite_voice.mic import SounddeviceMic
+from fish_audio_suite_voice.mic import SessionMic
 from fish_audio_suite_voice.reply import collect_reply, speak_reply, stream_turn
 from fish_audio_suite_voice.signals import DuplexSession
 from fish_audio_suite_voice.speaker import FishSpeaker
@@ -185,12 +185,14 @@ async def _session(
 ) -> int:
     async with AsyncExitStack() as stack:
         asr_http = await stack.enter_async_context(asr_client())
+        # One input for the whole session, so nothing is lost between listens.
+        mic = stack.enter_context(SessionMic(device, session.aec))
         history, pinned = opening_history(c.system_prompt, seed=c.pin_seed)
         ctx = DuplexContext(
             config=c,
             tts=tts,
             device=device,
-            mic=SounddeviceMic(device, session.aec),
+            mic=mic,
             backend=backend,
             session=session,
             asr_http=asr_http,

@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import sys
 import threading
+import time
 from collections.abc import Iterator
-from types import TracebackType
 from typing import Any
 
 import httpx
@@ -20,7 +20,7 @@ from fish_audio_suite_voice.console import console_print, end_reply_line, write_
 from fish_audio_suite_voice.debug import configure_voice_logging
 from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexContext
 from fish_audio_suite_voice.hearing import hear_line, recognize
-from fish_audio_suite_voice.mic import FRAME_BYTES, SounddeviceMic
+from fish_audio_suite_voice.mic import FRAME_BYTES, SessionMic
 from fish_audio_suite_voice.playback import PortAudioMissingError
 
 
@@ -108,11 +108,12 @@ def test_a_batch_turn_reports_the_silence_it_waited_out(monkeypatch: pytest.Monk
 
 def test_a_barge_in_clip_is_never_a_stale_copy(monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = make_ctx()
-    ctx.carry.prefix = b"clip"
+    ctx.carry.keep(b"clip", "", since=42)
     seen: dict[str, Any] = {}
 
     def record(*_args: object, **kwargs: object) -> bytes:
         seen["prefix"] = kwargs["prefix"]
+        seen["since"] = kwargs["since"]
         return b"wav"
 
     async def fake_recognize(*_args: object, **kwargs: object) -> Any:
@@ -125,30 +126,32 @@ def test_a_barge_in_clip_is_never_a_stale_copy(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr("fish_audio_suite_voice.hearing.recognize", fake_recognize)
     asyncio.run(hear_line(ctx, "hello there friend"))
     assert seen["prefix"] == b"clip"
+    assert seen["since"] == 42
     assert seen["stale"] is False
     assert seen["over_reply"] is True
     assert ctx.carry.prefix == b""
 
 
 class _FakeStream:
-    """A ``RawInputStream`` that delivers scripted buffers to the callback once opened."""
+    """A ``RawInputStream`` that delivers scripted buffers to the callback when started."""
+
+    opened = 0
 
     def __init__(self, buffers: list[bytes], **kwargs: Any) -> None:
         self._buffers = buffers
         self._callback = kwargs["callback"]
+        self.closed = False
+        _FakeStream.opened += 1
 
-    def __enter__(self) -> _FakeStream:
+    def start(self) -> None:
         for buffer in self._buffers:
             self._callback(buffer, len(buffer), None, None)
-        return self
 
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        tb: TracebackType | None,
-    ) -> None:
+    def stop(self) -> None:
         return None
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class _Aec:
@@ -156,24 +159,36 @@ class _Aec:
         return frame.upper()
 
 
-def _frames_from(
-    monkeypatch: pytest.MonkeyPatch, buffers: list[bytes], want: int, aec: _Aec | None = None
-) -> list[bytes]:
+def _install(monkeypatch: pytest.MonkeyPatch, buffers: list[bytes]) -> None:
     class Sd:
         @staticmethod
         def RawInputStream(**kwargs: Any) -> _FakeStream:  # noqa: N802 - mirrors sounddevice
             return _FakeStream(buffers, **kwargs)
 
+    _FakeStream.opened = 0
     monkeypatch.setattr(mic, "load_sounddevice", lambda: Sd)
-    stop = threading.Event()
+
+
+def _take(frames: Iterator[bytes], stop: threading.Event, want: int) -> list[bytes]:
     got: list[bytes] = []
-    source = SounddeviceMic() if aec is None else SounddeviceMic(aec=aec)  # pyright: ignore[reportArgumentType]
-    frames: Iterator[bytes] = source.frames(stop)
     for frame in frames:
         got.append(frame)
         if len(got) == want:
             stop.set()
     return got
+
+
+def _frames_from(
+    monkeypatch: pytest.MonkeyPatch, buffers: list[bytes], want: int, aec: _Aec | None = None
+) -> list[bytes]:
+    _install(monkeypatch, buffers)
+    with SessionMic(aec=aec) as source:  # pyright: ignore[reportArgumentType]
+        stop = threading.Event()
+        return _take(source.frames(stop), stop, want)
+
+
+def _numbered(count: int) -> list[bytes]:
+    return [index.to_bytes(4, "little") * (FRAME_BYTES // 4) for index in range(count)]
 
 
 def test_the_mic_regroups_ragged_buffers_into_whole_frames(
@@ -198,43 +213,69 @@ def test_the_mic_cleans_each_frame_with_the_echo_canceller(
 def test_the_mic_waits_out_an_empty_queue_until_stopped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class Sd:
-        @staticmethod
-        def RawInputStream(**kwargs: Any) -> _FakeStream:  # noqa: N802 - mirrors sounddevice
-            return _FakeStream([], **kwargs)
-
-    monkeypatch.setattr(mic, "load_sounddevice", lambda: Sd)
+    _install(monkeypatch, [])
     stop = threading.Event()
     timer = threading.Timer(0.05, stop.set)
     timer.start()
     try:
-        assert list(SounddeviceMic().frames(stop)) == []
+        with SessionMic() as source:
+            assert list(source.frames(stop)) == []
     finally:
         timer.cancel()
+
+
+def test_a_reader_picks_up_exactly_where_the_last_one_stopped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A barge-in stops reading on the frame that tripped it, and the next listen reads
+    # on from the frame after. Opening the device again lost what came in between.
+    buffers = _numbered(30)
+    _install(monkeypatch, buffers)
+    with SessionMic() as source:
+        stop = threading.Event()
+        start = source.position
+        first = _take(source.frames(stop, since=start), stop, 10)
+        stop = threading.Event()
+        rest = _take(source.frames(stop, since=start + len(first)), stop, 20)
+    assert first + rest == buffers
+    assert _FakeStream.opened == 1  # one device for the whole session
 
 
 def test_a_reader_that_falls_behind_keeps_only_the_newest_audio(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Ten seconds of frames arrive before the reader takes any. A backlog that size
-    # is stale, and an unbounded one grows for as long as the reader is held up.
-    buffers = [index.to_bytes(4, "little") * (FRAME_BYTES // 4) for index in range(333)]
-
-    class Sd:
-        @staticmethod
-        def RawInputStream(**kwargs: Any) -> _FakeStream:  # noqa: N802 - mirrors sounddevice
-            return _FakeStream(buffers, **kwargs)
-
-    monkeypatch.setattr(mic, "load_sounddevice", lambda: Sd)
-    stop = threading.Event()
-    timer = threading.Timer(0.3, stop.set)
-    timer.start()
-    try:
-        got = list(SounddeviceMic().frames(stop))
-    finally:
-        timer.cancel()
+    # Ten seconds of frames arrive while no one reads. A backlog that size is
+    # stale, so only about the last two seconds are kept.
+    buffers = _numbered(333)
+    _install(monkeypatch, buffers)
+    with SessionMic() as source:
+        stop = threading.Event()
+        assert _take(source.frames(stop), stop, 1)  # opens the device
+        deadline = time.monotonic() + 5
+        while source.position < len(buffers) and time.monotonic() < deadline:
+            time.sleep(0.01)
+        stop = threading.Event()
+        timer = threading.Timer(0.3, stop.set)
+        timer.start()
+        try:
+            got = list(source.frames(stop, since=0))
+        finally:
+            timer.cancel()
     assert 0 < len(got) <= 2_000 // mic.FRAME_MS  # at most about two seconds
     assert got == buffers[-len(got) :]  # the newest frames, in order, with no gap
+
+
+def test_a_failure_in_the_mic_thread_reaches_the_reader(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _BrokenAec:
+        def clean(self, frame: bytes) -> bytes:
+            raise OSError("device gone")
+
+    _install(monkeypatch, _numbered(3))
+    with (
+        SessionMic(aec=_BrokenAec()) as source,  # pyright: ignore[reportArgumentType]
+        pytest.raises(OSError, match="device gone"),
+    ):
+        list(source.frames(threading.Event()))
 
 
 def test_the_barge_heartbeat_only_logs_at_trace_level(
@@ -289,3 +330,27 @@ def test_hear_line_logs_instead_of_printing_listening_in_debug_mode(
     monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", lambda *_a, **_k: b"")
     assert asyncio.run(hear_line(make_ctx(), "")).kind == "noise"
     assert "listening" not in capsys.readouterr().out
+
+
+def test_releasing_the_mic_closes_the_device_forgets_its_audio_and_a_read_reopens_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    buffers = _numbered(5)
+    _install(monkeypatch, buffers)
+    with SessionMic() as source:
+        stop = threading.Event()
+        first = _take(source.frames(stop), stop, 5)
+        source.release()  # muted: nothing is kept or heard
+        assert source.position == 5  # numbers keep counting
+        stop = threading.Event()
+        timer = threading.Timer(0.2, stop.set)
+        timer.start()
+        try:
+            # A read from before the release finds nothing kept, and opens the device
+            # again, which delivers its buffers anew.
+            again = _take(source.frames(stop, since=0), stop, 5)
+        finally:
+            timer.cancel()
+    assert first == buffers
+    assert again == buffers
+    assert _FakeStream.opened == 2

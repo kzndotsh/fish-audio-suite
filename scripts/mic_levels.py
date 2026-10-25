@@ -29,7 +29,7 @@ from collections.abc import Sequence
 
 from fish_audio_suite_voice.aec import pcm_rms
 from fish_audio_suite_voice.barge import MIC_LEVEL_EVERY_FRAMES
-from fish_audio_suite_voice.mic import SounddeviceMic
+from fish_audio_suite_voice.mic import SessionMic
 
 _FULL_SCALE = 32768.0
 _SILENCE_DB = -90.0
@@ -144,15 +144,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     levels: list[float] = []
     started = time.monotonic()
     print("t(s)    rms     dB  level", file=sys.stderr)
-    for index, frame in enumerate(SounddeviceMic(device).frames(stop)):
-        if index % MIC_LEVEL_EVERY_FRAMES == 0:
-            rms = pcm_rms(frame)
-            level = to_db(rms)
-            levels.append(level)
-            elapsed = time.monotonic() - started
-            print(f"{elapsed:5.1f} {rms:7.0f} {level:6.1f}  {_bar(level)}")
-        if time.monotonic() - started >= args.seconds:
-            stop.set()
+    with SessionMic(device) as mic:
+        for index, frame in enumerate(mic.frames(stop)):
+            if index % MIC_LEVEL_EVERY_FRAMES == 0:
+                rms = pcm_rms(frame)
+                level = to_db(rms)
+                levels.append(level)
+                elapsed = time.monotonic() - started
+                print(f"{elapsed:5.1f} {rms:7.0f} {level:6.1f}  {_bar(level)}")
+            if time.monotonic() - started >= args.seconds:
+                stop.set()
     if not levels:
         print("no audio heard: check the device and the PortAudio setup", file=sys.stderr)
         return 1

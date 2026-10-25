@@ -306,6 +306,7 @@ def record_utterance(
     prefix: bytes = b"",
     tune: ListenTune | None = None,
     give_up_frames: int | None = None,
+    since: int | None = None,
 ) -> bytes | None:
     """Block until one VAD utterance.
 
@@ -323,6 +324,9 @@ def record_utterance(
     give_up_frames : int or None, optional
         Stop and return None when speech has not started after this many 30 ms frames. None
         waits as long as it takes.
+    since : int or None, optional
+        The mic position to read from, such as just after a barge-in clip. None reads
+        from now.
 
     Returns
     -------
@@ -356,7 +360,7 @@ def record_utterance(
         len(heard.clip_frames),
     )
 
-    for idle_frames, frame in enumerate(mic.frames(quit_requested), start=1):
+    for idle_frames, frame in enumerate(mic.frames(quit_requested, since=since), start=1):
         if heard.take(frame, idle_frames):
             break
         if give_up_frames is not None and not heard.triggered and idle_frames >= give_up_frames:
@@ -395,6 +399,7 @@ def stream_utterance(
     prefix: bytes = b"",
     tune: ListenTune | None = None,
     vad: Any = None,
+    since: int | None = None,
 ) -> bool:
     """Block until one utterance ends, passing its frames to ``sink`` as they come.
 
@@ -415,6 +420,8 @@ def stream_utterance(
         VAD and utterance limits. None uses the defaults.
     vad : Any, optional
         A voice-activity detector with ``is_speech(frame, rate)``. WebRTC's by default.
+    since : int or None, optional
+        The mic position to read from. None reads from now.
 
     Returns
     -------
@@ -435,7 +442,7 @@ def stream_utterance(
     tune = tune or ListenTune()
     heard = _StreamListen(tune, vad, sink)
     _prime_listen(heard, prefix)
-    for idle_frames, frame in enumerate(mic.frames(quit_requested), start=1):
+    for idle_frames, frame in enumerate(mic.frames(quit_requested, since=since), start=1):
         if heard.take(frame, idle_frames):
             return True
     return False

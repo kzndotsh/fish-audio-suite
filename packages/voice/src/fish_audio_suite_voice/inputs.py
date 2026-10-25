@@ -12,7 +12,7 @@ from fish_audio_suite_voice.debug import mark_turn
 from fish_audio_suite_voice.duplex_state import DuplexContext
 from fish_audio_suite_voice.events import EVENTS, Heard
 from fish_audio_suite_voice.hearing import HeardLine, hear_line
-from fish_audio_suite_voice.mic import StopFlag
+from fish_audio_suite_voice.mic import Mic, StopFlag
 from fish_audio_suite_voice.signals import DuplexSession
 
 __all__ = [
@@ -78,6 +78,8 @@ class LiveInput:
         self._session: DuplexSession | None = None
         # Set whenever anything changes, so a muted wait notices at once.
         self._changed = threading.Event()
+        # Seen on the first turn, so muting can close the device at once.
+        self._mic: Mic | None = None
 
     @property
     def muted(self) -> bool:
@@ -110,6 +112,7 @@ class LiveInput:
         self._muted = True
         self._interrupt.set()
         self._changed.set()
+        self._release_mic()
 
     def unmute(self) -> None:
         """Open the mic again."""
@@ -141,7 +144,15 @@ class LiveInput:
         self._changed.set()
         if muted:
             self._interrupt.set()
+            self._release_mic()
         return muted
+
+    def _release_mic(self) -> None:
+        # The session's input stays open between readers, so muting closes it
+        # here rather than waiting for the reply in flight to end.
+        mic = self._mic
+        if mic is not None:
+            mic.release()
 
     def _take_typed(self) -> str | None:
         with self._lock:
@@ -167,6 +178,7 @@ class LiveInput:
             The typed line or the heard one, ``bye`` on quit.
         """
         self._session = ctx.session
+        self._mic = ctx.mic
         ctx.muted = lambda: self._muted  # the barge-in watch keeps the mic closed while muted
         quit_requested = ctx.session.quit_requested
         while True:
@@ -176,6 +188,7 @@ class LiveInput:
             if quit_requested.is_set():
                 return HeardLine("bye")
             if self._muted:
+                ctx.mic.release()  # muted before the first turn: nothing had it yet
                 self._changed.clear()
                 if not self._muted or self._has_typed():
                     continue

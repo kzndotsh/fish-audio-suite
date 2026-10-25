@@ -245,7 +245,7 @@ Transcribing an hour-long file spends about 0.2 s of CPU building the captions, 
 These are known and left alone for now:
 
 - **One Fish websocket per turn.** Fish's protocol allows several utterances on one socket, but the setup cost is already hidden behind the LLM, so reuse would gain little.
-- **The mic closes and reopens around each reply.** Speech in the cooldown gap, and about 50 to 300 ms after a barge-in, is not recorded. A mic that stays open would fix both.
+- **Speech in the cooldown is not used.** The mic stays open for the session, and the listen after a barge-in reads on from the frame after the clip that tripped it, so nothing is lost there. Words said during `FISH_VOICE_COOLDOWN` still are, because the cooldown keeps the bot's echo from starting a turn.
 - **Silence-only turn-taking on the Fish ASR path.** Deepgram Flux decides turns itself (see above). The Fish ASR path still waits out a fixed silence; a turn-detection model (Pipecat's Smart Turn runs in under 100 ms on CPU) would allow a 0.3 to 0.5 s wait there without cutting off mid-sentence pauses.
 - **Trailing silence goes to speech-to-text.** Each clip ends with the full end-of-speech silence (a third of a short clip). Trimming it to about 0.25 s would cut the upload and reduce invented words. The gain is mostly accuracy, and about 20 to 50 ms of time.
 - **Very long held spans while streaming.** An unclosed `(`, code fence or URL in a 30,000-character reply still costs about 1.5 s in total, spread across the stream. Real replies stay well under that.

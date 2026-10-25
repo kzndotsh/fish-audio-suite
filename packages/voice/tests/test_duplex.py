@@ -356,7 +356,9 @@ def test_cancelled_speak_keeps_the_audio_that_tripped_barge(
 ) -> None:
     ctx = make_ctx()
 
-    install_audio(monkeypatch, gate=FakeGate(captured=b"clip"))
+    gate = FakeGate(captured=b"clip")
+    gate.resume_at = 42
+    install_audio(monkeypatch, gate=gate)
 
     def speak(
         text: str,
@@ -387,6 +389,7 @@ def test_cancelled_speak_keeps_the_audio_that_tripped_barge(
     )
     assert code is None
     assert ctx.carry.prefix == b"clip"
+    assert ctx.carry.since == 42  # the next listen reads on from just after the clip
     assert ctx.history[-1]["content"] == "hello"
 
 

@@ -200,6 +200,7 @@ class _Capture:
         stop: StopFlag,
         prefix: bytes,
         listen: ListenTune,
+        since: int | None,
     ) -> None:
         loop = asyncio.get_running_loop()
         self.frames: asyncio.Queue[tuple[bytes, bool, float] | None] = asyncio.Queue()
@@ -218,6 +219,7 @@ class _Capture:
                 sink,
                 prefix=prefix,
                 tune=listen,
+                since=since,
             ),
         )
         self.pump.add_done_callback(lambda _done: self.frames.put_nowait(None))
@@ -393,6 +395,7 @@ async def stream_turn(
     quit_requested: StopFlag,
     stop: StopFlag,
     prefix: bytes = b"",
+    since: int | None = None,
     make_stream: Callable[[str, str], FluxStream] = FluxStream,
     listen_fn: Callable[..., bool] = stream_utterance,
     on_eager: Callable[[str], None] | None = None,
@@ -414,6 +417,8 @@ async def stream_turn(
         Set to end the turn early, such as when a line is typed.
     prefix : bytes, optional
         PCM kept from the barge-in that interrupted the previous reply. Sent first.
+    since : int or None, optional
+        The mic position just after ``prefix``, read on from there. None reads from now.
     make_stream : Callable, optional
         Builds the connection from ``(url, key)``. A fake in tests.
     listen_fn : Callable, optional
@@ -450,6 +455,7 @@ async def stream_turn(
         stop=stop,
         prefix=prefix,
         listen=listen,
+        since=since,
     )
     turn = _Turn()
     turn.keep = bool(stt.save_dir)
