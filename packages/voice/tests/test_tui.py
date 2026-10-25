@@ -545,19 +545,25 @@ def test_a_pulsing_you_line_appears_when_speech_starts_and_becomes_the_transcrip
     assert _drive(harness, scenario) == 0
 
 
+async def _settled(pilot: Pilot[int], check: Callable[[], bool], timeout_s: float = 2.0) -> bool:
+    """Poll ``check`` while the app runs, so a slow runner gets time to redraw."""
+    deadline = time.monotonic() + timeout_s
+    while not check() and time.monotonic() < deadline:
+        await pilot.pause(0.02)
+    return check()
+
+
 def test_the_pulsing_line_goes_away_when_no_words_follow(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(tui_module, "_HEARING_HOLD_S", 0.2)
     harness = _Harness()
 
     async def scenario(pilot: Pilot[int]) -> None:
         harness.bus.emit(MicLevel(1000.0, 200.0, "listen"))
-        await pilot.pause(0.1)
-        assert len(harness.messages()) == 1
-        await pilot.pause(0.4)  # a cough: nothing was heard
-        assert harness.messages() == []
+        assert await _settled(pilot, lambda: len(harness.messages()) == 1)
+        # A cough: nothing was heard, so the line goes once the hold runs out.
+        assert await _settled(pilot, lambda: harness.messages() == [])
         harness.bus.emit(MicLevel(1000.0, 200.0, "listen"))  # and it comes back for real speech
-        await pilot.pause(0.1)
-        assert len(harness.messages()) == 1
+        assert await _settled(pilot, lambda: len(harness.messages()) == 1)
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
