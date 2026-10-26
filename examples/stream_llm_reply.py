@@ -27,6 +27,7 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 
+from fish_audio_suite_kit import strip_cue_tags
 from fish_audio_suite_voice import FileSink, FishSpeaker
 from fish_audio_suite_voice.envfile import load_dotenv
 
@@ -77,7 +78,13 @@ def main() -> None:
     # `spoken_so_far` is the text that actually reached the sink. If the user had
     # interrupted, it would be shorter than the full reply, which tells a chat
     # app what the user really heard.
-    print(f"spoken: {result.spoken_so_far!r}")
+    #
+    # It holds the text exactly as Fish received it, and Fish received a mood
+    # cue on every sentence: each sentence goes to Fish on its own, so the suite
+    # repeats the last mood (here `[happy]`) on any sentence the model left
+    # without one. Cues are tone instructions, not speech, so `strip_cue_tags`
+    # removes them to show only the words the listener heard.
+    print(f"heard: {strip_cue_tags(result.spoken_so_far)!r}")
     print(f"wrote {wav_path} ({wav_path.stat().st_size} bytes)")
 
 
