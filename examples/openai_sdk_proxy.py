@@ -32,7 +32,7 @@ from pathlib import Path
 
 from openai import OpenAI
 
-OUT = Path(__file__).resolve().parent.parent / "tmp" / "openai_sdk_proxy.mp3"
+MP3_PATH = Path(__file__).resolve().parent.parent / "tmp" / "openai_sdk_proxy.mp3"
 
 
 def main() -> None:
@@ -40,7 +40,7 @@ def main() -> None:
     # `api_key` can be any value unless the proxy was started with
     # `FISH_PROXY_API_KEYS` set, in which case it must be one of those keys.
     client = OpenAI(base_url="http://127.0.0.1:8849/v1", api_key="sk-local")
-    OUT.parent.mkdir(exist_ok=True)
+    MP3_PATH.parent.mkdir(exist_ok=True)
 
     # Step 1. Text to speech.
     # `tts-1` is OpenAI's model name. The proxy maps it to the Fish model set by
@@ -54,16 +54,16 @@ def main() -> None:
         input="[happy] The quick brown fox jumps over the lazy dog.",
         response_format="mp3",
     ) as response:
-        response.stream_to_file(OUT)
+        response.stream_to_file(MP3_PATH)
 
-    print(f"wrote {OUT} ({OUT.stat().st_size} bytes)")
+    print(f"wrote {MP3_PATH} ({MP3_PATH.stat().st_size} bytes)")
 
     # Step 2. Speech to text.
     # `whisper-1` is OpenAI's transcription model name. The proxy maps it to
     # Fish's speech recognition. The `[happy]` cue was a tone instruction, not
     # words, so it does not appear in the transcription.
-    with OUT.open("rb") as audio:
-        print("heard:", client.audio.transcriptions.create(model="whisper-1", file=audio).text)
+    with MP3_PATH.open("rb") as audio_file:
+        print("heard:", client.audio.transcriptions.create(model="whisper-1", file=audio_file).text)
 
 
 if __name__ == "__main__":

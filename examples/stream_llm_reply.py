@@ -39,9 +39,9 @@ REPLY = (
 
 def fake_llm() -> Iterator[str]:
     """Yield the reply 6 characters at a time, like a model streaming tokens."""
-    for i in range(0, len(REPLY), 6):
+    for chunk_start in range(0, len(REPLY), 6):
         time.sleep(0.02)
-        yield REPLY[i : i + 6]
+        yield REPLY[chunk_start : chunk_start + 6]
 
 
 def main() -> None:
@@ -53,9 +53,9 @@ def main() -> None:
         if not value:
             sys.exit(f"{name} is not set. Put it in {ROOT / '.env'} or export it.")
 
-    out = ROOT / "tmp" / "stream_llm_reply.wav"
-    out.parent.mkdir(exist_ok=True)
-    started = time.perf_counter()
+    wav_path = ROOT / "tmp" / "stream_llm_reply.wav"
+    wav_path.parent.mkdir(exist_ok=True)
+    start_time = time.perf_counter()
     speaker = FishSpeaker(api_key=api_key, voice_id=voice_id)
 
     # `speak_stream` reads the `fake_llm` generator, cleans each piece, and sends
@@ -66,8 +66,8 @@ def main() -> None:
     # arrives. A real app might use it to stop a "thinking" animation.
     result = speaker.speak_stream(
         fake_llm(),
-        FileSink(out),
-        on_first_audio=lambda: print(f"audio began {time.perf_counter() - started:.2f}s in"),
+        FileSink(wav_path),
+        on_first_audio=lambda: print(f"audio began {time.perf_counter() - start_time:.2f}s in"),
     )
     if result.error:
         sys.exit(f"Fish failed: {type(result.error).__name__}: {result.error.message}")
@@ -78,7 +78,7 @@ def main() -> None:
     # interrupted, it would be shorter than the full reply, which tells a chat
     # app what the user really heard.
     print(f"spoken: {result.spoken_so_far!r}")
-    print(f"wrote {out} ({out.stat().st_size} bytes)")
+    print(f"wrote {wav_path} ({wav_path.stat().st_size} bytes)")
 
 
 if __name__ == "__main__":

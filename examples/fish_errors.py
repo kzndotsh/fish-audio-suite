@@ -45,30 +45,30 @@ def main() -> None:
     for status, body, headers in RESPONSES:
         # `parse_fish_error` reads whatever body shape came back and gives you a
         # `status` and a readable `message`. An empty body becomes `"HTTP 503"`.
-        parsed = parse_fish_error(status, body)
+        parsed_body = parse_fish_error(status, body)
 
         # `retry_after_s` reads the `Retry-After` header, if there is one, as a
         # number of seconds. `FishHttpError.from_status` then picks the right
         # exception class for the status and stores that wait on it.
-        error = FishHttpError.from_status(
-            parsed.status, parsed.message, retry_after=retry_after_s(headers)
+        fish_error = FishHttpError.from_status(
+            parsed_body.status, parsed_body.message, retry_after=retry_after_s(headers)
         )
 
         # In a real app the error would be raised inside your Fish call. It is
         # raised here by hand so you can see how each `except` branch catches it.
         try:
-            raise error
+            raise fish_error
         # Put the specific classes first. `FishHttpError` is their parent, so if
         # it came first it would catch everything.
-        except FishAuthError as exc:
-            print(f"{status}: check the key or the credit balance ({exc.message})")
-        except FishRateLimitError as exc:
-            print(f"{status}: wait {exc.retry_after}s, then retry")
-        except FishUpstreamError as exc:
+        except FishAuthError as error:
+            print(f"{status}: check the key or the credit balance ({error.message})")
+        except FishRateLimitError as error:
+            print(f"{status}: wait {error.retry_after}s, then retry")
+        except FishUpstreamError as error:
             # `retryable` is `True` for 429 and 5xx: the same request may succeed later.
-            print(f"{status}: Fish is down, retryable={exc.retryable}")
-        except FishHttpError as exc:
-            print(f"{status}: {exc.message}, retryable={exc.retryable}")
+            print(f"{status}: Fish is down, retryable={error.retryable}")
+        except FishHttpError as error:
+            print(f"{status}: {error.message}, retryable={error.retryable}")
 
 
 if __name__ == "__main__":

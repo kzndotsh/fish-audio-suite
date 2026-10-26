@@ -47,23 +47,24 @@ def main() -> None:
     # keep buffering". It prefers to cut at the end of a sentence, but it knows
     # that `Dr.` is not one. If a sentence runs long, it cuts at a space near
     # 40 characters, so the first audio does not wait for a long sentence.
-    buf = ""
+    buffer = ""
 
     # Feed the cleaned text in 7-character chunks to imitate a streaming model.
-    for i in range(0, len(cleaned), 7):
-        buf += cleaned[i : i + 7]
-        cut = next_tts_cut(buf)
+    # `chunk_start` is where each chunk begins in the cleaned text: 0, 7, 14, ...
+    for chunk_start in range(0, len(cleaned), 7):
+        buffer += cleaned[chunk_start : chunk_start + 7]
+        piece_end = next_tts_cut(buffer)
 
         # One chunk can complete more than one piece, so keep cutting until
         # the buffer has nothing ready.
-        while cut > 0:
-            print(f"piece: {buf[:cut]!r}")
-            buf = buf[cut:]
-            cut = next_tts_cut(buf)
+        while piece_end > 0:
+            print(f"piece: {buffer[:piece_end]!r}")
+            buffer = buffer[piece_end:]
+            piece_end = next_tts_cut(buffer)
 
-    # The stream has ended. Whatever is left in `buf` is the final piece.
-    if buf:
-        print(f"piece: {buf!r}")
+    # The stream has ended. Whatever is left in `buffer` is the final piece.
+    if buffer:
+        print(f"piece: {buffer!r}")
 
 
 if __name__ == "__main__":

@@ -44,7 +44,7 @@ class MeterSink:
     output_latency_s = 0.0
 
     def __init__(self, sample_rate: int) -> None:
-        self.total = 0
+        self.total_bytes = 0
 
         # Bytes received but not yet drawn. See `write` for why this exists.
         self.pending = bytearray()
@@ -56,7 +56,7 @@ class MeterSink:
 
     def start(self) -> None:
         """Reset the counters. Called once per turn, since a sink can be reused."""
-        self.total = 0
+        self.total_bytes = 0
         self.pending.clear()
 
     def write(self, chunk: bytes) -> None:
@@ -67,16 +67,19 @@ class MeterSink:
         The leftover bytes stay in `pending` and the next chunk is added to them,
         or every sample after an odd-sized chunk would be read one byte off.
         """
-        self.total += len(chunk)
+        self.total_bytes += len(chunk)
         self.pending += chunk
         while len(self.pending) >= self.window_bytes:
             # `array("h", ...)` reads the bytes as signed 16-bit numbers, from
-            # -32768 to 32767. The largest absolute value is the window's peak.
-            window = array("h", self.pending[: self.window_bytes])
+            # -32768 to 32767. Each number is one sample of the sound wave.
+            samples = array("h", self.pending[: self.window_bytes])
             del self.pending[: self.window_bytes]
 
-            # Scale the peak to a bar of 0 to 40 `#` marks.
-            print("#" * (max(map(abs, window)) * 40 // 32768))
+            # The loudest sample in the window, ignoring whether it is above or
+            # below zero, sets the bar height: 0 to 40 `#` marks.
+            peak = max(abs(sample) for sample in samples)
+            bar_length = peak * 40 // 32768
+            print("#" * bar_length)
 
     def finish(self, *, kill: bool = False) -> None:
         """End the turn. `kill` is `True` when the speech was cut off early."""
@@ -84,7 +87,7 @@ class MeterSink:
 
     def bytes_played(self) -> int:
         """Return how many bytes this sink accepted, which the speaker reports back."""
-        return self.total
+        return self.total_bytes
 
 
 def main() -> None:
@@ -106,7 +109,7 @@ def main() -> None:
         sys.exit(f"Fish failed: {type(result.error).__name__}: {result.error.message}")
 
     # The speaker reads this number from `MeterSink.bytes_played`, so it equals
-    # `MeterSink.total`.
+    # `MeterSink.total_bytes`.
     print(f"bytes played: {result.bytes_played}")
 
 

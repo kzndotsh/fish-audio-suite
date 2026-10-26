@@ -45,8 +45,8 @@ def main() -> None:
             sys.exit(f"{name} is not set. Put it in {ROOT / '.env'} or export it.")
 
     # Write into `<root>/tmp/`, which git ignores.
-    out = ROOT / "tmp" / "speak_to_file.wav"
-    out.parent.mkdir(exist_ok=True)
+    wav_path = ROOT / "tmp" / "speak_to_file.wav"
+    wav_path.parent.mkdir(exist_ok=True)
 
     # Only `api_key` and `voice_id` are required. `model`, `speed`, `latency`
     # and the rest have sensible defaults you can pass as keyword arguments.
@@ -55,7 +55,7 @@ def main() -> None:
     # `speak` blocks until the whole line has been spoken into the sink. The
     # `[happy]` cue tells Fish what tone to use and is not read aloud. `FileSink`
     # collects the audio in memory and writes the WAV file once speech ends.
-    result = speaker.speak("[happy] Hello from the Fish Audio suite!", FileSink(out))
+    result = speaker.speak("[happy] Hello from the Fish Audio suite!", FileSink(wav_path))
 
     # A Fish failure does not raise. It comes back on the result, so one bad
     # turn cannot crash a long-running voice app. Always check `result.error`.
@@ -66,7 +66,7 @@ def main() -> None:
     # `tts_first_audio_ms` is how long Fish took to send the first audio, a good
     # measure of how fast the voice feels to a listener.
     print(f"first audio: {round(result.tts_first_audio_ms or 0)} ms")
-    print(f"wrote {out} ({out.stat().st_size} bytes)")
+    print(f"wrote {wav_path} ({wav_path.stat().st_size} bytes)")
 
 
 if __name__ == "__main__":
