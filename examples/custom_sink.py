@@ -53,16 +53,19 @@ class MeterSink:
         self.window_bytes = sample_rate // 10 * 2
 
     def start(self) -> None:
-        # A sink can be reused for several turns, so reset its state here.
+        """Reset the counters. Called once per turn, since a sink can be reused."""
         self.total = 0
         self.pending.clear()
 
     def write(self, chunk: bytes) -> None:
+        """Count one chunk and draw a bar for each full 100 ms window.
+
+        Chunks arrive in whatever sizes the network delivers. A chunk can end in
+        the middle of a 100 ms window, or even in the middle of a 2-byte sample.
+        The leftover bytes stay in `pending` and the next chunk is added to them,
+        or every sample after an odd-sized chunk would be read one byte off.
+        """
         self.total += len(chunk)
-        # Chunks arrive in whatever sizes the network delivers. A chunk can end
-        # in the middle of a 100 ms window, or even in the middle of a 2-byte
-        # sample. Keep the leftover bytes in `pending` and add the next chunk to
-        # them, or every sample after an odd-sized chunk would be read one byte off.
         self.pending += chunk
         while len(self.pending) >= self.window_bytes:
             # `array("h", ...)` reads the bytes as signed 16-bit numbers, from
@@ -73,9 +76,11 @@ class MeterSink:
             print("#" * (max(map(abs, window)) * 40 // 32768))
 
     def finish(self, *, kill: bool = False) -> None:
+        """End the turn. `kill` is `True` when the speech was cut off early."""
         print("stopped early" if kill else "done")
 
     def bytes_played(self) -> int:
+        """Return how many bytes this sink accepted, which the speaker reports back."""
         return self.total
 
 
