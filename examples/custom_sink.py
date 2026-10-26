@@ -69,6 +69,7 @@ class MeterSink:
         """
         self.total_bytes += len(chunk)
         self.pending += chunk
+
         while len(self.pending) >= self.window_bytes:
             # `array("h", ...)` reads the bytes as signed 16-bit numbers, from
             # -32768 to 32767. Each number is one sample of the sound wave.
@@ -79,6 +80,7 @@ class MeterSink:
             # below zero, sets the bar height: 0 to 40 `#` marks.
             peak = max(abs(sample) for sample in samples)
             bar_length = peak * 40 // 32768
+
             print("#" * bar_length)
 
     def finish(self, *, kill: bool = False) -> None:
@@ -95,6 +97,8 @@ def main() -> None:
     load_dotenv(ROOT / ".env")
     api_key = os.environ.get("FISH_API_KEY", "").strip()
     voice_id = os.environ.get("FISH_VOICE_ID", "").strip()
+
+    # Stop early with a clear message instead of failing later inside the call.
     for name, value in (("FISH_API_KEY", api_key), ("FISH_VOICE_ID", voice_id)):
         if not value:
             sys.exit(f"{name} is not set. Put it in {ROOT / '.env'} or export it.")

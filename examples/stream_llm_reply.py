@@ -50,6 +50,8 @@ def main() -> None:
     load_dotenv(ROOT / ".env")
     api_key = os.environ.get("FISH_API_KEY", "").strip()
     voice_id = os.environ.get("FISH_VOICE_ID", "").strip()
+
+    # Stop early with a clear message instead of failing later inside the call.
     for name, value in (("FISH_API_KEY", api_key), ("FISH_VOICE_ID", voice_id)):
         if not value:
             sys.exit(f"{name} is not set. Put it in {ROOT / '.env'} or export it.")
