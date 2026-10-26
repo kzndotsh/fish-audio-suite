@@ -6,18 +6,19 @@ In a voice assistant, every second of silence feels long. A language model can
 take several seconds to write a full reply, so waiting for the whole reply
 before speaking makes the assistant feel slow.
 
-speak_stream() fixes that. You hand it the reply as it is being written, one
-small piece at a time, and it starts speaking as soon as the first sentence is
-complete. The listener hears the start of the answer while the model is still
-writing the end.
+``FishSpeaker.speak_stream`` fixes that. You hand it the reply as it is being
+written, one small piece at a time, and it starts speaking as soon as the first
+sentence is complete. The listener hears the start of the answer while the
+model is still writing the end.
 
 This example uses a fake LLM, a generator that yields a fixed reply in small
 chunks with short pauses, so it needs no LLM key. To use a real model, pass
-your model's token stream in its place. speak_stream() accepts any iterable
+your model's token stream in its place. ``speak_stream`` accepts any iterable
 or async iterable of strings.
 
-Needs the same .env values as speak_to_file.py: FISH_API_KEY and FISH_VOICE_ID.
-You will see when the first audio arrived, what was spoken, and the file path.
+Needs the same ``.env`` values as ``speak_to_file.py``: ``FISH_API_KEY`` and
+``FISH_VOICE_ID``. You will see when the first audio arrived, what was spoken,
+and the file path.
 """
 
 import os
@@ -44,7 +45,7 @@ def fake_llm() -> Iterator[str]:
 
 
 def main() -> None:
-    # Load the key and voice from .env, as in speak_to_file.py.
+    # Load the key and voice from `.env`, as in `speak_to_file.py`.
     load_dotenv(ROOT / ".env")
     api_key = os.environ.get("FISH_API_KEY", "").strip()
     voice_id = os.environ.get("FISH_VOICE_ID", "").strip()
@@ -56,11 +57,11 @@ def main() -> None:
     out.parent.mkdir(exist_ok=True)
     started = time.perf_counter()
     speaker = FishSpeaker(api_key=api_key, voice_id=voice_id)
-    # speak_stream() reads the generator, cleans each piece, and sends a piece
-    # to Fish as soon as a sentence is complete. It returns once the whole reply
-    # has been spoken.
+    # `speak_stream` reads the `fake_llm` generator, cleans each piece, and sends
+    # a piece to Fish as soon as a sentence is complete. It returns once the
+    # whole reply has been spoken.
     #
-    # on_first_audio is a callback that fires once, the moment the first audio
+    # `on_first_audio` is a callback that fires once, the moment the first audio
     # arrives. A real app might use it to stop a "thinking" animation.
     result = speaker.speak_stream(
         fake_llm(),
@@ -70,7 +71,7 @@ def main() -> None:
     if result.error:
         sys.exit(f"Fish failed: {type(result.error).__name__}: {result.error.message}")
     print(f"first audio: {round(result.tts_first_audio_ms or 0)} ms after the first text")
-    # spoken_so_far is the text that actually reached the sink. If the user had
+    # `spoken_so_far` is the text that actually reached the sink. If the user had
     # interrupted, it would be shorter than the full reply, which tells a chat
     # app what the user really heard.
     print(f"spoken: {result.spoken_so_far!r}")
