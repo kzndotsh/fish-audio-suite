@@ -2,28 +2,28 @@
 
 Run: uv run python examples/custom_sink.py (needs FISH_API_KEY and FISH_VOICE_ID)
 
-``FishSpeaker`` does not care where audio goes. It hands every chunk it
+`FishSpeaker` does not care where audio goes. It hands every chunk it
 receives to a "sink", an object with a few agreed methods. The suite ships
 sinks for a file, your speakers, stdout and mpv, but you can write your own to
 send audio anywhere: a websocket, a recorder, a visualizer.
 
-A sink only needs these members (the ``PlaybackSink`` protocol):
+A sink only needs these members (the `PlaybackSink` protocol):
 
-- ``start()``: called once before the first chunk.
-- ``write(chunk)``: called for every chunk of audio bytes.
-- ``finish(kill=False)``: called once at the end. ``kill`` is ``True`` if the
+- `start()`: called once before the first chunk.
+- `write(chunk)`: called for every chunk of audio bytes.
+- `finish(kill=False)`: called once at the end. `kill` is `True` if the
   speech was cut off, for example because the user started talking.
-- ``bytes_played()``: how many bytes the sink accepted.
-- ``output_latency_s``: how many seconds of audio the sink holds before it is
-  heard. Use ``0.0`` when there is no buffering.
+- `bytes_played()`: how many bytes the sink accepted.
+- `output_latency_s`: how many seconds of audio the sink holds before it is
+  heard. Use `0.0` when there is no buffering.
 
 There is no base class to inherit from. Any class with these members works.
 
-This sink plays nothing. It draws a bar of ``#`` marks for every 100 ms of
+This sink plays nothing. It draws a bar of `#` marks for every 100 ms of
 audio, taller when the voice is louder, so you can watch the speech go by.
 
-Needs the same ``.env`` values as ``speak_to_file.py``: ``FISH_API_KEY`` and
-``FISH_VOICE_ID``.
+Needs the same `.env` values as `speak_to_file.py`: `FISH_API_KEY` and
+`FISH_VOICE_ID`.
 """
 
 import os
@@ -38,7 +38,7 @@ ROOT = Path(__file__).resolve().parent.parent
 
 
 class MeterSink:
-    """Implements the ``PlaybackSink`` protocol without touching a device or a file."""
+    """Implements the `PlaybackSink` protocol without touching a device or a file."""
 
     # This sink shows audio the instant it arrives, so nothing is waiting to be heard.
     output_latency_s = 0.0

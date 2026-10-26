@@ -6,18 +6,18 @@ In a voice assistant, every second of silence feels long. A language model can
 take several seconds to write a full reply, so waiting for the whole reply
 before speaking makes the assistant feel slow.
 
-``FishSpeaker.speak_stream`` fixes that. You hand it the reply as it is being
+`FishSpeaker.speak_stream` fixes that. You hand it the reply as it is being
 written, one small piece at a time, and it starts speaking as soon as the first
 sentence is complete. The listener hears the start of the answer while the
 model is still writing the end.
 
 This example uses a fake LLM, a generator that yields a fixed reply in small
 chunks with short pauses, so it needs no LLM key. To use a real model, pass
-your model's token stream in its place. ``speak_stream`` accepts any iterable
+your model's token stream in its place. `speak_stream` accepts any iterable
 or async iterable of strings.
 
-Needs the same ``.env`` values as ``speak_to_file.py``: ``FISH_API_KEY`` and
-``FISH_VOICE_ID``. You will see when the first audio arrived, what was spoken,
+Needs the same `.env` values as `speak_to_file.py`: `FISH_API_KEY` and
+`FISH_VOICE_ID`. You will see when the first audio arrived, what was spoken,
 and the file path.
 """
 

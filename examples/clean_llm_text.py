@@ -3,10 +3,10 @@
 Run: uv run python examples/clean_llm_text.py (offline, no key needed)
 
 Language models write for the screen, not for the ear. Their replies carry
-markdown (``**bold**``), links, and sometimes hidden "thinking" blocks. A
+markdown (`**bold**`), links, and sometimes hidden "thinking" blocks. A
 text-to-speech engine reads all of that out loud unless you remove it first.
 
-This example does two things with the ``kit`` package, which is pure text
+This example does two things with the `kit` package, which is pure text
 handling with no network calls:
 
 1. Cleans one messy reply so only the words meant to be spoken are left.

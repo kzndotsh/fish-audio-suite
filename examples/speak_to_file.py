@@ -8,14 +8,14 @@ any audio player.
 
 Two objects do the work:
 
-- ``FishSpeaker`` holds your settings (key, voice, model) and talks to Fish.
-- A "sink" is where the audio goes. ``FileSink`` saves it to a file. Other
+- `FishSpeaker` holds your settings (key, voice, model) and talks to Fish.
+- A "sink" is where the audio goes. `FileSink` saves it to a file. Other
   sinks play it on your speakers or pipe it to another program.
 
-Before you run it, put two values in the ``.env`` file at the repository root:
+Before you run it, put two values in the `.env` file at the repository root:
 
-- ``FISH_API_KEY``, your key from the Fish Audio dashboard.
-- ``FISH_VOICE_ID``, the id of the voice to use. There is no default voice.
+- `FISH_API_KEY`, your key from the Fish Audio dashboard.
+- `FISH_VOICE_ID`, the id of the voice to use. There is no default voice.
 
 You will see how long Fish took to start sending audio, and where the file is.
 """

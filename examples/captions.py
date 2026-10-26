@@ -6,10 +6,10 @@ A transcript is more useful with timestamps. Video players read two common
 subtitle formats:
 
 - SRT, the older one, used by most desktop players.
-- WebVTT (``.vtt``), the one web browsers use for the ``<track>`` element.
+- WebVTT (`.vtt`), the one web browsers use for the `<track>` element.
 
 Both describe the same thing, a list of "cues": show this text from this time
-to that time. The kit builds either file from a list of ``CaptionCue`` values,
+to that time. The kit builds either file from a list of `CaptionCue` values,
 so you never have to format timestamps by hand.
 
 You will see the same three cues printed first as SRT, then as WebVTT.

@@ -3,19 +3,19 @@
 Run: uv run python examples/fish_errors.py (offline, no key needed)
 
 When a call to Fish fails, you get an HTTP status number and a response body.
-The body is not always the same shape. Sometimes it is JSON with a ``message``
-field, sometimes it uses ``detail``, and sometimes it is empty.
+The body is not always the same shape. Sometimes it is JSON with a `message`
+field, sometimes it uses `detail`, and sometimes it is empty.
 
 The kit turns all of these into Python exception classes, so your code can say
 "if the key is wrong, do this; if we are rate limited, wait" without
 remembering which status number means what:
 
-- ``FishAuthError``: 401, 402 or 403. The key is wrong, missing, or out of
+- `FishAuthError`: 401, 402 or 403. The key is wrong, missing, or out of
   credit. Retrying will not help.
-- ``FishRateLimitError``: 429. Too many requests. Wait, then retry.
-- ``FishUpstreamError``: a 5xx error. Fish itself had a problem. Retrying may
+- `FishRateLimitError`: 429. Too many requests. Wait, then retry.
+- `FishUpstreamError`: a 5xx error. Fish itself had a problem. Retrying may
   work.
-- ``FishHttpError``: the parent class of all of the above, and the type used
+- `FishHttpError`: the parent class of all of the above, and the type used
   for any other status, such as 404.
 
 This example uses made-up responses so it runs without a key. You will see one

@@ -12,18 +12,18 @@ proxy in this repo speaks that same API, but sends the work to Fish. Point an
 OpenAI client at the proxy and it uses Fish voices without any code changes
 beyond the address.
 
-This example uses the official ``openai`` package to:
+This example uses the official `openai` package to:
 
 1. Turn a sentence into speech and save it as an mp3.
 2. Send that mp3 back to be transcribed, to show the round trip works.
 
-The block at the very top of this file (between the ``# ///`` lines) is inline
-script metadata. It tells ``uv`` to install ``openai`` just for this run, so
+The block at the very top of this file (between the `# ///` lines) is inline
+script metadata. It tells `uv` to install `openai` just for this run, so
 you do not need to add it to the project. That is why the run command is
-``uv run examples/...`` without ``python``.
+`uv run examples/...` without `python`.
 
 The Fish key lives on the proxy, not here. Start the proxy with
-``FISH_API_KEY`` in its environment. You will see the mp3's path and size, then
+`FISH_API_KEY` in its environment. You will see the mp3's path and size, then
 the transcription.
 """
 
