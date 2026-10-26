@@ -16,8 +16,6 @@
 >
 > **Warning**: Pre-1.0 and under active development. Anything could change at any moment and nothing is guaranteed. This notice will be left here until a stable release is published.
 
-**fish-audio-suite** puts [Fish Audio](https://fish.audio) speech behind three small Python packages: a text kit, an OpenAI-compatible proxy, and `fish-voice`, a full duplex voice chat in your terminal.
-
 ```text
 you ▸  Hey, can you hear me?
 llm ▸  [happy] Yes, I can hear you! [curious] What's on your mind today?
@@ -39,7 +37,6 @@ llm ▸  [happy] Yes, I can hear you! [curious] What's on your mind today?
 > git clone https://github.com/kzndotsh/fish-audio-suite
 > cd fish-audio-suite
 > uv sync --all-packages --extra cli
-> export FISH_API_KEY=...
 > ```
 
 #### <img height="14" src="https://octicons-col.vercel.app/comment-discussion/22D3EE">&nbsp;&nbsp;Talk to a Model
@@ -73,6 +70,7 @@ llm ▸  [happy] Yes, I can hear you! [curious] What's on your mind today?
 #### <img height="14" src="https://octicons-col.vercel.app/server/22D3EE">&nbsp;&nbsp;Serve It to OpenAI Clients
 
 > ```sh
+> export FISH_API_KEY=...           # the proxy reads the process env, not .env
 > uv run --package fish-audio-suite-proxy fish-audio-suite-proxy
 > curl -s http://127.0.0.1:8849/health
 > ```
@@ -82,14 +80,14 @@ llm ▸  [happy] Yes, I can hear you! [curious] What's on your mind today?
 > | Method | Path | Returns |
 > | --- | --- | --- |
 > | `POST` | `/v1/audio/speech` | audio bytes |
-> | `POST` | `/v1/audio/transcriptions` | JSON, or an `srt` / `vtt` file |
+> | `POST` | `/v1/audio/transcriptions` | JSON, plain text, or an `srt` / `vtt` file |
 > | `GET` | `/v1/models` | the OpenAI model list |
 > | `GET` | `/health` | process up, works with no key |
 >
 > `tts-1` and `whisper-1` map onto Fish models. Open WebUI settings and the full field map are in the [proxy README](packages/proxy/README.md).
 
 > [!WARNING]
-> With no `FISH_PROXY_API_KEYS` the proxy accepts any client, so anyone who can reach the port spends your Fish credits. Keep the default loopback bind, or set the keys before you listen on another address. A set-but-empty value refuses to start instead of silently turning auth off.
+> With no `FISH_PROXY_API_KEYS` the proxy accepts any client, so anyone who can reach the port spends your Fish credits. Keep the default loopback bind, or set the keys before you listen on another address.
 
 #### <img height="14" src="https://octicons-col.vercel.app/typography/22D3EE">&nbsp;&nbsp;Use the Text Helpers
 
@@ -113,8 +111,6 @@ llm ▸  [happy] Yes, I can hear you! [curious] What's on your mind today?
 > `scrub_tts` strips markdown, `<think>` blocks and URLs but keeps Fish `[cue]` tags, and `normalize_cues` rewrites `(happy)` to `[happy]` and `[laugh]` to `[laughing]`. Run them in that order. A cut falls at a sentence end, and `Dr.` is not one.
 >
 > For a reply that is still streaming, use `FishSpeaker.speak_stream` from the voice package: it also holds back half-finished spans such as an open `**` or a URL that has not ended. The [kit README](packages/kit/README.md) lists every helper, including the ASR ones (`scrub_asr`, `is_asr_hallucination`) and caption output (`format_as_srt`).
-
-<a href="docs/INSTALL.md"><img src="https://img.shields.io/badge/Every_Install_Option-%E2%86%92-22D3EE?style=flat-square&labelColor=2b2b2b" alt="Every Install Option"></a>
 
 ## <a href="./#gh-dark-mode-only" target="_blank"><img height="18" src="https://octicons-col.vercel.app/sync/ffffff" alt="loop-dark"></a><a href="./#gh-light-mode-only" target="_blank"><img height="18" src="https://octicons-col.vercel.app/sync/000000" alt="loop"></a>&nbsp;&nbsp;The Voice Loop
 
@@ -141,7 +137,7 @@ flowchart LR
 
 ## <a href="./#gh-dark-mode-only" target="_blank"><img height="18" src="https://octicons-col.vercel.app/hubot/ffffff" alt="llm-dark"></a><a href="./#gh-light-mode-only" target="_blank"><img height="18" src="https://octicons-col.vercel.app/hubot/000000" alt="llm"></a>&nbsp;&nbsp;Pick Your LLM
 
-`fish-voice` works with any OpenAI-compatible chat server. Two providers are built in, and each reads only its own key, so a key can never be sent to another host.
+`fish-voice` works with any OpenAI-compatible chat server. Two providers are built in, and each reads only its own key, so a provider's key is never sent to another host. `FISH_LLM_API_KEY` and `FISH_LLM_MODEL`, when set, apply to any provider.
 
 > | `FISH_LLM_PROVIDER` | Key variable | Model variable |
 > | --- | --- | --- |
@@ -204,7 +200,7 @@ The ones you touch first. Every package lists its full table.
 ## <a href="./#gh-dark-mode-only" target="_blank"><img height="18" src="https://octicons-col.vercel.app/shield-check/ffffff" alt="reliability-dark"></a><a href="./#gh-light-mode-only" target="_blank"><img height="18" src="https://octicons-col.vercel.app/shield-check/000000" alt="reliability"></a>&nbsp;&nbsp;Reliability
 
 > • <img height="14" src="https://octicons-col.vercel.app/code-square/22D3EE"> **Typed**: Type checked with basedpyright in strict mode, and each package's public API is fully typed. Fish errors are classes such as `FishAuthError` and `FishRateLimitError`, so you catch by type instead of comparing status numbers.<br />
-> • <img height="14" src="https://octicons-col.vercel.app/key/22D3EE"> **Quiet Keys**: Keys are left out of `repr()` and `/health`, nothing reads them at import, and an LLM key is sent only to the provider that owns it.<br />
+> • <img height="14" src="https://octicons-col.vercel.app/key/22D3EE"> **Quiet Keys**: Keys are left out of `repr()` and `/health`, and nothing reads them at import.<br />
 > • <img height="14" src="https://octicons-col.vercel.app/shield-lock/22D3EE"> **Safe Defaults**: A set-but-blank `FISH_PROXY_API_KEYS` stops the proxy from starting instead of silently turning auth off, and a plain-`http` remote Fish base logs a warning.<br />
 > • <img height="14" src="https://octicons-col.vercel.app/beaker/22D3EE"> **Strict Tests**: Random order, warnings as errors, network sockets disabled, and CI enforces branch-coverage floors.<br />
 > • <img height="14" src="https://octicons-col.vercel.app/milestone/22D3EE"> **Public API**: The names in each package's root `__all__`, plus the proxy's HTTP API. Until 1.0.0 names change freely, with no deprecation period. Details are in [CONTRIBUTING](CONTRIBUTING.md#the-public-api).
@@ -230,10 +226,7 @@ The ones you touch first. Every package lists its full table.
 > The same gates without `just`, and what each one checks, are in [CONTRIBUTING.md](CONTRIBUTING.md#run-the-checks).
 >
 > ```text
-> packages/
-> ├── kit/      cues, scrubbers, cuts, captions, error types
-> ├── proxy/    OpenAI audio over HTTP
-> └── voice/    websocket turn, sinks, barge-in, the fish-voice CLI
+> packages/     kit, proxy, voice
 > nix/          NixOS module        Dockerfile    proxy image
 > scripts/      developer tools: model and voice evals, mic and VAD checks (scripts/README.md)
 > ```
