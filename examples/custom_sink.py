@@ -21,18 +21,22 @@ class MeterSink:
 
     def __init__(self, sample_rate: int) -> None:
         self.total = 0
+        self.pending = bytearray()
         # One bar per 100 ms of 16-bit mono PCM.
         self.window_bytes = sample_rate // 10 * 2
 
     def start(self) -> None:
         self.total = 0
+        self.pending.clear()
 
     def write(self, chunk: bytes) -> None:
         self.total += len(chunk)
-        for i in range(0, len(chunk) - 1, self.window_bytes):
-            window = chunk[i : i + self.window_bytes]
-            peak = max(map(abs, array("h", window[: len(window) // 2 * 2])), default=0)
-            print(f"{'#' * (peak * 40 // 32768):<40}")
+        # Chunks split windows and even samples, so carry the remainder to the next write.
+        self.pending += chunk
+        while len(self.pending) >= self.window_bytes:
+            window = array("h", self.pending[: self.window_bytes])
+            del self.pending[: self.window_bytes]
+            print("#" * (max(map(abs, window)) * 40 // 32768))
 
     def finish(self, *, kill: bool = False) -> None:
         print("stopped early" if kill else "done")
