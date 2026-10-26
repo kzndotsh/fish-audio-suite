@@ -34,7 +34,7 @@ test = [
 testpaths = ["packages", "tests"]
 # Shared test helpers live next to the tests under unique module names, so two
 # packages can never both claim a package called "tests".
-pythonpath = ["packages/kit/tests", "packages/proxy/tests", "packages/voice/tests", "scripts"]
+pythonpath = ["packages/kit/tests", "packages/proxy/tests", "packages/voice/tests", "scripts", "examples"]
 markers = [
     "perf: timing guards. A slow runner can trip them, so run `-m 'not perf'` to skip them.",
 ]
@@ -235,6 +235,7 @@ max-branches = 15
 "packages/voice/src/fish_audio_suite_voice/{console,debug,cli}.py" = ["T20"]
 # A command-line script prints its results, and is not a package.
 "scripts/*.py" = ["T20", "INP001"]
+"examples/*.py" = ["T20", "INP001", "D"]
 
 [tool.pydoclint]
 style = "numpy"
@@ -296,10 +297,12 @@ pythonPlatform = "All"
 venvPath = "."
 venv = ".venv"
 typeCheckingMode = "strict"
-include = ["packages", "tests", "scripts"]
-exclude = [".venv", "dist", "**/__pycache__"]
+include = ["packages", "tests", "scripts", "examples"]
+# openai is not a dependency of this repo, so the OpenAI SDK example cannot resolve its import.
+exclude = [".venv", "dist", "**/__pycache__", "examples/openai_sdk_proxy.py"]
 extraPaths = [
     "scripts",
+    "examples",
     "packages/voice/tests",
     "packages/kit/src",
     "packages/proxy/src",

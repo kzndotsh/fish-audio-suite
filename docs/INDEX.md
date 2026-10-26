@@ -35,6 +35,7 @@ Every doc in this repository, what is in it, and who it is for. Start with the r
 | [CONTRIBUTING.md](../CONTRIBUTING.md) | Setup, the checks, docstrings, the public API, env-var names, versioning, releases and commits |
 | [SECURITY.md](../SECURITY.md) | Supported versions and how to report a vulnerability privately |
 | [AGENTS.md](../AGENTS.md) | The short list of rules for coding agents, with pointers to the docs above |
+| [examples/README.md](../examples/README.md) | Short runnable scripts: cleaning LLM text, captions, Fish errors, speaking to a file or a custom sink, streaming a reply, and the OpenAI SDK against the proxy |
 | [scripts/README.md](../scripts/README.md) | The developer tools in `scripts/`: comparing chat models and Fish voices, measuring a mic, comparing voice detectors on a recording, and trying Deepgram Flux |
 | [.env.example](../.env.example) | Every setting, with its default |
 
