@@ -19,8 +19,8 @@ Python 3.12 or newer. Use uv for everything; there is no pip or requirements fil
 `just check` runs every Python gate that CI runs. Without `just`, the commands are:
 
 ```sh
-uv run ruff check packages .github/scripts scripts tests
-uv run ruff format --check packages .github/scripts scripts tests
+uv run ruff check packages .github/scripts scripts examples tests
+uv run ruff format --check packages .github/scripts scripts examples tests
 uv run pydoclint --config=pyproject.toml packages
 uv run basedpyright
 uv run python .github/scripts/verifytypes.py
@@ -36,7 +36,7 @@ the layers below their own. A new voice module goes in the lowest layer it fits.
 `pytest` also runs the `>>>` examples in kit and voice docstrings as doctests. `just check` runs
 the tests through `just cov`, which adds branch coverage and the CI floors.
 
-`just fmt` (or `uv run ruff format packages .github/scripts scripts tests`) rewrites the formatting. `uvx pre-commit install`
+`just fmt` (or `uv run ruff format packages .github/scripts scripts examples tests`) rewrites the formatting. `uvx pre-commit install`
 runs the fast checks on every commit.
 
 CI also checks that the wheels build, `nix flake check`, the Docker image, the
@@ -49,7 +49,7 @@ test fails when they differ.
 ## Tests
 
 Tests live in `packages/<member>/tests/`. The root `tests/` holds the repo-wide checks
-(the settings tables, the repo rules) and the tests for `scripts/`. They run in random order with every
+(the settings tables, the repo rules) and the tests for `scripts/` and `examples/`. They run in random order with every
 warning turned into an error and with network sockets disabled, so a test must
 not depend on another test or on the real Fish API. Add a test with every
 behavior change, and put a regression test beside every bug fix. Do not call the
