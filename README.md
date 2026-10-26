@@ -210,6 +210,7 @@ The ones you touch first. Every package lists its full table.
 > • <img height="14" src="https://octicons-col.vercel.app/download/22D3EE"> **[Install](docs/INSTALL.md)**: Every way to install and run it: a clone, `uv tool`, Docker, Compose, NixOS.<br />
 > • <img height="14" src="https://octicons-col.vercel.app/plug/22D3EE"> **[Integrations](docs/INTEGRATIONS.md)**: Open WebUI, SillyTavern, RisuAI, AIRI, OpenAI SDKs, and the Python library.<br />
 > • <img height="14" src="https://octicons-col.vercel.app/stopwatch/22D3EE"> **[Performance](docs/PERFORMANCE.md)**: Where each second of a turn goes, and the settings that make replies come sooner.<br />
+> • <img height="14" src="https://octicons-col.vercel.app/code/22D3EE"> **[Examples](examples/README.md)**: Short runnable scripts for the kit, the voice library and the proxy.<br />
 > • <img height="14" src="https://octicons-col.vercel.app/tools/22D3EE"> **[Troubleshooting](docs/TROUBLESHOOTING.md)**: Symptoms, the log lines that explain them, and the fixes.<br />
 > • <img height="14" src="https://octicons-col.vercel.app/workflow/22D3EE"> **[Architecture](docs/ARCHITECTURE.md)**: How the packages fit together, with diagrams.<br />
 > • <img height="14" src="https://octicons-col.vercel.app/list-unordered/22D3EE"> **[Glossary](docs/GLOSSARY.md)**: Barge-in, cues, flushes, AEC and the other terms the docs use.
