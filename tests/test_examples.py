@@ -45,18 +45,20 @@ def test_fish_errors_catches_each_status_by_type(capsys: pytest.CaptureFixture[s
     ]
 
 
+@pytest.mark.parametrize("missing", ["FISH_API_KEY", "FISH_VOICE_ID"])
 @pytest.mark.parametrize("name", LIVE)
-def test_live_example_exits_naming_the_missing_key(
-    name: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+def test_live_example_exits_naming_the_missing_variable(
+    name: str, missing: str, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     module = importlib.import_module(name)
     # An empty value wins over the repository .env, because load_dotenv keeps set keys.
-    monkeypatch.setenv("FISH_API_KEY", "")
-    monkeypatch.setenv("FISH_VOICE_ID", "")
+    monkeypatch.setenv("FISH_API_KEY", "key")
+    monkeypatch.setenv("FISH_VOICE_ID", "voice")
+    monkeypatch.setenv(missing, "")
     monkeypatch.setattr(module, "ROOT", tmp_path)
     with pytest.raises(SystemExit) as caught:
         module.main()
-    assert "FISH_API_KEY" in str(caught.value)
+    assert missing in str(caught.value)
 
 
 def test_proxy_example_declares_its_own_dependency() -> None:
