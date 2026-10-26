@@ -57,6 +57,7 @@ def main() -> None:
     out.parent.mkdir(exist_ok=True)
     started = time.perf_counter()
     speaker = FishSpeaker(api_key=api_key, voice_id=voice_id)
+
     # `speak_stream` reads the `fake_llm` generator, cleans each piece, and sends
     # a piece to Fish as soon as a sentence is complete. It returns once the
     # whole reply has been spoken.
@@ -70,7 +71,9 @@ def main() -> None:
     )
     if result.error:
         sys.exit(f"Fish failed: {type(result.error).__name__}: {result.error.message}")
+
     print(f"first audio: {round(result.tts_first_audio_ms or 0)} ms after the first text")
+
     # `spoken_so_far` is the text that actually reached the sink. If the user had
     # interrupted, it would be shorter than the full reply, which tells a chat
     # app what the user really heard.

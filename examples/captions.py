@@ -35,6 +35,7 @@ def main() -> None:
     # `format_as_srt` numbers each cue and writes times as `00:00:01,800`
     # (comma before the milliseconds).
     print(format_as_srt(CUES))
+
     # `format_as_vtt` starts with a `WEBVTT` header and writes times as
     # `00:00:01.800` (dot before the milliseconds).
     print(format_as_vtt(CUES))

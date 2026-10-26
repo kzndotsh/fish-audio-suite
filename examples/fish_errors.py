@@ -46,6 +46,7 @@ def main() -> None:
         # `parse_fish_error` reads whatever body shape came back and gives you a
         # `status` and a readable `message`. An empty body becomes `"HTTP 503"`.
         parsed = parse_fish_error(status, body)
+
         # `retry_after_s` reads the `Retry-After` header, if there is one, as a
         # number of seconds. `FishHttpError.from_status` then picks the right
         # exception class for the status and stores that wait on it.

@@ -45,8 +45,10 @@ class MeterSink:
 
     def __init__(self, sample_rate: int) -> None:
         self.total = 0
+
         # Bytes received but not yet drawn. See `write` for why this exists.
         self.pending = bytearray()
+
         # `FishSpeaker` sends raw PCM by default: 16-bit samples (2 bytes each),
         # one channel. At 44,100 samples per second, 100 ms is 4,410 samples,
         # which is 8,820 bytes.
@@ -72,6 +74,7 @@ class MeterSink:
             # -32768 to 32767. The largest absolute value is the window's peak.
             window = array("h", self.pending[: self.window_bytes])
             del self.pending[: self.window_bytes]
+
             # Scale the peak to a bar of 0 to 40 `#` marks.
             print("#" * (max(map(abs, window)) * 40 // 32768))
 
@@ -94,12 +97,14 @@ def main() -> None:
             sys.exit(f"{name} is not set. Put it in {ROOT / '.env'} or export it.")
 
     speaker = FishSpeaker(api_key=api_key, voice_id=voice_id)
+
     # Pass `speaker.sample_rate` so the meter's 100 ms windows match the audio.
     result = speaker.speak(
         "[calm] Watch the meter follow my voice.", MeterSink(speaker.sample_rate)
     )
     if result.error:
         sys.exit(f"Fish failed: {type(result.error).__name__}: {result.error.message}")
+
     # The speaker reads this number from `MeterSink.bytes_played`, so it equals
     # `MeterSink.total`.
     print(f"bytes played: {result.bytes_played}")

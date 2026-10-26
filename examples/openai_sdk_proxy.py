@@ -55,6 +55,7 @@ def main() -> None:
         response_format="mp3",
     ) as response:
         response.stream_to_file(OUT)
+
     print(f"wrote {OUT} ({OUT.stat().st_size} bytes)")
 
     # Step 2. Speech to text.

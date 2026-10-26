@@ -38,6 +38,7 @@ def main() -> None:
     load_dotenv(ROOT / ".env")
     api_key = os.environ.get("FISH_API_KEY", "").strip()
     voice_id = os.environ.get("FISH_VOICE_ID", "").strip()
+
     # Stop early with a clear message instead of failing later inside the call.
     for name, value in (("FISH_API_KEY", api_key), ("FISH_VOICE_ID", voice_id)):
         if not value:
@@ -50,6 +51,7 @@ def main() -> None:
     # Only `api_key` and `voice_id` are required. `model`, `speed`, `latency`
     # and the rest have sensible defaults you can pass as keyword arguments.
     speaker = FishSpeaker(api_key=api_key, voice_id=voice_id)
+
     # `speak` blocks until the whole line has been spoken into the sink. The
     # `[happy]` cue tells Fish what tone to use and is not read aloud. `FileSink`
     # collects the audio in memory and writes the WAV file once speech ends.
@@ -60,6 +62,7 @@ def main() -> None:
     # It holds one of the kit error classes shown in `fish_errors.py`.
     if result.error:
         sys.exit(f"Fish failed: {type(result.error).__name__}: {result.error.message}")
+
     # `tts_first_audio_ms` is how long Fish took to send the first audio, a good
     # measure of how fast the voice feels to a listener.
     print(f"first audio: {round(result.tts_first_audio_ms or 0)} ms")

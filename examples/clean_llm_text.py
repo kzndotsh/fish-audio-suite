@@ -48,16 +48,19 @@ def main() -> None:
     # that `Dr.` is not one. If a sentence runs long, it cuts at a space near
     # 40 characters, so the first audio does not wait for a long sentence.
     buf = ""
+
     # Feed the cleaned text in 7-character chunks to imitate a streaming model.
     for i in range(0, len(cleaned), 7):
         buf += cleaned[i : i + 7]
         cut = next_tts_cut(buf)
+
         # One chunk can complete more than one piece, so keep cutting until
         # the buffer has nothing ready.
         while cut > 0:
             print(f"piece: {buf[:cut]!r}")
             buf = buf[cut:]
             cut = next_tts_cut(buf)
+
     # The stream has ended. Whatever is left in `buf` is the final piece.
     if buf:
         print(f"piece: {buf!r}")
