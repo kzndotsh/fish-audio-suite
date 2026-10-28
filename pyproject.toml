@@ -21,9 +21,9 @@ dev = [
 ]
 test = [
     "textual>=8.2.8",
-    "websockets>=14",
+    "websockets>=17.3",
     "pysilero-vad>=3.4.0",
-    "hypothesis>=6.140",
+    "hypothesis>=6.170.5",
     "pytest-cov>=7",
     "pytest-randomly>=3.16",
     "pytest-socket>=0.7",
