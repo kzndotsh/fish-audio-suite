@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12"
 
 [manifest]
@@ -275,7 +275,7 @@ wheels = [
 
 [[package]]
 name = "fastapi"
-version = "0.143.3"
+version = "0.156.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "annotated-doc" },
@@ -285,9 +285,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "typing-inspection" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/38/d5/b0aeb0b303650ac87b0411de4aaf3f901b06042dcc3fb00f30b97b7ff585/fastapi-0.143.3.tar.gz", hash = "sha256:b9ab567ee57afb4454004ce04c889f8f0160ac47946b99795887cd6e88484848", size = 469834, upload-time = "2026-10-16T14:14:13.31Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/24/46/1e2d7fac63a9d7b1d6f7b7bfc46b6845e0694cb70d11c34bc4ee18020474/fastapi-0.156.5.tar.gz", hash = "sha256:eff248c39b8512f9a192d7a682c6c972c0d42f209c21a5616a3919dc3162d2c4", size = 502181, upload-time = "2026-10-21T07:25:04.41Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2c/1a/03d246befcf307219bb2161c97d8c5d314f84125bf7dd245730a28589828/fastapi-0.143.3-py3-none-any.whl", hash = "sha256:75e8bd68e2f52f77d29b2879749c257d64de2d85282d25270caf2bfccce5efe5", size = 144849, upload-time = "2026-10-16T14:14:11.763Z" },
+    { url = "https://files.pythonhosted.org/packages/67/d2/9632d849f0df3d51c267ac3fb08df5e2284e0a0b6d76e3cf52390ddf7611/fastapi-0.156.5-py3-none-any.whl", hash = "sha256:5f448ea9941c3be211f2a6f6e1e6cb2bf4886bf4191f8d623b1c70bcb2ce0b04", size = 147268, upload-time = "2026-10-21T07:25:02.578Z" },
 ]
 
 [[package]]
@@ -310,6 +310,7 @@ wheels = [
 name = "fish-audio-suite"
 version = "0.0.0"
 source = { virtual = "." }
+default-groups = ["dev", "test"]
 
 [package.dev-dependencies]
 dev = [
@@ -371,7 +372,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fastapi", specifier = ">=0.115.7" },
+    { name = "fastapi", specifier = ">=0.156.5" },
     { name = "fish-audio-suite-kit", editable = "packages/kit" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "ormsgpack", specifier = ">=1.5" },
@@ -424,7 +425,7 @@ requires-dist = [
     { name = "httpx", specifier = ">=0.28" },
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "numpy", specifier = ">=2.0" },
-    { name = "openrouter", marker = "extra == 'cli'", specifier = ">=1.2" },
+    { name = "openrouter", marker = "extra == 'cli'", specifier = ">=1.3.71" },
     { name = "pysilero-vad", marker = "extra == 'silero'", specifier = ">=3.4.0" },
     { name = "pywebrtc-audio", marker = "extra == 'aec'", specifier = ">=0.2" },
     { name = "pywebrtc-audio", marker = "extra == 'cli'", specifier = ">=0.2" },
@@ -924,7 +925,7 @@ wheels = [
 
 [[package]]
 name = "openrouter"
-version = "1.3.64"
+version = "1.3.71"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpcore" },
@@ -932,9 +933,9 @@ dependencies = [
     { name = "jsonpath-python" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/24/61/205781c6301a5914b30dfb8a6b6905ecca8d963ef7ce7e1fd22b893f7ded/openrouter-1.3.64.tar.gz", hash = "sha256:c2d593dce4df832d0750f44e19e07a4dd4a32e3d9086b1664d67ca7b908e373e", size = 608187, upload-time = "2026-10-17T21:50:18.916Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/58/51/c5fbe634b007293e30ce384ba679a8b79ad355a51b1337b26ae750db181d/openrouter-1.3.71.tar.gz", hash = "sha256:c20be1e18ba27168c5b0b7e1d4b91d1e96c3bb65d36fed3746c1a0d0d8972318", size = 613801, upload-time = "2026-10-21T04:33:37.522Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/51/32/6ad0d43657c198c5c79ca389045119505dffc3544c2b0e9a744cb529cc15/openrouter-1.3.64-py3-none-any.whl", hash = "sha256:cf978765c5c0a9337c373386f337395ec1db9d87c463181bcebdb0e94a8f46e6", size = 1319390, upload-time = "2026-10-17T21:50:17.467Z" },
+    { url = "https://files.pythonhosted.org/packages/2e/41/0a8f31199e598952247feb4b06f8a8d9028f87fa2926b748b7bd651a4dd6/openrouter-1.3.71-py3-none-any.whl", hash = "sha256:e75725c2892f8853a462dadc8070e0ab096239c53639e69243cd0dcbe9a41934", size = 1329780, upload-time = "2026-10-21T04:33:35.297Z" },
 ]
 
 [[package]]
