@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 5
 requires-python = ">=3.12"
 
 [manifest]
@@ -275,7 +275,7 @@ wheels = [
 
 [[package]]
 name = "fastapi"
-version = "0.143.3"
+version = "0.162.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "annotated-doc" },
@@ -285,14 +285,14 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "typing-inspection" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/38/d5/b0aeb0b303650ac87b0411de4aaf3f901b06042dcc3fb00f30b97b7ff585/fastapi-0.143.3.tar.gz", hash = "sha256:b9ab567ee57afb4454004ce04c889f8f0160ac47946b99795887cd6e88484848", size = 469834, upload-time = "2026-10-16T14:14:13.31Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e9/eb/2cf8c80abf09b2800aef0a83b41066fbfda8ee5495b7a08b9d1af40f7046/fastapi-0.162.0.tar.gz", hash = "sha256:6a22c1e2e6e32e0633ee7e170f00009a29b8228b16feb219ee42f32fd8d88a8f", size = 527867, upload-time = "2026-10-23T18:47:33.264Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2c/1a/03d246befcf307219bb2161c97d8c5d314f84125bf7dd245730a28589828/fastapi-0.143.3-py3-none-any.whl", hash = "sha256:75e8bd68e2f52f77d29b2879749c257d64de2d85282d25270caf2bfccce5efe5", size = 144849, upload-time = "2026-10-16T14:14:11.763Z" },
+    { url = "https://files.pythonhosted.org/packages/b4/4f/3f2c25c9b43970b5e9a08beb5e04776247edea684ddc0930f4f02f0bb6cb/fastapi-0.162.0-py3-none-any.whl", hash = "sha256:3785963de305dd09912426cb81f2d230fce98ab3521cdfe97265c8d14983128c", size = 148912, upload-time = "2026-10-23T18:47:31.734Z" },
 ]
 
 [[package]]
 name = "fish-audio-sdk"
-version = "1.3.0"
+version = "1.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
@@ -301,15 +301,16 @@ dependencies = [
     { name = "pydantic" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/42/cb/7eef0fdada0274fa5fef617601aaf7a5e6d5dc122112fcd3740bf0256774/fish_audio_sdk-1.3.0.tar.gz", hash = "sha256:148817a42475dda780748ce9c8f8f2722cd7947e7c7bd9b181152ce3b55e734b", size = 1052190, upload-time = "2026-03-10T05:40:15.021Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/00/56/4045f59a486cdb86f5a546c062818851dfd9c876d0673f5322f8c084a435/fish_audio_sdk-1.4.0.tar.gz", hash = "sha256:063e0eb2b193d9ae626d1bc7ac099899eb7cf009a46b0317222db720206855fe", size = 1058189, upload-time = "2026-10-31T05:08:03.747Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/4e/78/d7e4b4f4d14381ae0c756281c447df68e43b0a8637970720befcddd4665d/fish_audio_sdk-1.3.0-py3-none-any.whl", hash = "sha256:51db1915de3707b5424e5dbd4719737e752ec1dd97c75af5c4bb75d2a3cb81a8", size = 41619, upload-time = "2026-03-10T05:40:13.14Z" },
+    { url = "https://files.pythonhosted.org/packages/bf/37/1b257ddee4cbf16b5003326dd032316110ae0ef5daff845aeb02b4edfc0d/fish_audio_sdk-1.4.0-py3-none-any.whl", hash = "sha256:0a17a47cffe9941a198aba679fa2fa9fe0ea75e90377e7b20afd35cf2f8ffd70", size = 44484, upload-time = "2026-10-31T05:08:02.359Z" },
 ]
 
 [[package]]
 name = "fish-audio-suite"
 version = "0.0.0"
 source = { virtual = "." }
+default-groups = ["dev", "test"]
 
 [package.dev-dependencies]
 dev = [
@@ -371,7 +372,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fastapi", specifier = ">=0.115.7" },
+    { name = "fastapi", specifier = ">=0.162.0" },
     { name = "fish-audio-suite-kit", editable = "packages/kit" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "ormsgpack", specifier = ">=1.5" },
@@ -419,7 +420,7 @@ vad = [
 
 [package.metadata]
 requires-dist = [
-    { name = "fish-audio-sdk", specifier = ">=1.0,<2" },
+    { name = "fish-audio-sdk", specifier = ">=1.4.0,<2" },
     { name = "fish-audio-suite-kit", editable = "packages/kit" },
     { name = "httpx", specifier = ">=0.28" },
     { name = "loguru", specifier = ">=0.7.3" },
@@ -924,7 +925,7 @@ wheels = [
 
 [[package]]
 name = "openrouter"
-version = "1.3.64"
+version = "1.3.115"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpcore" },
@@ -932,9 +933,9 @@ dependencies = [
     { name = "jsonpath-python" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/24/61/205781c6301a5914b30dfb8a6b6905ecca8d963ef7ce7e1fd22b893f7ded/openrouter-1.3.64.tar.gz", hash = "sha256:c2d593dce4df832d0750f44e19e07a4dd4a32e3d9086b1664d67ca7b908e373e", size = 608187, upload-time = "2026-10-17T21:50:18.916Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d3/36/27299cbc8587e95854432ef165cf7a12ca37393542626950b84fa170e35d/openrouter-1.3.115.tar.gz", hash = "sha256:64df4a6faad5bded528637b18c06c4f8789caaf76e08d1735c36fb69b8097b51", size = 625678, upload-time = "2026-11-04T05:26:42.779Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/51/32/6ad0d43657c198c5c79ca389045119505dffc3544c2b0e9a744cb529cc15/openrouter-1.3.64-py3-none-any.whl", hash = "sha256:cf978765c5c0a9337c373386f337395ec1db9d87c463181bcebdb0e94a8f46e6", size = 1319390, upload-time = "2026-10-17T21:50:17.467Z" },
+    { url = "https://files.pythonhosted.org/packages/0f/cc/3fd4de5019d35b2486bf6ad5555244ea508434d5bc2e74f71153e3d9081e/openrouter-1.3.115-py3-none-any.whl", hash = "sha256:763cb586408de0b24c47a2897c8cb6724c2184e2a568b6d7ecd1373f983c0af9", size = 1350808, upload-time = "2026-11-04T05:26:41.11Z" },
 ]
 
 [[package]]
@@ -1235,11 +1236,11 @@ wheels = [
 
 [[package]]
 name = "python-multipart"
-version = "0.0.32"
+version = "0.0.33"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/5b/42/55c32bb9b12693c092ad250a0e82edb5b31ddeda6eb772de5f308b3804ad/python_multipart-0.0.32.tar.gz", hash = "sha256:be54b7f3fa167bb83e4fcd936b887b708f4e57fe75911c02aebf53efaf8d938e", size = 46881, upload-time = "2026-06-04T16:18:58.647Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/9f/b7/15b905f6142a9a8a68f66900788da1a32e4d4254452783b37ad1eccb0506/python_multipart-0.0.33.tar.gz", hash = "sha256:b8112424a6abd162ec08d390565dd113ad699f2fe6fef3c987b8bbcbfe9e390d", size = 50499, upload-time = "2026-10-31T14:23:47.461Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/e1/04/e8135ebd1ad02c56ec633277529b2602ff99ff634be76cdba5744cf554fd/python_multipart-0.0.32-py3-none-any.whl", hash = "sha256:ff6d3f776f16878c894e52e107296ffc890e913c611b1a4ec6c44e2821fe2e23", size = 30042, upload-time = "2026-06-04T16:18:57.319Z" },
+    { url = "https://files.pythonhosted.org/packages/dd/1b/6b1b4164ec734cac911460ab599bfbe46afedd42c5c9627fe4235942c314/python_multipart-0.0.33-py3-none-any.whl", hash = "sha256:8f16c07b36add9da6b2ee87d3efcaf0a45a6de9c3d0a5dd94e9ccf7675a7bc45", size = 32253, upload-time = "2026-10-31T14:23:46.33Z" },
 ]
 
 [[package]]

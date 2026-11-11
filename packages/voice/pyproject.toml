@@ -21,7 +21,7 @@ classifiers = [
     "Topic :: Multimedia :: Sound/Audio :: Speech",
 ]
 dependencies = [
-    "fish-audio-sdk>=1.0,<2",
+    "fish-audio-sdk>=1.4.0,<2",
     "httpx>=0.28",
     "numpy>=2.0",
     "fish-audio-suite-kit>=0.1,<0.2",
