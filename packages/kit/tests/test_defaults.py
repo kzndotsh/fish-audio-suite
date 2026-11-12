@@ -284,3 +284,16 @@ def test_env_numbers_still_accept_ordinary_decimals(
 def test_the_default_asr_model_is_transcribe_1_pro() -> None:
     # Fish recommends pro and bills both models the same.
     assert SuiteDefaults().asr_model == "transcribe-1-pro"
+
+
+def test_the_default_prompt_offers_every_emotion_fish_documents_and_nothing_else() -> None:
+    import re
+
+    from fish_audio_suite_kit import official_cue
+
+    listed = re.search(r"or an action: ([a-z, ]+)\. Pick the word", DEFAULT_SYSTEM_PROMPT)
+    assert listed is not None
+    moods = listed.group(1).split(", ")
+    assert len(moods) == len(set(moods)) == 49  # every emotion Fish documents, none twice
+    assert all(official_cue(mood) == mood for mood in moods)
+    assert "do not fall back on the same few" in DEFAULT_SYSTEM_PROMPT
