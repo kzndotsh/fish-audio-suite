@@ -10,7 +10,7 @@ from contextlib import AsyncExitStack
 from fish_audio_suite_voice.aec import EchoCanceller
 from fish_audio_suite_voice.asr import asr_client
 from fish_audio_suite_voice.cancel import StopFlag, never
-from fish_audio_suite_voice.config import VoiceCliConfig
+from fish_audio_suite_voice.config import VoiceCliConfig, sink_latency
 from fish_audio_suite_voice.debug import debug, debug_enabled
 from fish_audio_suite_voice.duplex_state import Chat, DuplexContext, TurnInput
 from fish_audio_suite_voice.events import EVENTS, Bye, ExitCode, TurnEnded
@@ -131,6 +131,7 @@ async def duplex_turns(
     session: DuplexSession | None = None,
     *,
     source: TurnSource | None = None,
+    full_screen: bool = False,
 ) -> ExitCode:
     """Run turns until quit: mic, speech to text, LLM, then one TTS turn per reply.
 
@@ -149,6 +150,9 @@ async def duplex_turns(
         ``request_quit`` to a signal handler.
     source : TurnSource or None, optional
         Where each turn comes from, and the mute switch. The mic when omitted.
+    full_screen : bool, optional
+        Whether the session runs in the full-screen app, which decides an ``auto``
+        ``output_latency`` (see ``config.sink_latency``). False by default.
 
     Returns
     -------
@@ -171,7 +175,9 @@ async def duplex_turns(
     session = session or DuplexSession()
     code = ExitCode.CRASH  # replaced below unless the session raises
     try:
-        code = await _session(c, tts, device, backend, session=session, source=source)
+        code = await _session(
+            c, tts, device, backend, session=session, source=source, full_screen=full_screen
+        )
         return code
     finally:
         EVENTS.emit(Bye(code))
@@ -185,6 +191,7 @@ async def _session(
     *,
     session: DuplexSession,
     source: TurnSource | None,
+    full_screen: bool,
 ) -> ExitCode:
     async with AsyncExitStack() as stack:
         asr_http = await stack.enter_async_context(asr_client())
@@ -204,6 +211,7 @@ async def _session(
             ),
             tts=tts,
             asr_http=asr_http,
+            sink_latency=sink_latency(c.output_latency, full_screen=full_screen),
         )
         turn, history = ctx.turn_input, ctx.chat.history
         last_user = ""

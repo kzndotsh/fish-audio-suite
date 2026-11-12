@@ -367,7 +367,7 @@ The package root also exports:
 - **`EchoCanceller`:** WebRTC's mic cleanup: a high-pass filter, automatic gain and noise suppression on every frame, and AEC3 echo cancellation while the speaker plays (the `aec` extra).
 - **`DuplexSession`:** the cancel and quit flags.
 - **`ChatBackend`:** a streaming LLM interface.
-- **The tune dataclasses:** `AecTune`, `BargeTune`, `ListenTune` and `LlmTune`.
+- **The tune dataclasses:** `AecTune`, `BargeTune`, `ListenTune` and `LlmTune`. Each reads its `FISH_*` settings with `from_env()`, or takes them as arguments; built in code, a value `from_env()` would refuse raises `ValueError`.
 
 Together they are what `fish-voice` is built from, if you want to assemble your own loop.
 

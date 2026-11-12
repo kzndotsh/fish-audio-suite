@@ -33,6 +33,7 @@ from fish_audio_suite_voice.events import EVENTS, Event, Interim
 from fish_audio_suite_voice.mic import SessionMic
 from fish_audio_suite_voice.portaudio import parse_device
 from fish_audio_suite_voice.recognised import NoTurn, StreamFallback, Transcript
+from fish_audio_suite_voice.recognisers import recogniser_problem
 from fish_audio_suite_voice.streaming import stream_turn
 from fish_audio_suite_voice.tune import ListenTune, SttTune
 from fish_audio_suite_voice.turn_stream import RecogniserSettings
@@ -55,8 +56,11 @@ async def run(turns: int, device: str | int | None) -> int:
     """
     # Whatever FISH_VOICE_STT says, this script checks Deepgram.
     stt = replace(SttTune.from_env(), provider="deepgram")
-    if not stt.deepgram.key:
-        print("DEEPGRAM_API_KEY is not set (put it in .env or the environment)", file=sys.stderr)
+    settings = RecogniserSettings(stt)
+    # The app's own start-up check: the key, then the extra that installs websockets.
+    problem = recogniser_problem(settings)
+    if problem is not None:
+        print(problem, file=sys.stderr)
         return 2
     quit_requested = threading.Event()
 
@@ -70,7 +74,7 @@ async def run(turns: int, device: str | int | None) -> int:
         for number in range(1, turns + 1):
             print(f"\nturn {number}: say a sentence, then stop")
             outcome = await stream_turn(
-                settings=RecogniserSettings(stt),
+                settings=settings,
                 listen=ListenTune.from_env(),
                 mic=mic,
                 quit_requested=quit_requested,

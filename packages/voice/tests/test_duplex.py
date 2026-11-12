@@ -14,7 +14,7 @@ from voice_fakes import FakeGate, FakeSink, install_audio, make_result, set_tts
 
 from fish_audio_suite_kit import ChatMessage, FishHttpError
 from fish_audio_suite_voice.asr import AsrResult
-from fish_audio_suite_voice.config import SystemPrompt
+from fish_audio_suite_voice.config import DEFAULT_HISTORY_TURNS, SystemPrompt
 from fish_audio_suite_voice.console_sink import ConsoleSink
 from fish_audio_suite_voice.duplex import duplex_turns
 from fish_audio_suite_voice.duplex_state import DuplexContext
@@ -23,7 +23,6 @@ from fish_audio_suite_voice.heard import HeardLine, classify_transcript
 from fish_audio_suite_voice.hearing import hear_line
 from fish_audio_suite_voice.history import History, trim_history
 from fish_audio_suite_voice.latency import LatencySnapshot
-from fish_audio_suite_voice.llm_tune import DEFAULT_HISTORY_TURNS
 from fish_audio_suite_voice.portaudio import PortAudioMissingError
 from fish_audio_suite_voice.recognised import BargeIn
 from fish_audio_suite_voice.reply import (

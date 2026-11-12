@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 import httpx
 
 from fish_audio_suite_voice.cancel import never
-from fish_audio_suite_voice.config import VoiceCliConfig
+from fish_audio_suite_voice.config import SinkLatency, VoiceCliConfig
 from fish_audio_suite_voice.history import History
 from fish_audio_suite_voice.llm import ChatBackend
 from fish_audio_suite_voice.mic import Mic
@@ -130,6 +130,9 @@ class DuplexContext:
         Speaks each reply. Only the reply uses it.
     asr_http : httpx.AsyncClient
         The client Fish ASR requests share. Only hearing uses it.
+    sink_latency : {"low", "high"}
+        The playback buffer each reply's sink asks for, ``config.output_latency`` with
+        ``auto`` decided for this run by ``config.sink_latency``.
     """
 
     config: VoiceCliConfig
@@ -138,3 +141,4 @@ class DuplexContext:
     chat: Chat
     tts: FishSpeaker
     asr_http: httpx.AsyncClient
+    sink_latency: SinkLatency

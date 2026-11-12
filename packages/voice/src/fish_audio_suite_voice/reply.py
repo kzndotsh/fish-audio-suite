@@ -276,7 +276,7 @@ def _reply_sink(ctx: DuplexContext, cancel: threading.Event) -> PlaybackSink:
         device=ctx.device,
         cancel=cancel,
         aec=ctx.turn_input.mic.aec,
-        latency=c.sink_latency,
+        latency=ctx.sink_latency,
     )
 
 

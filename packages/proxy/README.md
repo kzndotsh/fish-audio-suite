@@ -161,7 +161,7 @@ Read once at startup. `GET /health` shows every setting in effect under `default
 | `FISH_PROXY_WORKERS` or `WEB_CONCURRENCY` | `1` | |
 | `FISH_PROXY_KEEP_ALIVE` | `5` | Seconds |
 | `FISH_PROXY_GRACEFUL_SHUTDOWN` | `120` | Seconds |
-| `FISH_PROXY_LIMIT_CONCURRENCY` | unset | Past this many open connections, new requests get 503. Unset or 0 means no cap |
+| `FISH_PROXY_LIMIT_CONCURRENCY` | `0` | Past this many open connections, new requests get 503. Unset or 0 means no cap |
 
 ## License
 

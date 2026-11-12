@@ -161,11 +161,10 @@ class _Runtime:
         return open_chat_backend(self.config.llm, session_id=uuid.uuid4().hex)
 
 
-def _start(c: VoiceCliConfig, *, full_screen: bool) -> _Runtime | None:
+def _start(c: VoiceCliConfig) -> _Runtime | None:
     """Check the settings and build the session's runtime, or say why not and return None."""
     if _preflight(c) is not None:
         return None
-    c = replace(c, full_screen=full_screen)
     return _Runtime(
         config=c, tts=_fish_tts(c), device=parse_device(c.device), session=DuplexSession()
     )
@@ -192,10 +191,9 @@ async def run_loop(c: VoiceCliConfig) -> int:
     to ``DuplexSession.request_quit`` on the running loop. A second Ctrl+C uses the
     default handler.
     """
-    run = _start(c, full_screen=False)
+    run = _start(c)
     if run is None:
         return ExitCode.FATAL
-    c = run.config
     console_print(
         f"fish-voice ready | tts={c.tts_model} voice={c.fish_voice_id} "
         f"asr_lang={c.fish_asr_language or 'auto'} latency={c.tts.latency} "
@@ -242,10 +240,9 @@ async def run_tui(c: VoiceCliConfig, *, debug: DebugLevel) -> int:
     log lines go to the app's log pane, not to stderr, which the screen owns. Quit is
     Ctrl+Q, since Ctrl+C is copy inside the app.
     """
-    run = _start(c, full_screen=True)
+    run = _start(c)
     if run is None:
         return ExitCode.FATAL
-    c = run.config
     # Imported here because Textual is an optional extra, checked for in ``main``.
     from fish_audio_suite_voice.tui import VoiceApp  # noqa: PLC0415 - optional extra
 
@@ -265,7 +262,7 @@ async def run_tui(c: VoiceCliConfig, *, debug: DebugLevel) -> int:
 
                 async def runner() -> int:
                     return await duplex_turns(
-                        c, run.tts, run.device, backend, run.session, source=live
+                        c, run.tts, run.device, backend, run.session, source=live, full_screen=True
                     )
 
                 info = (

@@ -21,6 +21,9 @@ from fish_audio_suite_voice.pcm import (
 from fish_audio_suite_voice.recognised import BargeIn, CarriedClip, StreamFallback
 from fish_audio_suite_voice.scorer import FrameScorer
 from fish_audio_suite_voice.tune import (
+    IMPULSE_EXTRA_VOICED,
+    IMPULSE_NOW_RATIO,
+    IMPULSE_PEAK_RATIO,
     IMPULSE_START_EXTRA,
     MAX_UTTERANCE_FRAMES,
     ListenTune,
@@ -47,13 +50,6 @@ MIN_UTTERANCE_FRAMES: Final = 4
 # One quiet frame is 30 ms, a normal dip inside a word. Ending on that dip
 # after the cap sends a cut-off sentence to ASR.
 _CAP_QUIET_FRAMES: Final = 4
-# A peak this many times the floor is a bang (a door, a desk knock) until
-# proven otherwise. Such a clip is dropped unless it holds this many voiced
-# frames beyond the minimum, and it cannot start while the current frame is
-# under this share of the peak.
-IMPULSE_PEAK_RATIO: Final = 8.0
-IMPULSE_EXTRA_VOICED: Final = 12
-IMPULSE_NOW_RATIO: Final = 0.5
 
 
 def start_hit(rms: float, min_rms: float, *, vad_speech: bool) -> bool:

@@ -198,17 +198,30 @@ def test_the_nixos_module_default_matches_the_proxy_graceful_shutdown() -> None:
 
 
 def test_voice_reads_the_environment_only_in_its_settings_layer() -> None:
-    """Settings come from ``config`` and the ``*.from_env`` tunes; the rest take arguments."""
-    allowed = {"config.py", "tune.py", "llm_tune.py", "debug.py", "log_format.py", "envfile.py"}
+    """Settings are read through ``env_read``, and only by ``config`` and the tune modules.
+
+    The rest take arguments. ``debug``, ``log_format`` and ``envfile`` are the documented
+    exceptions: the debug level, ``NO_COLOR``, and writing a dotenv file into the environment.
+    """
+    allowed = {"env_read.py", "debug.py", "log_format.py", "envfile.py"}
     offenders = [
         f"{path.relative_to(ROOT)}:{line}"
         for path in _modules(VOICE_SRC)
         if path.name not in allowed
         for line in _reads_environment(path)
     ]
-    assert not offenders, "read settings in config/tune and pass them down:\n" + "\n".join(
+    assert not offenders, "read settings through env_read and pass them down:\n" + "\n".join(
         offenders
     )
+    readers = {"config.py", "tune.py", "llm_tune.py", "tts_tune.py"}
+    callers = [
+        f"{path.relative_to(ROOT)}:{line}"
+        for path in _modules(VOICE_SRC)
+        if path.name not in readers
+        for module, line in _imports(path)
+        if module == "fish_audio_suite_voice.env_read"
+    ]
+    assert not callers, "only config and the *_tune modules read settings:\n" + "\n".join(callers)
 
 
 def _is_terminal_write(node: ast.Call | ast.Attribute) -> bool:

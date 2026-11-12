@@ -1,18 +1,26 @@
-"""``SttTune``: which recogniser hears the user, read from the environment."""
+"""The tunes: ``SttTune`` read from the environment, and every tune checked when built in code."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from operator import attrgetter
 
 import pytest
 
+from fish_audio_suite_voice.llm_tune import LlmTune
 from fish_audio_suite_voice.recognisers import RECOGNISERS
+from fish_audio_suite_voice.tts_tune import TtsTune
 from fish_audio_suite_voice.tune import (
     DEFAULT_DEEPGRAM_MODEL,
     DEFAULT_EOT_THRESHOLD,
+    IMPULSE_START_EXTRA,
     STREAMING_STT_PROVIDERS,
     STT_PROVIDERS,
+    AecTune,
+    DeepgramTune,
+    ListenTune,
     SttTune,
+    TurnTune,
 )
 
 _KEYS = (
@@ -149,3 +157,38 @@ def test_every_streaming_provider_setting_names_a_registered_recogniser() -> Non
     assert tuple(RECOGNISERS) == STREAMING_STT_PROVIDERS
     for name, spec in RECOGNISERS.items():
         assert spec.name == name
+
+
+@pytest.mark.parametrize(
+    ("build", "field"),
+    [
+        (lambda: ListenTune(vad_aggressiveness=4), "vad_aggressiveness"),
+        (lambda: ListenTune(min_voiced_frames=0), "min_voiced_frames"),
+        (lambda: ListenTune(min_speech_rms=0.0), "min_speech_rms"),
+        (lambda: TurnTune(max_extensions=3), "max_extensions"),
+        (lambda: AecTune(wet=1.5), "wet"),
+        (lambda: AecTune(noise_suppression_db=7), "noise_suppression_db"),
+        (lambda: DeepgramTune(region="us"), "region"),
+        (lambda: DeepgramTune(model="nova-3"), "model"),
+        (lambda: DeepgramTune(eot_threshold=0.4), "eot_threshold"),
+        (lambda: SttTune(eager_eot_threshold=0.1), "eager_eot_threshold"),
+        # Above the end-of-turn threshold, which caps it.
+        (lambda: SttTune(eager_eot_threshold=0.8), "eager_eot_threshold must be from 0.3 to 0.7"),
+        (lambda: LlmTune(temperature=2.5), "temperature"),
+        (lambda: LlmTune(provider_sort="fastest"), "provider_sort"),
+        (lambda: TtsTune(fade_ms=60.0), "fade_ms"),
+    ],
+)
+def test_a_tune_built_in_code_refuses_what_its_environment_would(
+    build: Callable[[], object], field: str
+) -> None:
+    with pytest.raises(ValueError, match=field):
+        build()
+
+
+def test_a_short_pre_roll_is_lengthened_to_hold_a_loud_start_as_from_env_does() -> None:
+    assert (
+        ListenTune(start_speech_frames=4, pre_pad_frames=0).pre_pad_frames
+        == 4 + IMPULSE_START_EXTRA
+    )
+    assert ListenTune(pre_pad_frames=40).pre_pad_frames == 40

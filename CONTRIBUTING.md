@@ -71,9 +71,39 @@ A new setting takes its prefix from what it controls:
 `reference_id`. Seconds are implied in env names (`FISH_VOICE_COOLDOWN`,
 `FISH_PROXY_READ_TIMEOUT`); other units are suffixed (`_FRAMES`, `_BYTES`, `_CHARS`).
 Python fields always carry the unit (`cooldown_s`). `FISH_SPEED` is the default speed,
-and the proxy multiplies a client-sent `speed` by it. `tests/test_docs_env.py` checks
-that every variable the code reads appears in the README tables and `.env.example`, and
-the reverse.
+and the proxy multiplies a client-sent `speed` by it.
+
+### Adding a voice setting
+
+A voice setting belongs to the frozen `*Tune` dataclass of the library class that uses it
+(`ListenTune`, `BargeTune`, `TtsTune`, `LlmTune` and so on), or to `VoiceCliConfig` in
+`config.py` when only the CLI uses it. It is read once, through `env_read`, which warns
+about a bad value and uses the default. Three places change:
+
+1. **The tune's module.** Add a `DEFAULT_*` constant and any bound as a named constant, the
+   field with its docstring entry, the read in `from_env()` (for example
+   `read_int("FISH_VOICE_X", DEFAULT_X, lo=_X_LO, hi=_X_HI)`, or `read_choice(...)` with a
+   tuple of the words and a `Literal` for the field), and the same bounds in
+   `__post_init__` with `check_range`, so a tune built in code is held to them too.
+2. **The package README's settings table.** One row: the default, backticked (or `on` /
+   `off`), and a two-sided range as `lo to hi`.
+3. **`.env.example`.** One commented line with the default, and the range in the comment
+   if you give one.
+
+`tests/test_docs_env.py` needs no change. It loads every setting while it records each
+reader call, and fails, naming the variable, the file and both values, when:
+
+- a variable the code reads is missing from its package README or `.env.example`, or a
+  documented variable is read by nothing;
+- something reads `os.environ` without a reader, so its default is not declared;
+- the README row or `.env.example` does not show the default the reader call declares;
+- a range the README or `.env.example` states (`lo to hi`, `0-3`, `at least`, `above`)
+  is not the one the reader call declares, or the README leaves out a two-sided range.
+
+A setting read only when another one is set needs that environment added to
+`ENVIRONMENTS` in the test; a default or range the docs can only put in words goes in
+`DEFAULT_IN_WORDS` or `RANGE_IN_WORDS` there, with the reason. A rename changes the code,
+`.env.example` and the README together, and the test fails until all three agree.
 
 ## Adding an LLM provider
 

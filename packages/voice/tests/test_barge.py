@@ -752,16 +752,19 @@ def test_with_echo_cancellation_the_aec_bleed_delay_applies(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def gate(aec_bleed: float, barge_bleed: float = DEFAULT_BLEED_DELAY_S) -> BargeGate:
-        aec = EchoCanceller(AecTune(enabled=True, bleed_delay_s=aec_bleed))
+        aec = EchoCanceller(AecTune(enabled=True))
         monkeypatch.setattr(aec, "available", lambda: True)
-        return BargeGate(mic=ScriptedMic(aec=aec), tune=BargeTune(bleed_delay_s=barge_bleed))
+        return BargeGate(
+            mic=ScriptedMic(aec=aec),
+            tune=BargeTune(bleed_delay_s=barge_bleed, aec_bleed_delay_s=aec_bleed),
+        )
 
     assert gate(0.3)._bleed_wait() == 0.3
     assert gate(1.5)._bleed_wait() == 1.5
     assert gate(0.0)._bleed_wait() == 0.0
     assert gate(0.3, barge_bleed=1.5)._bleed_wait() == 0.3
     with pytest.raises(ValueError, match="bleed_delay_s"):
-        AecTune(bleed_delay_s=-1.0)
+        BargeTune(aec_bleed_delay_s=-1.0)
 
 
 def test_the_bleed_wait_follows_whether_echo_cancellation_runs(
@@ -771,7 +774,7 @@ def test_the_bleed_wait_follows_whether_echo_cancellation_runs(
     assert (
         BargeGate(mic=ScriptedMic(aec=off), tune=BargeTune(bleed_delay_s=0.9))._bleed_wait() == 0.9
     )
-    on = EchoCanceller(AecTune(bleed_delay_s=DEFAULT_AEC_BLEED_DELAY_S))
+    on = EchoCanceller(AecTune())
     monkeypatch.setattr(on, "load", object)
     assert (
         BargeGate(mic=ScriptedMic(aec=on), tune=BargeTune(bleed_delay_s=0.9))._bleed_wait()

@@ -92,6 +92,7 @@ def make_ctx(
         ),
         tts=FishSpeaker(api_key="k", voice_id="voice"),
         asr_http=httpx.AsyncClient(),
+        sink_latency="low",
     )
 
 

@@ -127,7 +127,7 @@ class BargeGate:
 
     Notes
     -----
-    The bleed delay is ``AecTune.bleed_delay_s`` when echo cancellation is loaded and
+    The bleed delay is ``BargeTune.aec_bleed_delay_s`` when echo cancellation is loaded and
     ``BargeTune.bleed_delay_s`` otherwise, so the speaker's own voice is not taken for
     the user. The floor follows the room: it is the quiet-percentile of recent frames,
     never below ``min_rms``. It is multiplied by ``playing_gain`` while audio plays,
@@ -161,7 +161,7 @@ class BargeGate:
     def _bleed_wait(self) -> float:
         # AEC3 takes the speaker out of the mic, so the watch can start sooner with it.
         if self.aec.available():
-            return self.aec.tune.bleed_delay_s
+            return self.tune.aec_bleed_delay_s
         return self.tune.bleed_delay_s
 
     def _off_for_this_reply(self, step: Callable[[], None]) -> None:

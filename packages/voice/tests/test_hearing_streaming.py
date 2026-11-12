@@ -17,10 +17,10 @@ from fish_audio_suite_voice.events import EVENTS, Event, ExitCode, Heard
 from fish_audio_suite_voice.heard import HeardLine
 from fish_audio_suite_voice.hearing import hear_line
 from fish_audio_suite_voice.recognised import NoTurn, StreamFallback, Transcript
-from fish_audio_suite_voice.tune import DeepgramTune, SttTune
+from fish_audio_suite_voice.tune import DeepgramTune, SttProvider, SttTune
 
 
-def _ctx(provider: str = "deepgram") -> DuplexContext:
+def _ctx(provider: SttProvider = "deepgram") -> DuplexContext:
     ctx = make_ctx()
     return replace(
         ctx,

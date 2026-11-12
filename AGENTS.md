@@ -35,5 +35,5 @@ Unofficial Fish Audio toolkit, not affiliated with Fish Audio. Three distributio
 - Text, cue, scrub, error and caption logic lives in kit, and proxy and voice import kit only from its root. Never copy kit's regexes.
 - Never read `FISH_API_KEY` at import time, and never give a voice id a default.
 - Never `aclose()` the Fish websocket iterator; stop iterating and close the client.
-- A setting rename changes the code, `.env.example`, the READMEs and `tests/test_docs_env.py` together.
+- A setting rename changes the code, `.env.example` and the READMEs together; `tests/test_docs_env.py` reads the code and fails until they agree.
 - When a chunk of work is done, load the finalize skill by name (`/finalize`, [`.agents/skills/finalize`](.agents/skills/finalize)). Do not rely on auto-selection.

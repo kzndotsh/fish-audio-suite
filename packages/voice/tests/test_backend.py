@@ -10,8 +10,7 @@ import pytest
 from fish_audio_suite_voice.asr import asr_client
 from fish_audio_suite_voice.llm import ChatBackend, open_chat_backend
 from fish_audio_suite_voice.llm_tune import LlmTune
-from fish_audio_suite_voice.transports import chat_completions_url, http_client
-from fish_audio_suite_voice.tune import HTTP_KEEPALIVE_S
+from fish_audio_suite_voice.transports import HTTP_KEEPALIVE_S, chat_completions_url, http_client
 
 SSE = (
     'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n'

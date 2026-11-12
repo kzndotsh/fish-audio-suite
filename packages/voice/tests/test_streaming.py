@@ -26,7 +26,13 @@ from fish_audio_suite_voice.pcm import FRAME_BYTES
 from fish_audio_suite_voice.portaudio import PortAudioMissingError
 from fish_audio_suite_voice.recognised import BargeIn, NoTurn, StreamFallback, Transcript
 from fish_audio_suite_voice.streaming import stream_turn
-from fish_audio_suite_voice.tune import DEFAULT_BARGE_RMS, DeepgramTune, ListenTune, SttTune
+from fish_audio_suite_voice.tune import (
+    DEFAULT_BARGE_RMS,
+    DeepgramTune,
+    ListenTune,
+    SttProvider,
+    SttTune,
+)
 from fish_audio_suite_voice.turn_stream import (
     EagerTurnEnd,
     RecogniserSettings,
@@ -687,7 +693,7 @@ def test_a_turn_the_recogniser_drops_is_noise_even_after_words_arrived() -> None
 
 
 def test_fish_realtime_keeps_the_local_silence_limit_behind_fishs_own_end_of_turn() -> None:
-    def heard_tune(provider: str, frames: int) -> ListenTune:
+    def heard_tune(provider: SttProvider, frames: int) -> ListenTune:
         seen: dict[str, Any] = {}
         fake = _FakeFlux(on_audio=lambda sent: [TurnEnded("hi", 1.0, "model")] if sent else [])
         _run(

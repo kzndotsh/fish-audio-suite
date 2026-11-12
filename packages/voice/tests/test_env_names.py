@@ -9,8 +9,12 @@ from typing import Any, NamedTuple
 import pytest
 
 from fish_audio_suite_kit import DEFAULT_SYSTEM_PROMPT
-from fish_audio_suite_voice.config import VoiceCliConfig, load_config
-from fish_audio_suite_voice.llm_tune import DEFAULT_HISTORY_TURNS
+from fish_audio_suite_voice.config import (
+    DEFAULT_HISTORY_TURNS,
+    VoiceCliConfig,
+    load_config,
+    sink_latency,
+)
 
 
 class EnvCase(NamedTuple):
@@ -32,7 +36,7 @@ _CASES: list[EnvCase] = [
     EnvCase("FISH_VOICE_PRE_PAD_FRAMES", "40", 40, attrgetter("listen.pre_pad_frames")),
     EnvCase("FISH_VOICE_MIN_VOICED_FRAMES", "9", 9, attrgetter("listen.min_voiced_frames")),
     EnvCase("FISH_VOICE_BARGE_PLAYING_GAIN", "3.5", 3.5, attrgetter("barge.playing_gain")),
-    EnvCase("FISH_VOICE_AEC_BLEED_DELAY", "0.5", 0.5, attrgetter("aec.bleed_delay_s")),
+    EnvCase("FISH_VOICE_AEC_BLEED_DELAY", "0.5", 0.5, attrgetter("barge.aec_bleed_delay_s")),
     EnvCase("FISH_TTS_MOOD_LEAD", "1", True, attrgetter("mood_lead")),
     EnvCase("FISH_TTS_DROP_NARRATION", "1", True, attrgetter("drop_narration")),
     EnvCase("FISH_LLM_API_KEY", "sk-new", "sk-new", attrgetter("llm.api_key")),
@@ -74,11 +78,11 @@ def test_unset_keeps_the_defaults() -> None:
 def test_an_unknown_output_latency_is_ignored_and_auto_means_low_outside_the_screen(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    assert load_config().sink_latency == "low"  # auto
+    assert sink_latency(load_config().output_latency, full_screen=False) == "low"  # auto
     monkeypatch.setenv("FISH_VOICE_OUTPUT_LATENCY", "enormous")
     config = load_config()
     assert config.output_latency == "auto"
-    assert config.sink_latency == "low"
+    assert sink_latency(config.output_latency, full_screen=False) == "low"
 
 
 def test_cues_are_official_by_default_and_an_unknown_choice_is_ignored(

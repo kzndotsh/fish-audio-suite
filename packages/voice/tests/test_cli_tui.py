@@ -13,7 +13,7 @@ import pytest
 
 from fish_audio_suite_voice import cli
 from fish_audio_suite_voice.cli import _can_draw_a_screen, load_config, main, run_tui
-from fish_audio_suite_voice.config import VoiceCliConfig
+from fish_audio_suite_voice.config import VoiceCliConfig, sink_latency
 from fish_audio_suite_voice.debug import DebugLevel
 from fish_audio_suite_voice.events import EVENTS, ExitCode, Listening
 from fish_audio_suite_voice.inputs import LiveInput
@@ -157,9 +157,11 @@ def test_run_tui_gives_the_session_to_the_app_with_the_console_off(
     assert "voice123" in app.info
     assert "model" in app.info
     args, kwargs = calls["duplex"]
-    assert args[0] == replace(c, full_screen=True)
-    assert args[0].sink_latency == "high"  # the screen asks for a bigger buffer
-    assert c.sink_latency == "low"
+    assert args[0] == c
+    assert kwargs["full_screen"] is True
+    # The screen asks for a bigger buffer.
+    assert sink_latency(c.output_latency, full_screen=kwargs["full_screen"]) == "high"
+    assert sink_latency(c.output_latency, full_screen=False) == "low"
     assert args[4] is app.session
     assert kwargs["source"] is app.live
     # The plain display is not printing: the screen shows the session.

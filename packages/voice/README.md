@@ -496,7 +496,7 @@ Listen and interrupt. Times are approximate at 30 ms frames.
 | `FISH_VOICE_VAD` | `1` | Voice detector strictness, 0 to 3. Higher is pickier. Listening and barge-in both use it |
 | `FISH_VOICE_VAD_ENGINE` | `webrtc` | The voice detector: `webrtc`, `silero` (the `silero` extra) or a plugin as `package.module:factory`. See [Voice detectors](#voice-detectors) |
 | `FISH_VOICE_COOLDOWN` | `0.8` | Seconds after a reply before the next listen starts. A barge-in skips it |
-| `FISH_VOICE_FADE_MS` | `4` | Milliseconds of fade at each sentence start and end (a sound next to silence), so it does not click. 0 turns it off. Up to 50 |
+| `FISH_VOICE_FADE_MS` | `4` | Milliseconds of fade at each sentence start and end (a sound next to silence), so it does not click. 0 to 50, and 0 turns it off |
 | `FISH_VOICE_BLEED_DELAY` | `0.9` | Seconds the mic is ignored after a reply starts, when AEC is off or missing |
 | `FISH_VOICE_AEC` | on | `0` turns off echo cancellation. Gain and noise suppression stay |
 | `FISH_VOICE_AEC_WET` | `0.85` | While the speaker plays, the share of echo-cancelled mic mixed with the raw mic, 0 to 1 |

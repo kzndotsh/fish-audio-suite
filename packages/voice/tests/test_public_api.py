@@ -10,10 +10,10 @@ import pytest
 
 import fish_audio_suite_voice as voice
 from fish_audio_suite_voice.debug import DebugLevel, debug_level
+from fish_audio_suite_voice.env_read import read_flag
 from fish_audio_suite_voice.listen import start_hit
 from fish_audio_suite_voice.llm_tune import LlmTune
 from fish_audio_suite_voice.log_setup import configure_voice_logging
-from fish_audio_suite_voice.tune import read_flag
 
 
 def _modules() -> list[str]:

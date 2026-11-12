@@ -166,7 +166,7 @@ flowchart LR
 | `speaker` / `tts_turn` / `wire` | One Fish websocket per turn: text and flush out, audio chunks back. The speaker asks Fish for the format the sink declares (`audio_format`, PCM when a sink does not say) |
 | `audio_chain` / `loudness` | `AudioChain` fades each sentence's edges (`declick`) and then levels it; `LoudnessMatch` is one smoothed gain and a soft limiter that bring a reply's speech to a target level as it streams |
 | `playback` | Writes ~30 ms slices to the speakers on a worker thread. The sink names `FISH_VOICE_PLAYBACK` takes are in `playback_kind`, beside the settings |
-| `barge` | Watches the mic on its own thread while audio plays; loud voiced frames cancel the turn. Decides how long to wait out speaker bleed: `AecTune.bleed_delay_s` when `EchoCanceller.available()`, `BargeTune.bleed_delay_s` otherwise |
+| `barge` | Watches the mic on its own thread while audio plays; loud voiced frames cancel the turn. Decides how long to wait out speaker bleed: `BargeTune.aec_bleed_delay_s` when `EchoCanceller.available()`, `BargeTune.bleed_delay_s` otherwise |
 | `spoken` | Records only what was heard (`spoken_so_far`) for history |
 
 > [!TIP]
@@ -226,7 +226,7 @@ There is no frontend. The user-facing parts are an HTTP API (the proxy) and a te
 
 | Job | Modules |
 | --- | --- |
-| Settings | `config` (`VoiceCliConfig`, `SystemPrompt`, which alone decides whether the opening exchange is pinned), `tune` (listen, barge, turn, AEC and STT tunes, with Deepgram's own `DeepgramTune`, env readers), `tts_tune` (`TtsTune`, the Fish TTS settings `FishSpeaker` takes as one value), `llm_tune` (`LlmTune`, provider table), `playback_kind` (the sink names) |
+| Settings | `config` (`VoiceCliConfig`, the tunes plus the settings only the CLI uses; `SystemPrompt`, which alone decides whether the opening exchange is pinned; `sink_latency`, which alone decides `auto`), `tune` (listen, barge, turn, AEC and STT tunes, with Deepgram's own `DeepgramTune`, and the impulse constants the listen tune and `listen` share), `tts_tune` (`TtsTune`, the Fish TTS settings `FishSpeaker` takes as one value), `llm_tune` (`LlmTune`, provider table), `env_read` (the one family of environment readers, and `check_range`), `playback_kind` (the sink names) |
 | Duplex loop | `duplex` (the loop; it only emits), `duplex_state` (by who uses what: `TurnInput`, the mic side a turn source gets; `Chat`, the backend, `History` and a reply written ahead; `DuplexContext`, what hearing and the reply get; `CarryOver`), `hearing` (runs a listen), `heard` (judges what was heard), `recognised` (what a recogniser returns, and carried clips), `turn_check` (end-of-turn check), `reply` (answer and speak), `history`, `signals` (cancel and quit flags; quit is sticky, so a turn bound after it starts cancelled) |
 | Audio in | `pcm` (the format and its helpers), `portaudio` (the device loader), `mic` (`SessionMic`), `aec` (`EchoCanceller`), `vad`, `listen`, `barge`, `floor` |
 | Streaming STT | `turn_stream` (the `Recogniser` spec, the turn messages, the `TurnStream` interface and the shared socket), `deepgram` (Flux adapter), `fish_realtime` (Fish realtime adapter), `recognisers` (the registry), `streaming` (one turn streamed to the chosen one), `speculate` (a reply written ahead of time) |
@@ -242,7 +242,7 @@ There is no frontend. The user-facing parts are an HTTP API (the proxy) and a te
 > There is no database. Nothing is written to disk unless you ask for it: a log file per run with `FISH_VOICE_LOG_DIR`, or audio through a library `FileSink`.
 
 - **Chat history:** a list of messages in memory (`History.messages`, on the session's `Chat`). It is trimmed to `FISH_VOICE_HISTORY_TURNS` user and assistant pairs, a quarter at a time so the cached start of the prompt survives several turns, keeps the system prompt (and the default prompt's opening example) pinned, and is lost when `fish-voice` exits.
-- **Settings:** read from the environment and an optional `.env` file once at startup. The proxy keeps them in one object on `app.state.settings`.
+- **Settings:** read from the environment and an optional `.env` file once at startup. Voice keeps them in frozen tunes gathered on one `VoiceCliConfig`, and the proxy in one object on `app.state.settings`.
 - **Audio:** streamed through memory. A `FileSink` writes a file only when a library caller asks for one.
 
 ## 5. External integrations
@@ -378,7 +378,9 @@ The rules most easily broken, each with its reason. A test or a lint rule enforc
 ### Settings and secrets
 
 - **Env vars are read at startup, never at import.** `FISH_API_KEY` is read in the proxy's lifespan, the CLI, or `FishSpeaker(...)`, so importing the app and `GET /health` work with no key. There is no default voice id.
-- **Voice reads settings only in `config.load_config()` and the `*.from_env()` tunes**, once, with validation (a bad value warns and uses the default). Library classes take their settings as arguments. Three exceptions are not settings: `debug.debug_level()` reads `FISH_VOICE_DEBUG`, `log_format` checks `NO_COLOR` for each line it colours, and `envfile` writes `os.environ` when it loads a dotenv file. `test_repo_rules` fails when any other voice module reads the environment.
+- **Voice reads settings only in `config.load_config()` and the `*.from_env()` tunes, through `env_read`**, once. Each read names the variable, its default and its range or choices in one call. The policy is voice's: a bad value warns and uses the default. A call that passes `quiet=True` says so where it is read, and keeps the proxy's policy instead (the shared `FISH_*` speech numbers are clamped, and `FISH_ASR_MODEL` falls back without a word). Library classes take their settings as arguments. Three exceptions are not settings: `debug.debug_level()` reads `FISH_VOICE_DEBUG` (through kit's `env_bool`, so an unknown word is off without a warning), `log_format` checks `NO_COLOR` for each line it colours, and `envfile` writes `os.environ` when it loads a dotenv file. `test_repo_rules` fails when any other voice module reads the environment or imports `env_read`.
+- **Each group of settings a library class takes is a frozen `*Tune` dataclass with `from_env()`.** `VoiceCliConfig` gathers the tunes and holds only the settings the CLI alone uses. A tune checks its values when it is built, with the same bounds `from_env` reads with, so a library caller gets what the environment gets: `ValueError` for a value the environment would refuse (`TtsTune` clamps the Fish numbers instead, as the proxy does). A run mode is not a setting: the CLI passes `full_screen` to `duplex_turns`, and `config.sink_latency` turns `auto` into a buffer size there.
+- **The settings tables follow the code.** `tests/test_docs_env.py` loads every setting while it records each reader call, then checks that every variable read is in the README and `.env.example` and the reverse, that both show the default the code declares, and that a range they state is the code's.
 - **Key fields use `repr=False`.** Keys never reach a log or `/health`. A key goes only to its own host: each LLM provider reads only its own key variable, and the host of the final base URL decides which provider that is.
 
 ### The proxy
