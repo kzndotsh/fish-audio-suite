@@ -56,9 +56,11 @@ _WHISPER_CLOSE_RE = re.compile(whisper_tag(close=True, space=r"\s*"), re.IGNOREC
 # Holding past either would release the "<" or "[label](" in front of it.
 _URL_AT_END_RE = re.compile(r"https?://[^\s)>]*$", re.IGNORECASE)
 # A hash run at the start of a line is a heading only once a space follows.
-_OPEN_HEADING_RE = re.compile(rf"(?m)^{LINE_INDENT}{HEADING_MARK}$")
 # "* item" is a list mark only once a space follows. A lone "*" is not speech.
-_OPEN_LIST_RE = re.compile(rf"(?m)^{LINE_INDENT}{LIST_MARK}$")
+# The space is held too: "Title\n### " shaped alone loses its line, and the mood
+# word after it is then mid-sentence.
+_OPEN_HEADING_RE = re.compile(rf"(?m)^{LINE_INDENT}{HEADING_MARK}[ \t]*$")
+_OPEN_LIST_RE = re.compile(rf"(?m)^{LINE_INDENT}{LIST_MARK}[ \t]*$")
 _LT_ENTITY_RE = re.compile(r"&(?:lt|#0*60|#x0*3c);", re.IGNORECASE)
 _GT_ENTITY_RE = re.compile(r"&(?:gt|#0*62|#x0*3e);|>", re.IGNORECASE)
 # A split "<thi" is not a tag yet. The tag names that open a removed span.

@@ -9,7 +9,6 @@ unless the model is directed) and flush only after text.
 
 from __future__ import annotations
 
-import re
 import threading
 from collections.abc import AsyncIterable, AsyncIterator, Iterable, Iterator
 from dataclasses import dataclass
@@ -18,7 +17,6 @@ from typing import Any, Final
 from fishaudio import FlushEvent, TextEvent
 
 from fish_audio_suite_kit import (
-    EMPHASIS_MARKS,
     SENTENCE_AND_CLAUSE_MARKS,
     CueStyle,
     MoodCarry,
@@ -180,11 +178,6 @@ def _at_line_start(ready: str) -> bool:
     return not text or text.endswith("\n")
 
 
-# A closer split from its word ("words" then "** ") is not an operator.
-# " * " still is: the mark does not start the chunk.
-_ORPHAN_CLOSER_RE: Final = re.compile(rf"^[{re.escape(EMPHASIS_MARKS)}]+(?=\s)")
-
-
 def _glue_sentence_stop(ready: str, piece: str) -> str:
     # "(https://example.com)" is removed after "door " was already buffered.
     # The period arrives next, and Fish says "door" and then "dot".
@@ -196,16 +189,6 @@ def _glue_sentence_stop(ready: str, piece: str) -> str:
     ):
         ready = ready[:-1]
     return ready + piece
-
-
-def _drop_orphan_closer(stable: str, ready: str) -> str:
-    if not ready or not ready[-1].isalnum():
-        return stable
-    # "~~~" then a newline is a code fence, not a leftover closer.
-    # Stripping it would speak the code.
-    if stable.startswith(("~~~", "```")):
-        return stable
-    return _ORPHAN_CLOSER_RE.sub("", stable)
 
 
 def _continues_sentence(ready: str, incoming: str = "") -> bool:
@@ -223,6 +206,12 @@ def _continues_sentence(ready: str, incoming: str = "") -> bool:
     return not (incoming[:1].isspace() and ends_sentence(ready + incoming[:1]))
 
 
+def _word_gap(ch: str) -> str:
+    # A tab or a no-break space parts two words as a space does. A newline is not
+    # a gap here: it is restored as a line break.
+    return ch if ch.isspace() and ch != "\n" else ""
+
+
 def _shape_chunk(
     text: str,
     style: CueStyle,
@@ -234,13 +223,13 @@ def _shape_chunk(
     continued: bool,
 ) -> str:
     """Shape one stable stream chunk with the text already accepted around it."""
-    if not text:
+    # A gap at the start of the reply has no word before it to part.
+    if not text or (not before and all(_word_gap(ch) for ch in text)):
         return ""
-    # A chunk edge is the middle of the reply. Whole-string scrub strips
-    # that space, and cue rewrite strips it again. The newline is how the
-    # next chunk knows it starts a line.
-    lead_space = text[0] == " "
-    trail_space = text[-1] == " "
+    # A chunk edge is the middle of the reply, but the first chunk has no neighbour
+    # until the next token arrives, so scrub strips its last space or tab as the end
+    # of the reply. The newline is how the next chunk knows it starts a line.
+    trail_gap = _word_gap(text[-1])
     body = text.lstrip(" \t")
     lead_breaks = min(len(body) - len(body.lstrip("\n")), 2)
     ended_line = text.rstrip(" \t").endswith("\n")
@@ -252,14 +241,12 @@ def _shape_chunk(
         after=after[:1],
         sentence_start=sentence_start,
     )
-    if lead_space and spoken[:1] != " ":
-        spoken = f" {spoken}"
-    if trail_space and spoken[-1:] != " ":
-        spoken = f"{spoken} "
+    if trail_gap and not spoken[-1:].isspace():
+        spoken += trail_gap
     if lead_breaks and not spoken.startswith("\n"):
-        spoken = ("\n" * lead_breaks) + spoken.lstrip(" ")
+        spoken = ("\n" * lead_breaks) + spoken.lstrip(" \t")
     elif ended_line and not spoken.endswith("\n"):
-        spoken = f"{spoken.rstrip(' ')}\n"
+        spoken = spoken.rstrip(" \t") + "\n"
     return spoken
 
 
@@ -360,7 +347,6 @@ class _StreamShaper:
         )
         stable, self._raw = self._raw[:cut], self._raw[cut:]
         if stable:
-            stable = _drop_orphan_closer(stable, self._ready)
             self._accept(stable, sentence_start=sentence_start, after=self._raw[:1])
             if self._ready:
                 self._last = self._ready[-1]
@@ -372,8 +358,10 @@ class _StreamShaper:
         """Shape what is still held, send it, and yield the closing flush."""
         if not self._cancel.is_set() and self._raw:
             sentence_start = not _continues_sentence(self._sent_line + self._ready, self._raw)
-            self._raw = _drop_orphan_closer(self._raw, self._ready)
             self._accept(self._raw, sentence_start=sentence_start)
+        # Nothing follows the reply's last word, so the gap kept for one goes, as it
+        # does in the whole reply.
+        self._ready = self._ready.rstrip()
         # A span held until the end can be longer than the send window.
         # One cut would speak the first words and drop the rest.
         while self._ready and not self._cancel.is_set():

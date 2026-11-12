@@ -272,6 +272,14 @@ def test_a_continued_chunk_skips_only_its_first_sentence() -> None:
     assert normalize_cues("excited, hello", continued=True) == "excited, hello"
 
 
+def test_a_new_line_in_a_continued_chunk_starts_a_sentence() -> None:
+    # The whole reply reads a new line as a new sentence, so a chunk that continues
+    # "Line one" must not keep the mood word after its line break as speech.
+    assert normalize_cues("\nExcited, two.", lead=True, continued=True) == "\n[excited] two."
+    assert normalize_cues("\n\nExcited, two.", lead=True, continued=True) == ("\n\n[excited] two.")
+    assert normalize_cues("\nExcited, two.", continued=True) == "\nExcited, two."
+
+
 def test_a_stop_at_the_start_of_a_continued_chunk_ends_a_sentence_only_by_what_came_before() -> (
     None
 ):
@@ -298,6 +306,17 @@ def test_a_style_shapes_later_sentences_of_a_chunk_that_continues_one(mode: CueM
     )
     off = CueStyle(mode, lead=False)
     assert off.shape(chunk, sentence_start=False) == chunk
+
+
+def test_a_style_keeps_the_gap_scrub_kept_for_the_word_before_the_chunk() -> None:
+    # A closer then a tab ("*" then "\thello") left the tab at the edge, and only an
+    # edge space was put back, so "hello" joined the word before it.
+    assert CueStyle().shape("*\thello there", before="hello", line_start=False) == ("\thello there")
+    assert CueStyle(lead=True).shape("\tExcited, hi", before="Done.", line_start=False) == (
+        "\t[excited] hi"
+    )
+    # At the start of a line there is no word before the gap.
+    assert CueStyle().shape("*\thello there", before="hello\n") == "hello there"
 
 
 def test_explicit_cues_are_normalized_without_the_lead_switch() -> None:

@@ -121,7 +121,6 @@
     "CueStyle": "class(mode: CueMode = free, lead: bool = False) -> None fields=['mode', 'lead']",
     "DEFAULT_SEED_EXCHANGE": "tuple[len=1]",
     "DEFAULT_SYSTEM_PROMPT": "str",
-    "EMPHASIS_MARKS": "str='*_`~'",
     "FISH_ASR_MODEL_IDS": "tuple[len=2]",
     "FISH_ASR_PATH": "str='/v1/asr'",
     "FISH_RETRY_ATTEMPTS": "int=5",

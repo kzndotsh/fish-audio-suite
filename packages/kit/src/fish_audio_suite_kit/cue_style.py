@@ -108,7 +108,7 @@ class CueStyle:
             True when text was already sent before this chunk. Default False.
         before : str, optional
             Text already sent on this line before this chunk. Scrubbing reads its last
-            character, and cue shaping reads it to tell whether a stop at the start of
+            two characters, and cue shaping reads it to tell whether a stop at the start of
             the chunk ends a sentence.
         after : str, optional
             Text still held after this chunk. Only its first character is read.
@@ -144,12 +144,15 @@ class CueStyle:
             official=self.mode == "official",
             directed=directed,
         )
-        # Scrub keeps one edge space for a neighbour, even one it decoded (``&#160;``),
-        # and a rewritten lead would drop it.
-        if cleaned[:1] == " " and spoken[:1] != " ":
-            spoken = f" {spoken}"
-        if cleaned[-1:] == " " and spoken[-1:] != " ":
-            spoken = f"{spoken} "
+        # Scrub keeps the gap a neighbour needs (a space, even one it decoded from
+        # ``&#160;``, or the tab after a removed "*"), and cue shaping strips it. At the
+        # start of a line there is no word before it to part.
+        head = cleaned[: len(cleaned) - len(cleaned.lstrip())]
+        tail = cleaned[len(cleaned.rstrip()) :]
+        if head and not line_start and "\n" not in head and not spoken[:1].isspace():
+            spoken = head + spoken
+        if tail and "\n" not in tail and not spoken[-1:].isspace():
+            spoken += tail
         return spoken
 
     def hold_at(

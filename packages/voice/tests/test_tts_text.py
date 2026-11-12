@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from collections.abc import AsyncIterator
 
 import pytest
 from wire_helpers import (
@@ -12,6 +13,7 @@ from wire_helpers import (
 )
 
 from fish_audio_suite_kit import (
+    CueMode,
     CueStyle,
     normalize_cues,
     scrub_tts,
@@ -794,3 +796,98 @@ def test_a_mood_word_after_a_stop_in_a_continuing_chunk_is_shaped_as_the_whole_r
     sent = asyncio.run(streamed())
     assert sent == style.shape("".join(tokens))
     assert sent == (with_lead if lead else without_lead)
+
+
+def _streamed_and_whole(tokens: list[str], style: CueStyle) -> tuple[str, str]:
+    async def texts(events: AsyncIterator[object]) -> str:
+        return "".join([event.text async for event in events if isinstance(event, TextEvent)])
+
+    streamed = delta_events(tokens, threading.Event(), partial_chars=40, style=style)
+    whole = text_events(style.shape("".join(tokens)), threading.Event(), 40, style=style)
+    return asyncio.run(texts(streamed)), asyncio.run(texts(whole))
+
+
+@pytest.mark.parametrize(
+    ("tokens", "with_lead", "without_lead"),
+    [
+        (
+            ["Line one", "\nExcited, line two."],
+            "Line one\n[excited] line two.",
+            "Line one\nExcited, line two.",
+        ),
+        (
+            ["Line one", "\n\nExcited, line two."],
+            "Line one\n\n[excited] line two.",
+            "Line one\n\nExcited, line two.",
+        ),
+        (
+            ["Title\n### ", "Excited, heading."],
+            "Title\n[excited] heading.",
+            "Title\nExcited, heading.",
+        ),
+        (
+            ["Title", "\n### Excited, heading."],
+            "Title\n[excited] heading.",
+            "Title\nExcited, heading.",
+        ),
+        (
+            ["Intro\n- ", "Excited, bullet."],
+            "Intro\n[excited] bullet.",
+            "Intro\nExcited, bullet.",
+        ),
+    ],
+)
+@pytest.mark.parametrize("mode", ["official", "free"])
+@pytest.mark.parametrize("lead", [False, True])
+def test_a_mood_word_after_a_new_line_in_the_next_token_is_shaped_as_the_whole_reply(
+    tokens: list[str], with_lead: str, without_lead: str, mode: CueMode, lead: bool
+) -> None:
+    # The token after "Line one" once looked mid-sentence, so the mood word that opens
+    # the new line was spoken while the whole reply sent it as a cue.
+    streamed, whole = _streamed_and_whole(tokens, CueStyle(mode, lead=lead))
+    assert streamed == whole
+    assert streamed == (with_lead if lead else without_lead)
+
+
+@pytest.mark.parametrize(
+    ("tokens", "with_lead", "without_lead"),
+    [
+        (["Hi there\t", "friend."], "Hi there\tfriend.", "Hi there\tfriend."),
+        (["Hello.\t", "Excited, tab."], "Hello.\t[excited] tab.", "Hello.\tExcited, tab."),
+        (["Hello.\t", "Excited", ", tab."], "Hello.\t[excited] tab.", "Hello.\tExcited, tab."),
+        (["Word ", "nbsp here."], "Word nbsp here.", "Word nbsp here."),
+    ],
+)
+@pytest.mark.parametrize("lead", [False, True])
+def test_a_token_that_ends_in_a_tab_keeps_its_words_apart(
+    tokens: list[str], with_lead: str, without_lead: str, lead: bool
+) -> None:
+    # Only a space at a token's edge was kept, so "there\t" + "friend" became one word.
+    streamed, whole = _streamed_and_whole(tokens, CueStyle(lead=lead))
+    assert streamed == whole
+    assert streamed == (with_lead if lead else without_lead)
+
+
+@pytest.mark.parametrize(
+    ("tokens", "expected"),
+    [
+        (["**", "Note", ":**", " this is it."], "Note: this is it."),
+        (["**Note:", "**", " ok."], "Note: ok."),
+        (["**", "Hello", ".**", " Yes."], "Hello. Yes."),
+        (["**", "Really", "?**", " Yes."], "Really? Yes."),
+        (["Hi ", "**Note**", ": ok."], "Hi Note: ok."),
+        (["*", "Wow", "!*", " ok."], "Wow! ok."),
+        (["End on bold **h", "ere**."], "End on bold here."),
+        (["Done\n**Exc", "ited,** bold lead."], "Done\nExcited, bold lead."),
+        (['Quote "*h', 'i*." done.'], 'Quote "hi." done.'),
+    ],
+)
+@pytest.mark.parametrize("mode", ["official", "free", "directed"])
+def test_an_emphasis_mark_cut_from_its_word_is_not_spoken(
+    tokens: list[str], expected: str, mode: CueMode
+) -> None:
+    # A closer after a stop ("Note:" then "**") or an opener before a cut word ("**"
+    # then "h") was read without the text beside it, so Fish was sent the stars.
+    streamed, whole = _streamed_and_whole(tokens, CueStyle(mode))
+    assert streamed == whole
+    assert streamed == expected

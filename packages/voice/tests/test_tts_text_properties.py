@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from collections.abc import AsyncIterator
 from itertools import pairwise
 from typing import Any
 
@@ -11,8 +12,8 @@ from fishaudio import FlushEvent, TextEvent
 from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 
-from fish_audio_suite_kit import CueStyle, ends_sentence
-from fish_audio_suite_voice.tts_text import delta_events
+from fish_audio_suite_kit import CueMode, CueStyle, ends_sentence
+from fish_audio_suite_voice.tts_text import delta_events, text_events
 
 # Pieces that exercise the scrubber's state machine: spans that hold text until
 # they close, line and sentence starts, cues, and the break characters it folds.
@@ -213,3 +214,65 @@ def test_a_stop_split_from_its_abbreviation_is_not_a_sentence_end() -> None:
     first_flush = events.index(("flush", ""))
     spoken_before = "".join(text for kind, text in events[:first_flush] if kind == "text")
     assert "Smith" in spoken_before
+
+
+# Prose as a model writes it: words, some wrapped in emphasis with a colon or comma
+# inside or outside the marks, an optional mood lead, sentences joined by a space, a
+# tab or a line break. Gaps between words are spaces or tabs.
+_WORD = st.sampled_from(("hello", "there", "friend", "Note", "today", "works"))
+
+
+@st.composite
+def _phrase(draw: st.DrawFn) -> str:
+    word = draw(_WORD)
+    mark = draw(st.sampled_from(("", "", "*", "**")))
+    punct = draw(st.sampled_from(("", "", ":", ",")))
+    if draw(st.booleans()):
+        return f"{mark}{word}{punct}{mark}"
+    return f"{mark}{word}{mark}{punct}"
+
+
+@st.composite
+def _sentence(draw: st.DrawFn) -> str:
+    lead = draw(st.sampled_from(("", "", "Excited, ", "Happy, ", "Calm, ")))
+    phrases = draw(st.lists(_phrase(), min_size=1, max_size=4))
+    body = phrases[0]
+    for phrase in phrases[1:]:
+        body += draw(st.sampled_from((" ", " ", "\t"))) + phrase
+    return lead + body + draw(st.sampled_from((".", "!", "?")))
+
+
+@st.composite
+def _prose_streams(draw: st.DrawFn) -> list[str]:
+    sentences = draw(st.lists(_sentence(), min_size=1, max_size=3))
+    text = sentences[0]
+    for sentence in sentences[1:]:
+        text += draw(st.sampled_from((" ", "\t", "\n", "\n\n"))) + sentence
+    cuts = sorted(draw(st.sets(st.integers(0, len(text)), max_size=10)))
+    bounds = [0, *cuts, len(text)]
+    return [text[a:b] for a, b in pairwise(bounds)]
+
+
+@_SETTINGS
+@given(
+    tokens=_prose_streams(),
+    partial=st.integers(min_value=20, max_value=300),
+    mode=st.sampled_from(("official", "free", "directed")),
+    lead=_flags,
+)
+def test_streamed_prose_sends_the_words_and_cues_the_whole_reply_sends(
+    tokens: list[str], partial: int, mode: CueMode, lead: bool
+) -> None:
+    style = CueStyle(mode, lead=lead)
+
+    async def texts(events: AsyncIterator[Any]) -> str:
+        return "".join([e.text async for e in events if isinstance(e, TextEvent)])
+
+    streamed = asyncio.run(
+        texts(delta_events(tokens, threading.Event(), partial_chars=partial, style=style))
+    )
+    whole = asyncio.run(
+        texts(text_events(style.shape("".join(tokens)), threading.Event(), partial, style=style))
+    )
+    # Fish reads any run of spaces, tabs and line breaks as one gap.
+    assert streamed.split() == whole.split()

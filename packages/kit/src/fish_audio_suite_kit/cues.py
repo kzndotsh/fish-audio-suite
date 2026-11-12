@@ -600,6 +600,10 @@ def normalize_cues(
         if not part or part.isspace():
             out.append(part)
             context = ""
+            # A new line starts a sentence even when the chunk continued one, as it does
+            # in the whole reply.
+            if "\n" in part:
+                allow_lead = lead
             continue
         spoken: list[str] = []
         for sent, sep in _sentence_spans(part, context):
