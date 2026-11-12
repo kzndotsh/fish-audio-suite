@@ -171,19 +171,25 @@ flowchart LR
 ```
 POST /v1/audio/speech (OpenAI JSON)
   → body_limit.py: cap the body before any route reads it
-  → server.py: client key check (FISH_PROXY_API_KEYS)
-  → request_fields.py / speech.py: map OpenAI fields onto a Fish TTS body
-    and scrub the text with the kit
+  → server.py: client key check (FISH_PROXY_API_KEYS), a route dependency
+  → speech.py read_speech: parse the body, resolve the model once, shape the
+    text with its CueStyle, and decide junk
   → junk text? return local silence (audio.py), never call Fish
+  → no FISH_API_KEY? 503
+  → speech.py fish_tts: the Fish TTS body (JSON, or MessagePack with clips)
   → upstream.py fish_send: shared httpx client, bounded retry with Retry-After
   → stream Fish's audio back to the client as it arrives
 
 POST /v1/audio/transcriptions (multipart or JSON)
-  → transcribe.py: parse the upload and options
-  → Fish /v1/asr
-  → kit scrub_asr, phrases.py: group word timings into caption cues
-  → json | text | verbose_json | srt | vtt
+  → transcribe.py read_asr_request: parse the upload, options and reply format
+  → no FISH_API_KEY? 503
+  → transcribe.py fish_asr_request: model, pro-field gating, language hint
+  → upstream.py fish_send → Fish /v1/asr
+  → transcribe.py transcription_reply: kit clean_transcript, phrases.py
+    caption cues → json | text | verbose_json | srt | vtt
 ```
+
+Every refusal on the way is raised as a `ProxyError` (`errors.py`); the app's one exception handler turns it into the OpenAI error envelope.
 
 ## 3. Core components
 
@@ -201,7 +207,7 @@ There is no frontend. The user-facing parts are an HTTP API (the proxy) and a te
 - **Description:** an OpenAI Audio API in front of Fish Audio, so apps that speak OpenAI's TTS and speech-to-text APIs can use Fish voices without code changes. It maps model names (`tts-1`, `whisper-1`) onto Fish models, scrubs text, retries politely and streams audio back.
 - **Technologies:** FastAPI, uvicorn (with uvloop and httptools), httpx, ormsgpack (reference-audio bodies), python-multipart.
 - **Deployment:** `fish-audio-suite-proxy` on `127.0.0.1:8849` by default; the Docker image; or the NixOS module (`nixosModules.default`, a native systemd service or an OCI container).
-- **Key modules:** `server` (app, lifespan, routes), `settings` (one validated settings object, read once), `upstream` (`fish_send` with retry), `speech`, `transcribe`, `phrases`, `audio`, `request_fields`, `models`, `errors`, `body_limit`.
+- **Key modules:** `server` (app, lifespan, routes, client key and Fish key checks), `settings` (one validated settings object, read once; `/health` is derived from it), `speech` (a speech request end to end), `transcribe` (a transcription end to end), `upstream` (`fish_send` with retry, and the trace and model headers), `phrases` (Fish word segments grouped into caption cues), `request_body` (the JSON object, loose fields and base64 audio of a request), `audio` (the formats a client may ask for, and silence), `models` (model ids and aliases), `errors` (`ProxyError` and the error envelope), `body_limit`.
 
 ### 3.3. fish-audio-suite-voice
 
@@ -304,7 +310,7 @@ The rules most easily broken, each with its reason. A test or a lint rule enforc
 - **Three distributions only: `fish-audio-suite-kit`, `-proxy` and `-voice`.** The CLI stays in voice. There is no fourth package, no OpenTelemetry SDK (kit parses W3C trace headers itself; FastAPI 0.142+ pulls in `opentelemetry-api`, which does nothing unless a deployment installs the SDK) and no VAD package of our own (voice wraps `webrtcvad-wheels` or `pysilero-vad` behind its `Vad` interface).
 - **Shared logic lives in kit.** Scrubbing, cues, sentence cuts, W3C parsing, the Fish error shape and captions are written once there. Proxy and voice must not copy those regexes, and they import kit only through its root, never a submodule or a private module. `test_repo_rules` fails on a submodule import.
 - **Kit is pure text.** No network, no audio, no HTTP client, no `fishaudio`, no OpenTelemetry. `dependencies = []` keeps that honest, and a test checks that its sources import only the standard library.
-- **Imports point one way.** The import-linter contracts in `pyproject.toml` (`just layers`, run by `just check` and CI) encode the layering. Kit imports neither program, and the proxy and voice never import each other (`kit-is-the-base`, `apps-are-independent`), so what both need moves to kit. Inside voice, `voice-direction` lists the modules in rows: the CLI, then the session and its displays, then a turn, capture and speech, adapters, and settings at the bottom. Inside kit, `kit-layers` does the same: the cue style, stream holds and the junk gate, then scrubbing and dialogue, cues, sentence cuts and the catalog, and the character sets at the bottom. A module may import its own row and the rows below it, never a row above. A new module goes in the lowest row it fits.
+- **Imports point one way.** The import-linter contracts in `pyproject.toml` (`just layers`, run by `just check` and CI) encode the layering. Kit imports neither program, and the proxy and voice never import each other (`kit-is-the-base`, `apps-are-independent`), so what both need moves to kit. In the proxy, `settings`, `audio` and `models` never import the HTTP layer (`proxy-settings-are-plain`), so reading settings needs no FastAPI. Inside voice, `voice-direction` lists the modules in rows: the CLI, then the session and its displays, then a turn, capture and speech, adapters, and settings at the bottom. Inside kit, `kit-layers` does the same: the cue style, stream holds and the junk gate, then scrubbing and dialogue, cues, sentence cuts and the catalog, and the character sets at the bottom. A module may import its own row and the rows below it, never a row above. A new module goes in the lowest row it fits.
 
 ### Listening
 

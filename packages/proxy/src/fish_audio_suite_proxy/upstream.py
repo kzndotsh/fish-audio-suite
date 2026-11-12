@@ -1,4 +1,4 @@
-"""Send one request to Fish with a bounded, polite retry."""
+"""Send one request to Fish with a bounded, polite retry, and the headers every call carries."""
 
 from __future__ import annotations
 
@@ -11,20 +11,21 @@ from dataclasses import dataclass
 from typing import Final, Protocol
 
 import httpx
-from fastapi.responses import JSONResponse
 
 from fish_audio_suite_kit import (
     FISH_RETRY_ATTEMPTS,
-    FishErrorBody,
     FishHttpError,
+    cut_at_control,
+    ensure_trace_headers,
     fish_backoff_s,
+    fish_request_id,
     parse_fish_error,
     retry_after_s,
     utf8_text,
 )
-from fish_audio_suite_proxy.errors import json_error, json_from_call_failure, provider_json_error
+from fish_audio_suite_proxy.errors import FishProviderError, ProxyError
 
-__all__ = ["FishFiles", "FishHttp", "RetryPolicy", "fish_send"]
+__all__ = ["RetryPolicy", "fish_send", "traced_model_headers"]
 
 log: Final[logging.Logger] = logging.getLogger("fish-audio-suite-proxy")
 _BODY_UNREADABLE: Final = "Fish answered with status {code} but the error body could not be read"
@@ -81,7 +82,12 @@ _DEADLINE_STATUS = 504
 _DEADLINE_MESSAGE = "Fish did not answer before the retry deadline"
 
 
-def _transport_error(exc: httpx.RequestError) -> FishHttpError:
+def _fixed(err: FishHttpError) -> ProxyError:
+    # Fish never answered, so this is the proxy's own error, not a provider error.
+    return ProxyError(err.status, err.message)
+
+
+def _transport_error(exc: httpx.RequestError) -> ProxyError:
     """Classify a failed Fish request.
 
     Parameters
@@ -91,28 +97,25 @@ def _transport_error(exc: httpx.RequestError) -> FishHttpError:
 
     Returns
     -------
-    FishHttpError
-        ``FishTimeoutError`` (504) for a timeout and ``FishUpstreamError`` (502)
-        with the fixed unreachable message otherwise. The exception's own text
-        can name hosts, addresses or errno values, so it is logged here and
-        never sent to the client.
+    ProxyError
+        504 with the kit's fixed timeout message for a timeout, 502 with the fixed
+        unreachable message otherwise. The exception's own text can name hosts,
+        addresses or errno values, so it is logged here and never sent to the client.
     """
     if isinstance(exc, httpx.TimeoutException):
-        return FishHttpError.for_timeout()
+        return _fixed(FishHttpError.for_timeout())
     log.warning("fish transport error: %s", exc)
-    return FishHttpError.for_unreachable()
+    return _fixed(FishHttpError.for_unreachable())
 
 
 # Fish ids are short. A long or multi-line value is cut so it cannot fill a log line.
 _ID_MAX_CHARS: Final = 128
 
 
-def _short_id(value: object) -> str:
+def _short_code(value: object) -> str:
     if isinstance(value, bool) or not isinstance(value, (str, int)):
         return ""
-    text = str(value).strip()
-    cut = next((i for i, ch in enumerate(text) if ord(ch) < 32), len(text))
-    return utf8_text(text[:cut][:_ID_MAX_CHARS].strip())
+    return utf8_text(cut_at_control(str(value).strip())[:_ID_MAX_CHARS].strip())
 
 
 def _fish_error_ids(body: bytes, headers: Mapping[str, str]) -> dict[str, str]:
@@ -125,11 +128,10 @@ def _fish_error_ids(body: bytes, headers: Mapping[str, str]) -> dict[str, str]:
         data: object = jsonlib.loads(body) if body else None
     except (ValueError, UnicodeDecodeError):
         data = None
-    found = data if isinstance(data, dict) else {}
     ids: dict[str, str] = {}
-    if code := _short_id(found.get("code")):
+    if isinstance(data, dict) and (code := _short_code(data.get("code"))):
         ids["provider_code"] = code
-    if request_id := _short_id(found.get("request_id")) or _short_id(headers.get("x-request-id")):
+    if request_id := fish_request_id(data, headers):
         ids["request_id"] = request_id
     return ids
 
@@ -143,7 +145,7 @@ def _log_fish_error(status: int, ids: Mapping[str, str]) -> None:
     )
 
 
-async def _closed_error(upstream: httpx.Response) -> tuple[JSONResponse, FishHttpError]:
+async def _closed_error(upstream: httpx.Response) -> tuple[FishProviderError, FishHttpError]:
     """Read and close a failed Fish response.
 
     Parameters
@@ -153,9 +155,9 @@ async def _closed_error(upstream: httpx.Response) -> tuple[JSONResponse, FishHtt
 
     Returns
     -------
-    tuple of JSONResponse and FishHttpError
-        The OpenAI error for the client and the typed failure the retry loop
-        reads (``retryable`` and ``retry_after``).
+    tuple of FishProviderError and FishHttpError
+        The error for the client and the typed failure the retry loop reads
+        (``retryable`` and ``retry_after``).
     """
     # The body read can fail on a dropped connection. The response is closed
     # either way, and the failure is classified like any other transport error.
@@ -175,7 +177,7 @@ async def _closed_error(upstream: httpx.Response) -> tuple[JSONResponse, FishHtt
             _BODY_UNREADABLE.format(code=code),
             retry_after=retry_after_s(upstream.headers),
         )
-        return provider_json_error(FishErrorBody(code, failure.message), metadata=ids), failure
+        return FishProviderError(code, failure.message, metadata=ids), failure
     finally:
         await upstream.aclose()
     detail = parse_fish_error(upstream.status_code, body)
@@ -187,7 +189,7 @@ async def _closed_error(upstream: httpx.Response) -> tuple[JSONResponse, FishHtt
         detail.message,
         retry_after=retry_after_s(upstream.headers),
     )
-    return provider_json_error(detail, metadata=ids), failure
+    return FishProviderError(detail.status, detail.message, metadata=ids), failure
 
 
 def _set_read_timeout(request: httpx.Request, seconds: float) -> None:
@@ -219,7 +221,7 @@ async def fish_send(
     policy: RetryPolicy | None = None,
     is_disconnected: Callable[[], Awaitable[bool]] | None = None,
     read_timeout_s: float | None = None,
-) -> httpx.Response | JSONResponse:
+) -> httpx.Response:
     """Send a request to Fish, retrying only what is safe to repeat.
 
     Parameters
@@ -254,8 +256,16 @@ async def fish_send(
 
     Returns
     -------
-    httpx.Response or JSONResponse
-        A 2xx response, or the OpenAI error for the last failure.
+    httpx.Response
+        A 2xx response.
+
+    Raises
+    ------
+    FishProviderError
+        Fish's own error for the last failure, with its status and ids.
+    ProxyError
+        502 or 504 with a fixed message when Fish was unreachable or slow, 504
+        at the retry deadline, and 499 when the client hung up during a pause.
 
     Notes
     -----
@@ -267,7 +277,7 @@ async def fish_send(
     """
     policy = policy or RetryPolicy()
     started = time.monotonic()
-    last_error: JSONResponse | None = None
+    last_error: ProxyError | None = None
     for attempt in range(policy.attempts):
         retry_after: float | None = None
         try:
@@ -279,13 +289,13 @@ async def fish_send(
                 if read_timeout_s is not None:
                     _set_read_timeout(request, read_timeout_s)
                 upstream = await client.send(request, stream=stream)
-        except TimeoutError:
+        except TimeoutError as exc:
             # Fish may already be working on it, so it is not sent again.
-            return json_error(_DEADLINE_STATUS, _DEADLINE_MESSAGE)
+            raise ProxyError(_DEADLINE_STATUS, _DEADLINE_MESSAGE) from exc
         except httpx.RequestError as exc:
-            last_error = json_from_call_failure(_transport_error(exc))
+            last_error = _transport_error(exc)
             if not isinstance(exc, _RETRY_TRANSPORT):
-                return last_error
+                raise last_error from exc
         else:
             # Only 2xx is audio. A 3xx redirect body streamed through would
             # reach the client as a 200 file with no speech in it.
@@ -294,10 +304,10 @@ async def fish_send(
             try:
                 async with asyncio.timeout(_remaining(policy, started)):
                     last_error, failure = await _closed_error(upstream)
-            except TimeoutError:
-                return json_error(_DEADLINE_STATUS, _DEADLINE_MESSAGE)
+            except TimeoutError as exc:
+                raise ProxyError(_DEADLINE_STATUS, _DEADLINE_MESSAGE) from exc
             if not failure.retryable:
-                return last_error
+                raise last_error
             retry_after = failure.retry_after
             log.warning(
                 "fish retry status=%s attempt=%s/%s",
@@ -311,6 +321,24 @@ async def fish_send(
         if policy.deadline_s and time.monotonic() - started + pause > policy.deadline_s:
             break
         if is_disconnected is not None and await is_disconnected():
-            return json_error(_CLIENT_CLOSED, "client closed the request")
+            raise ProxyError(_CLIENT_CLOSED, "client closed the request")
         await asyncio.sleep(pause)
-    return last_error or json_from_call_failure(FishHttpError.for_unreachable())
+    raise last_error or _fixed(FishHttpError.for_unreachable())
+
+
+def traced_model_headers(model: str, incoming: Mapping[str, str]) -> dict[str, str]:
+    """Fish ``model`` header plus the trace headers for this request.
+
+    Parameters
+    ----------
+    model : str
+        Already resolved Fish model id.
+    incoming : Mapping
+        Client headers. A valid ``traceparent`` is forwarded; otherwise one is minted.
+
+    Returns
+    -------
+    dict
+        Sent on TTS and ASR upstream calls.
+    """
+    return {"model": model, **ensure_trace_headers(incoming)}

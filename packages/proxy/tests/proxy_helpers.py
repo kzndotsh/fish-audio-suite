@@ -6,19 +6,13 @@ from unittest.mock import AsyncMock
 
 import httpx
 import pytest
-from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 
 from fish_audio_suite_kit import AsrBody
+from fish_audio_suite_proxy.errors import ProxyError
 from fish_audio_suite_proxy.server import app
 from fish_audio_suite_proxy.speech import PackedTts
 from fish_audio_suite_proxy.upstream import FishHttp, RetryPolicy, fish_send
-
-
-def not_response[T](value: T | JSONResponse) -> T:
-    """Narrow a ``value | JSONResponse`` result to ``value``, failing if it was an error."""
-    assert not isinstance(value, JSONResponse)
-    return value
 
 
 class FakeUpstream:
@@ -86,14 +80,18 @@ def run_fish_send(
     client = FakeFishClient(outcomes)
 
     async def run() -> Any:
-        return await fish_send(
-            cast(FishHttp, client),
-            stream=False,
-            policy=policy,
-            is_disconnected=is_disconnected,
-            method="POST",
-            url="https://api.fish.audio/v1/tts",
-        )
+        try:
+            return await fish_send(
+                cast(FishHttp, client),
+                stream=False,
+                policy=policy,
+                is_disconnected=is_disconnected,
+                method="POST",
+                url="https://api.fish.audio/v1/tts",
+            )
+        except ProxyError as exc:
+            # The app's handler sends exactly this response for the raised error.
+            return exc.response()
 
     return asyncio.run(run()), client, sleeps
 

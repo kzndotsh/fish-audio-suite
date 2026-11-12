@@ -74,7 +74,7 @@ The same fields are under Admin, Settings, Audio.
 | Transcription `response_format` other than `json`, `text`, `verbose_json`, `srt`, `vtt` | 400, never a different format |
 | `verbose_json` and word timestamps | `segments` always: the phrase cues above, each with an `id`. With `timestamp_granularities=word`, `words` lists every Fish word segment (`word`, `start`, `end`). `language` is the language name in lowercase, as OpenAI sends it (`english`), else Fish's code, else the hint sent |
 | Transcription body | Multipart `file`, or JSON `input_audio` (base64, optional `data:` URI) |
-| `references`, `input_references` | Decoded and sent as MessagePack. Without clips the body is JSON |
+| `references`, `input_references` | Decoded and sent as MessagePack. Without clips the body is JSON. In `input_references`, an audio part after the first good clip that fails to decode is skipped; a first part that fails is a 400 |
 | `seed`, `use_memory_cache` | Forwarded (`on` / `off`) |
 | `traceparent`, `tracestate` | Forwarded. A sampled `traceparent` is minted when the client omits one |
 
@@ -124,7 +124,7 @@ Fish now serves OpenAI-compatible, OpenRouter-compatible and ElevenLabs-compatib
 
 ## Settings
 
-Read once at startup. `GET /health` shows the values in effect under `defaults`, never a key. The TTS defaults are `tts_model`, `tts_format` and `tts_speed`.
+Read once at startup. `GET /health` shows every setting in effect under `defaults`, except the client keys and `FISH_BASE`, and never a key. The TTS defaults are `tts_model`, `tts_format` and `tts_speed`.
 
 | Variable | Default | Notes |
 | --- | --- | --- |

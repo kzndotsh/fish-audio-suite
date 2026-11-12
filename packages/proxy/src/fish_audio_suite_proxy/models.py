@@ -5,10 +5,10 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Final
 
-from fish_audio_suite_kit import FISH_TTS_MODEL_IDS, normalize_tts_model
+from fish_audio_suite_kit import FISH_TTS_MODEL_IDS, is_header_safe, normalize_tts_model
 
 __all__ = [
-    "OPENAI_TTS_NAMES",
+    "PRO_ASR_MODEL",
     "catalog_ids",
     "default_tts_aliases",
     "parse_aliases",
@@ -18,9 +18,11 @@ __all__ = [
 
 # OpenAI names clients send by default. Each maps to the configured TTS model,
 # and FISH_PROXY_TTS_ALIASES adds or replaces entries.
-OPENAI_TTS_NAMES: Final = ("tts-1", "tts-1-hd", "gpt-4o-mini-tts")
+_OPENAI_TTS_NAMES: Final = ("tts-1", "tts-1-hd", "gpt-4o-mini-tts")
 
-_ASR_NATIVE = ("transcribe-1", "transcribe-1-pro")
+PRO_ASR_MODEL: Final = "transcribe-1-pro"
+"""The ASR model that takes speaker and audio-event options, and the fallback ASR id."""
+_ASR_NATIVE = ("transcribe-1", PRO_ASR_MODEL)
 # Accepted on the transcription route. It is not a Fish id, so it takes the default.
 _ASR_ALIASES = ("whisper-1",)
 _PREFIX = "fish-audio/"
@@ -39,7 +41,7 @@ def default_tts_aliases(default_model: str) -> dict[str, str]:
     dict
         Lowercase alias to Fish model id.
     """
-    return dict.fromkeys(OPENAI_TTS_NAMES, default_model)
+    return dict.fromkeys(_OPENAI_TTS_NAMES, default_model)
 
 
 def parse_aliases(raw: str) -> dict[str, str]:
@@ -79,11 +81,7 @@ def _model_name(model: object, default: str) -> str:
     return default
 
 
-def resolve_tts_model(
-    model: object,
-    default: str,
-    aliases: Mapping[str, str] | None = None,
-) -> str:
+def resolve_tts_model(model: object, default: str, aliases: Mapping[str, str]) -> str:
     """Map an OpenAI or prefixed model id onto a Fish TTS model.
 
     Parameters
@@ -92,8 +90,8 @@ def resolve_tts_model(
         Client ``model``. Non-strings use ``default``.
     default : str
         Used when ``model`` is missing.
-    aliases : Mapping or None, optional
-        Alias table. ``None`` uses the OpenAI names mapped to ``default``.
+    aliases : Mapping
+        Lowercase alias to Fish model id.
 
     Returns
     -------
@@ -103,9 +101,8 @@ def resolve_tts_model(
         single-token id is returned as written. An id with whitespace or a
         control character uses ``default``.
     """
-    table = default_tts_aliases(default) if aliases is None else aliases
     raw = _native_model_id(_model_name(model, default))
-    target = table.get(raw.lower())
+    target = aliases.get(raw.lower())
     if target is not None:
         # A target written as fish-audio/<id> is the same model as <id>.
         return normalize_tts_model(_native_model_id(target))
@@ -118,9 +115,7 @@ def _header_model(text: str) -> str:
     # A newline in the model header is illegal. h11 raises and the
     # transcription request never leaves.
     token = text.strip()
-    if token and all(32 < ord(ch) < 127 and not ch.isspace() for ch in token):
-        return token
-    return ""
+    return token if is_header_safe(token, token=True) else ""
 
 
 def resolve_asr_model(model: object, default: str) -> str:
@@ -140,7 +135,7 @@ def resolve_asr_model(model: object, default: str) -> str:
         The client's native id, lowercased. Otherwise the default: lowercased
         when native, or as written when it is a single header token, so a
         custom ASR model set in the environment still reaches Fish. A blank or
-        illegal default becomes ``transcribe-1-pro``.
+        illegal default becomes ``PRO_ASR_MODEL``.
     """
     chosen = _header_model(_native_model_id(_model_name(model, default))).lower()
     if chosen in _ASR_NATIVE:
@@ -151,16 +146,16 @@ def resolve_asr_model(model: object, default: str) -> str:
     custom = _header_model(default)
     if custom:
         return custom
-    return "transcribe-1-pro"
+    return PRO_ASR_MODEL
 
 
-def catalog_ids(aliases: Mapping[str, str] | None = None) -> list[str]:
+def catalog_ids(aliases: Mapping[str, str]) -> list[str]:
     """Model ids advertised on ``GET /v1/models``.
 
     Parameters
     ----------
-    aliases : Mapping or None, optional
-        TTS alias table. ``None`` lists the OpenAI names.
+    aliases : Mapping
+        TTS alias table. Its names are listed.
 
     Returns
     -------
@@ -168,8 +163,7 @@ def catalog_ids(aliases: Mapping[str, str] | None = None) -> list[str]:
         Native Fish ids, the accepted aliases, and the native ids prefixed
         with ``fish-audio/``. Every id listed here is accepted on a route.
     """
-    alias_names = OPENAI_TTS_NAMES if aliases is None else tuple(aliases)
     native = [*FISH_TTS_MODEL_IDS, *_ASR_NATIVE]
     prefixed = [f"{_PREFIX}{name}" for name in native]
     # An alias can share a name with a native id. Each id is listed once.
-    return list(dict.fromkeys([*native, *alias_names, *_ASR_ALIASES, *prefixed]))
+    return list(dict.fromkeys([*native, *aliases, *_ASR_ALIASES, *prefixed]))

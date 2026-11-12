@@ -292,6 +292,25 @@ layers = [
 ]
 
 [[tool.importlinter.contracts]]
+id = "proxy-settings-are-plain"
+name = "proxy settings, formats and model ids never import the HTTP layer"
+type = "forbidden"
+source_modules = [
+    "fish_audio_suite_proxy.settings",
+    "fish_audio_suite_proxy.audio",
+    "fish_audio_suite_proxy.models",
+]
+forbidden_modules = [
+    "fish_audio_suite_proxy.errors",
+    "fish_audio_suite_proxy.request_body",
+    "fish_audio_suite_proxy.body_limit",
+    "fish_audio_suite_proxy.upstream",
+    "fish_audio_suite_proxy.speech",
+    "fish_audio_suite_proxy.transcribe",
+    "fish_audio_suite_proxy.server",
+]
+
+[[tool.importlinter.contracts]]
 id = "voice-direction"
 name = "voice imports point down: the CLI, the session and displays, a turn, capture and speech, adapters, settings"
 type = "layers"

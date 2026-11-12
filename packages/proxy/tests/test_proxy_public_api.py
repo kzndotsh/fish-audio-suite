@@ -13,30 +13,29 @@ import httpx
 import pytest
 from starlette.requests import Request
 
-from fish_audio_suite_kit import AsrFormat, FishErrorBody
+from fish_audio_suite_kit import AsrFormat
 from fish_audio_suite_proxy.audio import (
     SUPPORTED_FORMATS,
-    AudioDecodeError,
     ClientFormat,
-    decode_audio_b64,
+    client_format,
     fish_audio_format,
 )
 from fish_audio_suite_proxy.errors import (
+    FishProviderError,
     ProxyError,
-    provider_json_error,
     proxy_error_response,
 )
-from fish_audio_suite_proxy.request_fields import read_format
+from fish_audio_suite_proxy.request_body import decode_audio_b64
 from fish_audio_suite_proxy.settings import ProxySettings
 from fish_audio_suite_proxy.speech import (
-    ClipError,
     PackedTts,
     SpeechControls,
 )
 from fish_audio_suite_proxy.transcribe import (
     ASR_FORMATS,
     InboundAsr,
-    read_asr_format,
+    ProAsrOptions,
+    _response_format,
 )
 from fish_audio_suite_proxy.upstream import FishHttp, RetryPolicy
 
@@ -46,7 +45,7 @@ _MODULES = (
     "errors",
     "models",
     "phrases",
-    "request_fields",
+    "request_body",
     "server",
     "settings",
     "speech",
@@ -107,27 +106,29 @@ def test_no_public_signature_mentions_a_private_type(label: str, value: object) 
             assert not type_name.startswith("_"), f"{label} {key} uses private type {type_name}"
 
 
-def test_clip_error_is_a_proxy_error_with_status_400() -> None:
-    error = ClipError("reference audio is empty")
-    assert isinstance(error, AudioDecodeError)
-    assert isinstance(error, ProxyError)
-    assert error.status == 400
-    assert error.message == "reference audio is empty"
+def test_the_handler_sends_a_proxy_error_with_its_status() -> None:
+    error = ProxyError(400, "reference audio is empty")
     response = proxy_error_response(Request({"type": "http"}), error)
     assert response.status_code == 400
+    assert response.body == (
+        b'{"error":{"code":400,"message":"reference audio is empty",'
+        b'"type":"invalid_request_error"}}'
+    )
+    other = proxy_error_response(Request({"type": "http"}), RuntimeError("boom"))
+    assert other.status_code == 500
     with pytest.raises(ProxyError):
-        decode_audio_b64("")
+        decode_audio_b64("", field="reference audio")
 
 
 def test_the_audio_decoder_names_the_field_it_read() -> None:
-    with pytest.raises(AudioDecodeError, match=r"^audio is empty$"):
-        decode_audio_b64(None)
-    with pytest.raises(AudioDecodeError, match=r"^audio is not valid base64$"):
-        decode_audio_b64("!!!!")
-    with pytest.raises(AudioDecodeError, match=r"^input_audio is empty$") as caught:
+    with pytest.raises(ProxyError, match=r"^audio is empty$"):
+        decode_audio_b64(None, field="audio")
+    with pytest.raises(ProxyError, match=r"^audio is not valid base64$"):
+        decode_audio_b64("!!!!", field="audio")
+    with pytest.raises(ProxyError, match=r"^input_audio is empty$") as caught:
         decode_audio_b64("  ", field="input_audio")
     assert caught.value.status == 400
-    assert decode_audio_b64(b"RIFF") == b"RIFF"
+    assert decode_audio_b64(b"RIFF", field="audio") == b"RIFF"
 
 
 @pytest.mark.parametrize(
@@ -135,7 +136,7 @@ def test_the_audio_decoder_names_the_field_it_read() -> None:
     [
         SpeechControls("s2.1-pro", 1.0, "mp3", "normal", 200, 50),
         PackedTts({}, {"json": {}}, "audio/mpeg"),
-        InboundAsr(b"x", "a.wav", "audio/wav", None, "", "json", ()),
+        InboundAsr(b"x", "a.wav", "audio/wav", None, "", "json", (), ProAsrOptions()),
         RetryPolicy(),
         ProxySettings(),
     ],
@@ -153,19 +154,21 @@ def test_formats_the_client_may_ask_for_and_the_format_fish_makes() -> None:
     assert fish_audio_format("pcm16") == "pcm"
     for fmt in ("mp3", "opus", "pcm", "wav"):
         assert fish_audio_format(typing.cast(ClientFormat, fmt)) == fmt
-    assert read_format({"format": "PCM16"}, "mp3") == "pcm16"
+    assert client_format(" PCM16 ") == "pcm16"
+    assert client_format("aac") is None
 
 
 def test_asr_formats_are_the_kit_literal_and_the_reader_returns_a_member() -> None:
     assert typing.get_args(AsrFormat) == ASR_FORMATS
     for name in ASR_FORMATS:
-        assert read_asr_format(f" {name.upper()} ") == name
+        assert _response_format(f" {name.upper()} ") == name
+    assert _response_format(None) == _response_format(" ") == "json"
     with pytest.raises(ProxyError, match="unsupported response_format"):
-        read_asr_format("xml")
+        _response_format("xml")
 
 
 def test_a_parsed_fish_error_becomes_a_provider_error_with_its_own_status() -> None:
-    response = provider_json_error(FishErrorBody.of(429, "slow down"))
+    response = FishProviderError(429, "slow down").response()
     assert response.status_code == 429
     assert response.body == (
         b'{"error":{"code":429,"message":"slow down","type":"provider_error",'

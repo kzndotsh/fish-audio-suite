@@ -1,33 +1,15 @@
-"""OpenAI error envelope for local and Fish failures."""
+"""The one error channel: every refusal is a ``ProxyError``, shown as an OpenAI error envelope."""
 
 from __future__ import annotations
 
-import json
-from collections.abc import Mapping
-from typing import Any
+from collections.abc import Iterable, Mapping
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
-from fish_audio_suite_kit import (
-    FishErrorBody,
-    FishHttpError,
-    OpenAIErrorBody,
-    OpenAIErrorDetail,
-    parse_fish_error,
-    utf8_text,
-)
+from fish_audio_suite_kit import OpenAIErrorBody, OpenAIErrorDetail, utf8_text
 
-__all__ = [
-    "ProxyError",
-    "json_error",
-    "json_from_call_failure",
-    "openai_error_body",
-    "provider_json_error",
-    "provider_json_from_raw",
-    "proxy_error_response",
-    "read_json_object",
-]
+__all__ = ["FishProviderError", "ProxyError", "proxy_error_response", "unsupported_format"]
 
 _ERROR_TYPES = {
     401: "authentication_error",
@@ -38,7 +20,7 @@ _ERROR_TYPES = {
 
 
 class ProxyError(Exception):
-    """A request the proxy refuses. The app maps it to an OpenAI error envelope.
+    """A request the proxy refuses. The app's handler turns it into the response.
 
     Attributes
     ----------
@@ -62,6 +44,60 @@ class ProxyError(Exception):
         self.message: str = message
         super().__init__(message)
 
+    def response(self) -> JSONResponse:
+        """Return the OpenAI error envelope for this refusal.
+
+        Returns
+        -------
+        JSONResponse
+            ``{error: {code, message, type}}`` with the error's status. The type
+            follows the status, as OpenAI's own errors do.
+        """
+        return _envelope(self.status, self.message)
+
+
+class FishProviderError(ProxyError):
+    """Fish answered with an error. The client sees it as a provider error.
+
+    Attributes
+    ----------
+    status : int
+        Fish's HTTP status, or the status its error body names.
+    message : str
+        Fish's message.
+    metadata : Mapping of str to str
+        Fish's own error ``code`` (as ``provider_code``) and ``request_id``, when
+        it sent them.
+    """
+
+    def __init__(
+        self, status: int, message: str, *, metadata: Mapping[str, str] | None = None
+    ) -> None:
+        """Store Fish's status, message and ids.
+
+        Parameters
+        ----------
+        status : int
+            HTTP status of the response.
+        message : str
+            Fish's message.
+        metadata : Mapping or None, optional
+            Fish's ``provider_code`` and ``request_id``. ``error.code`` stays the
+            HTTP status.
+        """
+        super().__init__(status, message)
+        self.metadata: Mapping[str, str] = dict(metadata or {})
+
+    def response(self) -> JSONResponse:
+        """Return the envelope with ``type`` ``provider_error`` and Fish's metadata.
+
+        Returns
+        -------
+        JSONResponse
+            ``metadata.provider_name`` is ``fish-audio``, beside any ids Fish sent.
+        """
+        return _envelope(self.status, self.message, metadata=self.metadata)
+
 
 def _openai_error_type(status: int) -> str:
     named = _ERROR_TYPES.get(status)
@@ -72,78 +108,41 @@ def _openai_error_type(status: int) -> str:
     return "invalid_request_error"
 
 
-def openai_error_body(
-    status: int,
-    message: str,
-    *,
-    provider: bool = False,
-    metadata: Mapping[str, str] | None = None,
-) -> OpenAIErrorBody:
-    """OpenAI ``{error: {code, message, type}}`` object.
-
-    Parameters
-    ----------
-    status : int
-        HTTP status stored as ``code``.
-    message : str
-        Client-facing message.
-    provider : bool, optional
-        When True, ``type`` is ``provider_error`` and metadata names Fish.
-        Local validation keeps the OpenAI type for that status.
-    metadata : Mapping or None, optional
-        More provider details, such as Fish's ``provider_code`` and
-        ``request_id``, added to ``metadata`` beside ``provider_name``. Used
-        only when ``provider`` is True.
-
-    Returns
-    -------
-    OpenAIErrorBody
-        The envelope, not a response.
-    """
+def _envelope(
+    status: int, message: str, *, metadata: Mapping[str, str] | None = None
+) -> JSONResponse:
+    # Metadata marks a Fish error. Local validation keeps the OpenAI type for its status.
     err: OpenAIErrorDetail = {
         "code": int(status),
         "message": utf8_text(str(message)),
-        "type": "provider_error" if provider else _openai_error_type(status),
+        "type": "provider_error" if metadata is not None else _openai_error_type(status),
     }
-    if provider:
-        err["metadata"] = {**(metadata or {}), "provider_name": "fish-audio"}
-    return {"error": err}
+    if metadata is not None:
+        err["metadata"] = {**metadata, "provider_name": "fish-audio"}
+    body: OpenAIErrorBody = {"error": err}
+    return JSONResponse(body, status_code=status)
 
 
-def json_error(status: int, message: str) -> JSONResponse:
-    """Local validation or proxy failure. Not marked as a Fish provider error.
-
-    Parameters
-    ----------
-    status : int
-        HTTP status of the response.
-    message : str
-        Shown in ``error.message``.
-
-    Returns
-    -------
-    JSONResponse
-        OpenAI envelope with the matching status code.
-    """
-    return JSONResponse(openai_error_body(status, message), status_code=status)
-
-
-def json_from_call_failure(err: FishHttpError) -> JSONResponse:
-    """Turn a Fish call that gave no usable answer into the proxy's own error.
+def unsupported_format(name: str, allowed: Iterable[str]) -> ProxyError:
+    """Build the 400 for a ``response_format`` the route cannot produce.
 
     Parameters
     ----------
-    err : FishHttpError
-        An error built by the kit: unreachable, timed out, or a reply body
-        that is not JSON or not an object.
+    name : str
+        The format the client named, already lowercased. Only its first 32
+        characters are shown.
+    allowed : Iterable of str
+        The formats the route accepts, listed in the message.
 
     Returns
     -------
-    JSONResponse
-        OpenAI envelope with the error's status and fixed message. It is not
-        marked as a Fish provider error, because Fish never answered.
+    ProxyError
+        Status 400. Returning another format than the one asked for would break
+        the client's decoder, so the request is refused instead.
     """
-    return json_error(err.status, err.message)
+    return ProxyError(
+        400, f"unsupported response_format {name[:32]!r}; use one of: {', '.join(allowed)}"
+    )
 
 
 def proxy_error_response(_request: Request, exc: Exception) -> JSONResponse:
@@ -162,77 +161,5 @@ def proxy_error_response(_request: Request, exc: Exception) -> JSONResponse:
         OpenAI envelope with the error's status.
     """
     if isinstance(exc, ProxyError):
-        return json_error(exc.status, exc.message)
-    return json_error(500, "internal error")
-
-
-async def read_json_object(request: Request) -> dict[str, Any] | JSONResponse:
-    """Parse a JSON object body, or an OpenAI 400 response.
-
-    Parameters
-    ----------
-    request : Request
-        Incoming FastAPI request.
-
-    Returns
-    -------
-    dict or JSONResponse
-        The object when the body is a JSON object. A 400 response when the
-        body is not JSON or is a JSON array or scalar. Callers must check
-        the type before treating the result as fields.
-    """
-    try:
-        # utf-8-sig drops a leading BOM. json.loads rejects that byte and the
-        # request would 400 before Fish saw the text.
-        raw = await request.body()
-        parsed = json.loads(raw.decode("utf-8-sig"))
-    # A client can nest arrays deep enough to raise RecursionError.
-    except (json.JSONDecodeError, UnicodeDecodeError, RecursionError):
-        return json_error(400, "invalid JSON body")
-    if not isinstance(parsed, dict):
-        return json_error(400, "JSON body must be an object")
-    return parsed
-
-
-def provider_json_from_raw(status: int, raw: Any) -> JSONResponse:
-    """Turn a Fish error body into an OpenAI provider error.
-
-    Parameters
-    ----------
-    status : int
-        Upstream HTTP status. ``parse_fish_error`` may replace it from the body.
-    raw : Any
-        Fish bytes, text, or an already-decoded object.
-
-    Returns
-    -------
-    JSONResponse
-        ``type`` is ``provider_error`` and ``metadata.provider_name`` is
-        ``fish-audio``. The response status is the parsed Fish status.
-    """
-    return provider_json_error(parse_fish_error(status, raw))
-
-
-def provider_json_error(
-    detail: FishErrorBody, *, metadata: Mapping[str, str] | None = None
-) -> JSONResponse:
-    """Turn an already parsed Fish error into an OpenAI provider error.
-
-    Parameters
-    ----------
-    detail : FishErrorBody
-        The status and message from ``parse_fish_error``.
-    metadata : Mapping or None, optional
-        Fish's own error ``code`` (as ``provider_code``) and ``request_id``,
-        when it sent them. ``error.code`` stays the HTTP status.
-
-    Returns
-    -------
-    JSONResponse
-        ``type`` is ``provider_error`` and ``metadata.provider_name`` is
-        ``fish-audio``. The response status is ``detail.status``.
-    """
-    return JSONResponse(
-        openai_error_body(detail.status, detail.message, provider=True, metadata=metadata),
-        status_code=detail.status,
-    )
+        return exc.response()
+    return _envelope(500, "internal error")

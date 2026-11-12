@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 from kit_helpers import assert_linear_time
 
 from fish_audio_suite_kit import (
     DEFAULT_BACKCHANNELS,
     DEFAULT_QUIT_PHRASES,
+    AsrBody,
+    CleanTranscript,
     asr_language_hint,
     asr_tone,
+    clean_transcript,
     is_asr_hallucination,
     is_backchannel,
     is_caption_watermark,
@@ -340,3 +345,71 @@ def test_asr_tone_is_capped_and_keeps_the_first_cues() -> None:
 @pytest.mark.parametrize("unit", ["[a", "[ ", "]", "[a b c d "])
 def test_asr_tone_is_linear_on_hostile_input(unit: str) -> None:
     assert_linear_time(asr_tone, unit * 20_000)
+
+
+def _clean(
+    text: str,
+    segments: list[object],
+    *,
+    strip_cues: bool = False,
+    trim_hallucination: bool = False,
+) -> CleanTranscript:
+    # Fish segments are untrusted JSON, so the tests hand in any shape.
+    body = cast(AsrBody, {"text": text, "segments": segments})
+    return clean_transcript(
+        text,
+        body,
+        strip_speakers=True,
+        strip_cues=strip_cues,
+        trim_hallucination=trim_hallucination,
+    )
+
+
+def test_clean_transcript_keeps_real_speech_as_scrubbed() -> None:
+    clean = _clean("Speaker 1: hello there [laughter]", [], strip_cues=True)
+    assert clean == CleanTranscript("hello there", "hello there", "text")
+
+
+def test_clean_transcript_rebuilds_a_blank_transcript_from_its_segments() -> None:
+    segments: list[object] = [
+        {"text": " real "},
+        {"text": "words"},
+        {"text": "Thanks for watching!"},
+        5,
+    ]
+    clean = _clean("", segments)
+    assert clean == CleanTranscript("real words", "", "segments")
+
+
+def test_clean_transcript_uses_the_callers_segment_join() -> None:
+    clean = clean_transcript(
+        "",
+        {"text": "", "segments": []},
+        strip_speakers=True,
+        strip_cues=False,
+        segment_text=lambda: "joined by the caller",
+    )
+    assert clean.text == "joined by the caller"
+    assert clean.source == "segments"
+
+
+def test_clean_transcript_trims_a_watermark_beside_speech() -> None:
+    clean = _clean(
+        "We should meet at noon tomorrow. Thanks for watching!",
+        [{"text": "We should meet at noon tomorrow."}, {"text": "Thanks for watching!"}],
+    )
+    assert clean.source == "trimmed"
+    assert clean.text == "We should meet at noon tomorrow."
+    assert clean.scrubbed.endswith("Thanks for watching!")
+
+
+def test_clean_transcript_reports_a_hallucination_with_the_scrubbed_text() -> None:
+    clean = _clean("Thanks for watching!", [{"text": "Thanks for watching!"}])
+    assert clean == CleanTranscript("Thanks for watching!", "Thanks for watching!", "hallucination")
+
+
+def test_trim_hallucination_still_trims_a_watermark_out_of_a_known_phrase() -> None:
+    segments: list[object] = [{"text": "Subscribe."}]
+    assert _clean("Like and subscribe.", segments).source == "hallucination"
+    trimmed = _clean("Like and subscribe.", segments, trim_hallucination=True)
+    assert trimmed == CleanTranscript("Like and", "Like and subscribe.", "trimmed")

@@ -17,19 +17,22 @@ from proxy_helpers import (
     post_speech,
     run_fish_send,
 )
-from starlette.datastructures import FormData, UploadFile
+from starlette.datastructures import UploadFile
 from starlette.responses import JSONResponse
 
 from fish_audio_suite_kit import (
     CaptionCue,
     is_asr_hallucination,
+    parse_fish_error,
 )
-from fish_audio_suite_proxy.errors import provider_json_from_raw
-from fish_audio_suite_proxy.phrases import caption_cues
+from fish_audio_suite_proxy.errors import FishProviderError
+from fish_audio_suite_proxy.phrases import AsrScrub, caption_cues
 from fish_audio_suite_proxy.server import app
 from fish_audio_suite_proxy.settings import load_settings
-from fish_audio_suite_proxy.transcribe import _granularity_list, form_strings, transcription_body
+from fish_audio_suite_proxy.transcribe import transcription_body
 from fish_audio_suite_proxy.upstream import fish_send
+
+_KEEP = AsrScrub(speakers=False, cues=False)
 
 
 def test_transcriptions_srt_and_granularities_bracket(
@@ -83,6 +86,7 @@ def test_verbose_language_surrogate_still_encodes() -> None:
         {"language": "en\ud800", "duration": 1.0},
         language=None,
         granularities=[],
+        scrub=_KEEP,
     )
     encoded = bytes(JSONResponse(body).body)
     assert b"hello there" in encoded
@@ -280,8 +284,13 @@ def test_transcription_non_json_upstream_is_502(monkeypatch: pytest.MonkeyPatch)
     assert response.json()["error"]["message"] == "Fish returned a non-JSON body"
 
 
+def _provider_error(status: int, raw: Any) -> JSONResponse:
+    detail = parse_fish_error(status, raw)
+    return FishProviderError(detail.status, detail.message).response()
+
+
 def test_upstream_errors_use_openai_envelope() -> None:
-    resp = provider_json_from_raw(402, {"message": "no credits", "status": 402})
+    resp = _provider_error(402, {"message": "no credits", "status": 402})
     assert resp.status_code == 402
     body = json.loads(bytes(resp.body))
     assert body == {
@@ -292,7 +301,7 @@ def test_upstream_errors_use_openai_envelope() -> None:
             "metadata": {"provider_name": "fish-audio"},
         }
     }
-    bad = provider_json_from_raw(502, {"message": "bad \ud800 byte", "status": 502})
+    bad = _provider_error(502, {"message": "bad \ud800 byte", "status": 502})
     assert bad.status_code == 502
     encoded = bytes(bad.body)
     encoded.decode("utf-8")
@@ -682,6 +691,7 @@ def test_verbose_language_is_the_lowercase_name(
         asr_body({"text": "hi", **fish}),
         language=hint,
         granularities=[],
+        scrub=_KEEP,
     )
     assert isinstance(body, dict)
     assert body["language"] == language
@@ -749,27 +759,48 @@ def test_transcription_bad_json_is_400() -> None:
         assert broken.json()["error"]["message"] == "invalid JSON body"
 
 
-def test_form_strings_merges_bracket_alias() -> None:
-    both = FormData(
-        [
-            ("timestamp_granularities", "word"),
-            ("timestamp_granularities[]", "segment"),
-        ]
-    )
-    assert form_strings(both, "timestamp_granularities", "timestamp_granularities[]") == [
-        "word",
-        "segment",
-    ]
-    bracket = FormData([("timestamp_granularities[]", "segment")])
-    assert form_strings(bracket, "timestamp_granularities", "timestamp_granularities[]") == [
-        "segment"
-    ]
-    padded = FormData([("timestamp_granularities", " word ")])
-    assert form_strings(padded, "timestamp_granularities") == ["word"]
+def test_both_spellings_of_the_granularity_field_ask_fish_for_timestamps(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured = capture_upstream(monkeypatch, AsrJson())
+    with TestClient(app) as client:
+        bracket = client.post(
+            "/v1/audio/transcriptions",
+            files=WAV_UPLOAD,
+            data={"timestamp_granularities[]": "segment"},
+        )
+        assert bracket.status_code == 200
+        assert captured["data"]["ignore_timestamps"] == "false"
+        padded = client.post(
+            "/v1/audio/transcriptions",
+            files=WAV_UPLOAD,
+            data={"response_format": "verbose_json", "timestamp_granularities": " word "},
+        )
+        assert padded.json()["words"][0]["word"] == "hello"
+        none = client.post("/v1/audio/transcriptions", files=WAV_UPLOAD)
+        assert none.status_code == 200
+        assert captured["data"]["ignore_timestamps"] == "true"
 
 
-def test_granularity_list_keeps_strings_only() -> None:
-    assert _granularity_list([" word ", 1, None, {"type": "word"}]) == ["word"]
+def test_a_json_granularity_list_keeps_strings_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured = capture_upstream(monkeypatch, AsrJson())
+    audio = {"data": base64.b64encode(b"RIFF").decode()}
+    with TestClient(app) as client:
+        junk = client.post(
+            "/v1/audio/transcriptions",
+            json={"input_audio": audio, "timestamp_granularities": [1, None, {"type": "word"}]},
+        )
+        assert junk.status_code == 200
+        assert captured["data"]["ignore_timestamps"] == "true"
+        mixed = client.post(
+            "/v1/audio/transcriptions",
+            json={
+                "input_audio": audio,
+                "response_format": "verbose_json",
+                "timestamp_granularities": [" word ", 1, None],
+            },
+        )
+        assert mixed.json()["words"][0]["word"] == "hello"
 
 
 def test_verbose_duration_rejects_a_boolean() -> None:
@@ -780,6 +811,7 @@ def test_verbose_duration_rejects_a_boolean() -> None:
         {"duration": True},
         language=None,
         granularities=[],
+        scrub=_KEEP,
     )
     assert isinstance(body, dict)
     assert body["duration"] is None
@@ -790,6 +822,7 @@ def test_verbose_duration_rejects_a_boolean() -> None:
         {"duration": 1.5},
         language=None,
         granularities=[],
+        scrub=_KEEP,
     )
     assert isinstance(kept, dict)
     assert kept["duration"] == 1.5
@@ -803,6 +836,7 @@ def test_verbose_words_accepts_padded_granularity() -> None:
         {},
         language=None,
         granularities=[" word "],
+        scrub=_KEEP,
     )
     assert isinstance(body, dict)
     assert "words" not in body
@@ -813,6 +847,7 @@ def test_verbose_words_accepts_padded_granularity() -> None:
         asr_body({"words": [{"word": "hello", "start": 0.0, "end": 0.4}, {"word": 7}, "junk"]}),
         language=None,
         granularities=[" word "],
+        scrub=_KEEP,
     )
     assert isinstance(with_words, dict)
     assert with_words["words"] == [{"word": "hello", "start": 0.0, "end": 0.4}]
@@ -835,7 +870,7 @@ def test_caption_cues_drop_a_watermark_segment() -> None:
             ],
         },
         "Thanks for watching. Ok. Hello there friend.",
-        strip_speakers=False,
+        _KEEP,
     )
     assert [cue.text for cue in cues] == ["Ok.", "Hello there friend."]
     only = caption_cues(
@@ -844,7 +879,7 @@ def test_caption_cues_drop_a_watermark_segment() -> None:
             "segments": [{"text": "Thanks for watching.", "start": 0, "end": 1}],
         },
         "hello there friend",
-        strip_speakers=False,
+        _KEEP,
     )
     assert [cue.text for cue in only] == ["hello there friend"]
 
@@ -860,7 +895,7 @@ def test_caption_cues_skip_non_string_segment_text() -> None:
             }
         ),
         "there",
-        strip_speakers=False,
+        _KEEP,
     )
     assert [(c.start, c.end, c.text) for c in cues] == [(1.0, 2.0, "there")]
 
@@ -869,24 +904,24 @@ def test_caption_cues_keep_zero_when_times_are_junk() -> None:
     cues = caption_cues(
         asr_body({"segments": [{"text": "hello", "start": "nope", "end": None}]}),
         "hello",
-        strip_speakers=False,
+        _KEEP,
     )
     assert [(c.start, c.end, c.text) for c in cues] == [(0.0, 0.0, "hello")]
-    whole = caption_cues({"duration": float("nan")}, "hello", strip_speakers=False)
+    whole = caption_cues({"duration": float("nan")}, "hello", _KEEP)
     assert [(c.start, c.end, c.text) for c in whole] == [(0.0, 0.0, "hello")]
-    negative = caption_cues({"duration": -3}, "hello", strip_speakers=False)
+    negative = caption_cues({"duration": -3}, "hello", _KEEP)
     assert [(c.start, c.end, c.text) for c in negative] == [(0.0, 0.0, "hello")]
-    flagged = caption_cues({"duration": True}, "hello", strip_speakers=False)
+    flagged = caption_cues({"duration": True}, "hello", _KEEP)
     assert [(c.start, c.end, c.text) for c in flagged] == [(0.0, 0.0, "hello")]
     flagged_start = caption_cues(
         {"segments": [{"text": "hello", "start": True, "end": False}]},
         "hello",
-        strip_speakers=False,
+        _KEEP,
     )
     assert [(c.start, c.end, c.text) for c in flagged_start] == [(0.0, 0.0, "hello")]
     backwards = caption_cues(
         {"segments": [{"text": "hello", "start": 2.0, "end": -1.0}]},
         "hello",
-        strip_speakers=False,
+        _KEEP,
     )
     assert [(c.start, c.end, c.text) for c in backwards] == [(2.0, 2.0, "hello")]

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from starlette.datastructures import Headers
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-from fish_audio_suite_proxy.errors import ProxyError, json_error
+from fish_audio_suite_proxy.errors import ProxyError
 
-__all__ = ["BodyLimitMiddleware", "BodyTooLargeError"]
+__all__ = ["BodyLimitMiddleware"]
 
 _TOO_LARGE = 413
 
@@ -51,31 +53,28 @@ class BodyTooLargeError(ProxyError):
         super().__init__(_TOO_LARGE, f"request body exceeds {limit} bytes")
 
 
-def _limit(scope: Scope) -> int:
-    app = scope.get("app")
-    settings = getattr(getattr(app, "state", None), "settings", None)
-    return int(getattr(settings, "max_body_bytes", 0) or 0)
-
-
 class BodyLimitMiddleware:
     """Reject a body over the cap, by ``Content-Length`` or by counting bytes.
 
     Notes
     -----
     A chunked upload has no length, so the received bytes are counted and
-    the read raises ``BodyTooLargeError``. A cap of 0 turns the check off. The
-    cap lives on ``app.state.settings``, which the lifespan fills in.
+    the read raises ``BodyTooLargeError``. A cap of 0 turns the check off.
     """
 
-    def __init__(self, app: ASGIApp) -> None:
+    def __init__(self, app: ASGIApp, *, limit: Callable[[], int]) -> None:
         """Wrap ``app``.
 
         Parameters
         ----------
         app : ASGIApp
             The next application in the stack.
+        limit : Callable
+            Returns the cap in bytes, read on each request because the settings
+            are loaded after the middleware is installed.
         """
         self.app = app
+        self.limit = limit
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Check the body size, then pass the request on.
@@ -89,14 +88,14 @@ class BodyLimitMiddleware:
         send : Send
             Response channel.
         """
-        limit = _limit(scope) if scope["type"] == "http" else 0
+        limit = self.limit() if scope["type"] == "http" else 0
         if limit <= 0:
             await self.app(scope, receive, send)
             return
         declared = Headers(scope=scope).get("content-length", "")
         if _declared_too_large(declared, limit):
-            refusal = json_error(_TOO_LARGE, f"request body exceeds {limit} bytes")
-            await refusal(scope, receive, send)
+            # This runs outside the app's exception handler, so the refusal is sent here.
+            await BodyTooLargeError(limit).response()(scope, receive, send)
             return
         seen = 0
 

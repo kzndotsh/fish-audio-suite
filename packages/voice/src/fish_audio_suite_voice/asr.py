@@ -4,33 +4,29 @@ from __future__ import annotations
 
 import json
 import threading
-from collections.abc import Mapping
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
-from typing import Any, Final, cast
+from typing import Any, Final
 
 import httpx
 
 from fish_audio_suite_kit import (
     FISH_ASR_PATH,
     FISH_RETRY_ATTEMPTS,
-    AsrBody,
     FishHttpError,
     SuiteDefaults,
     asr_language_hint,
     asr_tone,
     bearer,
+    clean_transcript,
     describe_request_error,
     fish_attempt_exhausted,
     fish_backoff_s,
-    is_asr_hallucination,
-    is_caption_watermark,
+    fish_request_id,
     parse_asr_body,
     parse_fish_error,
     retry_after_s,
-    scrub_asr,
     strip_base,
-    without_watermark_segments,
 )
 from fish_audio_suite_voice.debug import debug, with_detail
 from fish_audio_suite_voice.pause import sleep_unless
@@ -45,7 +41,6 @@ __all__ = [
 
 _ASR_TIMEOUT_S: Final = 60.0
 _ASR_CONNECT_S: Final = 10.0
-_REQUEST_ID_MAX: Final = 128
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,18 +59,6 @@ class AsrResult:
 
     text: str
     tone: tuple[str, ...] = ()
-
-
-def _request_id(headers: Mapping[str, str], body: object) -> str:
-    """Return Fish's request id from ``x-request-id`` or the body, or ``""``.
-
-    transcribe-1-pro sends it on success and on errors. Fish support asks for it.
-    """
-    from_body = body.get("request_id") if isinstance(body, dict) else None
-    for value in (headers.get("x-request-id"), from_body):
-        if isinstance(value, str) and (line := value.strip()):
-            return line.splitlines()[0][:_REQUEST_ID_MAX]
-    return ""
 
 
 def _json_or_none(text: str) -> object:
@@ -127,7 +110,9 @@ async def _post_fish(
             continue
         if response.status_code >= 400:
             detail = parse_fish_error(response.status_code, response.text)
-            request_id = _request_id(response.headers, _json_or_none(response.text))
+            request_id = fish_request_id(
+                _json_or_none(response.text), response.headers, header_first=True
+            )
             message = (
                 f"{detail.message} (request_id {request_id})" if request_id else detail.message
             )
@@ -256,27 +241,20 @@ async def fish_asr(
             lang or "auto",
             meta.get("text_chars"),
             response.headers.get("x-fish-trace-id", "")[:12],
-            _request_id(response.headers, body) or "-",
+            fish_request_id(body, response.headers, header_first=True) or "-",
         )
     parsed, raw_text = parse_asr_body(body)
     tone = asr_tone(raw_text) if hear_tone else ()
-    return AsrResult(_clean_text(raw_text, parsed), tone)
-
-
-def _clean_text(raw_text: str, parsed: AsrBody) -> str:
-    text = scrub_asr(raw_text.strip(), strip_cues=True)
-    # The loop answers only this string. When ``text`` is blank or a caption
-    # watermark, the segments may still hold the words, so use them instead.
-    if is_asr_hallucination(text):
-        alt = _segment_text(parsed)
-        if alt and not is_asr_hallucination(alt):
-            return alt
-    # Real speech plus a watermark sentence passes the hallucination check, so
-    # the watermark would be answered too. Drop the segments that are watermarks.
-    trimmed = without_watermark_segments(text, parsed.get("segments"), strip_cues=True)
-    if trimmed != text and trimmed and not is_asr_hallucination(trimmed):
-        return trimmed
-    return text
+    # The loop answers only this text: it falls back to the segments when the
+    # transcript is blank or a watermark, and drops watermark segments beside speech.
+    clean = clean_transcript(
+        raw_text.strip(),
+        parsed,
+        strip_speakers=True,
+        strip_cues=True,
+        trim_hallucination=True,
+    )
+    return AsrResult(clean.text, tone)
 
 
 def _form_language(language: str) -> str:
@@ -285,23 +263,3 @@ def _form_language(language: str) -> str:
     if cut is not None:
         text = text[:cut].strip()
     return text
-
-
-def _segment_text(body: AsrBody) -> str:
-    # Fish may send any shape. The kit only checks "text", so each piece is
-    # narrowed here before it is read.
-    segments: object = body.get("segments")
-    if not isinstance(segments, list):
-        return ""
-    parts: list[str] = []
-    for seg in cast(list[object], segments):
-        if not isinstance(seg, dict):
-            continue
-        raw = cast(dict[str, object], seg).get("text")
-        if not isinstance(raw, str):
-            continue
-        piece = scrub_asr(raw.strip(), strip_cues=True)
-        # A watermark segment beside real speech would be spoken with it.
-        if piece and not is_caption_watermark(piece):
-            parts.append(piece)
-    return " ".join(parts)

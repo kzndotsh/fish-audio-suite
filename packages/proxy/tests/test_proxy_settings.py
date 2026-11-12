@@ -12,7 +12,6 @@ from unittest.mock import AsyncMock
 import httpx
 import ormsgpack
 import pytest
-from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 from proxy_helpers import (
     AsrJson,
@@ -28,8 +27,10 @@ from fish_audio_suite_proxy.audio import (
     SILENT_MP3,
 )
 from fish_audio_suite_proxy.body_limit import _declared_too_large
+from fish_audio_suite_proxy.errors import ProxyError
 from fish_audio_suite_proxy.models import catalog_ids, resolve_tts_model
-from fish_audio_suite_proxy.server import _uvicorn_run_kwargs, app
+from fish_audio_suite_proxy.phrases import AsrScrub
+from fish_audio_suite_proxy.server import app
 from fish_audio_suite_proxy.settings import ProxySettings, SettingsError, load_settings
 from fish_audio_suite_proxy.transcribe import transcription_body
 from fish_audio_suite_proxy.upstream import FishHttp, RetryPolicy, fish_send
@@ -37,7 +38,7 @@ from fish_audio_suite_proxy.upstream import FishHttp, RetryPolicy, fish_send
 
 def test_proxy_listens_on_loopback_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("FISH_PROXY_HOST", raising=False)
-    assert _uvicorn_run_kwargs()["host"] == "127.0.0.1"
+    assert load_settings().uvicorn_kwargs()["host"] == "127.0.0.1"
     assert load_settings().exposed is False
     monkeypatch.setenv("FISH_PROXY_HOST", "0.0.0.0")
     assert load_settings().exposed is True
@@ -213,7 +214,7 @@ def test_each_env_name_changes_its_setting(monkeypatch: pytest.MonkeyPatch, case
 
 def test_a_model_env_name_feeds_the_default_aliases(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FISH_TTS_MODEL", "s1")
-    assert load_settings().tts_aliases["tts-1"] == "s1"
+    assert load_settings().model_aliases["tts-1"] == "s1"
 
 
 def test_health_shows_the_tts_keys(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -404,8 +405,9 @@ def test_the_deadline_cuts_off_a_stalled_request() -> None:
         )
 
     started = time.monotonic()
-    out = asyncio.run(run())
-    assert out.status_code == 504
+    with pytest.raises(ProxyError) as caught:
+        asyncio.run(run())
+    assert caught.value.status == 504
     assert client.sends == 1
     assert time.monotonic() - started < 2
 
@@ -490,11 +492,16 @@ def test_word_rows_are_scrubbed_like_the_transcript_and_empty_ones_dropped() -> 
         data,
         language="en",
         granularities=["word"],
-        strip_speakers=True,
-        strip_cues=True,
+        scrub=AsrScrub(speakers=True, cues=True),
     )
     kept = transcription_body(
-        "verbose_json", "Hello ok", [], data, language="en", granularities=["word"]
+        "verbose_json",
+        "Hello ok",
+        [],
+        data,
+        language="en",
+        granularities=["word"],
+        scrub=AsrScrub(speakers=False, cues=False),
     )
     assert isinstance(stripped, dict)
     assert isinstance(kept, dict)
@@ -623,14 +630,15 @@ def test_an_unreadable_error_body_keeps_the_status_fish_sent(
 
     async def run() -> tuple[int, bytes]:
         async with client:
-            out = await fish_send(
-                client,
-                stream=True,
-                method="POST",
-                url="https://fish.test/v1/tts",
-                policy=RetryPolicy(attempts=3),
-            )
-            assert isinstance(out, JSONResponse)
+            with pytest.raises(ProxyError) as caught:
+                await fish_send(
+                    client,
+                    stream=True,
+                    method="POST",
+                    url="https://fish.test/v1/tts",
+                    policy=RetryPolicy(attempts=3),
+                )
+            out = caught.value.response()
             return out.status_code, bytes(out.body)
 
     code, body = asyncio.run(run())

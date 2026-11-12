@@ -5,6 +5,7 @@ from __future__ import annotations
 import bisect
 import math
 import unicodedata
+from dataclasses import dataclass
 from typing import Any, Final
 
 from fish_audio_suite_kit import (
@@ -17,9 +18,43 @@ from fish_audio_suite_kit import (
 )
 
 __all__ = [
+    "AsrScrub",
     "caption_cues",
+    "json_number",
     "word_cues",
 ]
+
+
+@dataclass(frozen=True, slots=True)
+class AsrScrub:
+    """What to strip from Fish's transcript and from each of its words.
+
+    Attributes
+    ----------
+    speakers : bool
+        Drop ``Speaker 1:`` labels (``FISH_PROXY_ASR_STRIP_SPEAKERS``).
+    cues : bool
+        Drop ``[laughter]`` style annotations (``FISH_PROXY_ASR_STRIP_CUES``).
+    """
+
+    speakers: bool
+    cues: bool
+
+    def __call__(self, text: str) -> str:
+        """Scrub one transcript or word with ``scrub_asr``.
+
+        Parameters
+        ----------
+        text : str
+            Fish text.
+
+        Returns
+        -------
+        str
+            The text without the stripped markup.
+        """
+        return scrub_asr(text, strip_speakers=self.speakers, strip_cues=self.cues)
+
 
 # A Fish word is looked for in the transcript's letters and digits, at most this
 # many of them ahead of the last match. A word the transcript lacks is used as
@@ -53,22 +88,34 @@ def _seconds(value: Any) -> float:
     return parse_number(value or 0, 0.0, float)
 
 
-def _duration_s(value: Any) -> float:
-    """Fish ``duration`` is a number of seconds. A string or boolean is not a caption length."""
+def json_number(value: Any) -> int | float | None:
+    """Return a finite JSON number from Fish, as sent.
+
+    Parameters
+    ----------
+    value : Any
+        A field of Fish's reply, such as ``duration`` or a word's ``start``.
+
+    Returns
+    -------
+    int or float or None
+        The number, or None for a string, a boolean (``True`` is not a duration),
+        or a non-finite float.
+    """
     if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return 0.0
+        return None
     if not math.isfinite(value):
-        return 0.0
-    return float(value)
+        return None
+    return value
 
 
-def _segment_cue(seg: Any, *, strip_speakers: bool, strip_cues: bool) -> CaptionCue | None:
+def _segment_cue(seg: Any, scrub: AsrScrub) -> CaptionCue | None:
     if not isinstance(seg, dict):
         return None
     raw_text = seg.get("text", "")
     if not isinstance(raw_text, str):
         return None
-    body = scrub_asr(raw_text, strip_speakers=strip_speakers, strip_cues=strip_cues)
+    body = scrub(raw_text)
     if not body:
         return None
     start = max(0.0, _seconds(seg.get("start", 0)))
@@ -76,18 +123,15 @@ def _segment_cue(seg: Any, *, strip_speakers: bool, strip_cues: bool) -> Caption
     return CaptionCue(start, end, body)
 
 
-def word_cues(data: AsrBody, *, strip_speakers: bool, strip_cues: bool) -> list[CaptionCue]:
+def word_cues(data: AsrBody, scrub: AsrScrub) -> list[CaptionCue]:
     """Return one timed cue per word of a Fish ASR body.
 
     Parameters
     ----------
     data : AsrBody
         The Fish ASR response. Its segments are word-level.
-    strip_speakers : bool
-        Drop ``Speaker 1:`` labels from the words. Passed to ``scrub_asr``.
-    strip_cues : bool
-        Drop annotations such as ``[laughter]`` from the words. Passed to
-        ``scrub_asr``.
+    scrub : AsrScrub
+        What to strip from each word.
 
     Returns
     -------
@@ -101,7 +145,7 @@ def word_cues(data: AsrBody, *, strip_speakers: bool, strip_cues: bool) -> list[
         return []
     words: list[CaptionCue] = []
     for seg in raw_segments:
-        cue = _segment_cue(seg, strip_speakers=strip_speakers, strip_cues=strip_cues)
+        cue = _segment_cue(seg, scrub)
         if cue is not None:
             words.append(cue)
     return words
@@ -324,13 +368,7 @@ def _phrases(words: list[CaptionCue], turn_starts: list[float]) -> list[CaptionC
     return phrases
 
 
-def caption_cues(
-    data: AsrBody,
-    text: str,
-    *,
-    strip_speakers: bool,
-    strip_cues: bool = False,
-) -> list[CaptionCue]:
+def caption_cues(data: AsrBody, text: str, scrub: AsrScrub) -> list[CaptionCue]:
     """Build phrase cues from Fish word segments, or one cue for the whole transcript.
 
     Fish ``segments`` are word-level: each holds one word with ``start`` and
@@ -350,12 +388,10 @@ def caption_cues(
     text : str
         Scrubbed full transcript. It supplies punctuation, and is the one cue
         when ``segments`` is missing or empty.
-    strip_speakers : bool
-        Drop speaker labels inside each word.
-    strip_cues : bool, optional
-        Drop ``[cue]`` annotations inside each word. Default False, which also
-        keeps a cue that ``text`` puts right before a word in front of that
-        word (``[laughs] Well,``), as Fish's own ``speaker_turns`` text does.
+    scrub : AsrScrub
+        What to strip inside each word. Keeping cues also keeps a cue that
+        ``text`` puts right before a word in front of that word
+        (``[laughs] Well,``), as Fish's own ``speaker_turns`` text does.
 
     Returns
     -------
@@ -364,11 +400,12 @@ def caption_cues(
         watermark is omitted. Otherwise one cue from 0 to ``duration`` (seconds)
         covering ``text``, or an empty list when ``text`` is empty.
     """
-    words = word_cues(data, strip_speakers=strip_speakers, strip_cues=strip_cues)
-    phrases = _phrases(_punctuated(words, text, keep_cues=not strip_cues), _turn_starts(data))
+    words = word_cues(data, scrub)
+    phrases = _phrases(_punctuated(words, text, keep_cues=not scrub.cues), _turn_starts(data))
     cues = [cue for cue in phrases if not is_caption_watermark(cue.text)]
     if cues:
         return cues
     if not text:
         return []
-    return [CaptionCue(0.0, max(0.0, _duration_s(data.get("duration"))), text)]
+    duration = json_number(data.get("duration")) or 0.0
+    return [CaptionCue(0.0, max(0.0, float(duration)), text)]

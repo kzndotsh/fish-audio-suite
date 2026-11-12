@@ -5,8 +5,9 @@ from __future__ import annotations
 import re
 import unicodedata
 import zlib
-from collections.abc import Sequence, Set
-from typing import Final, cast
+from collections.abc import Callable, Sequence, Set
+from dataclasses import dataclass
+from typing import Final, Literal, cast
 
 from fish_audio_suite_kit._charsets import (
     ANGLE_TOKEN_RE,
@@ -20,13 +21,16 @@ from fish_audio_suite_kit._charsets import (
 )
 from fish_audio_suite_kit._single_pass import collapse_space_before_stop
 from fish_audio_suite_kit._speech_floor import too_little_speech
-from fish_audio_suite_kit.payloads import AsrSegment
+from fish_audio_suite_kit.payloads import AsrBody, AsrSegment
 
 __all__ = [
     "DEFAULT_BACKCHANNELS",
     "DEFAULT_QUIT_PHRASES",
+    "CleanTranscript",
+    "TranscriptSource",
     "asr_language_hint",
     "asr_tone",
+    "clean_transcript",
     "is_asr_hallucination",
     "is_backchannel",
     "is_caption_watermark",
@@ -498,6 +502,119 @@ def is_asr_hallucination(text: str) -> bool:
     if tagged is None or _gzip_repetitive(tagged):
         return True
     return too_little_speech(s, any_cjk=True)
+
+
+TranscriptSource = Literal["text", "trimmed", "segments", "hallucination"]
+
+
+@dataclass(frozen=True, slots=True)
+class CleanTranscript:
+    """A Fish transcript after ``clean_transcript``.
+
+    Attributes
+    ----------
+    text : str
+        The text to answer or return. For ``source == "hallucination"`` it is the
+        scrubbed transcript, which is still a hallucination; the caller decides
+        whether to drop it.
+    scrubbed : str
+        The transcript after ``scrub_asr``, before any fallback or trim.
+    source : TranscriptSource
+        Where ``text`` came from: ``"text"`` (the scrubbed transcript),
+        ``"trimmed"`` (watermark segments removed from it), ``"segments"`` (rebuilt
+        from the segments because the transcript was a hallucination) or
+        ``"hallucination"`` (nothing usable was found).
+    """
+
+    text: str
+    scrubbed: str
+    source: TranscriptSource
+
+
+def _segment_text(segments: object, *, strip_speakers: bool, strip_cues: bool) -> str:
+    # Fish may send any shape. Only an object with a string "text" is a segment.
+    if not isinstance(segments, list):
+        return ""
+    parts: list[str] = []
+    for seg in cast(list[object], segments):
+        if not isinstance(seg, dict):
+            continue
+        raw = cast(dict[str, object], seg).get("text")
+        if not isinstance(raw, str):
+            continue
+        piece = scrub_asr(raw.strip(), strip_speakers=strip_speakers, strip_cues=strip_cues)
+        # A watermark segment beside real speech would be spoken with it.
+        if piece and not is_caption_watermark(piece):
+            parts.append(piece)
+    return " ".join(parts)
+
+
+def clean_transcript(
+    transcript: str,
+    body: AsrBody,
+    *,
+    strip_speakers: bool,
+    strip_cues: bool,
+    segment_text: Callable[[], str] | None = None,
+    trim_hallucination: bool = False,
+) -> CleanTranscript:
+    """Scrub a Fish transcript and recover the speech from its segments when needed.
+
+    The steps: ``scrub_asr``; when that is a hallucination (blank, a caption
+    watermark, too thin), rebuild the text from the segments, leaving out
+    watermark segments; otherwise remove the watermark segments a real transcript
+    still holds (``without_watermark_segments``), keeping the trim only when it is
+    not a hallucination itself.
+
+    Parameters
+    ----------
+    transcript : str
+        Fish's top-level ``text``.
+    body : AsrBody
+        The decoded Fish reply. Only ``segments`` is read, and any shape is safe.
+    strip_speakers : bool
+        Drop ``Speaker 1:`` labels. Passed to ``scrub_asr`` for the transcript and
+        every segment.
+    strip_cues : bool
+        Drop ``[laughter]`` style annotations. Passed to ``scrub_asr`` the same way.
+    segment_text : Callable or None, optional
+        Builds the fallback text from the segments. None joins each segment,
+        stripped and scrubbed, with a space, skipping caption watermarks. A caller
+        that groups segments into phrases passes its own join.
+    trim_hallucination : bool, optional
+        When the transcript and the segment text are both hallucinations, still
+        try removing watermark segments from the transcript and use that when it
+        is speech. Default False, which reports the hallucination at once.
+
+    Returns
+    -------
+    CleanTranscript
+        The text, the scrubbed transcript and which step produced the text.
+
+    Examples
+    --------
+    >>> body = {"text": "", "segments": [{"text": "hello"}, {"text": "there"}]}
+    >>> clean_transcript("", body, strip_speakers=True, strip_cues=False)
+    CleanTranscript(text='hello there', scrubbed='', source='segments')
+    """
+    segments = body.get("segments")
+    scrubbed = scrub_asr(transcript, strip_speakers=strip_speakers, strip_cues=strip_cues)
+    hallucination = is_asr_hallucination(scrubbed)
+    if hallucination:
+        if segment_text is None:
+            alt = _segment_text(segments, strip_speakers=strip_speakers, strip_cues=strip_cues)
+        else:
+            alt = segment_text()
+        if alt and not is_asr_hallucination(alt):
+            return CleanTranscript(alt, scrubbed, "segments")
+        if not trim_hallucination:
+            return CleanTranscript(scrubbed, scrubbed, "hallucination")
+    trimmed = without_watermark_segments(
+        scrubbed, segments, strip_speakers=strip_speakers, strip_cues=strip_cues
+    )
+    if trimmed != scrubbed and trimmed and not is_asr_hallucination(trimmed):
+        return CleanTranscript(trimmed, scrubbed, "trimmed")
+    return CleanTranscript(scrubbed, scrubbed, "hallucination" if hallucination else "text")
 
 
 def _known_phrase(text: str, phrases: Set[str]) -> bool:
