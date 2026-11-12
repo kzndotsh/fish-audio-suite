@@ -28,7 +28,7 @@ from textual.widget import Widget
 from textual.widgets import Footer, Header, Input, Log, Static
 from textual.worker import Worker, WorkerState
 
-from fish_audio_suite_kit import LatencySnapshot, split_cues
+from fish_audio_suite_kit import split_cues
 from fish_audio_suite_voice.events import (
     DEFAULT_KEYS,
     EVENTS,
@@ -37,6 +37,7 @@ from fish_audio_suite_voice.events import (
     Event,
     EventBus,
     EventQueue,
+    ExitCode,
     Heard,
     Interim,
     LogLine,
@@ -50,7 +51,7 @@ from fish_audio_suite_voice.events import (
     available_actions,
 )
 from fish_audio_suite_voice.inputs import LiveInput
-from fish_audio_suite_voice.reply import turn_summary
+from fish_audio_suite_voice.latency import LatencySnapshot, turn_summary
 from fish_audio_suite_voice.session_view import (
     Ballistics,
     SessionView,
@@ -534,7 +535,7 @@ class VoiceApp(App[int]):
         self._session = session
         self._info = info
         self._view = SessionView()
-        self._exit_code = 0
+        self._exit_code = ExitCode.OK
         self._wake_pending = threading.Event()
         # Subscribed now, so nothing the session says before the screen is up is lost.
         self._queue = EventQueue(bus, wake=self._wake)
@@ -643,11 +644,11 @@ class VoiceApp(App[int]):
             case _:
                 return
 
-    def _on_bye(self, code: int) -> None:
+    def _on_bye(self, code: ExitCode) -> None:
         self._ended = True
         self._exit_code = code
-        if code == 0:
-            self.exit(0)
+        if code == ExitCode.OK:
+            self.exit(ExitCode.OK)
 
     def _render_view(self) -> None:
         view = self._view
@@ -711,11 +712,11 @@ class VoiceApp(App[int]):
         """Show a session that stopped with an error, or leave when it ended normally."""
         if event.state is WorkerState.ERROR:
             self._ended = True
-            self._exit_code = 1
+            self._exit_code = ExitCode.CRASH
             self.query_one(Conversation).add_note(f"the session stopped: {event.worker.error!r}")
             self._render_view()
         elif event.state is WorkerState.SUCCESS and not self._ended:
-            self.exit(int(event.worker.result or 0))
+            self.exit(int(event.worker.result or ExitCode.OK))
 
     def on_unmount(self) -> None:
         """Stop collecting events."""

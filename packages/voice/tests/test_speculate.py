@@ -114,17 +114,21 @@ def _ctx_with(reply: str, asked: str) -> tuple[DuplexContext, list[str]]:
         yield reply
 
     ctx = make_ctx(tokens)
-    ctx.history.append({"role": "user", "content": asked})
+    ctx.chat.history.messages.append({"role": "user", "content": asked})
     return ctx, calls
 
 
 def test_a_confirmed_turn_uses_the_reply_that_was_already_being_written() -> None:
     async def run() -> tuple[str, list[str]]:
         ctx, calls = _ctx_with("Hi back.", "hello there")
-        ctx.speculation = Speculation(ctx.backend, list(ctx.history), "Hello there.")
+        ctx.chat.speculation = Speculation(
+            ctx.chat.backend, list(ctx.chat.history.messages), "Hello there."
+        )
         await asyncio.sleep(0.01)
-        reply, _ = await collect_reply(ctx, llm_cancel=asyncio.Event(), trace_id=None, started=0.0)
-        assert ctx.speculation is None
+        reply, _ = await collect_reply(
+            ctx.chat, llm_cancel=asyncio.Event(), trace_id=None, started=0.0
+        )
+        assert ctx.chat.speculation is None
         return reply, calls
 
     reply, calls = asyncio.run(run())
@@ -135,9 +139,13 @@ def test_a_confirmed_turn_uses_the_reply_that_was_already_being_written() -> Non
 def test_when_the_words_changed_the_reply_is_asked_for_again() -> None:
     async def run() -> tuple[str, list[str]]:
         ctx, calls = _ctx_with("Fresh reply.", "hello there you")
-        ctx.speculation = Speculation(ctx.backend, list(ctx.history), "hello there")
+        ctx.chat.speculation = Speculation(
+            ctx.chat.backend, list(ctx.chat.history.messages), "hello there"
+        )
         await asyncio.sleep(0.01)
-        reply, _ = await collect_reply(ctx, llm_cancel=asyncio.Event(), trace_id=None, started=0.0)
+        reply, _ = await collect_reply(
+            ctx.chat, llm_cancel=asyncio.Event(), trace_id=None, started=0.0
+        )
         return reply, calls
 
     reply, calls = asyncio.run(run())

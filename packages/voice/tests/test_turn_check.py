@@ -70,8 +70,7 @@ def _asr(monkeypatch: pytest.MonkeyPatch, said: dict[bytes, str | BaseException]
 
 def _ctx(**turn: Any) -> DuplexContext:
     ctx = make_ctx()
-    ctx.config = replace(ctx.config, turn=TurnTune(enabled=True, **turn))
-    return ctx
+    return replace(ctx, config=replace(ctx.config, turn=TurnTune(enabled=True, **turn)))
 
 
 def _hear(
@@ -224,7 +223,7 @@ def test_quit_while_waiting_for_a_continuation_is_a_bye_and_nothing_is_answered(
     ctx = _ctx()
     _asr(monkeypatch, {b"clip1": "I wanted to say that,"})
     mic = ScriptedMic(WAIT)
-    timer = threading.Timer(0.2, ctx.session.quit_requested.set)
+    timer = threading.Timer(0.2, ctx.turn_input.session.quit_requested.set)
     timer.start()
     try:
         heard, seen = _hear(monkeypatch, ctx, mic)
@@ -252,7 +251,7 @@ def test_a_mute_or_typed_line_while_waiting_drops_the_turn_without_announcing_it
 
 def test_a_muted_mic_is_not_reopened_for_a_continuation(monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = _ctx()
-    ctx.muted = lambda: True
+    ctx = replace(ctx, turn_input=replace(ctx.turn_input, muted=lambda: True))
     _asr(monkeypatch, {b"clip1": "I wanted to say that,"})
     mic = ScriptedMic()
     heard, _ = _hear(monkeypatch, ctx, mic)
@@ -263,14 +262,14 @@ def test_a_muted_mic_is_not_reopened_for_a_continuation(monkeypatch: pytest.Monk
 def test_a_barge_in_clip_goes_to_the_first_recording_only(monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = _ctx()
     clip = barge_clip(b"pcm")
-    ctx.carry.keep(clip, "")
+    ctx.turn_input.carry.keep(clip, "")
     _asr(monkeypatch, {b"clip1": "Wait,", b"clip2": "stop that please."})
     mic = ScriptedMic(b"clip2")
     heard, _ = _hear(monkeypatch, ctx, mic)
     assert heard.text == "Wait, stop that please."
     assert mic.calls[0]["carried"] == clip
     assert "carried" not in mic.calls[1]
-    assert ctx.carry.clip is None
+    assert ctx.turn_input.carry.clip is None
 
 
 def test_a_joined_line_is_not_taken_for_a_stale_copy_of_the_last_one(

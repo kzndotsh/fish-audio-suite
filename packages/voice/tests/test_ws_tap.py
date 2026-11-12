@@ -8,7 +8,7 @@ import pytest
 from fishaudio.resources import realtime
 
 from fish_audio_suite_voice import ws_tap
-from fish_audio_suite_voice.debug import configure_voice_logging
+from fish_audio_suite_voice.log_setup import configure_voice_logging
 from fish_audio_suite_voice.ws_tap import install_fish_ws_tap
 
 TAPPED = ws_tap._TAPPED_FUNCTIONS

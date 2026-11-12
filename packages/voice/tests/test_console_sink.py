@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import re
+import threading
 
 import pytest
 from session_fakes import (
@@ -15,16 +16,16 @@ from session_fakes import (
 )
 from voice_fakes import install_audio
 
-from fish_audio_suite_kit import LatencySnapshot
 from fish_audio_suite_voice.asr import AsrResult
 from fish_audio_suite_voice.console_sink import ConsoleSink
 from fish_audio_suite_voice.duplex import duplex_turns
-from fish_audio_suite_voice.duplex_state import DuplexContext
+from fish_audio_suite_voice.duplex_state import TurnInput
 from fish_audio_suite_voice.events import (
     EVENTS,
     Bye,
     Event,
     EventBus,
+    ExitCode,
     Heard,
     Listening,
     Notice,
@@ -32,7 +33,9 @@ from fish_audio_suite_voice.events import (
     ReplyToken,
     TurnEnded,
 )
-from fish_audio_suite_voice.hearing import HeardLine, hear_line
+from fish_audio_suite_voice.hearing import HeardLine
+from fish_audio_suite_voice.inputs import Hear
+from fish_audio_suite_voice.latency import LatencySnapshot
 from fish_audio_suite_voice.speaker import FishSpeaker
 
 
@@ -116,12 +119,15 @@ class _OneTurn:
         self._real = real
         self._turns = 0
 
-    async def next_turn(self, ctx: DuplexContext, last_user: str) -> HeardLine:
+    muted = False
+
+    async def next_turn(self, turn: TurnInput, hear: Hear) -> HeardLine:
+        del turn
         self._turns += 1
         if self._turns > 1:
             return HeardLine("bye")
         if self._real:
-            return await hear_line(ctx, last_user)
+            return await hear(threading.Event())
         return HeardLine("line", text="hi")
 
 
@@ -162,7 +168,6 @@ def test_a_display_that_draws_its_own_screen_leaves_the_console_off(
                     None,
                     FakeBackend(hello_tokens),
                     source=_OneTurn(real=False),
-                    console=False,
                 ),
                 5,
             )
@@ -188,7 +193,7 @@ def test_the_session_ends_with_the_typical_and_the_slow_wait(
     bus = EventBus()
     ConsoleSink(bus)
     waits = [1000, 1200, 1400, 1600, 1800, 2000, 2200, 2400, 2600, 5000]
-    _emit(bus, *(_turn(wait, wait / 2) for wait in waits), Bye(0))
+    _emit(bus, *(_turn(wait, wait / 2) for wait in waits), Bye(ExitCode.OK))
     out = capsys.readouterr().out
     summary = next(line for line in out.splitlines() if line.startswith("session"))
     # The middle of ten turns, and the slow one in ten (the 9th of 10 sorted).
@@ -202,7 +207,7 @@ def test_the_session_ends_with_the_typical_and_the_slow_wait(
 def test_a_session_with_no_turns_prints_no_summary(capsys: pytest.CaptureFixture[str]) -> None:
     bus = EventBus()
     ConsoleSink(bus)
-    _emit(bus, Bye(0))
+    _emit(bus, Bye(ExitCode.OK))
     assert "session" not in capsys.readouterr().out
 
 
@@ -218,6 +223,6 @@ def test_the_session_summary_goes_to_the_log_with_debug_on(
     monkeypatch.setattr("fish_audio_suite_voice.console_sink.debug", record)
     bus = EventBus()
     ConsoleSink(bus)
-    _emit(bus, _turn(1000, 500), Bye(2))
+    _emit(bus, _turn(1000, 500), Bye(ExitCode.FATAL))
     assert any(line.startswith("session.summary 1 turns") for line in lines)
     assert "session" not in capsys.readouterr().out

@@ -4,12 +4,12 @@ import httpx
 import pytest
 
 from fish_audio_suite_voice.config import VoiceCliConfig, warn_if_insecure_base
-from fish_audio_suite_voice.debug import with_detail
 from fish_audio_suite_voice.llm_tune import LlmTune
 from fish_audio_suite_voice.playback import StdoutSink
 from fish_audio_suite_voice.speaker import FishSpeaker
 from fish_audio_suite_voice.tts_tune import TtsTune
 from fish_audio_suite_voice.tts_turn import _classify_fish_exc
+from fish_audio_suite_voice.wording import with_detail
 
 SECRET = "sk-very-secret-value"
 

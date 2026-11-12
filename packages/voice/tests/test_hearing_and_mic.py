@@ -14,12 +14,13 @@ import pytest
 from session_fakes import barge_clip, make_ctx, recognize
 
 from fish_audio_suite_kit import FishHttpError
-from fish_audio_suite_voice import barge, console, mic, pcm
+from fish_audio_suite_voice import barge, mic, pcm
 from fish_audio_suite_voice.asr import AsrResult
-from fish_audio_suite_voice.console import console_print, end_reply_line, write_reply_token
-from fish_audio_suite_voice.debug import configure_voice_logging
-from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexContext
+from fish_audio_suite_voice.console_sink import ConsoleSink, console_print
+from fish_audio_suite_voice.duplex_state import DuplexContext
+from fish_audio_suite_voice.events import EventBus, ExitCode, ReplyToken
 from fish_audio_suite_voice.hearing import hear_line
+from fish_audio_suite_voice.log_setup import configure_voice_logging
 from fish_audio_suite_voice.mic import SessionMic
 from fish_audio_suite_voice.pcm import FRAME_BYTES
 from fish_audio_suite_voice.portaudio import PortAudioMissingError
@@ -58,7 +59,7 @@ def test_a_failure_after_quit_is_just_a_bye(
     monkeypatch: pytest.MonkeyPatch, error: BaseException
 ) -> None:
     ctx = make_ctx()
-    ctx.session.quit_requested.set()
+    ctx.turn_input.session.quit_requested.set()
     _asr_returns(monkeypatch, error)
     assert _recognize(ctx) == "bye"
 
@@ -79,7 +80,7 @@ def test_hear_line_exits_when_the_mic_cannot_open(monkeypatch: pytest.MonkeyPatc
 
     monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", no_audio)
     heard = asyncio.run(hear_line(make_ctx(), ""))
-    assert (heard.kind, heard.code) == ("fatal", EXIT_FATAL)
+    assert (heard.kind, heard.code) == ("fatal", ExitCode.FATAL)
 
 
 @pytest.mark.parametrize(("clip", "quit_set", "kind"), [(b"", False, "noise"), (b"x", True, "bye")])
@@ -90,7 +91,7 @@ def test_hear_line_reports_a_dropped_clip_and_quit(
 
     def record(*_args: object, **_kwargs: object) -> bytes:
         if quit_set:
-            ctx.session.quit_requested.set()
+            ctx.turn_input.session.quit_requested.set()
         return clip
 
     monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", record)
@@ -108,7 +109,7 @@ def test_a_batch_turn_reports_the_silence_it_waited_out(monkeypatch: pytest.Monk
 def test_a_barge_in_clip_is_never_a_stale_copy(monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = make_ctx()
     clip = barge_clip(b"clip", since=42)
-    ctx.carry.keep(clip, "")
+    ctx.turn_input.carry.keep(clip, "")
     seen: dict[str, Any] = {}
 
     def record(*_args: object, **kwargs: object) -> bytes:
@@ -120,7 +121,7 @@ def test_a_barge_in_clip_is_never_a_stale_copy(monkeypatch: pytest.MonkeyPatch) 
     heard = asyncio.run(hear_line(ctx, "hello there friend"))
     assert seen["carried"] == clip  # the listen starts from the clip and reads on after it
     assert heard.kind == "line"  # the same words as the last line, but said fresh over the reply
-    assert ctx.carry.clip is None
+    assert ctx.turn_input.carry.clip is None
 
 
 class _FakeStream:
@@ -303,10 +304,12 @@ def test_a_closed_stdout_never_raises_from_the_console_helpers(
 ) -> None:
     monkeypatch.setattr(sys, "stdout", _BrokenPipe())
     console_print("status")
-    write_reply_token("hello")
-    console._REPLY.open = True  # pyright: ignore[reportPrivateUsage]
-    end_reply_line()
-    assert console._REPLY.open is False  # pyright: ignore[reportPrivateUsage]
+    bus = EventBus()
+    with ConsoleSink(bus) as display:
+        bus.emit(ReplyToken("hello"))
+        display._line_open = True  # pyright: ignore[reportPrivateUsage]
+        display.end_reply_line()
+        assert display._line_open is False  # pyright: ignore[reportPrivateUsage]
 
 
 def test_a_buffer_shorter_than_a_frame_waits_and_a_zero_frame_size_yields_nothing() -> None:
@@ -395,5 +398,5 @@ def test_a_stop_flag_ends_the_recording_and_quit_still_does_too(
     typed.set()
     assert flags[0].is_set()
     typed.clear()
-    ctx.session.quit_requested.set()
+    ctx.turn_input.session.quit_requested.set()
     assert flags[0].is_set()

@@ -19,14 +19,13 @@ import numpy as np
 from numpy.typing import NDArray
 
 from fish_audio_suite_kit import MS_PER_S
-from fish_audio_suite_voice.pcm import SAMPLE_BYTES, SAMPLE_DTYPE
+from fish_audio_suite_voice.pcm import FULL_SCALE, SAMPLE_BYTES, SAMPLE_DTYPE
 
 __all__ = [
     "LoudnessMatch",
 ]
 
 _BLOCK_MS: Final = 20
-_FULL_SCALE: Final = 32768.0
 # Blocks quieter than this are pauses and breath, not speech, so they do not set the level.
 _GATE_DB: Final = -50.0
 # Speech needed before the level is trusted. Until then the reply plays untouched.
@@ -108,7 +107,7 @@ class LoudnessMatch:
         self._odd = data[usable:]
         if usable == 0:
             return b""
-        samples = np.frombuffer(data[:usable], dtype=SAMPLE_DTYPE).astype(np.float64) / _FULL_SCALE
+        samples = np.frombuffer(data[:usable], dtype=SAMPLE_DTYPE).astype(np.float64) / FULL_SCALE
         self._measure(samples)
         wanted = self._wanted_db()
         if wanted is None:
@@ -132,8 +131,8 @@ class LoudnessMatch:
             out[start : start + block.size] = block * np.power(10.0, ramp / 20.0)
         shaped = _soft_limit(out)
         return (
-            np.rint(shaped * _FULL_SCALE)
-            .clip(-_FULL_SCALE, _FULL_SCALE - 1)
+            np.rint(shaped * FULL_SCALE)
+            .clip(-FULL_SCALE, FULL_SCALE - 1)
             .astype(SAMPLE_DTYPE)
             .tobytes()
         )

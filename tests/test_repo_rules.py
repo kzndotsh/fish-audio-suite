@@ -199,7 +199,7 @@ def test_the_nixos_module_default_matches_the_proxy_graceful_shutdown() -> None:
 
 def test_voice_reads_the_environment_only_in_its_settings_layer() -> None:
     """Settings come from ``config`` and the ``*.from_env`` tunes; the rest take arguments."""
-    allowed = {"config.py", "tune.py", "llm_tune.py", "debug.py", "envfile.py"}
+    allowed = {"config.py", "tune.py", "llm_tune.py", "debug.py", "log_format.py", "envfile.py"}
     offenders = [
         f"{path.relative_to(ROOT)}:{line}"
         for path in _modules(VOICE_SRC)
@@ -234,10 +234,18 @@ def _writes_to_the_terminal(path: Path) -> list[int]:
 def test_the_voice_session_reports_through_events_and_never_writes_to_the_terminal() -> None:
     """A full-screen display owns the terminal, so session code reports through ``events``.
 
-    Only the modules that make up the plain display, the startup in ``cli`` and the raw
+    Only the plain display, the logging modules, the startup in ``cli`` and the raw
     stdout audio sink may write to a stream.
     """
-    allowed = {"console.py", "console_sink.py", "debug.py", "cli.py", "playback.py"}
+    allowed = {
+        "console_sink.py",
+        "debug.py",
+        "log_format.py",
+        "log_file.py",
+        "log_setup.py",
+        "cli.py",
+        "playback.py",
+    }
     offenders = [
         f"{path.relative_to(ROOT)}:{line}"
         for path in _modules(VOICE_SRC)

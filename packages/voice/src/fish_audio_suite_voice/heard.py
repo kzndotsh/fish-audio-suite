@@ -21,8 +21,7 @@ from fish_audio_suite_kit import (
 )
 from fish_audio_suite_voice.cancel import StopFlag
 from fish_audio_suite_voice.debug import debug
-from fish_audio_suite_voice.duplex_state import EXIT_FATAL
-from fish_audio_suite_voice.events import EVENTS, Heard
+from fish_audio_suite_voice.events import EVENTS, ExitCode, Heard
 from fish_audio_suite_voice.recognised import CarriedClip, NoTurn, Transcript, said_over_reply
 
 __all__ = [
@@ -42,7 +41,7 @@ class HeardLine:
     asr_ms: float = 0.0
     started: float = 0.0
     trace_id: str | None = None
-    code: int = 0
+    code: ExitCode = ExitCode.OK
     # The silence waited out after the last word, when the listener ended the turn.
     end_wait_ms: float | None = None
     # How Fish heard the voice (``laughter``, ``tired``). Only set with ``FISH_VOICE_HEAR_TONE``,
@@ -161,7 +160,7 @@ def heard_line(
     Returns
     -------
     HeardLine
-        ``bye`` on quit or a quit word, ``fatal`` (with ``EXIT_FATAL``), ``again``, ``noise``
+        ``bye`` on quit or a quit word, ``fatal`` (with ``ExitCode.FATAL``), ``again``, ``noise``
         for nothing to answer, otherwise the ``line``, which is also announced with a
         ``Heard`` event.
     """
@@ -169,7 +168,7 @@ def heard_line(
         return HeardLine("bye")
     match outcome:
         case NoTurn(reason="fatal"):
-            return HeardLine("fatal", code=EXIT_FATAL)
+            return HeardLine("fatal", code=ExitCode.FATAL)
         case NoTurn(reason="again"):
             return HeardLine("again")
         case NoTurn():

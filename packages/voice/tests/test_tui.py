@@ -17,12 +17,12 @@ from textual.geometry import Region
 from textual.pilot import Pilot
 from textual.widgets import Input, Log, Static
 
-from fish_audio_suite_kit import LatencySnapshot
 from fish_audio_suite_voice import tui as tui_module
 from fish_audio_suite_voice.events import (
     BargedIn,
     Bye,
     EventBus,
+    ExitCode,
     Heard,
     Interim,
     Listening,
@@ -37,6 +37,7 @@ from fish_audio_suite_voice.events import (
     TurnEnded,
 )
 from fish_audio_suite_voice.inputs import LiveInput
+from fish_audio_suite_voice.latency import LatencySnapshot
 from fish_audio_suite_voice.signals import DuplexSession
 from fish_audio_suite_voice.tui import _BAR_COLOURS, Conversation, Timings, VoiceApp, Waveform
 
@@ -74,7 +75,7 @@ class _Harness:
     async def _until_quit(self) -> int:
         """Like ``duplex_turns``: runs until asked to quit, then says bye."""
         await asyncio.to_thread(self.session.quit_requested.wait, 15)
-        self.bus.emit(Bye(0))
+        self.bus.emit(Bye(ExitCode.OK))
         return 0
 
     def messages(self) -> list[str]:
@@ -280,7 +281,7 @@ def test_quit_asks_the_session_to_end_and_the_app_leaves_when_it_has() -> None:
 def test_a_session_that_says_goodbye_on_its_own_closes_the_app() -> None:
     async def says_bye(harness: _Harness) -> int:
         await asyncio.sleep(0.05)
-        harness.bus.emit(Bye(0))
+        harness.bus.emit(Bye(ExitCode.OK))
         return 0
 
     harness = _Harness(says_bye)
@@ -296,7 +297,7 @@ def test_a_fatal_end_stays_on_screen_until_the_user_quits_and_keeps_its_code() -
     async def fails(harness: _Harness) -> int:
         await asyncio.sleep(0.05)
         harness.bus.emit(Notice("[tts] 401 unauthorized"))
-        harness.bus.emit(Bye(2))
+        harness.bus.emit(Bye(ExitCode.FATAL))
         return 2
 
     harness = _Harness(fails)

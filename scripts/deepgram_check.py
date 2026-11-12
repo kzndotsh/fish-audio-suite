@@ -31,6 +31,7 @@ from pathlib import Path
 from fish_audio_suite_voice.envfile import apply_cli_env_files
 from fish_audio_suite_voice.events import EVENTS, Event, Interim
 from fish_audio_suite_voice.mic import SessionMic
+from fish_audio_suite_voice.portaudio import parse_device
 from fish_audio_suite_voice.recognised import NoTurn, StreamFallback, Transcript
 from fish_audio_suite_voice.streaming import stream_turn
 from fish_audio_suite_voice.tune import ListenTune, SttTune
@@ -109,9 +110,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--turns", type=int, default=3, help="how many turns to try")
     parser.add_argument("--device", default=None, help="a PortAudio device name or number")
     args = parser.parse_args(argv)
-    device: str | int | None = args.device
-    if isinstance(device, str) and device.isdigit():
-        device = int(device)
+    device = parse_device(args.device)
     apply_cli_env_files([Path(".env")], required=False)
     try:
         return asyncio.run(run(max(1, args.turns), device))

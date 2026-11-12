@@ -17,12 +17,16 @@ import pytest
 from voice_fakes import FakeSink, ScriptedMic, make_result, set_tts
 
 from fish_audio_suite_kit import ChatMessage
+from fish_audio_suite_voice.aec import EchoCanceller
 from fish_audio_suite_voice.asr import transcribe_clip
 from fish_audio_suite_voice.config import VoiceCliConfig
+from fish_audio_suite_voice.console_sink import ConsoleSink
 from fish_audio_suite_voice.duplex import duplex_turns
-from fish_audio_suite_voice.duplex_state import DuplexContext
+from fish_audio_suite_voice.duplex_state import Chat, DuplexContext, TurnInput
+from fish_audio_suite_voice.events import EVENTS
 from fish_audio_suite_voice.heard import Circumstances, HeardLine
 from fish_audio_suite_voice.heard import heard_line as judged
+from fish_audio_suite_voice.history import History
 from fish_audio_suite_voice.inputs import TurnSource
 from fish_audio_suite_voice.llm_tune import LlmTune
 from fish_audio_suite_voice.recognised import BargeIn
@@ -74,17 +78,20 @@ class FakeBackend:
 def make_ctx(
     tokens: Callable[..., AsyncIterator[str]] | None = None,
     session: DuplexSession | None = None,
+    muted: Callable[[], bool] | None = None,
 ) -> DuplexContext:
-    session = session or DuplexSession()
+    config = make_config()
+    turn = TurnInput(session=session or DuplexSession(), mic=ScriptedMic(aec=EchoCanceller()))
     return DuplexContext(
-        config=make_config(),
-        tts=FishSpeaker(api_key="k", voice_id="voice"),
+        config=config,
         device=None,
-        mic=ScriptedMic(aec=session.aec),
-        backend=FakeBackend(tokens),
-        session=session,
+        turn_input=turn if muted is None else replace(turn, muted=muted),
+        chat=Chat(
+            FakeBackend(tokens),
+            History([{"role": "system", "content": "be brief"}], config.history_turns),
+        ),
+        tts=FishSpeaker(api_key="k", voice_id="voice"),
         asr_http=httpx.AsyncClient(),
-        history=[{"role": "system", "content": "be brief"}],
     )
 
 
@@ -107,7 +114,8 @@ class ScriptedHearing:
         self.ctx: DuplexContext | None = None
         monkeypatch.setattr("fish_audio_suite_voice.duplex.hear_line", self._hear)
 
-    async def _hear(self, ctx: DuplexContext, last_user: str) -> HeardLine:
+    async def _hear(self, ctx: DuplexContext, last_user: str, *, stop: object = None) -> HeardLine:
+        del stop
         self.ctx = ctx
         self.last_user.append(last_user)
         return next(self._lines)
@@ -129,11 +137,19 @@ def run_session_with(
     source: TurnSource | None,
     session: DuplexSession | None = None,
 ) -> int:
-    return asyncio.run(
-        asyncio.wait_for(
-            duplex_turns(cfg, tts, None, FakeBackend(tokens), session, source=source), 5
-        )
-    )
+    return asyncio.run(asyncio.wait_for(_with_console(cfg, tts, tokens, source, session), 5))
+
+
+async def _with_console(
+    cfg: VoiceCliConfig,
+    tts: FishSpeaker,
+    tokens: Callable[..., AsyncIterator[str]] | None,
+    source: TurnSource | None,
+    session: DuplexSession | None,
+) -> int:
+    """Run the session with the plain display printing it, as ``fish-voice`` does."""
+    with ConsoleSink(EVENTS):
+        return await duplex_turns(cfg, tts, None, FakeBackend(tokens), session, source=source)
 
 
 def heard_line(text: str = "hi there") -> HeardLine:
@@ -147,11 +163,10 @@ def barge_clip(pcm: bytes = b"clip", since: int | None = None) -> BargeIn:
 
 async def recognize(ctx: DuplexContext, wav: bytes, last_user: str) -> HeardLine:
     """Hear one clip with Fish ASR and judge it, as the batch path does for a fresh turn."""
-    got = await transcribe_clip(
-        wav, ctx.config, cancel=ctx.session.quit_requested, client=ctx.asr_http
-    )
+    quit_requested = ctx.turn_input.session.quit_requested
+    got = await transcribe_clip(wav, ctx.config, cancel=quit_requested, client=ctx.asr_http)
     at = Circumstances(last_user, None, 0.0, 0.0, ctx.config.repeat_window_s)
-    return judged(got, at, quit_requested=ctx.session.quit_requested)
+    return judged(got, at, quit_requested=quit_requested)
 
 
 def speak_with_fakes(

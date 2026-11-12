@@ -8,11 +8,14 @@ from __future__ import annotations
 
 from typing import Any, Final
 
+from fish_audio_suite_kit import cut_at_control
+
 __all__ = [
     "PORTAUDIO_HINT",
     "PortAudioMissingError",
     "load_sounddevice",
     "missing_portaudio",
+    "parse_device",
     "pcm_stream_kwargs",
 ]
 
@@ -24,6 +27,44 @@ PORTAUDIO_HINT: Final = """sounddevice needs the PortAudio C library (the Python
           or ./packages/voice/dev.sh"""
 
 _MONO: Final = 1
+
+
+def parse_device(raw: str | None) -> str | int | None:
+    """Read a PortAudio device as ``FISH_VOICE_DEVICE`` or ``--device`` gives it.
+
+    Parameters
+    ----------
+    raw : str or None
+        A device number or a device name. None or blank is the host default.
+
+    Returns
+    -------
+    str or int or None
+        The number (``"3"`` and ``"3.0"`` are device 3), else the name, else None.
+
+    Examples
+    --------
+    >>> parse_device(" 3 "), parse_device("1.0"), parse_device("USB Mic"), parse_device("")
+    (3, 1, 'USB Mic', None)
+    """
+    if raw is None:
+        return None
+    # A control character, such as a newline left by an env file, is not part of a
+    # PortAudio name. Kept, it would match no device and the mic would not open.
+    text = cut_at_control(raw.strip()).strip()
+    if not text:
+        return None
+    try:
+        return int(text)
+    except ValueError:
+        # "1.0" is device 1. As a name it would match no device.
+        try:
+            value = float(text)
+        except ValueError:
+            return text
+        if value.is_integer():
+            return int(value)
+        return text
 
 
 class PortAudioMissingError(OSError):

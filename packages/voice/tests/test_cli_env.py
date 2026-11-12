@@ -8,16 +8,16 @@ from pathlib import Path
 import pytest
 
 from fish_audio_suite_voice.cli import (
-    _parse_device,
     apply_cli_env_files,
     load_config,
     main,
     run_loop,
     smoke_test,
 )
-from fish_audio_suite_voice.config import OPENROUTER_API_BASE
-from fish_audio_suite_voice.duplex import EXIT_FATAL
+from fish_audio_suite_voice.events import ExitCode
+from fish_audio_suite_voice.llm_tune import OPENROUTER_API_BASE
 from fish_audio_suite_voice.playback import PlaybackSink
+from fish_audio_suite_voice.portaudio import parse_device
 from fish_audio_suite_voice.signals import DuplexSession, TurnSignals
 
 
@@ -246,7 +246,7 @@ def test_run_loop_rejects_bad_playback(
     monkeypatch.setenv("FISH_LLM_API_KEY", "k")
     monkeypatch.setenv("FISH_LLM_MODEL", "m")
     c = replace(load_config(), playback="nope")
-    assert asyncio.run(run_loop(c)) == EXIT_FATAL
+    assert asyncio.run(run_loop(c)) == ExitCode.FATAL
     assert "unknown playback sink" in capsys.readouterr().err
 
 
@@ -269,16 +269,16 @@ def test_catalog_model_and_latency_are_canonical(monkeypatch: pytest.MonkeyPatch
 
 
 def test_parse_device_strips_index_and_blank() -> None:
-    assert _parse_device(None) is None
-    assert _parse_device("") is None
-    assert _parse_device("  ") is None
-    assert _parse_device(" 3 ") == 3
-    assert _parse_device("1.0") == 1
-    assert _parse_device("0.0") == 0
-    assert _parse_device("1.5") == "1.5"
-    assert _parse_device(" hw:0 ") == "hw:0"
-    assert _parse_device("3\nbad") == 3
-    assert _parse_device("hw:0\nbad") == "hw:0"
+    assert parse_device(None) is None
+    assert parse_device("") is None
+    assert parse_device("  ") is None
+    assert parse_device(" 3 ") == 3
+    assert parse_device("1.0") == 1
+    assert parse_device("0.0") == 0
+    assert parse_device("1.5") == "1.5"
+    assert parse_device(" hw:0 ") == "hw:0"
+    assert parse_device("3\nbad") == 3
+    assert parse_device("hw:0\nbad") == "hw:0"
 
 
 def test_cleared_turn_does_not_cancel_the_old_events() -> None:
@@ -323,7 +323,7 @@ def test_main_exits_2_on_an_unexpected_cancel_without_restarting(
         raise asyncio.CancelledError
 
     _stub_main(monkeypatch, run)
-    assert main([]) == EXIT_FATAL
+    assert main([]) == ExitCode.FATAL
     assert calls["n"] == 1
     assert "cancelled unexpectedly" in capsys.readouterr().err
 

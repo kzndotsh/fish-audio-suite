@@ -45,12 +45,12 @@ from fish_audio_suite_kit import (
     CueStyle,
     is_tts_junk,
 )
-from fish_audio_suite_voice.config import system_prompt_from_file
-from fish_audio_suite_voice.debug import configure_voice_logging
+from fish_audio_suite_voice.config import SystemPrompt, prompt_from_file
 from fish_audio_suite_voice.envfile import load_dotenv
-from fish_audio_suite_voice.history import opening_history
+from fish_audio_suite_voice.history import History
 from fish_audio_suite_voice.llm import open_chat_backend
 from fish_audio_suite_voice.llm_tune import LlmTune
+from fish_audio_suite_voice.log_setup import configure_voice_logging
 
 # ---------------------------------------------------------------------------
 # EDIT THESE. The models and prompts the script runs when you pass none.
@@ -444,7 +444,7 @@ async def evaluate(
     system_prompt: str,
     *,
     runs: int,
-    seed: bool | None,
+    seed: bool,
     warmup: bool,
     on_run: Callable[[Run], None] | None = None,
 ) -> list[Run]:
@@ -462,8 +462,8 @@ async def evaluate(
         The system prompt, sent with the opening example the app pins.
     runs : int
         Repeats of each prompt on each model.
-    seed : bool or None
-        Whether to pin the opening example. None pins it for the default prompt only.
+    seed : bool
+        Whether to pin the opening example, as ``SystemPrompt.pin_seed`` decides it.
     warmup : bool
         Send one throwaway request per model first, so connection setup is not timed.
     on_run : Callable or None, optional
@@ -486,12 +486,12 @@ async def evaluate(
     for model in models:
         model_tune = replace(tune, model=model)
         if warmup:
-            opening, _ = opening_history(system_prompt, seed=seed)
+            opening = History.opening(system_prompt, seed=seed, turns=1).messages
             # Best effort: the real runs report the error if the model is broken.
             with contextlib.suppress(Exception):
                 await _one(model_tune, [*opening, {"role": "user", "content": "Say hi."}])
         for index, prompt in enumerate(prompts):
-            opening, _ = opening_history(system_prompt, seed=seed)
+            opening = History.opening(system_prompt, seed=seed, turns=1).messages
             messages: list[ChatMessage] = [*opening, {"role": "user", "content": prompt}]
             for run in range(runs):
                 try:
@@ -744,14 +744,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("--runs must be at least 1.", file=sys.stderr)
         return 2
     prompts = read_prompts(args.prompt, args.prompts_file)
-    system_prompt = DEFAULT_SYSTEM_PROMPT
-    seed: bool | None = None
+    prompt: SystemPrompt | None = SystemPrompt.written(DEFAULT_SYSTEM_PROMPT)
     if args.system_file is not None:
-        composed = system_prompt_from_file(str(args.system_file), DEFAULT_SYSTEM_PROMPT)
-        if composed is None:
-            print(f"Could not use {args.system_file} as a character file.", file=sys.stderr)
-            return 2
-        system_prompt, seed = composed, True
+        prompt = prompt_from_file(str(args.system_file), required=True)
+    if prompt is None:
+        print(f"Could not use {args.system_file} as a character file.", file=sys.stderr)
+        return 2
     tune = _tune(args)
     requests = len(models) * len(prompts) * args.runs
     print(
@@ -774,9 +772,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             tune,
             models,
             prompts,
-            system_prompt,
+            prompt.text,
             runs=args.runs,
-            seed=seed,
+            seed=prompt.pin_seed,
             warmup=args.warmup,
             on_run=None if args.quiet else lambda run: _print_run(run, len(prompts), args.runs),
         )
@@ -802,9 +800,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
             args.out.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         else:
-            args.out.write_text(
-                _markdown(summaries, runs, prompts, system_prompt), encoding="utf-8"
-            )
+            args.out.write_text(_markdown(summaries, runs, prompts, prompt.text), encoding="utf-8")
         print(f"wrote {args.out}", file=sys.stderr)
     return 0 if any(s.ok for s in summaries) else 2
 

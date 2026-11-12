@@ -22,15 +22,13 @@ __all__ = [
     "LLM_PROVIDERS",
     "OPENAI_KEY_ENV",
     "OPENROUTER_API_BASE",
-    "PROVIDER_SORTS",
-    "REASONING_EFFORTS",
-    "SERVICE_TIERS",
     "KnownLlmProvider",
     "LlmBackendName",
     "LlmProvider",
     "LlmProviderName",
     "LlmTune",
     "is_openrouter_host",
+    "llm_problem",
     "provider_for_base",
 ]
 
@@ -43,15 +41,15 @@ EXPERIENTIAL_API_BASE: Final = "https://api.experientiallabs.ai/v1"
 
 # The values Experiential documents for reasoning_effort. OpenAI's own names are a
 # subset, so they pass too. Which of them a route accepts is the provider's call.
-REASONING_EFFORTS: Final = frozenset({"none", "minimal", "low", "medium", "high", "max"})
+_REASONING_EFFORTS: Final = frozenset({"none", "minimal", "low", "medium", "high", "max"})
 # OpenRouter's provider.sort values. Voice wants the first token soon, so the
 # default is latency; OpenRouter's own default weighs price.
-PROVIDER_SORTS: Final = frozenset({"latency", "throughput", "price"})
+_PROVIDER_SORTS: Final = frozenset({"latency", "throughput", "price"})
 DEFAULT_LLM_PROVIDER_SORT: Final = "latency"
 # OpenRouter's service_tier values. Unset leaves the tier to OpenRouter. priority
 # costs more for steadier speed, and ultrafast (select OpenAI models only) far
 # more, falling back to priority and then default where it is not offered.
-SERVICE_TIERS: Final = frozenset({"default", "flex", "priority", "ultrafast"})
+_SERVICE_TIERS: Final = frozenset({"default", "flex", "priority", "ultrafast"})
 
 
 DEFAULT_LLM_MAX_TOKENS: Final = 1200
@@ -277,8 +275,7 @@ class LlmTune:
         )
         provider = provider_for_base(base)
         backend = _backend(base)
-        # An OpenRouter host is always a known provider, so an unknown host is OpenAI-compatible.
-        key_env = provider.key_env if provider is not None else OPENAI_KEY_ENV
+        key_env = _key_env(provider)
         key_names = ["FISH_LLM_API_KEY"]
         if provider is None or _is_https(base):
             key_names.append(key_env)
@@ -287,8 +284,7 @@ class LlmTune:
                 f"fish-voice: {key_env} is not used because the base is not https, which would "
                 f"send it unencrypted. Use an https base, or set FISH_LLM_API_KEY to send a key anyway."
             )
-        model_names = [provider.model_env] if provider is not None else []
-        model_names.append("FISH_LLM_MODEL")
+        model_names = _model_names(provider)
         return cls(
             backend=backend,
             base=base,
@@ -308,6 +304,39 @@ class LlmTune:
             continuation=read_flag("FISH_LLM_CONTINUE", default=False),
             reasoning_effort=_reasoning_effort(),
         )
+
+
+def _key_env(provider: LlmProvider | None) -> str:
+    """Return the variable, besides ``FISH_LLM_API_KEY``, that may hold the key for a base."""
+    # An OpenRouter host is always a known provider, so an unknown host is OpenAI-compatible.
+    return provider.key_env if provider is not None else OPENAI_KEY_ENV
+
+
+def _model_names(provider: LlmProvider | None) -> list[str]:
+    """Return the variables the model is read from, first match wins."""
+    return [*([provider.model_env] if provider is not None else []), "FISH_LLM_MODEL"]
+
+
+def llm_problem(tune: LlmTune) -> str | None:
+    """Say which LLM setting a session cannot start without, naming where it is read from.
+
+    Parameters
+    ----------
+    tune : LlmTune
+        The chat settings.
+
+    Returns
+    -------
+    str or None
+        ``FISH_LLM_API_KEY / <the provider's key variable> missing`` or
+        ``FISH_LLM_MODEL / <the model variables> missing``, or None when both are set.
+    """
+    provider = provider_for_base(tune.base)
+    if not tune.api_key:
+        return f"FISH_LLM_API_KEY / {_key_env(provider)} missing"
+    if not tune.model:
+        return f"FISH_LLM_MODEL / {' / '.join(_model_names(provider))} missing"
+    return None
 
 
 def _named_provider() -> LlmProvider | None:
@@ -336,9 +365,9 @@ def _reasoning_effort() -> str:
     if raw is None:
         return ""
     low = raw.lower()
-    if low in REASONING_EFFORTS:
+    if low in _REASONING_EFFORTS:
         return low
-    values = ", ".join(sorted(REASONING_EFFORTS))
+    values = ", ".join(sorted(_REASONING_EFFORTS))
     warn(f"fish-voice: FISH_LLM_REASONING_EFFORT={raw!r} is not one of {values}, leaving it unset")
     return ""
 
@@ -348,9 +377,9 @@ def _service_tier() -> str:
     if raw is None:
         return ""
     low = raw.lower()
-    if low in SERVICE_TIERS:
+    if low in _SERVICE_TIERS:
         return low
-    values = ", ".join(sorted(SERVICE_TIERS))
+    values = ", ".join(sorted(_SERVICE_TIERS))
     warn(f"fish-voice: FISH_LLM_SERVICE_TIER={raw!r} is not one of {values}, leaving it unset")
     return ""
 
@@ -360,11 +389,11 @@ def _provider_sort() -> str:
     if raw is None:
         return DEFAULT_LLM_PROVIDER_SORT
     low = raw.lower()
-    if low in PROVIDER_SORTS:
+    if low in _PROVIDER_SORTS:
         return low
     if low in {"off", "none"}:
         return ""
-    values = ", ".join(sorted(PROVIDER_SORTS))
+    values = ", ".join(sorted(_PROVIDER_SORTS))
     warn(
         f"fish-voice: FISH_LLM_PROVIDER_SORT={raw!r} is not one of {values} or off, "
         f"using {DEFAULT_LLM_PROVIDER_SORT}"

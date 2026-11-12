@@ -39,11 +39,12 @@ from fish_audio_suite_kit import (
 )
 from fish_audio_suite_voice.cancel import never
 from fish_audio_suite_voice.config import VoiceCliConfig
-from fish_audio_suite_voice.debug import debug, warn, with_detail
+from fish_audio_suite_voice.debug import debug, warn
 from fish_audio_suite_voice.log_meta import public_meta
 from fish_audio_suite_voice.pause import Retry, fish_retries
 from fish_audio_suite_voice.recognised import NoTurn, Transcript
 from fish_audio_suite_voice.tune import HTTP_KEEPALIVE_S
+from fish_audio_suite_voice.wording import with_detail
 
 __all__ = [
     "AsrResult",

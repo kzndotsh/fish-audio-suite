@@ -12,8 +12,8 @@ from session_fakes import FakeBackend, barge_clip, make_ctx
 
 from fish_audio_suite_kit import ChatMessage
 from fish_audio_suite_voice.asr import AsrResult
-from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexContext
-from fish_audio_suite_voice.events import EVENTS, Event, Heard
+from fish_audio_suite_voice.duplex_state import DuplexContext
+from fish_audio_suite_voice.events import EVENTS, Event, ExitCode, Heard
 from fish_audio_suite_voice.heard import HeardLine
 from fish_audio_suite_voice.hearing import hear_line
 from fish_audio_suite_voice.recognised import NoTurn, StreamFallback, Transcript
@@ -22,8 +22,10 @@ from fish_audio_suite_voice.tune import DeepgramTune, SttTune
 
 def _ctx(provider: str = "deepgram") -> DuplexContext:
     ctx = make_ctx()
-    ctx.config = replace(ctx.config, stt=SttTune(provider=provider, deepgram=DeepgramTune(key="k")))
-    return ctx
+    return replace(
+        ctx,
+        config=replace(ctx.config, stt=SttTune(provider=provider, deepgram=DeepgramTune(key="k"))),
+    )
 
 
 def _stream_returns(monkeypatch: pytest.MonkeyPatch, outcome: object) -> list[dict[str, Any]]:
@@ -84,7 +86,7 @@ def test_when_deepgram_cannot_be_reached_the_turn_is_heard_the_usual_way_from_th
 @pytest.mark.parametrize(
     ("outcome", "expected"),
     [
-        (NoTurn("fatal"), HeardLine("fatal", code=EXIT_FATAL)),
+        (NoTurn("fatal"), HeardLine("fatal", code=ExitCode.FATAL)),
         (NoTurn("again"), HeardLine("again")),
         (NoTurn("noise"), HeardLine("noise")),
         (NoTurn("stopped"), HeardLine("noise")),  # a typed line or mute cut it short
@@ -100,11 +102,11 @@ def test_each_way_a_streamed_turn_can_fail_maps_to_what_the_loop_does_next(
 def test_quitting_during_a_streamed_turn_says_bye(monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = _ctx()
     _stream_returns(monkeypatch, NoTurn("stopped"))
-    ctx.session.quit_requested.set()
+    ctx.turn_input.session.quit_requested.set()
     assert asyncio.run(hear_line(ctx, "")) == HeardLine("bye")
     ctx2 = _ctx()
     _stream_returns(monkeypatch, _turn())
-    ctx2.session.quit_requested.set()  # quit arrived while the answer was coming back
+    ctx2.turn_input.session.quit_requested.set()  # quit arrived while the answer was coming back
     assert asyncio.run(hear_line(ctx2, "")) == HeardLine("bye")
 
 
@@ -113,7 +115,9 @@ def test_a_streamed_transcript_is_judged_like_a_batch_one(monkeypatch: pytest.Mo
     assert asyncio.run(hear_line(_ctx(), "")) == HeardLine("bye")  # a quit word ends the session
     _stream_returns(monkeypatch, _turn("mm-hmm"))
     ctx = _ctx()
-    ctx.carry.keep(barge_clip(b"\x01\x00" * 100), "")  # said over the reply: "mm-hmm" is "go on"
+    ctx.turn_input.carry.keep(
+        barge_clip(b"\x01\x00" * 100), ""
+    )  # said over the reply: "mm-hmm" is "go on"
     assert asyncio.run(hear_line(ctx, "")) == HeardLine("noise")
     _stream_returns(monkeypatch, _turn("what is the weather"))
     assert asyncio.run(hear_line(_ctx(), "what is the weather")).kind == "noise"  # a stale copy
@@ -125,17 +129,19 @@ def test_the_barge_prefix_is_handed_to_the_stream_and_cleared(
     calls = _stream_returns(monkeypatch, _turn())
     ctx = _ctx()
     clip = barge_clip(b"\x02\x00" * 50, since=42)
-    ctx.carry.keep(clip, "")
+    ctx.turn_input.carry.keep(clip, "")
     asyncio.run(hear_line(ctx, ""))
     assert calls[0]["carried"] == clip
-    assert ctx.carry.clip is None
+    assert ctx.turn_input.carry.clip is None
 
 
 def _eager_ctx() -> DuplexContext:
     ctx = _ctx()
-    ctx.config = replace(ctx.config, stt=replace(ctx.config.stt, eager_eot_threshold=0.5))
-    ctx.history.append({"role": "user", "content": "earlier"})
-    ctx.history.append({"role": "assistant", "content": "reply"})
+    ctx = replace(
+        ctx, config=replace(ctx.config, stt=replace(ctx.config.stt, eager_eot_threshold=0.5))
+    )
+    ctx.chat.history.messages.append({"role": "user", "content": "earlier"})
+    ctx.chat.history.messages.append({"role": "assistant", "content": "reply"})
     return ctx
 
 
@@ -156,9 +162,9 @@ def test_an_early_end_of_turn_starts_a_reply_that_the_speaker_resuming_throws_aw
 
     async def fake(**kwargs: Any) -> object:
         kwargs["on_eager"]("what is the weather")
-        seen["started"] = ctx.speculation
+        seen["started"] = ctx.chat.speculation
         kwargs["on_resumed"]()
-        seen["after_resume"] = ctx.speculation
+        seen["after_resume"] = ctx.chat.speculation
         kwargs["on_eager"]("what is the weather today")
         return _turn("what is the weather today")
 
@@ -167,9 +173,13 @@ def test_an_early_end_of_turn_starts_a_reply_that_the_speaker_resuming_throws_aw
     assert heard.kind == "line"
     assert seen["started"] is not None
     assert seen["after_resume"] is None
-    assert ctx.speculation is not None  # the confirmed turn keeps the latest one for the reply
-    assert ctx.speculation.text == "what is the weather today"
-    assert [m["content"] for m in ctx.history] == ["be brief", "earlier", "reply"]  # not touched
+    assert ctx.chat.speculation is not None  # the confirmed turn keeps the latest one for the reply
+    assert ctx.chat.speculation.text == "what is the weather today"
+    assert [m["content"] for m in ctx.chat.history.messages] == [
+        "be brief",
+        "earlier",
+        "reply",
+    ]  # not touched
 
 
 def test_a_reply_started_early_is_dropped_when_the_turn_turns_out_to_be_nothing(
@@ -183,7 +193,7 @@ def test_a_reply_started_early_is_dropped_when_the_turn_turns_out_to_be_nothing(
 
     monkeypatch.setattr("fish_audio_suite_voice.hearing.stream_turn", fake)
     assert asyncio.run(hear_line(ctx, "")) == HeardLine("noise")
-    assert ctx.speculation is None
+    assert ctx.chat.speculation is None
 
 
 def _fallback_then_asr(
@@ -230,14 +240,14 @@ def test_a_reply_started_early_never_edits_an_unanswered_line_in_the_history(
     # request did that merge in the session's own message, and the confirmed line was
     # merged a second time on top.
     ctx = _eager_ctx()
-    ctx.history.append({"role": "user", "content": "are you there"})
+    ctx.chat.history.messages.append({"role": "user", "content": "are you there"})
     asked: list[list[ChatMessage]] = []
 
     async def tokens(messages: list[ChatMessage], **_kwargs: object) -> AsyncIterator[str]:
         asked.append([message.copy() for message in messages])
         yield "Hi."
 
-    ctx.backend = FakeBackend(tokens)
+    ctx.chat.backend = FakeBackend(tokens)
 
     async def fake(**kwargs: Any) -> object:
         kwargs["on_eager"]("what is the weather")
@@ -247,5 +257,5 @@ def test_a_reply_started_early_never_edits_an_unanswered_line_in_the_history(
     monkeypatch.setattr("fish_audio_suite_voice.hearing.stream_turn", fake)
     heard = asyncio.run(hear_line(ctx, ""))
     assert heard.kind == "line"
-    assert ctx.history[-1] == {"role": "user", "content": "are you there"}
+    assert ctx.chat.history.messages[-1] == {"role": "user", "content": "are you there"}
     assert asked[0][-1]["content"] == "are you there\nwhat is the weather"

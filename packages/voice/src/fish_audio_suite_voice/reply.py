@@ -4,17 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import math
 import threading
 import time
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Callable
 from dataclasses import replace
 from typing import Final
 
 from fish_audio_suite_kit import (
     ChatMessage,
     FishAuthError,
-    LatencySnapshot,
     elapsed_ms,
     ensure_lead_cue,
     is_same_utterance,
@@ -24,12 +22,12 @@ from fish_audio_suite_kit import (
 from fish_audio_suite_voice.barge import BargeGate
 from fish_audio_suite_voice.cancel import is_cancel_noise, is_own_cancel
 from fish_audio_suite_voice.config import VoiceCliConfig
-from fish_audio_suite_voice.console import end_reply_line
 from fish_audio_suite_voice.debug import debug, warn
-from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexContext
-from fish_audio_suite_voice.events import EVENTS, ReplyEnd, ReplyToken, Speaking, notice
+from fish_audio_suite_voice.duplex_state import Chat, DuplexContext
+from fish_audio_suite_voice.events import EVENTS, ExitCode, ReplyEnd, ReplyToken, Speaking, notice
 from fish_audio_suite_voice.heard import HeardLine
-from fish_audio_suite_voice.history import remember_user, with_tone_hint
+from fish_audio_suite_voice.history import History, with_tone_hint
+from fish_audio_suite_voice.latency import LatencySnapshot
 from fish_audio_suite_voice.playback import PlaybackSink, make_sink
 from fish_audio_suite_voice.portaudio import PortAudioMissingError
 from fish_audio_suite_voice.recognised import BargeIn
@@ -39,14 +37,11 @@ from fish_audio_suite_voice.transports import ChatUnusableError
 from fish_audio_suite_voice.wire import TtsResult
 
 __all__ = [
-    "after_speech",
     "collect_reply",
     "drop_speculation",
-    "session_summary",
     "speak_reply",
     "start_speculation",
     "stream_turn",
-    "turn_summary",
 ]
 
 # The barge watch notices its stop flag within one mic poll (0.2 s). The join
@@ -109,22 +104,22 @@ class _TokenPipe:
                 yield item
 
 
-def _request(history: list[ChatMessage], tone: tuple[str, ...]) -> list[ChatMessage]:
+def _request(history: History, tone: tuple[str, ...]) -> list[ChatMessage]:
     """Return the messages a reply is asked for with: the chat so far, ending with the line.
 
     ``tone`` is how the line sounded. It goes into this request only, never into history.
     """
-    return with_tone_hint(history, tone)
+    return with_tone_hint(history.messages, tone)
 
 
-def start_speculation(ctx: DuplexContext, text: str) -> None:
+def start_speculation(chat: Chat, text: str) -> None:
     """Start writing the reply for ``text``, which the recogniser thinks is probably the whole turn.
 
     Parameters
     ----------
-    ctx : DuplexContext
-        The session. Its history is not touched: it only gains the line once the turn is
-        confirmed.
+    chat : Chat
+        The conversation. Its history is not touched: it only gains the line once the
+        turn is confirmed.
     text : str
         The words so far.
 
@@ -134,49 +129,45 @@ def start_speculation(ctx: DuplexContext, text: str) -> None:
     line added. A streaming recogniser hears no tone, so there is no tone hint, and the
     turn's trace id does not exist yet.
     """
-    drop_speculation(ctx)
-    # Each message is copied: adding the line merges it into an unanswered user line in place.
-    asked = [message.copy() for message in ctx.history]
-    remember_user(asked, text, ctx.config.history_turns, ctx.pinned)
-    ctx.speculation = Speculation(ctx.backend, _request(asked, ()), text)
+    drop_speculation(chat)
+    asked = chat.history.copy()
+    asked.remember_user(text)
+    chat.speculation = Speculation(chat.backend, _request(asked, ()), text)
 
 
-def drop_speculation(ctx: DuplexContext) -> None:
+def drop_speculation(chat: Chat) -> None:
     """Throw away a reply that was being written ahead of time, if there is one.
 
     Parameters
     ----------
-    ctx : DuplexContext
-        The session.
+    chat : Chat
+        The conversation.
     """
-    if ctx.speculation is not None:
-        ctx.speculation.cancel()
-        ctx.speculation = None
+    if chat.speculation is not None:
+        chat.speculation.cancel()
+        chat.speculation = None
         debug("llm.speculate dropped")
 
 
 def _tokens_for(
-    ctx: DuplexContext,
+    chat: Chat,
     llm_cancel: asyncio.Event,
     trace_id: str | None,
     tone: tuple[str, ...] = (),
 ) -> AsyncIterator[str]:
     """Return the reply's tokens: the one already being written if it answers this line."""
-    ahead, ctx.speculation = ctx.speculation, None
-    last_user = (
-        ctx.history[-1]["content"] if ctx.history and ctx.history[-1]["role"] == "user" else ""
-    )
-    if ahead is not None and ahead.matches(last_user):
+    ahead, chat.speculation = chat.speculation, None
+    if ahead is not None and ahead.matches(chat.history.last_user()):
         debug("llm.speculate hit, the reply was already being written")
         return ahead.replay(llm_cancel)
     if ahead is not None:
         debug("llm.speculate miss: the words changed, asking again")
         ahead.cancel()
-    return ctx.backend.stream(_request(ctx.history, tone), cancel=llm_cancel, trace_id=trace_id)
+    return chat.backend.stream(_request(chat.history, tone), cancel=llm_cancel, trace_id=trace_id)
 
 
 async def collect_reply(
-    ctx: DuplexContext,
+    chat: Chat,
     *,
     llm_cancel: asyncio.Event,
     trace_id: str | None,
@@ -190,7 +181,7 @@ async def collect_reply(
     """
     parts: list[str] = []
     ttft_ms: float | None = None
-    tokens = _tokens_for(ctx, llm_cancel, trace_id, tone)
+    tokens = _tokens_for(chat, llm_cancel, trace_id, tone)
     try:
         async for tok in tokens:
             if ttft_ms is None:
@@ -208,8 +199,6 @@ async def collect_reply(
     except (BaseExceptionGroup, RuntimeError) as e:
         if not is_cancel_noise(e, cancelled=llm_cancel.is_set()):
             warn(f"[llm] {e}")
-    finally:
-        end_reply_line()
     reply = "".join(parts).strip()
     EVENTS.emit(ReplyEnd(reply))
     return reply, ttft_ms
@@ -220,7 +209,7 @@ def _first_audio(into: list[float]) -> None:
     EVENTS.emit(Speaking())
 
 
-def after_speech(
+def _after_speech(
     ctx: DuplexContext,
     snapshot: LatencySnapshot,
     result: TtsResult,
@@ -228,14 +217,14 @@ def after_speech(
     started: float,
     first_audio_at: float | None = None,
     resumes: bool = False,
-) -> tuple[LatencySnapshot, int | None]:
+) -> tuple[LatencySnapshot, ExitCode | None]:
     """Record what was heard in history and fold the TTS result into the timings.
 
     With ``resumes``, the spoken text continues the last assistant message
     instead of starting a new one.
     """
     c = ctx.config
-    history = ctx.history
+    history = ctx.chat.history.messages
     notes = ["cancelled" if result.cancelled else "", "no audio" if not result.got_audio else ""]
     if result.error_status is not None or result.error_message:
         notes.append(f"error={result.error_status} {result.error_message or ''}".strip())
@@ -246,7 +235,7 @@ def after_speech(
         " ".join(note for note in notes if note),
     )
     if isinstance(result.error, FishAuthError):
-        return snapshot, EXIT_FATAL
+        return snapshot, ExitCode.FATAL
     if not result.got_audio and result.cancelled:
         notice("  [tts cancelled before audio]")
     elif not result.got_audio and result.error_status is None and not result.error_message:
@@ -254,7 +243,7 @@ def after_speech(
     spoken = result.spoken_so_far
     # The last history row is the user line this reply answers. Saving an
     # exact copy teaches the next turn to repeat them again.
-    last_user = history[-1]["content"] if history and history[-1]["role"] == "user" else ""
+    last_user = ctx.chat.history.last_user()
     if (
         spoken
         and (result.got_audio or not result.cancelled)
@@ -286,7 +275,7 @@ def _reply_sink(ctx: DuplexContext, cancel: threading.Event) -> PlaybackSink:
         sample_rate=c.tts.sample_rate,
         device=ctx.device,
         cancel=cancel,
-        aec=ctx.session.aec,
+        aec=ctx.turn_input.mic.aec,
         latency=c.sink_latency,
     )
 
@@ -305,7 +294,7 @@ def _keep_for_resume(ctx: DuplexContext, sent: str, result: TtsResult, barge: Ba
     # A barge-in keeps the clip that tripped it. If that clip turns out to be
     # noise, the rest of the reply is spoken again.
     if result.cancelled and barge.captured:
-        ctx.carry.keep(
+        ctx.turn_input.carry.keep(
             BargeIn(barge.captured, barge.resume_at, barge.tune.min_rms),
             unspoken_text(sent, result.spoken_so_far) if result.got_audio else "",
         )
@@ -320,7 +309,7 @@ async def speak_reply(
     started: float,
     trace_id: str | None,
     resumes: bool = False,
-) -> tuple[LatencySnapshot, int | None]:
+) -> tuple[LatencySnapshot, ExitCode | None]:
     """Speak a finished reply through one TTS turn on a private loop.
 
     With ``resumes``, ``reply`` is the rest of a reply a false barge-in cut
@@ -331,7 +320,9 @@ async def speak_reply(
     if is_tts_junk(prepared, drop_narration=c.drop_narration):
         notice("  (skip junk TTS)")
         return snapshot, None
-    barge = BargeGate(mic=ctx.mic, tune=c.barge, listen=c.listen, muted=ctx.muted)
+    barge = BargeGate(
+        mic=ctx.turn_input.mic, tune=c.barge, listen=c.listen, muted=ctx.turn_input.muted
+    )
     thread = barge.start_after_bleed(cancel)
     sink = _reply_sink(ctx, cancel)
     try:
@@ -347,9 +338,9 @@ async def speak_reply(
             )
         except PortAudioMissingError as exc:
             warn(str(exc))
-            return snapshot, EXIT_FATAL
+            return snapshot, ExitCode.FATAL
         _keep_for_resume(ctx, prepared, result, barge)
-        return after_speech(
+        return _after_speech(
             ctx,
             snapshot,
             result,
@@ -382,7 +373,7 @@ async def stream_turn(
     heard: HeardLine,
     cancel: threading.Event,
     llm_cancel: asyncio.Event,
-) -> tuple[LatencySnapshot, int | None]:
+) -> tuple[LatencySnapshot, ExitCode | None]:
     """Speak the reply while the model is still writing it.
 
     Parameters
@@ -407,11 +398,13 @@ async def stream_turn(
     first audio chunk, not at the start, so it does not listen to a silent
     speaker. A Fish failure before any audio falls back to speaking the
     finished reply. A ``ChatUnusableError`` lets the Fish turn end, then
-    returns ``EXIT_FATAL``.
+    returns ``ExitCode.FATAL``.
     """
     c = ctx.config
     pipe = _TokenPipe()
-    barge = BargeGate(mic=ctx.mic, tune=c.barge, listen=c.listen, muted=ctx.muted)
+    barge = BargeGate(
+        mic=ctx.turn_input.mic, tune=c.barge, listen=c.listen, muted=ctx.turn_input.muted
+    )
     barge_threads: list[threading.Thread] = []
     first_audio: list[float] = []
 
@@ -443,7 +436,7 @@ async def stream_turn(
     try:
         try:
             reply, ttft_ms = await collect_reply(
-                ctx,
+                ctx.chat,
                 llm_cancel=llm_cancel,
                 trace_id=heard.trace_id,
                 started=time.perf_counter(),
@@ -463,7 +456,7 @@ async def stream_turn(
             result = await tts_task
         except PortAudioMissingError as exc:
             warn(str(exc))
-            return snapshot, EXIT_FATAL
+            return snapshot, ExitCode.FATAL
         # Not the pieces the stream sent: the resumed rest is cut from the reply shaped
         # whole, as the reply would have been spoken without streaming.
         _keep_for_resume(ctx, _prepared(reply, c), result, barge)
@@ -475,87 +468,25 @@ async def stream_turn(
         # Nothing to say. The non-streaming path never opens a Fish turn for an
         # empty reply, so skip the "silent" report and the history entry too.
         debug("tts.stream empty reply, nothing to speak")
-        return snapshot, EXIT_FATAL if unusable else None
+        return snapshot, ExitCode.FATAL if unusable else None
     failed_early = (
         not result.got_audio
         and not result.cancelled
         and (result.error_status is not None or bool(result.error_message))
         and not isinstance(result.error, FishAuthError)
     )
-    if failed_early and reply and not ctx.session.quit_requested.is_set():
+    if failed_early and reply and not ctx.turn_input.session.quit_requested.is_set():
         debug("tts.stream failed before audio, speaking the finished reply")
         retry_cancel = threading.Event()
-        ctx.session.turn.bind(retry_cancel, llm_cancel)
-        if ctx.session.quit_requested.is_set():
-            # Quit landed between the check above and the rebind, so the old
-            # cancel flag no longer reaches this turn. Stop is sticky.
-            retry_cancel.set()
-            return snapshot, None
+        # A quit after this point sets the new flag too: ``TurnSignals`` keeps it.
+        ctx.turn_input.session.turn.bind(retry_cancel, llm_cancel)
         return await speak_reply(
             ctx, reply, retry_cancel, snapshot, started=heard.started, trace_id=heard.trace_id
         )
-    return after_speech(
+    return _after_speech(
         ctx,
         snapshot,
         result,
         started=heard.started,
         first_audio_at=first_audio[0] if first_audio else None,
     )
-
-
-def _seconds(ms: float) -> str:
-    return f"{ms / 1000:.2f}s"
-
-
-def _percentile(values: list[float], share: float) -> float:
-    # Nearest rank: the value at or below which ``share`` of the turns fall.
-    ordered = sorted(values)
-    return ordered[max(0, math.ceil(share * len(ordered)) - 1)]
-
-
-def session_summary(snapshots: Sequence[LatencySnapshot]) -> str:
-    """One human line for a whole session: the typical and the slow turn.
-
-    Parameters
-    ----------
-    snapshots : Sequence of LatencySnapshot
-        One per answered turn, in any order.
-
-    Returns
-    -------
-    str
-        ``session N turns · since you stopped p50 … p90 …`` and the same for first
-        audio, the LLM's first token and the total, for each one any turn recorded.
-        Empty when there were no turns.
-    """
-    if not snapshots:
-        return ""
-    fields = [
-        ("since you stopped", [s.since_stop_ms for s in snapshots]),
-        ("first audio", [s.first_audio_ms for s in snapshots]),
-        ("llm first token", [s.llm_first_token_ms for s in snapshots]),
-        ("total", [s.voice_to_voice_ms for s in snapshots]),
-    ]
-    parts = [f"session {len(snapshots)} turns"]
-    for name, values in fields:
-        known = [value for value in values if value is not None]
-        if known:
-            parts.append(
-                f"{name} p50 {_seconds(_percentile(known, 0.5))}"
-                f" p90 {_seconds(_percentile(known, 0.9))}"
-            )
-    return " \u00b7 ".join(parts)
-
-
-def turn_summary(snapshot: LatencySnapshot) -> str:
-    """One human line for a finished turn. The first number is the wait that matters."""
-    fields = [
-        ("since you stopped", snapshot.since_stop_ms),
-        ("first audio", snapshot.first_audio_ms),
-        ("asr", snapshot.asr_ms),
-        ("llm first token", snapshot.llm_first_token_ms),
-        ("tts first audio", snapshot.tts_first_audio_ms),
-        ("total", snapshot.voice_to_voice_ms),
-    ]
-    shown = [f"{name} {_seconds(value)}" for name, value in fields if value is not None]
-    return "  \u21b3 " + " \u00b7 ".join(shown) if shown else ""

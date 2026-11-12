@@ -1,17 +1,15 @@
-"""State shared by the duplex loop and its listen and reply steps."""
+"""State shared by the duplex loop and its listen and reply steps, grouped by who uses it."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Final
 
 import httpx
 
-from fish_audio_suite_kit import ChatMessage
 from fish_audio_suite_voice.cancel import never
 from fish_audio_suite_voice.config import VoiceCliConfig
-from fish_audio_suite_voice.history import KEEP_SYSTEM
+from fish_audio_suite_voice.history import History
 from fish_audio_suite_voice.llm import ChatBackend
 from fish_audio_suite_voice.mic import Mic
 from fish_audio_suite_voice.recognised import BargeIn
@@ -20,17 +18,11 @@ from fish_audio_suite_voice.speaker import FishSpeaker
 from fish_audio_suite_voice.speculate import Speculation
 
 __all__ = [
-    "EXIT_CRASH",
-    "EXIT_FATAL",
-    "EXIT_OK",
     "CarryOver",
+    "Chat",
     "DuplexContext",
+    "TurnInput",
 ]
-
-EXIT_OK: Final = 0
-EXIT_FATAL: Final = 2
-# What Python itself exits with after an uncaught exception.
-EXIT_CRASH: Final = 1
 
 
 @dataclass(slots=True)
@@ -78,21 +70,71 @@ class CarryOver:
         return resume
 
 
+@dataclass(frozen=True, slots=True)
+class TurnInput:
+    """What a turn source works with: the mic side of the session.
+
+    Attributes
+    ----------
+    session : DuplexSession
+        Quit, and the handles of the reply in flight.
+    mic : Mic
+        The session's one input stream.
+    carry : CarryOver
+        What the last barge-in left for the next listen.
+    muted : Callable
+        Says whether the user has muted the mic. A source with a mute switch supplies it.
+    """
+
+    session: DuplexSession
+    mic: Mic
+    carry: CarryOver = field(default_factory=CarryOver)
+    muted: Callable[[], bool] = never
+
+
 @dataclass(slots=True)
+class Chat:
+    """The conversation with the model: the backend, the history, and a reply written ahead.
+
+    Attributes
+    ----------
+    backend : ChatBackend
+        Streams the model's replies.
+    history : History
+        What was said so far.
+    speculation : Speculation or None
+        A reply being written for a turn the recogniser thinks is probably over. Hearing
+        starts it, and the reply uses it if the same words are confirmed.
+    """
+
+    backend: ChatBackend
+    history: History
+    speculation: Speculation | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class DuplexContext:
-    """Everything one duplex session shares between the listen, reply and history steps."""
+    """One duplex session, as hearing and the reply see it.
+
+    Attributes
+    ----------
+    config : VoiceCliConfig
+        The session's settings.
+    device : str or int or None
+        The PortAudio device for the mic and the speaker.
+    turn_input : TurnInput
+        The mic side: quit, the mic, the carried clip and the mute switch.
+    chat : Chat
+        The model, the history and a reply written ahead.
+    tts : FishSpeaker
+        Speaks each reply. Only the reply uses it.
+    asr_http : httpx.AsyncClient
+        The client Fish ASR requests share. Only hearing uses it.
+    """
 
     config: VoiceCliConfig
-    tts: FishSpeaker
     device: str | int | None
-    mic: Mic
-    backend: ChatBackend
-    session: DuplexSession
+    turn_input: TurnInput
+    chat: Chat
+    tts: FishSpeaker
     asr_http: httpx.AsyncClient
-    history: list[ChatMessage]
-    carry: CarryOver = field(default_factory=CarryOver)
-    # Says whether the user has muted the mic. A source with a mute switch sets it.
-    muted: Callable[[], bool] = never
-    # A reply being written for a turn Flux thinks is probably over. Used if it is confirmed.
-    speculation: Speculation | None = None
-    pinned: int = KEEP_SYSTEM

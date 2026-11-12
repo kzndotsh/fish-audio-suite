@@ -28,7 +28,7 @@ from fish_audio_suite_kit import (
     should_retry_fish_status,
 )
 from fish_audio_suite_voice.cancel import first_real_error, is_cancel_noise, quiet_shutdown
-from fish_audio_suite_voice.debug import debug, warn, with_detail
+from fish_audio_suite_voice.debug import debug, warn
 from fish_audio_suite_voice.pause import Retry, fish_retries
 from fish_audio_suite_voice.playback import PlaybackSink
 from fish_audio_suite_voice.tts_text import WholeText
@@ -43,6 +43,7 @@ from fish_audio_suite_voice.wire import (
     send_turn,
     tts_result,
 )
+from fish_audio_suite_voice.wording import with_detail
 
 _WS_TIMEOUT_S: Final = 240.0
 

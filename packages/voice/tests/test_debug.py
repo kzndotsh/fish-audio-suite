@@ -7,19 +7,25 @@ import sys
 
 import pytest
 
-from fish_audio_suite_voice.console import write_reply_token
+from fish_audio_suite_voice.console_sink import ConsoleSink
 from fish_audio_suite_voice.debug import (
-    configure_voice_logging,
-    conversation,
     debug,
     debug_enabled,
     debug_level,
     heartbeat_due,
     mark_turn,
-    short_model,
     trace,
 )
+from fish_audio_suite_voice.events import EventBus, ReplyToken
 from fish_audio_suite_voice.log_meta import public_meta, ws_event_view
+from fish_audio_suite_voice.log_setup import configure_voice_logging
+from fish_audio_suite_voice.wording import short_model
+
+
+def conversation(role: str, text: str) -> None:
+    """Print one line of the conversation as the plain display does."""
+    with ConsoleSink(EventBus()) as display:
+        display._conversation(role, text)  # pyright: ignore[reportPrivateUsage]
 
 
 def test_configure_voice_logging_replaces_library_handlers() -> None:
@@ -58,11 +64,14 @@ def test_debug_follows_a_replaced_stderr(
 def test_debug_closes_reply_before_the_log(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    bus = EventBus()
+    display = ConsoleSink(bus)
+    bus.emit(ReplyToken("[calm] hey"))  # streamed while debug is off
     configure_voice_logging(debug=True)
-    write_reply_token("[calm] hey")
     debug("llm.stream_end finish=stop")
+    display.close()
     captured = capsys.readouterr()
-    assert captured.out == "[calm] hey\n"
+    assert captured.out == "llm \u25b8 [calm] hey\n"
     assert "llm" in captured.err
     assert "stream_end finish=stop" in captured.err
     assert not captured.err.startswith("[calm]")
@@ -171,7 +180,7 @@ def test_conversation_on_a_terminal_with_debug_has_the_time_columns_on_stdout(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     configure_voice_logging(debug=1)
-    monkeypatch.setattr("fish_audio_suite_voice.debug._stdout_tty", lambda: True)
+    monkeypatch.setattr("fish_audio_suite_voice.console_sink._stdout_tty", lambda: True)
     mark_turn()
     capsys.readouterr()
     conversation("you", "Hey there")
@@ -192,7 +201,7 @@ def test_piped_conversation_stays_plain_on_stdout_even_with_debug(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     configure_voice_logging(debug=1)
-    monkeypatch.setattr("fish_audio_suite_voice.debug._stdout_tty", lambda: False)
+    monkeypatch.setattr("fish_audio_suite_voice.console_sink._stdout_tty", lambda: False)
     conversation("you", "Hey there")
     captured = capsys.readouterr()
     assert captured.out == "you \u25b8 Hey there\n"

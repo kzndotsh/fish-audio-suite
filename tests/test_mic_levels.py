@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import pytest
-from mic_levels import main, percentile, summarize, to_db
+from mic_levels import main, scale_levels, summarize, to_db
+
+from fish_audio_suite_voice.latency import percentile
+from fish_audio_suite_voice.session_view import SpeechScale
 
 
 def test_a_level_is_reported_in_db_below_full_scale() -> None:
@@ -42,6 +45,21 @@ def test_a_recording_of_only_room_has_no_speech_to_average() -> None:
     stats = summarize([-55.0, -56.0, -54.0, -55.0])
     assert stats["active"] == 0.0
     assert stats["speech"] == stats["noise"]  # nothing above the room, so nothing to average
+
+
+def test_the_waveform_numbers_are_the_ones_speech_scale_takes() -> None:
+    room = [-55.0, -56.0, -54.0, -55.0, -57.0, -55.0, -56.0, -54.0, -55.0, -56.0]
+    speech = [-30.0, -26.0, -28.0, -24.0, -29.0]
+    noise, level = scale_levels(room + speech)
+    assert noise == percentile(room + speech, 0.1)  # the quiet end, above the -70 dB floor
+    assert level is not None
+    assert level == percentile(speech, 0.9)  # loud, but not the loudest block
+    scale = SpeechScale()
+    for index, db in enumerate(room + speech):
+        scale.update(32768.0 * 10 ** (db / 20), index * 0.09)
+    # The same speech level sets the top of the bar: a block there is near full.
+    assert scale.update(32768.0 * 10 ** (level / 20), 2.0) > 0.85
+    assert scale_levels(room)[1] is None  # no speech to measure
 
 
 def test_the_script_explains_itself_without_opening_the_mic(

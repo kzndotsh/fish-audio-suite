@@ -13,8 +13,8 @@ from voice_fakes import make_result
 
 from fish_audio_suite_kit import SuiteDefaults
 from fish_audio_suite_voice.cancel import is_cancel_noise
-from fish_audio_suite_voice.debug import configure_voice_logging
 from fish_audio_suite_voice.events import EVENTS, Event, OutputLevel
+from fish_audio_suite_voice.log_setup import configure_voice_logging
 from fish_audio_suite_voice.pcm import write_mono_wav
 from fish_audio_suite_voice.playback import (
     OUTPUT_LEVEL_EVERY_S,

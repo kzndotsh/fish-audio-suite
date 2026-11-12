@@ -23,10 +23,11 @@ from fish_audio_suite_kit import (
     strip_base,
     utf8_text,
 )
-from fish_audio_suite_voice.debug import debug, debug_enabled, short_model, trace, warn
+from fish_audio_suite_voice.debug import debug, debug_enabled, trace, warn
 from fish_audio_suite_voice.events import notice
 from fish_audio_suite_voice.llm_tune import LlmTune
 from fish_audio_suite_voice.tune import HTTP_KEEPALIVE_S
+from fish_audio_suite_voice.wording import short_model
 
 __all__ = [
     "ChatCall",

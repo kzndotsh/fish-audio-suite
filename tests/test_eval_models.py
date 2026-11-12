@@ -14,8 +14,8 @@ from loguru import logger
 
 from fish_audio_suite_kit import ChatMessage
 from fish_audio_suite_voice import llm
-from fish_audio_suite_voice.debug import configure_voice_logging
 from fish_audio_suite_voice.llm_tune import LlmTune
+from fish_audio_suite_voice.log_setup import configure_voice_logging
 
 
 def test_voice_checks_flag_what_a_voice_cannot_say() -> None:
@@ -102,7 +102,7 @@ def test_every_model_and_prompt_runs_and_failures_do_not_stop_the_sweep() -> Non
             ["one", "two"],
             "system",
             runs=2,
-            seed=None,
+            seed=True,
             warmup=True,
         )
     )
@@ -123,7 +123,7 @@ def test_the_summary_counts_only_successful_runs() -> None:
             ["one"],
             "system",
             runs=3,
-            seed=None,
+            seed=True,
             warmup=False,
         )
     )

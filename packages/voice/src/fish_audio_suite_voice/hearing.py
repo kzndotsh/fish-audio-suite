@@ -78,9 +78,9 @@ async def hear_line(
     EVENTS.emit(Listening())
     clear_turn()
     trace("listen.waiting device={}", ctx.device)
-    quit_requested = ctx.session.quit_requested
+    quit_requested = ctx.turn_input.session.quit_requested
     stopper = quit_requested if stop is None else any_of(quit_requested, stop)
-    barge = ctx.carry.take_clip()
+    barge = ctx.turn_input.carry.take_clip()
     carried: CarriedClip | None = barge
     opened = time.monotonic()
     outcome: Transcript | NoTurn | None = None
@@ -97,7 +97,7 @@ async def hear_line(
             if isinstance(outcome, Transcript) and not quit_requested.is_set():
                 mark_turn()
     if outcome is None:
-        drop_speculation(ctx)
+        drop_speculation(ctx.chat)
         outcome, ended = await _hear_batch(ctx, carried, stopper)
     line = heard_line(
         outcome,
@@ -111,7 +111,7 @@ async def hear_line(
         quit_requested=quit_requested,
     )
     if line.kind != "line":
-        drop_speculation(ctx)  # no turn to answer, so a reply started for one is no use
+        drop_speculation(ctx.chat)  # no turn to answer, so a reply started for one is no use
     return line
 
 
@@ -123,12 +123,12 @@ async def _hear_streaming(ctx: DuplexContext, barge: BargeIn | None, stop: StopF
             ctx.config.stt, fish_key=ctx.config.fish_api_key, fish_base=ctx.config.fish_base
         ),
         listen=ctx.config.listen,
-        mic=ctx.mic,
-        quit_requested=ctx.session.quit_requested,
+        mic=ctx.turn_input.mic,
+        quit_requested=ctx.turn_input.session.quit_requested,
         stop=stop,
         carried=barge,
-        on_eager=functools.partial(start_speculation, ctx) if eager else None,
-        on_resumed=functools.partial(drop_speculation, ctx) if eager else None,
+        on_eager=functools.partial(start_speculation, ctx.chat) if eager else None,
+        on_resumed=functools.partial(drop_speculation, ctx.chat) if eager else None,
     )
 
 
@@ -145,12 +145,12 @@ async def _hear_batch(
     first_tune = first_clip_tune(ctx.config.listen, ctx.config.turn)
     try:
         wav = await asyncio.to_thread(
-            record_utterance, ctx.mic, stop, carried=carried, tune=first_tune
+            record_utterance, ctx.turn_input.mic, stop, carried=carried, tune=first_tune
         )
     except PortAudioMissingError as e:
         return mic_failure(e), time.monotonic()
     ended = time.monotonic()
-    if ctx.session.quit_requested.is_set():
+    if ctx.turn_input.session.quit_requested.is_set():
         return NoTurn("stopped"), ended
     if not wav:
         debug("listen.dropped (too short or none)")
@@ -159,7 +159,7 @@ async def _hear_batch(
     if ctx.config.turn.enabled:
         return await _hear_checked(ctx, wav, stop, first_tune), ended
     heard = await transcribe_clip(
-        wav, ctx.config, cancel=ctx.session.quit_requested, client=ctx.asr_http
+        wav, ctx.config, cancel=ctx.turn_input.session.quit_requested, client=ctx.asr_http
     )
     if isinstance(heard, Transcript):
         heard = replace(heard, end_wait_ms=_silence_ms(first_tune))
@@ -190,7 +190,7 @@ async def _hear_checked(
         reopened = _reopen(ctx, stop, open_turn, more_tune)
         try:
             got = await transcribe_clip(
-                clip, ctx.config, cancel=ctx.session.quit_requested, client=ctx.asr_http
+                clip, ctx.config, cancel=ctx.turn_input.session.quit_requested, client=ctx.asr_http
             )
             if isinstance(got, NoTurn):
                 if got.reason != "again" or last is None:
@@ -231,11 +231,11 @@ def _reopen(
 ) -> Reopened | None:
     """Start listening for a continuation, unless the turn has used them all or the mic is muted."""
     turn = ctx.config.turn
-    if not open_turn.room_for_more(turn) or ctx.muted() or stop.is_set():
+    if not open_turn.room_for_more(turn) or ctx.turn_input.muted() or stop.is_set():
         return None
     wait = wait_frames(turn)
 
     def record(flag: StopFlag) -> bytes | None:
-        return record_utterance(ctx.mic, flag, tune=tune, give_up_frames=wait)
+        return record_utterance(ctx.turn_input.mic, flag, tune=tune, give_up_frames=wait)
 
     return Reopened(record, stop)

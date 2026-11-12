@@ -20,6 +20,7 @@ from voice_fakes import FakeGate, ScriptedMic, install_audio, install_vad, set_t
 
 from fish_audio_suite_voice import reply
 from fish_audio_suite_voice.duplex_state import DuplexContext
+from fish_audio_suite_voice.events import ExitCode
 from fish_audio_suite_voice.hearing import HeardLine
 from fish_audio_suite_voice.portaudio import PortAudioMissingError
 from fish_audio_suite_voice.signals import DuplexSession
@@ -41,7 +42,7 @@ def test_a_heard_line_is_answered_by_the_llm_and_spoken_then_the_loop_says_bye(
     # Only the whole-reply path gives the line a lead cue itself. A stream gets one from the scrubber.
     assert said == ["Hello there friend." if stream else "[calm] Hello there friend."]
     assert loop.ctx is not None
-    assert loop.ctx.history[-2:] == [
+    assert loop.ctx.chat.history.messages[-2:] == [
         {"role": "user", "content": "hi there"},
         {"role": "assistant", "content": said[0]},
     ]
@@ -61,7 +62,7 @@ def test_each_listen_step_is_told_the_previous_line(monkeypatch: pytest.MonkeyPa
 
 def test_a_fatal_listen_step_ends_the_loop_with_its_code(monkeypatch: pytest.MonkeyPatch) -> None:
     tts = FishSpeaker(api_key="k", voice_id="voice")
-    ScriptedHearing(monkeypatch, HeardLine("fatal", code=2))
+    ScriptedHearing(monkeypatch, HeardLine("fatal", code=ExitCode.FATAL))
     assert run_session(quick_config(), tts) == 2
 
 
@@ -79,7 +80,7 @@ def test_an_empty_reply_is_not_spoken_and_the_loop_goes_on(
     assert run_session(quick_config(), tts, nothing) == 0
     assert said == []
     assert loop.ctx is not None
-    assert loop.ctx.history[-1] == {"role": "user", "content": "anyone there"}
+    assert loop.ctx.chat.history.messages[-1] == {"role": "user", "content": "anyone there"}
 
 
 def test_quit_while_the_llm_answers_ends_the_loop_without_speaking(
@@ -142,7 +143,7 @@ def test_a_barge_in_skips_the_cooldown(monkeypatch: pytest.MonkeyPatch) -> None:
 
     async def hear(ctx: DuplexContext, last_user: str) -> HeardLine:
         heard.last_user.append(last_user)
-        ctx.carry.keep(barge_clip(), "")  # the user spoke over the reply
+        ctx.turn_input.carry.keep(barge_clip(), "")  # the user spoke over the reply
         return next(lines)
 
     monkeypatch.setattr("fish_audio_suite_voice.duplex.hear_line", hear)
@@ -161,7 +162,7 @@ def test_a_failing_resume_ends_the_loop_with_code_2(monkeypatch: pytest.MonkeyPa
     lines = iter([HeardLine("noise"), HeardLine("bye")])
 
     async def hear(ctx: DuplexContext, _last: str) -> HeardLine:
-        ctx.carry.resume = "the rest of the reply"
+        ctx.turn_input.carry.resume = "the rest of the reply"
         return next(lines)
 
     monkeypatch.setattr("fish_audio_suite_voice.duplex.hear_line", hear)
@@ -226,7 +227,7 @@ def _logged_cooldowns(monkeypatch: pytest.MonkeyPatch, *, barged: bool) -> list[
     async def hear(ctx: DuplexContext, last_user: str) -> HeardLine:
         heard.last_user.append(last_user)
         if barged:
-            ctx.carry.keep(barge_clip(), "")  # the user spoke over the reply
+            ctx.turn_input.carry.keep(barge_clip(), "")  # the user spoke over the reply
         return next(lines)
 
     monkeypatch.setattr("fish_audio_suite_voice.duplex.hear_line", hear)

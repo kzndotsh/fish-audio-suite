@@ -12,11 +12,12 @@ from typing import Final
 
 from fish_audio_suite_voice.deepgram import DEEPGRAM
 from fish_audio_suite_voice.fish_realtime import FISH_REALTIME
-from fish_audio_suite_voice.turn_stream import Recogniser
+from fish_audio_suite_voice.turn_stream import Recogniser, RecogniserSettings
 
 __all__ = [
     "RECOGNISERS",
     "recogniser",
+    "recogniser_problem",
 ]
 
 RECOGNISERS: Final[Mapping[str, Recogniser]] = MappingProxyType(
@@ -38,3 +39,21 @@ def recogniser(provider: str) -> Recogniser | None:
         Its spec, or None for ``fish``, which hears a clip after the user stops.
     """
     return RECOGNISERS.get(provider)
+
+
+def recogniser_problem(settings: RecogniserSettings) -> str | None:
+    """Say why the chosen streaming recogniser cannot be used, through its own ``problem`` check.
+
+    Parameters
+    ----------
+    settings : RecogniserSettings
+        The speech-to-text settings and the Fish account.
+
+    Returns
+    -------
+    str or None
+        The reason, such as a missing key or extra. None when it can be used, and for
+        ``fish``, which needs nothing more.
+    """
+    spec = recogniser(settings.stt.provider)
+    return None if spec is None else spec.problem(settings)

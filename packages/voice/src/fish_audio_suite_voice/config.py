@@ -6,7 +6,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Final
+from typing import Final, Literal, overload
 from urllib.parse import urlsplit
 
 from fish_audio_suite_kit import (
@@ -20,7 +20,7 @@ from fish_audio_suite_kit import (
     normalize_tts_model,
 )
 from fish_audio_suite_voice.debug import warn
-from fish_audio_suite_voice.llm_tune import DEFAULT_HISTORY_TURNS, OPENROUTER_API_BASE, LlmTune
+from fish_audio_suite_voice.llm_tune import DEFAULT_HISTORY_TURNS, LlmTune
 from fish_audio_suite_voice.playback_kind import DEFAULT_PLAYBACK, playback_key
 from fish_audio_suite_voice.tts_tune import TtsTune
 from fish_audio_suite_voice.tune import (
@@ -38,16 +38,16 @@ from fish_audio_suite_voice.tune import (
 # A fresh utterance cannot end sooner: the turn needs about 1.2 s of silence plus
 # the minimum voiced time. A faster clip is mostly pre-roll or leftover audio.
 DEFAULT_REPEAT_WINDOW_S: Final = 1.5
-OUTPUT_LATENCIES: Final = ("auto", "low", "high")
-TTS_CUE_MODES: Final = ("official", "free")
+_OUTPUT_LATENCIES: Final = ("auto", "low", "high")
+_TTS_CUE_MODES: Final = ("official", "free")
 
 __all__ = [
-    "OPENROUTER_API_BASE",
-    "OUTPUT_LATENCIES",
-    "TTS_CUE_MODES",
+    "SystemPrompt",
     "VoiceCliConfig",
+    "fish_problem",
     "load_config",
     "log_dir_from_env",
+    "prompt_from_file",
     "system_prompt_from_file",
     "warn_if_insecure_base",
 ]
@@ -94,6 +94,9 @@ class VoiceCliConfig:
         The sound card's playback buffer: ``"low"`` or ``"high"`` (bigger, so a busy moment
         does not make it run dry and click). ``"auto"`` is ``"high"`` in the full-screen app,
         which is busy drawing, and ``"low"`` otherwise.
+    full_screen : bool
+        Whether the session runs in the full-screen app, which decides ``"auto"`` above.
+        Set by the CLI, not read from the environment.
 
     Notes
     -----
@@ -127,6 +130,7 @@ class VoiceCliConfig:
     tts_cues: str = "official"
     drop_narration: bool = False
     stream_tts: bool = False
+    full_screen: bool = False
 
     @property
     def cue_style(self) -> CueStyle:
@@ -141,7 +145,30 @@ class VoiceCliConfig:
     @property
     def sink_latency(self) -> str:
         """Return the buffer size the playback stream asks for: ``low`` or ``high``."""
-        return "low" if self.output_latency == "auto" else self.output_latency
+        if self.output_latency != "auto":
+            return self.output_latency
+        # The screen is busy drawing, so a bigger buffer rides it out.
+        return "high" if self.full_screen else "low"
+
+
+def fish_problem(c: VoiceCliConfig) -> str | None:
+    """Say which Fish setting a session cannot start without.
+
+    Parameters
+    ----------
+    c : VoiceCliConfig
+        The settings.
+
+    Returns
+    -------
+    str or None
+        ``FISH_API_KEY missing`` or ``FISH_VOICE_ID missing``, or None when both are set.
+    """
+    if not c.fish_api_key:
+        return "FISH_API_KEY missing"
+    if not c.fish_voice_id:
+        return "FISH_VOICE_ID missing"
+    return None
 
 
 def _asr_model(default: str) -> str:
@@ -197,7 +224,7 @@ def log_dir_from_env() -> str:
 def _tts_cues() -> str:
     """Read ``FISH_TTS_CUES``: ``official`` or ``free``."""
     value = read_text("FISH_TTS_CUES", "official").lower() or "official"
-    if value not in TTS_CUE_MODES:
+    if value not in _TTS_CUE_MODES:
         warn(f"fish-voice: ignoring FISH_TTS_CUES={value!r}, use official or free")
         return "official"
     return value
@@ -206,7 +233,7 @@ def _tts_cues() -> str:
 def _output_latency() -> str:
     """Read ``FISH_VOICE_OUTPUT_LATENCY``: ``auto``, ``low`` or ``high``."""
     value = read_text("FISH_VOICE_OUTPUT_LATENCY", "auto").lower() or "auto"
-    if value not in OUTPUT_LATENCIES:
+    if value not in _OUTPUT_LATENCIES:
         warn(f"fish-voice: ignoring FISH_VOICE_OUTPUT_LATENCY={value!r}, use auto, low or high")
         return "auto"
     return value
@@ -227,7 +254,7 @@ def load_config() -> VoiceCliConfig:
     of falling back to a default key. There is no default voice id.
     """
     d = SuiteDefaults()
-    prompt = _system_prompt(DEFAULT_SYSTEM_PROMPT)
+    prompt = _system_prompt()
     return VoiceCliConfig(
         fish_api_key=env_text("FISH_API_KEY"),
         fish_base=env_base("FISH_BASE", d.fish_base),
@@ -277,12 +304,37 @@ def load_config() -> VoiceCliConfig:
 
 
 @dataclass(frozen=True, slots=True)
-class _Prompt:
+class SystemPrompt:
+    """The session's system prompt, and whether the opening exchange is pinned after it.
+
+    Attributes
+    ----------
+    text : str
+        The system prompt.
+    pin_seed : bool
+        Pin the opening exchange that shows several cues. It is pinned for the default
+        prompt and for a character file, which keeps the voice rules. A prompt written
+        out in full is left alone. This is the one place that decides it.
+    """
+
     text: str
-    # The opening exchange that shows several cues is pinned for the default prompt
-    # and for a character file (which keeps the voice rules). A prompt written out in
-    # full is left alone.
     pin_seed: bool
+
+    @classmethod
+    def written(cls, text: str) -> SystemPrompt:
+        """Take a prompt written out in full, such as ``FISH_VOICE_SYSTEM_PROMPT``.
+
+        Parameters
+        ----------
+        text : str
+            The whole system prompt.
+
+        Returns
+        -------
+        SystemPrompt
+            Pinned only when it is the default prompt.
+        """
+        return cls(text, pin_seed=text == DEFAULT_SYSTEM_PROMPT)
 
 
 # A character card is a few KB. This stops a wrong path (a log, a binary) from
@@ -341,7 +393,34 @@ def system_prompt_from_file(path: str, default: str) -> str | None:
     return f"{card}\n\n{default}"
 
 
-def _system_prompt(default: str) -> _Prompt:
+@overload
+def prompt_from_file(path: str, *, required: Literal[True]) -> SystemPrompt | None: ...
+@overload
+def prompt_from_file(path: str, *, required: Literal[False]) -> SystemPrompt: ...
+def prompt_from_file(path: str, *, required: bool) -> SystemPrompt | None:
+    """Build the system prompt from a character file, with the voice rules.
+
+    Parameters
+    ----------
+    path : str
+        The file, as ``system_prompt_from_file`` reads it.
+    required : bool
+        What a file that cannot be used means. True (``--prompt-file``) returns None, so
+        the caller can stop. False (``FISH_VOICE_SYSTEM_PROMPT_FILE``) falls back to the
+        default prompt. Either way a warning says why first.
+
+    Returns
+    -------
+    SystemPrompt or None
+        The file and the voice rules, with the opening exchange pinned.
+    """
+    composed = system_prompt_from_file(path, DEFAULT_SYSTEM_PROMPT)
+    if composed is not None:
+        return SystemPrompt(composed, pin_seed=True)
+    return None if required else SystemPrompt.written(DEFAULT_SYSTEM_PROMPT)
+
+
+def _system_prompt() -> SystemPrompt:
     file = os.environ.get("FISH_VOICE_SYSTEM_PROMPT_FILE", "").strip()
     inline = os.environ.get("FISH_VOICE_SYSTEM_PROMPT")
     if file:
@@ -349,12 +428,7 @@ def _system_prompt(default: str) -> _Prompt:
             warn(
                 "fish-voice: FISH_VOICE_SYSTEM_PROMPT_FILE is set, so FISH_VOICE_SYSTEM_PROMPT is ignored"
             )
-        composed = system_prompt_from_file(file, default)
-        if composed is not None:
-            return _Prompt(composed, pin_seed=True)
-        return _Prompt(default, pin_seed=True)
+        return prompt_from_file(file, required=False)
     # A prompt set but blank means "no system prompt", so unlike the other keys
     # a blank value still counts here.
-    if inline is None:
-        return _Prompt(default, pin_seed=True)
-    return _Prompt(inline, pin_seed=inline == default)
+    return SystemPrompt.written(DEFAULT_SYSTEM_PROMPT if inline is None else inline)

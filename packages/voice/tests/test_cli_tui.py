@@ -12,12 +12,13 @@ from typing import Any
 import pytest
 
 from fish_audio_suite_voice import cli
-from fish_audio_suite_voice.cli import EXIT_FATAL, _can_draw_a_screen, load_config, main, run_tui
+from fish_audio_suite_voice.cli import _can_draw_a_screen, load_config, main, run_tui
 from fish_audio_suite_voice.config import VoiceCliConfig
 from fish_audio_suite_voice.debug import DebugLevel
+from fish_audio_suite_voice.events import EVENTS, ExitCode, Listening
 from fish_audio_suite_voice.inputs import LiveInput
 from fish_audio_suite_voice.signals import DuplexSession
-from fish_audio_suite_voice.transports import ChatUnusableError
+from fish_audio_suite_voice.transports import unusable
 
 
 def _configured(monkeypatch: pytest.MonkeyPatch) -> VoiceCliConfig:
@@ -32,7 +33,7 @@ def test_the_tui_flag_without_the_extra_says_how_to_install_it(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr("importlib.util.find_spec", lambda _name: None)
-    assert main(["--tui"]) == EXIT_FATAL
+    assert main(["--tui"]) == ExitCode.FATAL
     err = capsys.readouterr().err
     assert "needs the tui extra" in err
     assert "fish-audio-suite-voice[tui]" in err
@@ -79,7 +80,7 @@ def test_run_tui_stops_on_the_same_blockers_as_the_plain_loop(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     c = replace(_configured(monkeypatch), playback="nope")
-    assert asyncio.run(run_tui(c, debug=DebugLevel.OFF)) == EXIT_FATAL
+    assert asyncio.run(run_tui(c, debug=DebugLevel.OFF)) == ExitCode.FATAL
     assert "unknown playback sink" in capsys.readouterr().err
 
 
@@ -133,6 +134,7 @@ def _patch_session(monkeypatch: pytest.MonkeyPatch, calls: dict[str, Any]) -> No
 
     async def fake_duplex(*args: Any, **kwargs: Any) -> int:
         calls["duplex"] = (args, kwargs)
+        EVENTS.emit(Listening())
         return 0
 
     monkeypatch.setattr(cli, "duplex_turns", fake_duplex)
@@ -145,7 +147,7 @@ def _patch_session(monkeypatch: pytest.MonkeyPatch, calls: dict[str, Any]) -> No
 
 
 def test_run_tui_gives_the_session_to_the_app_with_the_console_off(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     c = _configured(monkeypatch)
     calls: dict[str, Any] = {}
@@ -155,11 +157,13 @@ def test_run_tui_gives_the_session_to_the_app_with_the_console_off(
     assert "voice123" in app.info
     assert "model" in app.info
     args, kwargs = calls["duplex"]
-    assert args[0] == replace(c, output_latency="high")  # the screen asks for a bigger buffer
+    assert args[0] == replace(c, full_screen=True)
+    assert args[0].sink_latency == "high"  # the screen asks for a bigger buffer
     assert c.sink_latency == "low"
     assert args[4] is app.session
     assert kwargs["source"] is app.live
-    assert kwargs["console"] is False
+    # The plain display is not printing: the screen shows the session.
+    assert "listening" not in capsys.readouterr().out
     # Logging moves off stderr, which the screen owns, and the forwarding is undone.
     assert calls["logging"] == {"debug": DebugLevel.EVENTS, "to_stderr": False}
     assert calls["stopped"] is True
@@ -249,12 +253,12 @@ def test_choosing_deepgram_needs_its_key_and_its_extra(
     fish = replace(base, stt=SttTune(provider="fish"))
     assert _preflight(fish) is None  # the default needs nothing from Deepgram
     keyless = replace(base, stt=SttTune(provider="deepgram"))
-    assert _preflight(keyless) == EXIT_FATAL
+    assert _preflight(keyless) == ExitCode.FATAL
     assert "DEEPGRAM_API_KEY" in capsys.readouterr().err
     ready = replace(base, stt=SttTune(provider="deepgram", deepgram=DeepgramTune(key="k")))
     assert _preflight(ready) is None  # websockets is installed in the test environment
     monkeypatch.setattr("importlib.util.find_spec", lambda name, *_a: None)
-    assert _preflight(ready) == EXIT_FATAL
+    assert _preflight(ready) == ExitCode.FATAL
     assert "deepgram extra" in capsys.readouterr().err
 
 
@@ -267,7 +271,7 @@ def test_choosing_fish_realtime_needs_only_its_extra(
     ready = replace(_configured(monkeypatch), stt=SttTune(provider="fish-realtime"))
     assert _preflight(ready) is None  # the Fish key is already required, and it is the only one
     monkeypatch.setattr("importlib.util.find_spec", lambda name, *_a: None)
-    assert _preflight(ready) == EXIT_FATAL
+    assert _preflight(ready) == ExitCode.FATAL
     assert "fish-realtime extra" in capsys.readouterr().err
 
 
@@ -280,9 +284,9 @@ def test_a_voice_detector_that_cannot_load_stops_the_start(
     base = _configured(monkeypatch)
     assert _preflight(replace(base, listen=ListenTune(vad_engine="silero"))) is None
     monkeypatch.setitem(sys.modules, "pysilero_vad", None)
-    assert _preflight(replace(base, listen=ListenTune(vad_engine="silero"))) == EXIT_FATAL
+    assert _preflight(replace(base, listen=ListenTune(vad_engine="silero"))) == ExitCode.FATAL
     assert "fish-audio-suite-voice[silero]" in capsys.readouterr().err
-    assert _preflight(replace(base, listen=ListenTune(vad_engine="silro"))) == EXIT_FATAL
+    assert _preflight(replace(base, listen=ListenTune(vad_engine="silro"))) == ExitCode.FATAL
     assert "unknown voice detector" in capsys.readouterr().err
 
 
@@ -293,7 +297,7 @@ class _UnusableBackend:
         pass
 
     async def __aenter__(self) -> object:
-        raise ChatUnusableError("no provider serves model org/model")
+        raise unusable("no provider serves model org/model")
 
     async def __aexit__(self, *_exc: object) -> None:
         return None
@@ -315,11 +319,11 @@ def test_a_model_that_cannot_answer_stops_before_the_session_and_says_why(
     monkeypatch.setattr(cli, "configure_voice_logging", configure)
     if tui:
         code = asyncio.run(run_tui(c, debug=DebugLevel.OFF))
-        # The log had moved into the screen, which never opened, so the reason is put
-        # back on the terminal.
-        assert logging[-1] is True
+        # The model is checked before the screen takes the log, so the reason is on the
+        # terminal.
+        assert False not in logging
         assert "no provider serves model org/model" in capsys.readouterr().err
     else:
         code = asyncio.run(cli.run_loop(c))
-    assert code == EXIT_FATAL
+    assert code == ExitCode.FATAL
     assert _FakeApp.instances == []

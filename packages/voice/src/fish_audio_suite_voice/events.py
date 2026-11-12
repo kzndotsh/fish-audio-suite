@@ -1,8 +1,8 @@
 """What happens in a voice session, as events a display can follow.
 
-The duplex loop reports each step here as well as printing it, so another
-display, such as a full-screen terminal app, can follow a session without
-reading its console output.
+The duplex loop reports each step here and prints nothing itself. The plain terminal
+display (``console_sink``) and the full-screen app (``tui``) are both subscribers, so
+each sees the same facts.
 """
 
 from __future__ import annotations
@@ -11,14 +11,12 @@ import threading
 from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from enum import StrEnum
+from enum import IntEnum, StrEnum
 from time import monotonic
-from typing import Any, Final, Literal
+from typing import Final, Literal
 
-from loguru import logger
-
-from fish_audio_suite_kit import LatencySnapshot
-from fish_audio_suite_voice.debug import displayed, log_tag, log_to_file, warn
+from fish_audio_suite_voice.debug import warn
+from fish_audio_suite_voice.latency import LatencySnapshot
 
 __all__ = [
     "DEFAULT_KEYS",
@@ -28,6 +26,7 @@ __all__ = [
     "Event",
     "EventBus",
     "EventQueue",
+    "ExitCode",
     "Heard",
     "Interim",
     "Listening",
@@ -40,19 +39,11 @@ __all__ = [
     "SessionAction",
     "SessionState",
     "Speaking",
-    "StateChanged",
-    "StateTracker",
     "TurnEnded",
     "available_actions",
-    "forward_logs",
-    "mirror_conversation",
     "next_state",
     "notice",
 ]
-
-# Events that may be dropped when a consumer falls behind. Everything else is
-# a fact about the conversation and is never dropped.
-_DROPPABLE: Final = ("MicLevel", "OutputLevel", "Interim", "LogLine")
 
 
 def _now() -> float:
@@ -268,20 +259,31 @@ class TurnEnded:
     at: float = field(default_factory=_now, compare=False, kw_only=True)
 
 
+class ExitCode(IntEnum):
+    """How a session ended, as the process exit code ``fish-voice`` returns."""
+
+    OK = 0
+    """A normal quit."""
+    # What Python itself exits with after an uncaught exception.
+    CRASH = 1
+    """The session raised an unexpected exception."""
+    FATAL = 2
+    """A fatal error, such as a bad key, missing PortAudio or an unusable chat model."""
+
+
 @dataclass(frozen=True, slots=True)
 class Bye:
     """The session is over, sent once however it ended.
 
     Attributes
     ----------
-    code : int
-        The exit code: 0 for a normal quit, 2 for a fatal error such as a bad key or
-        missing PortAudio, 1 when the session raised an unexpected exception.
+    code : ExitCode
+        How it ended.
     at : float
         ``time.monotonic()`` when the event was made. Not part of equality.
     """
 
-    code: int = 0
+    code: ExitCode = ExitCode.OK
     at: float = field(default_factory=_now, compare=False, kw_only=True)
 
 
@@ -317,22 +319,6 @@ DEFAULT_KEYS: Final[Mapping[SessionAction, str]] = {
 }
 
 
-@dataclass(frozen=True, slots=True)
-class StateChanged:
-    """The session moved to a new state. Made by a ``StateTracker``.
-
-    Attributes
-    ----------
-    state : SessionState
-        The new state.
-    at : float
-        ``time.monotonic()`` when the event was made. Not part of equality.
-    """
-
-    state: SessionState
-    at: float = field(default_factory=_now, compare=False, kw_only=True)
-
-
 type Event = (
     Listening
     | Heard
@@ -347,8 +333,11 @@ type Event = (
     | Notice
     | TurnEnded
     | Bye
-    | StateChanged
 )
+
+# Events that may be dropped when a consumer falls behind. Everything else is
+# a fact about the conversation and is never dropped.
+_DROPPABLE: Final = (MicLevel, OutputLevel, Interim, LogLine)
 
 
 def next_state(state: SessionState, event: Event) -> SessionState:
@@ -382,7 +371,7 @@ def next_state(state: SessionState, event: Event) -> SessionState:
 
 
 def available_actions(state: SessionState, *, muted: bool) -> frozenset[SessionAction]:
-    """Return the actions that make sense now, so a display shows only those keys.
+    """Return the actions that depend on the state, so a display shows only those keys.
 
     Parameters
     ----------
@@ -394,14 +383,13 @@ def available_actions(state: SessionState, *, muted: bool) -> frozenset[SessionA
     Returns
     -------
     frozenset of SessionAction
-        Sending a line and quitting always apply. Interrupting only applies while the
-        model is thinking or the reply is playing, and muting offers the opposite of
-        the current setting.
+        Interrupting applies only while the model is thinking or the reply is playing,
+        and muting offers the opposite of the current setting. Sending a line and
+        quitting always apply, so they are not listed.
     """
-    actions = {SessionAction.SEND, SessionAction.QUIT}
+    actions = {SessionAction.UNMUTE if muted else SessionAction.MUTE}
     if state in (SessionState.THINKING, SessionState.SPEAKING):
         actions.add(SessionAction.INTERRUPT)
-    actions.add(SessionAction.UNMUTE if muted else SessionAction.MUTE)
     return frozenset(actions)
 
 
@@ -479,41 +467,6 @@ class EventBus:
                     self._reporting.on = False
 
 
-class StateTracker:
-    """Follows the events of a bus and announces each change of ``SessionState``.
-
-    Parameters
-    ----------
-    bus : EventBus
-        The bus to follow and to announce on.
-
-    Attributes
-    ----------
-    state : SessionState
-        The current state.
-    """
-
-    def __init__(self, bus: EventBus) -> None:
-        self._bus = bus
-        self._lock = threading.Lock()
-        self.state: SessionState = SessionState.IDLE
-        self._unsubscribe = bus.subscribe(self._on_event)
-
-    def _on_event(self, event: Event) -> None:
-        if isinstance(event, StateChanged):
-            return
-        with self._lock:
-            new = next_state(self.state, event)
-            if new is self.state:
-                return
-            self.state = new
-        self._bus.emit(StateChanged(new))
-
-    def close(self) -> None:
-        """Stop following the bus."""
-        self._unsubscribe()
-
-
 class EventQueue:
     """Collects the events of a bus for a consumer that runs at its own pace.
 
@@ -546,56 +499,30 @@ class EventQueue:
         self._droppable = 0
         self._max_droppable = max(1, max_droppable)
         self._wake = wake
-        self._cond = threading.Condition()
+        self._lock = threading.Lock()
         self._closed = False
         self.dropped: int = 0
         self._unsubscribe = bus.subscribe(self._put)
 
     def _put(self, event: Event) -> None:
-        with self._cond:
+        with self._lock:
             if self._closed:
                 return
             self._items.append(event)
-            if type(event).__name__ in _DROPPABLE:
+            if isinstance(event, _DROPPABLE):
                 self._droppable += 1
                 if self._droppable > self._max_droppable:
                     self._drop_oldest_droppable()
-            self._cond.notify()
         if self._wake is not None:
             self._wake()
 
     def _drop_oldest_droppable(self) -> None:
         for index, item in enumerate(self._items):
-            if type(item).__name__ in _DROPPABLE:
+            if isinstance(item, _DROPPABLE):
                 del self._items[index]
                 self._droppable -= 1
                 self.dropped += 1
                 return
-
-    def _took(self, event: Event) -> None:
-        if type(event).__name__ in _DROPPABLE:
-            self._droppable -= 1
-
-    def get(self, timeout: float | None = None) -> Event | None:
-        """Take the oldest event, waiting for one if there is none.
-
-        Parameters
-        ----------
-        timeout : float or None, optional
-            Seconds to wait. None waits until an event arrives or the queue is closed.
-
-        Returns
-        -------
-        Event or None
-            The event, or None when the wait timed out or the queue was closed.
-        """
-        with self._cond:
-            self._cond.wait_for(lambda: self._items or self._closed, timeout)
-            if not self._items:
-                return None
-            event = self._items.popleft()
-            self._took(event)
-            return event
 
     def drain(self) -> list[Event]:
         """Take every event waiting, without blocking.
@@ -605,18 +532,17 @@ class EventQueue:
         list of Event
             The events, oldest first. Empty when there are none.
         """
-        with self._cond:
+        with self._lock:
             events = list(self._items)
             self._items.clear()
             self._droppable = 0
             return events
 
     def close(self) -> None:
-        """Stop collecting and wake anyone waiting in ``get``."""
+        """Stop collecting."""
         self._unsubscribe()
-        with self._cond:
+        with self._lock:
             self._closed = True
-            self._cond.notify_all()
 
 
 EVENTS = EventBus()
@@ -632,66 +558,3 @@ def notice(text: str) -> None:
         indents it by two spaces.
     """
     EVENTS.emit(Notice(text.strip()))
-
-
-def mirror_conversation(bus: EventBus | None = None) -> Callable[[], None]:
-    """Write what was heard and what the model answered to the log file.
-
-    Parameters
-    ----------
-    bus : EventBus or None, optional
-        The bus to follow. The session's ``EVENTS`` when omitted.
-
-    Returns
-    -------
-    Callable
-        Call it to stop.
-    """
-
-    def write(event: Event) -> None:
-        if isinstance(event, Heard):
-            log_to_file("you", f"\u25b8 {event.text}")
-        elif isinstance(event, ReplyEnd):
-            log_to_file("llm", f"\u25b8 {event.text}")
-
-    return (bus if bus is not None else EVENTS).subscribe(write)
-
-
-def forward_logs(bus: EventBus | None = None, *, level: str = "DEBUG") -> Callable[[], None]:
-    """Send each log line to ``bus`` as a ``LogLine``.
-
-    Parameters
-    ----------
-    bus : EventBus or None, optional
-        Where to send them. The session's ``EVENTS`` when omitted.
-    level : str, optional
-        The lowest log level to forward.
-
-    Returns
-    -------
-    Callable
-        Call it to stop forwarding.
-
-    Notes
-    -----
-    Use it with ``configure_voice_logging(..., to_stderr=False)`` when a display
-    owns the terminal, so log lines reach it instead of corrupting the screen.
-    Call it after ``configure_voice_logging``, which removes every other sink.
-    """
-    target = bus if bus is not None else EVENTS
-
-    def sink(message: Any) -> None:
-        record = message.record
-        name = record["level"].name
-        tag, text = log_tag(str(record["message"]), name)
-        target.emit(LogLine(name, tag, text))
-
-    handler = logger.add(sink, level=level, format="{message}", filter=displayed)
-
-    def stop() -> None:
-        try:
-            logger.remove(handler)
-        except ValueError:
-            return
-
-    return stop

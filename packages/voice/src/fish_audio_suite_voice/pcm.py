@@ -19,6 +19,7 @@ __all__ = [
     "FRAME_BYTES",
     "FRAME_MS",
     "FRAME_SAMPLES",
+    "FULL_SCALE",
     "LISTEN_HEARTBEAT_FRAMES",
     "MIC_LEVEL_EVERY_FRAMES",
     "SAMPLE_BYTES",
@@ -36,6 +37,8 @@ SAMPLE_RATE: Final = 16_000
 SAMPLE_BYTES: Final = 2
 # Little-endian int16, as NumPy reads the samples.
 SAMPLE_DTYPE: Final = "<i2"
+# The peak of a 16-bit sample, which a level in dB below full scale is measured against.
+FULL_SCALE: Final = 32768.0
 BYTES_PER_S: Final = SAMPLE_RATE * SAMPLE_BYTES
 # The unit of every FISH_VOICE_*_FRAMES setting.
 FRAME_MS: Final = 30

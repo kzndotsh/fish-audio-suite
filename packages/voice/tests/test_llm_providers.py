@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from typing import Any, get_args
 
 import httpx
 import pytest
 
-from fish_audio_suite_voice.cli import llm_setting_names
-from fish_audio_suite_voice.debug import configure_voice_logging
 from fish_audio_suite_voice.llm import open_chat_backend
 from fish_audio_suite_voice.llm_tune import (
     EXPERIENTIAL_API_BASE,
@@ -18,8 +17,10 @@ from fish_audio_suite_voice.llm_tune import (
     OPENROUTER_API_BASE,
     KnownLlmProvider,
     LlmTune,
+    llm_problem,
     provider_for_base,
 )
+from fish_audio_suite_voice.log_setup import configure_voice_logging
 
 _ENV = (
     "FISH_LLM_PROVIDER",
@@ -326,18 +327,22 @@ def test_the_startup_blockers_name_the_selected_providers_variables(
     env: pytest.MonkeyPatch,
 ) -> None:
     env.setenv("FISH_LLM_PROVIDER", "experiential")
-    assert llm_setting_names(LlmTune.from_env()) == (
-        "EXPLABS_API_KEY",
-        "FISH_LLM_MODEL_EXPERIENTIAL / FISH_LLM_MODEL",
+    assert llm_problem(LlmTune.from_env()) == "FISH_LLM_API_KEY / EXPLABS_API_KEY missing"
+    assert llm_problem(replace(LlmTune.from_env(), api_key="k")) == (
+        "FISH_LLM_MODEL / FISH_LLM_MODEL_EXPERIENTIAL / FISH_LLM_MODEL missing"
     )
     env.setenv("FISH_LLM_PROVIDER", "openrouter")
-    assert llm_setting_names(LlmTune.from_env()) == (
-        "OPENROUTER_API_KEY",
-        "FISH_LLM_MODEL_OPENROUTER / FISH_LLM_MODEL",
+    assert llm_problem(LlmTune.from_env()) == "FISH_LLM_API_KEY / OPENROUTER_API_KEY missing"
+    assert llm_problem(replace(LlmTune.from_env(), api_key="k")) == (
+        "FISH_LLM_MODEL / FISH_LLM_MODEL_OPENROUTER / FISH_LLM_MODEL missing"
     )
     env.setenv("FISH_LLM_PROVIDER", "custom")
     env.setenv("FISH_LLM_BASE", "http://127.0.0.1:11434/v1")
-    assert llm_setting_names(LlmTune.from_env()) == ("OPENAI_API_KEY", "FISH_LLM_MODEL")
+    assert llm_problem(LlmTune.from_env()) == "FISH_LLM_API_KEY / OPENAI_API_KEY missing"
+    assert llm_problem(replace(LlmTune.from_env(), api_key="k")) == (
+        "FISH_LLM_MODEL / FISH_LLM_MODEL missing"
+    )
+    assert llm_problem(replace(LlmTune.from_env(), api_key="k", model="m")) is None
 
 
 def test_the_provider_table_names_exactly_the_known_providers() -> None:

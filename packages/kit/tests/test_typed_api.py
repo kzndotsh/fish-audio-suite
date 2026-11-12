@@ -21,7 +21,6 @@ from fish_audio_suite_kit import (
     FishRateLimitError,
     FishTimeoutError,
     FishUpstreamError,
-    LatencySnapshot,
     SuiteDefaults,
     TtsModel,
     env_bool,
@@ -143,17 +142,6 @@ def test_the_defaults_use_the_literal_values_and_stay_light() -> None:
     assert defaults.latency in get_args(FishLatency)
     assert defaults.audio_format in get_args(AudioFormat)
     assert not hasattr(defaults, "__dict__")
-
-
-def test_a_latency_snapshot_is_still_built_by_position() -> None:
-    snapshot = LatencySnapshot(1.0, 2.0, 3.0, 4.0, 5.0, "trace-1")
-    assert (snapshot.asr_ms, snapshot.voice_to_voice_ms, snapshot.trace_id) == (
-        1.0,
-        5.0,
-        "trace-1",
-    )
-    assert snapshot.first_audio_ms is None
-    assert dataclasses.replace(snapshot, first_audio_ms=9.0).first_audio_ms == 9.0
 
 
 # --- retry_after_s ----------------------------------------------------------

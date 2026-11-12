@@ -52,7 +52,7 @@ def test_the_heard_line_carries_the_tone_and_the_clean_text(
 ) -> None:
     calls = _asr(monkeypatch, AsrResult("tell me a joke", ("laughter", "tired")))
     ctx = make_ctx()
-    ctx.config = replace(ctx.config, hear_tone=True)
+    ctx = replace(ctx, config=replace(ctx.config, hear_tone=True))
     heard = asyncio.run(hear_line(ctx, ""))
     assert (heard.text, heard.tone) == ("tell me a joke", ("laughter", "tired"))
     assert calls[0]["hear_tone"] is True
@@ -76,7 +76,7 @@ def test_tone_from_every_clip_of_a_turn_reaches_the_line(monkeypatch: pytest.Mon
         "fish_audio_suite_voice.hearing.record_utterance", lambda *_a, **_k: next(clips, None)
     )
     ctx = make_ctx()
-    ctx.config = replace(ctx.config, hear_tone=True, turn=TurnTune(enabled=True))
+    ctx = replace(ctx, config=replace(ctx.config, hear_tone=True, turn=TurnTune(enabled=True)))
     heard = asyncio.run(hear_line(ctx, ""))
     assert heard.text == "tell me, and then a joke."
     assert heard.tone == ("tired", "laughter")
@@ -134,8 +134,10 @@ def test_the_model_is_told_the_tone_for_that_turn_and_history_keeps_the_plain_li
     # The next request has no memory of the note, and nor does the history.
     assert all("laughter" not in m["content"] for m in asked[1])
     assert loop.ctx is not None
-    assert all("laughter" not in m["content"] for m in loop.ctx.history)
-    assert "tell me a joke" in [m["content"] for m in loop.ctx.history if m["role"] == "user"]
+    assert all("laughter" not in m["content"] for m in loop.ctx.chat.history.messages)
+    assert "tell me a joke" in [
+        m["content"] for m in loop.ctx.chat.history.messages if m["role"] == "user"
+    ]
 
 
 def test_the_default_config_has_the_tone_off() -> None:

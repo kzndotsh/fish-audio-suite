@@ -105,7 +105,7 @@ from fish_audio_suite_kit.payloads import (
 from fish_audio_suite_kit.prompt import DEFAULT_SEED_EXCHANGE, DEFAULT_SYSTEM_PROMPT
 from fish_audio_suite_kit.scrub_tts import scrub_tts
 from fish_audio_suite_kit.stream_holds import tts_hold_at
-from fish_audio_suite_kit.timing import MS_PER_S, LatencySnapshot, elapsed_ms
+from fish_audio_suite_kit.timing import MS_PER_S, elapsed_ms
 from fish_audio_suite_kit.trace_context import (
     ensure_trace_headers,
     make_traceparent,
@@ -153,7 +153,6 @@ __all__ = [
     "FishRateLimitError",
     "FishTimeoutError",
     "FishUpstreamError",
-    "LatencySnapshot",
     "MoodCarry",
     "OpenAIErrorBody",
     "OpenAIErrorDetail",

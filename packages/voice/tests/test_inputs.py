@@ -17,6 +17,7 @@ from session_fakes import (
 )
 from voice_fakes import ScriptedMic, install_audio
 
+from fish_audio_suite_voice import duplex
 from fish_audio_suite_voice.cancel import StopFlag
 from fish_audio_suite_voice.duplex_state import DuplexContext
 from fish_audio_suite_voice.events import EVENTS, Event, Heard
@@ -32,7 +33,7 @@ class _Mic:
         self.result = result
         self.opened = threading.Event()
         self.calls = 0
-        monkeypatch.setattr("fish_audio_suite_voice.inputs.hear_line", self._hear)
+        monkeypatch.setattr("fish_audio_suite_voice.duplex.hear_line", self._hear)
 
     async def _hear(
         self, ctx: DuplexContext, last_user: str, *, stop: StopFlag | None = None
@@ -49,12 +50,16 @@ class _Mic:
 
 
 def _turn(source: LiveInput, ctx: DuplexContext) -> HeardLine:
-    return asyncio.run(asyncio.wait_for(source.next_turn(ctx, ""), 5))
+    async def hear(stop: StopFlag) -> HeardLine:
+        # Looked up on each call, so a test's fake mic stands in, as in the loop.
+        return await duplex.hear_line(ctx, "", stop=stop)
+
+    return asyncio.run(asyncio.wait_for(source.next_turn(ctx.turn_input, hear), 5))
 
 
 def test_a_typed_line_is_answered_like_a_spoken_one() -> None:
     ctx = make_ctx()
-    ctx.carry.keep(barge_clip(), "")
+    ctx.turn_input.carry.keep(barge_clip(), "")
     seen: list[Event] = []
     unsubscribe = EVENTS.subscribe(seen.append)
     source = LiveInput()
@@ -64,7 +69,7 @@ def test_a_typed_line_is_answered_like_a_spoken_one() -> None:
     finally:
         unsubscribe()
     assert (heard.kind, heard.text) == ("line", "hello there")
-    assert ctx.carry.clip is None
+    assert ctx.turn_input.carry.clip is None
     assert seen == [Heard("hello there", 0.0)]
 
 
@@ -150,7 +155,7 @@ def test_quit_ends_a_muted_wait_and_a_recording(monkeypatch: pytest.MonkeyPatch)
     ctx = make_ctx()
     source = LiveInput()
     source.mute()
-    timer = threading.Timer(0.05, ctx.session.quit_requested.set)
+    timer = threading.Timer(0.05, ctx.turn_input.session.request_quit)
     timer.start()
     try:
         assert _turn(source, ctx).kind == "bye"
@@ -173,7 +178,7 @@ def test_the_loop_answers_a_typed_line_through_a_source(monkeypatch: pytest.Monk
 
 def _bound_turn(ctx: DuplexContext) -> tuple[threading.Event, asyncio.Event]:
     cancel, llm_cancel = threading.Event(), asyncio.Event()
-    ctx.session.turn.bind(cancel, llm_cancel)
+    ctx.turn_input.session.turn.bind(cancel, llm_cancel)
     return cancel, llm_cancel
 
 
@@ -230,22 +235,33 @@ async def _llm_cancel_is_set(event: asyncio.Event) -> bool:
     return event.is_set()
 
 
-def test_the_context_learns_the_mute_switch_so_the_barge_in_watch_can_follow_it() -> None:
+def test_the_context_takes_the_mute_switch_so_the_barge_in_watch_can_follow_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert not make_ctx().turn_input.muted()  # a context with no mute switch is never muted
     live = LiveInput()
-    ctx = make_ctx()
-    assert not ctx.muted()  # a context with no mute switch is never muted
-    live.submit("hello")
-    assert _turn(live, ctx).kind == "line"
-    assert not ctx.muted()
-    live.mute()
-    assert ctx.muted()
-    live.unmute()
-    assert not ctx.muted()
+    seen: list[bool] = []
+
+    async def hear(ctx: DuplexContext, _last: str, *, stop: StopFlag | None = None) -> HeardLine:
+        del stop
+        seen.append(ctx.turn_input.muted())
+        live.mute()
+        seen.append(ctx.turn_input.muted())
+        live.unmute()
+        seen.append(ctx.turn_input.muted())
+        # The mute cut this recording short, so only quit lets the loop end here.
+        ctx.turn_input.session.request_quit()
+        return HeardLine("bye")
+
+    monkeypatch.setattr("fish_audio_suite_voice.duplex.hear_line", hear)
+    tts = FishSpeaker(api_key="k", voice_id="voice")
+    assert run_session_with(quick_config(), tts, hello_tokens, live) == 0
+    assert seen == [False, True, False]
 
 
 def test_muting_closes_the_session_mic_at_once_and_while_muted() -> None:
     ctx = make_ctx()
-    mic = ctx.mic
+    mic = ctx.turn_input.mic
     assert isinstance(mic, ScriptedMic)
     source = LiveInput()
     source.submit("hi")
@@ -262,7 +278,7 @@ def test_muting_closes_the_session_mic_at_once_and_while_muted() -> None:
 
 def test_a_session_muted_before_its_first_turn_keeps_the_mic_closed() -> None:
     ctx = make_ctx()
-    mic = ctx.mic
+    mic = ctx.turn_input.mic
     assert isinstance(mic, ScriptedMic)
     source = LiveInput()
     source.mute()

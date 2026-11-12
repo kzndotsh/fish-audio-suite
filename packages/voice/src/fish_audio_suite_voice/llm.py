@@ -31,7 +31,7 @@ from fish_audio_suite_voice.cancel import (
     never,
     reap,
 )
-from fish_audio_suite_voice.debug import debug, short_model, warn
+from fish_audio_suite_voice.debug import debug, warn
 from fish_audio_suite_voice.events import notice
 from fish_audio_suite_voice.llm_tune import LlmTune
 from fish_audio_suite_voice.pause import sleep_unless
@@ -49,6 +49,7 @@ from fish_audio_suite_voice.transports import (
     unusable_reason,
     usage_brief,
 )
+from fish_audio_suite_voice.wording import short_model
 
 __all__ = [
     "ChatBackend",

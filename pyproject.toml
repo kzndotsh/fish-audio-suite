@@ -232,7 +232,7 @@ max-branches = 15
 # openrouter) inside functions, so the base install imports without them.
 "packages/voice/src/fish_audio_suite_voice/{aec,llm,playback,transports,vad}.py" = ["PLC0415"]
 # Both print to the terminal on purpose.
-"packages/voice/src/fish_audio_suite_voice/{console,debug,cli}.py" = ["T20"]
+"packages/voice/src/fish_audio_suite_voice/{console_sink,cli}.py" = ["T20"]
 # A command-line script prints its results, and is not a package.
 "scripts/*.py" = ["T20", "INP001"]
 "examples/*.py" = ["T20", "INP001", "D"]
@@ -312,18 +312,18 @@ forbidden_modules = [
 
 [[tool.importlinter.contracts]]
 id = "voice-direction"
-name = "voice imports point down: the CLI, the session and displays, a turn, capture and speech, adapters, settings"
+name = "voice imports point down: the CLI, the session and the screen, a turn, capture and speech, adapters, then settings, events and logging"
 type = "layers"
 containers = ["fish_audio_suite_voice"]
 # Each row may import the rows below it, never the rows above. Modules in one row may
 # import each other. A new module goes in the lowest row it fits.
 layers = [
     "cli",
-    "duplex : tui : console_sink : inputs",
-    "reply : hearing : streaming",
-    "listen : barge : speaker : duplex_state : heard : speculate : tts_turn",
-    "mic : wire : llm : playback : transports : recognisers : deepgram : fish_realtime : turn_stream : asr : aec : signals : session_view",
-    "config : tune : llm_tune : tts_tune : events : debug : envfile : cancel : ws_tap : log_meta : console : declick : audio_chain : floor : history : pause : tts_text : pcm : portaudio : playback_kind : vad : scorer : loudness : spoken : turn_check : recognised",
+    "duplex : tui",
+    "reply : hearing : streaming : inputs",
+    "listen : barge : speaker : duplex_state : speculate : tts_turn",
+    "mic : wire : llm : playback : transports : recognisers : deepgram : fish_realtime : turn_stream : asr : aec",
+    "config : tune : llm_tune : tts_tune : events : signals : heard : latency : console_sink : session_view : debug : log_format : log_file : log_setup : wording : envfile : cancel : ws_tap : log_meta : declick : audio_chain : floor : history : pause : tts_text : pcm : portaudio : playback_kind : vad : scorer : loudness : spoken : turn_check : recognised",
 ]
 
 [tool.basedpyright]

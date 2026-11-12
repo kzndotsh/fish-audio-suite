@@ -37,7 +37,6 @@ __all__ = [
     "MAX_UTTERANCE_FRAMES",
     "STREAMING_STT_PROVIDERS",
     "STT_PROVIDERS",
-    "TURN_EXTENSIONS_MAX",
     "AecTune",
     "BargeTune",
     "DeepgramTune",
@@ -88,7 +87,7 @@ IMPULSE_START_EXTRA: Final = 6
 # that stops mid-thought reopens the mic.
 DEFAULT_TURN_SILENCE_FRAMES: Final = 12
 DEFAULT_TURN_EXTENSIONS: Final = 1
-TURN_EXTENSIONS_MAX: Final = 2
+_TURN_EXTENSIONS_MAX: Final = 2
 
 DEFAULT_BARGE_HIT_FRAMES: Final = 10
 DEFAULT_BARGE_RMS: Final = 220.0
@@ -375,7 +374,7 @@ class TurnTune:
                 "FISH_VOICE_TURN_EXTENSIONS",
                 DEFAULT_TURN_EXTENSIONS,
                 lo=1,
-                hi=TURN_EXTENSIONS_MAX,
+                hi=_TURN_EXTENSIONS_MAX,
             ),
         )
 

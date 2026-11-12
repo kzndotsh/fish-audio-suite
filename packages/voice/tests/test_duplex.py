@@ -12,21 +12,23 @@ import pytest
 from session_fakes import FakeBackend, barge_clip, make_config, make_ctx, recognize
 from voice_fakes import FakeGate, FakeSink, install_audio, make_result, set_tts
 
-from fish_audio_suite_kit import ChatMessage, FishHttpError, LatencySnapshot
+from fish_audio_suite_kit import ChatMessage, FishHttpError
 from fish_audio_suite_voice.asr import AsrResult
+from fish_audio_suite_voice.config import SystemPrompt
 from fish_audio_suite_voice.console_sink import ConsoleSink
 from fish_audio_suite_voice.duplex import duplex_turns
 from fish_audio_suite_voice.duplex_state import DuplexContext
 from fish_audio_suite_voice.events import EVENTS
 from fish_audio_suite_voice.heard import HeardLine, classify_transcript
 from fish_audio_suite_voice.hearing import hear_line
-from fish_audio_suite_voice.history import opening_history, remember_user, trim_history
+from fish_audio_suite_voice.history import History, trim_history
+from fish_audio_suite_voice.latency import LatencySnapshot
 from fish_audio_suite_voice.llm_tune import DEFAULT_HISTORY_TURNS
 from fish_audio_suite_voice.portaudio import PortAudioMissingError
 from fish_audio_suite_voice.recognised import BargeIn
 from fish_audio_suite_voice.reply import (
+    _after_speech,
     _TokenPipe,
-    after_speech,
     collect_reply,
     speak_reply,
     stream_turn,
@@ -63,7 +65,7 @@ def test_a_lone_yeah_answers_on_its_own_turn_but_not_over_a_reply() -> None:
 def test_history_keeps_the_system_prompt_and_drops_the_oldest_turns() -> None:
     history: list[ChatMessage] = [{"role": "system", "content": "be brief"}]
     for i in range(HISTORY_TURNS + 1):
-        remember_user(history, f"u{i}", HISTORY_TURNS)
+        History(history, HISTORY_TURNS).remember_user(f"u{i}")
         history.append({"role": "assistant", "content": f"a{i}"})
     assert history[0] == {"role": "system", "content": "be brief"}
     kept = [m["content"] for m in history[1::2]]
@@ -75,9 +77,9 @@ def test_history_keeps_the_system_prompt_and_drops_the_oldest_turns() -> None:
 def test_history_drops_whole_turns_so_roles_stay_paired() -> None:
     history: list[ChatMessage] = [{"role": "system", "content": "be brief"}]
     for i in range(HISTORY_TURNS):
-        remember_user(history, f"u{i}", HISTORY_TURNS)
+        History(history, HISTORY_TURNS).remember_user(f"u{i}")
         history.append({"role": "assistant", "content": f"a{i}"})
-    remember_user(history, "newest", HISTORY_TURNS)
+    History(history, HISTORY_TURNS).remember_user("newest")
     history.append({"role": "assistant", "content": "answer"})
     roles = [m["role"] for m in history[1:]]
     assert roles == ["user", "assistant"] * (len(roles) // 2)
@@ -95,7 +97,7 @@ def test_the_history_is_trimmed_in_blocks_so_its_start_stays_the_same_between_tr
     floor = HISTORY_TURNS - HISTORY_TURNS // 4
     starts: list[list[ChatMessage]] = []
     for i in range(HISTORY_TURNS * 3):
-        remember_user(history, f"u{i}", HISTORY_TURNS)
+        History(history, HISTORY_TURNS).remember_user(f"u{i}")
         turns = (len(history) - 1) // 2  # whole pairs before the newest line
         assert turns <= HISTORY_TURNS
         if i >= HISTORY_TURNS:
@@ -111,7 +113,7 @@ def test_the_history_is_trimmed_in_blocks_so_its_start_stays_the_same_between_tr
 def test_a_small_history_cap_still_drops_one_turn_at_a_time() -> None:
     history: list[ChatMessage] = [{"role": "system", "content": "be brief"}]
     for i in range(4):
-        remember_user(history, f"u{i}", 3)
+        History(history, 3).remember_user(f"u{i}")
         history.append({"role": "assistant", "content": f"a{i}"})
     assert [m["content"] for m in history[1:]] == ["u1", "a1", "u2", "a2", "u3", "a3"]
 
@@ -119,27 +121,27 @@ def test_a_small_history_cap_still_drops_one_turn_at_a_time() -> None:
 def test_after_speech_records_only_audio_that_was_played() -> None:
     ctx = make_ctx()
     snapshot = LatencySnapshot()
-    fatal, code = after_speech(
+    fatal, code = _after_speech(
         ctx,
         snapshot,
         make_result(error_status=401, error_message="no"),
         started=0.0,
     )
     assert code == 2
-    assert len(ctx.history) == 1
+    assert len(ctx.chat.history.messages) == 1
     assert fatal.tts_first_audio_ms is None
 
     ctx = make_ctx()
-    after_speech(
+    _after_speech(
         ctx,
         snapshot,
         make_result(cancelled=True),
         started=0.0,
     )
-    assert len(ctx.history) == 1
+    assert len(ctx.chat.history.messages) == 1
 
     ctx = make_ctx()
-    updated, code = after_speech(
+    updated, code = _after_speech(
         ctx,
         snapshot,
         make_result(
@@ -153,12 +155,12 @@ def test_after_speech_records_only_audio_that_was_played() -> None:
         started=0.0,
     )
     assert code is None
-    assert ctx.history[-1] == {"role": "assistant", "content": "hello"}
+    assert ctx.chat.history.messages[-1] == {"role": "assistant", "content": "hello"}
     assert updated.tts_first_audio_ms == 12.0
 
     ctx = make_ctx()
-    ctx.history.append({"role": "user", "content": "Hey! Can you hear me?"})
-    after_speech(
+    ctx.chat.history.messages.append({"role": "user", "content": "Hey! Can you hear me?"})
+    _after_speech(
         ctx,
         snapshot,
         make_result(
@@ -170,8 +172,8 @@ def test_after_speech_records_only_audio_that_was_played() -> None:
         ),
         started=0.0,
     )
-    assert ctx.history[-1]["role"] == "user"
-    after_speech(
+    assert ctx.chat.history.messages[-1]["role"] == "user"
+    _after_speech(
         ctx,
         snapshot,
         make_result(
@@ -183,7 +185,7 @@ def test_after_speech_records_only_audio_that_was_played() -> None:
         ),
         started=0.0,
     )
-    assert ctx.history[-1] == {"role": "assistant", "content": "Yeah. What's up?"}
+    assert ctx.chat.history.messages[-1] == {"role": "assistant", "content": "Yeah. What's up?"}
 
 
 def test_recognize_fatal_again_and_quit(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -267,7 +269,7 @@ def test_collect_reply_survives_a_closed_stdout(
     printer = ConsoleSink(EVENTS)  # the display that writes the tokens to the closed stdout
     try:
         reply, ttft = asyncio.run(
-            collect_reply(ctx, llm_cancel=asyncio.Event(), trace_id=None, started=0.0)
+            collect_reply(ctx.chat, llm_cancel=asyncio.Event(), trace_id=None, started=0.0)
         )
     finally:
         printer.close()
@@ -288,7 +290,9 @@ def test_collect_reply_keeps_partial_text_on_cancel(
         raise asyncio.CancelledError
 
     ctx = make_ctx(tokens)
-    reply, ttft = asyncio.run(collect_reply(ctx, llm_cancel=cancel, trace_id=None, started=0.0))
+    reply, ttft = asyncio.run(
+        collect_reply(ctx.chat, llm_cancel=cancel, trace_id=None, started=0.0)
+    )
     assert reply == "Hi"
     assert ttft is not None
     assert "[llm]" not in capsys.readouterr().err
@@ -303,7 +307,7 @@ def test_collect_reply_lets_an_outside_cancel_propagate() -> None:
 
     async def run() -> None:
         task = asyncio.create_task(
-            collect_reply(ctx, llm_cancel=asyncio.Event(), trace_id=None, started=0.0)
+            collect_reply(ctx.chat, llm_cancel=asyncio.Event(), trace_id=None, started=0.0)
         )
         await asyncio.sleep(0.05)
         task.cancel()
@@ -323,7 +327,7 @@ def test_collect_reply_lets_asyncio_timeout_fire() -> None:
 
     async def run() -> None:
         async with asyncio.timeout(0.1):
-            await collect_reply(ctx, llm_cancel=asyncio.Event(), trace_id=None, started=0.0)
+            await collect_reply(ctx.chat, llm_cancel=asyncio.Event(), trace_id=None, started=0.0)
 
     with pytest.raises(TimeoutError):
         asyncio.run(run())
@@ -350,7 +354,7 @@ def test_speak_reply_exits_when_playback_cannot_open(
         )
     )
     assert code == 2
-    assert len(ctx.history) == 1
+    assert len(ctx.chat.history.messages) == 1
 
 
 def test_cancelled_speak_keeps_the_audio_that_tripped_barge(
@@ -392,8 +396,8 @@ def test_cancelled_speak_keeps_the_audio_that_tripped_barge(
     )
     assert code is None
     # The next listen reads on from just after the clip, scoring it at the gate's own level.
-    assert ctx.carry.clip == BargeIn(b"clip", 42, 90.0)
-    assert ctx.history[-1]["content"] == "hello"
+    assert ctx.turn_input.carry.clip == BargeIn(b"clip", 42, 90.0)
+    assert ctx.chat.history.messages[-1]["content"] == "hello"
 
 
 def test_speak_reply_releases_the_mic_before_returning(
@@ -423,7 +427,7 @@ def test_speak_reply_releases_the_mic_before_returning(
         )
     )
     assert code is None
-    assert ctx.history[-1]["content"] == "hello there"
+    assert ctx.chat.history.messages[-1]["content"] == "hello there"
     # The watcher waits up to 30 s for the cancel flag, and the caller only joins
     # for about a second, so a thread that is already finished proves the caller
     # set the flag before it returned.
@@ -434,9 +438,9 @@ def test_speak_reply_releases_the_mic_before_returning(
 def test_history_cap_follows_the_configured_turns() -> None:
     history: list[ChatMessage] = [{"role": "system", "content": "be brief"}]
     for i in range(5):
-        remember_user(history, f"u{i}", 2)
+        History(history, 2).remember_user(f"u{i}")
         history.append({"role": "assistant", "content": f"a{i}"})
-    remember_user(history, "newest", 2)
+    History(history, 2).remember_user("newest")
     # The oldest user and assistant leave together, so roles stay paired.
     assert [m["content"] for m in history] == ["be brief", "u4", "a4", "newest"]
 
@@ -536,7 +540,7 @@ def test_stream_turn_feeds_tokens_to_tts_and_arms_barge_at_first_audio(
     assert gate.armed == 1
     assert snapshot.first_audio_ms is not None
     assert snapshot.llm_first_token_ms is not None
-    assert ctx.history[-1] == {"role": "assistant", "content": "Hello there friend."}
+    assert ctx.chat.history.messages[-1] == {"role": "assistant", "content": "Hello there friend."}
 
 
 def test_stream_turn_speaks_the_finished_reply_when_fish_fails_before_audio(
@@ -588,20 +592,28 @@ def test_stream_turn_speaks_the_finished_reply_when_fish_fails_before_audio(
     assert code is None
     assert len(spoken) == 1
     assert "Hello" in spoken[0]
-    assert ctx.history[-1]["role"] == "assistant"
+    assert ctx.chat.history.messages[-1]["role"] == "assistant"
+
+
+def _opening(text: str) -> History:
+    """Open a session's history for a prompt written out in full, as the config decides it."""
+    prompt = SystemPrompt.written(text)
+    return History.opening(prompt.text, seed=prompt.pin_seed, turns=DEFAULT_HISTORY_TURNS)
 
 
 def test_default_prompt_starts_with_a_pinned_multi_cue_exchange() -> None:
     from fish_audio_suite_kit import DEFAULT_SYSTEM_PROMPT
 
-    history, pinned = opening_history(DEFAULT_SYSTEM_PROMPT)
+    opened = _opening(DEFAULT_SYSTEM_PROMPT)
+    history, pinned = opened.messages, opened.pinned
     assert pinned == 3
     assert [m["role"] for m in history] == ["system", "user", "assistant"]
     assert history[2]["content"].count("[") >= 2
 
 
 def test_a_custom_prompt_gets_no_seed_exchange() -> None:
-    history, pinned = opening_history("You are a pirate.")
+    opened = _opening("You are a pirate.")
+    history, pinned = opened.messages, opened.pinned
     assert pinned == 1
     assert history == [{"role": "system", "content": "You are a pirate."}]
 
@@ -609,11 +621,12 @@ def test_a_custom_prompt_gets_no_seed_exchange() -> None:
 def test_trimming_never_drops_the_pinned_seed() -> None:
     from fish_audio_suite_kit import DEFAULT_SYSTEM_PROMPT
 
-    history, pinned = opening_history(DEFAULT_SYSTEM_PROMPT)
+    opened = _opening(DEFAULT_SYSTEM_PROMPT)
+    history, pinned = opened.messages, opened.pinned
     for index in range(30):
-        remember_user(history, f"question {index}", 3, pinned)
+        History(history, 3, pinned).remember_user(f"question {index}")
         history.append({"role": "assistant", "content": f"[calm] answer {index}"})
-    assert history[:pinned] == opening_history(DEFAULT_SYSTEM_PROMPT)[0]
+    assert history[:pinned] == _opening(DEFAULT_SYSTEM_PROMPT).messages
     assert len(history) == pinned + 3 * 2
     assert history[-2]["content"] == "question 29"
 
@@ -672,7 +685,7 @@ def test_stream_turn_with_an_empty_reply_speaks_nothing_and_reports_nothing(
         raise AssertionError("an empty reply must not be spoken")
 
     set_tts(monkeypatch, ctx.tts, speak=never, speak_stream=speak_stream)
-    history_before = list(ctx.history)
+    history_before = list(ctx.chat.history.messages)
     _snapshot, code = asyncio.run(
         stream_turn(
             ctx,
@@ -683,7 +696,7 @@ def test_stream_turn_with_an_empty_reply_speaks_nothing_and_reports_nothing(
     )
     assert code is None
     assert seen_cancel == [True]
-    assert ctx.history == history_before
+    assert ctx.chat.history.messages == history_before
     assert "silent" not in capsys.readouterr().out
 
 
@@ -707,18 +720,24 @@ def test_quit_during_the_stream_fallback_rebind_does_not_speak(
         asyncio.run(drain())
         return make_result(error_status=503)
 
-    def never(*_args: object, **_kwargs: object) -> TtsResult:
-        raise AssertionError("nothing may be spoken after quit")
+    started_cancelled: list[bool] = []
 
-    bind = ctx.session.turn.bind
+    def speak_whole(
+        text: str, sink: FakeSink, cancel: threading.Event | None = None, **_kwargs: object
+    ) -> TtsResult:
+        del text, sink
+        started_cancelled.append(cancel is not None and cancel.is_set())
+        return make_result(cancelled=True)
+
+    bind = ctx.turn_input.session.turn.bind
 
     def bind_then_quit(cancel: threading.Event, llm_cancel: asyncio.Event, *a: object) -> None:
         bind(cancel, llm_cancel)
         # Ctrl+C lands right after the old flag was replaced.
-        ctx.session.quit_requested.set()
+        ctx.turn_input.session.request_quit()
 
-    monkeypatch.setattr(ctx.session.turn, "bind", bind_then_quit)
-    set_tts(monkeypatch, ctx.tts, speak=never, speak_stream=speak_stream)
+    monkeypatch.setattr(ctx.turn_input.session.turn, "bind", bind_then_quit)
+    set_tts(monkeypatch, ctx.tts, speak=speak_whole, speak_stream=speak_stream)
     _snapshot, code = asyncio.run(
         stream_turn(
             ctx,
@@ -728,8 +747,9 @@ def test_quit_during_the_stream_fallback_rebind_does_not_speak(
         )
     )
     assert code is None
-    assert ctx.session.turn.cancel is not None
-    assert ctx.session.turn.cancel.is_set()
+    assert started_cancelled == [True]  # quit reaches the retried turn: nothing is played
+    assert ctx.turn_input.session.turn.cancel is not None
+    assert ctx.turn_input.session.turn.cancel.is_set()
 
 
 def test_recognize_listens_again_after_a_network_error(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -760,29 +780,29 @@ def test_an_unanswered_user_line_is_merged_with_the_next_one() -> None:
     # A turn the model never answered (a 429, a refusal from the provider) left its
     # user line last. Two user messages in a row reached the model before.
     history: list[ChatMessage] = [{"role": "system", "content": "s"}]
-    remember_user(history, "Swear on it.", HISTORY_TURNS)
-    remember_user(history, "Swear on it.", HISTORY_TURNS)
+    History(history, HISTORY_TURNS).remember_user("Swear on it.")
+    History(history, HISTORY_TURNS).remember_user("Swear on it.")
     assert history == [
         {"role": "system", "content": "s"},
         {"role": "user", "content": "Swear on it."},
     ]
-    remember_user(history, "Are you there?", HISTORY_TURNS)
+    History(history, HISTORY_TURNS).remember_user("Are you there?")
     assert history[-1] == {"role": "user", "content": "Swear on it.\nAre you there?"}
     assert [m["role"] for m in history] == ["system", "user"]
 
 
 def test_a_new_line_after_a_reply_is_its_own_message() -> None:
     history: list[ChatMessage] = [{"role": "system", "content": "s"}]
-    remember_user(history, "hi", HISTORY_TURNS)
+    History(history, HISTORY_TURNS).remember_user("hi")
     history.append({"role": "assistant", "content": "hello"})
-    remember_user(history, "hi", HISTORY_TURNS)
+    History(history, HISTORY_TURNS).remember_user("hi")
     assert [m["role"] for m in history] == ["system", "user", "assistant", "user"]
 
 
 def test_a_long_run_of_unanswered_lines_keeps_only_the_latest() -> None:
     history: list[ChatMessage] = [{"role": "system", "content": "s"}]
     for i in range(10):
-        remember_user(history, f"line {i}", HISTORY_TURNS)
+        History(history, HISTORY_TURNS).remember_user(f"line {i}")
     assert len(history) == 2
     assert history[-1]["content"] == "line 6\nline 7\nline 8\nline 9"
 
@@ -825,14 +845,14 @@ def test_a_cut_off_reply_is_remembered_for_resuming(monkeypatch: pytest.MonkeyPa
             trace_id=None,
         )
     )
-    assert ctx.carry.resume == "[calm] How was your day today?"
+    assert ctx.turn_input.carry.resume == "[calm] How was your day today?"
 
 
 def test_noise_after_a_barge_in_speaks_the_rest_and_joins_history(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     ctx, said = _cut_off_ctx(monkeypatch, "Hello there.")
-    ctx.history.append({"role": "user", "content": "hi"})
+    ctx.chat.history.messages.append({"role": "user", "content": "hi"})
     asyncio.run(
         speak_reply(
             ctx,
@@ -850,10 +870,13 @@ def test_noise_after_a_barge_in_speaks_the_rest_and_joins_history(
 
     monkeypatch.setattr("fish_audio_suite_voice.duplex.hear_line", hear)
     monkeypatch.setattr("fish_audio_suite_voice.duplex.DuplexContext", lambda **_kw: ctx)
-    asyncio.run(duplex_turns(ctx.config, ctx.tts, None, ctx.backend, session=DuplexSession()))
+    asyncio.run(duplex_turns(ctx.config, ctx.tts, None, ctx.chat.backend, session=DuplexSession()))
     assert said[1] == "[calm] How was your day today?"
-    assert ctx.carry.resume == ""
-    assert ctx.history[-1] == {"role": "assistant", "content": "Hello there. Hello there."}
+    assert ctx.turn_input.carry.resume == ""
+    assert ctx.chat.history.messages[-1] == {
+        "role": "assistant",
+        "content": "Hello there. Hello there.",
+    }
 
 
 def test_a_real_line_after_a_barge_in_drops_the_rest_for_good(
@@ -887,7 +910,7 @@ def test_a_real_line_after_a_barge_in_drops_the_rest_for_good(
     monkeypatch.setattr("fish_audio_suite_voice.duplex.hear_line", hear)
     monkeypatch.setattr("fish_audio_suite_voice.duplex._answer_line", answer)
     monkeypatch.setattr("fish_audio_suite_voice.duplex.DuplexContext", lambda **_kw: ctx)
-    asyncio.run(duplex_turns(ctx.config, ctx.tts, None, ctx.backend, session=DuplexSession()))
+    asyncio.run(duplex_turns(ctx.config, ctx.tts, None, ctx.chat.backend, session=DuplexSession()))
     # The noise after the joke request must not bring back the reply the user talked over.
     assert said == ["[calm] Hello there. How was your day today?"]
 
@@ -898,7 +921,7 @@ def test_hear_line_answers_a_yeah_unless_it_was_said_over_the_reply(
 ) -> None:
     ctx = make_ctx()
     if barge_prefix:
-        ctx.carry.keep(barge_clip(barge_prefix), "")
+        ctx.turn_input.carry.keep(barge_clip(barge_prefix), "")
 
     def wav(*_args: object, **_kwargs: object) -> bytes:
         return b"RIFFwav"

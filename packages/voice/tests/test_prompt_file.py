@@ -9,7 +9,7 @@ import pytest
 from fish_audio_suite_kit import DEFAULT_SYSTEM_PROMPT
 from fish_audio_suite_voice.cli import main
 from fish_audio_suite_voice.config import VoiceCliConfig, load_config, system_prompt_from_file
-from fish_audio_suite_voice.history import opening_history
+from fish_audio_suite_voice.history import History
 
 CARD = "You are Mira, a dry-witted ship's engineer. Stay in character."
 
@@ -36,9 +36,9 @@ def test_a_character_file_comes_first_and_keeps_the_voice_rules(
 
 
 def test_a_character_file_still_pins_the_cue_example() -> None:
-    history, pinned = opening_history(f"{CARD}\n\n{DEFAULT_SYSTEM_PROMPT}", seed=True)
-    assert pinned == 3
-    assert history[1]["role"] == "user"
+    opened = History.opening(f"{CARD}\n\n{DEFAULT_SYSTEM_PROMPT}", seed=True, turns=1)
+    assert opened.pinned == 3
+    assert opened.messages[1]["role"] == "user"
 
 
 def test_an_inline_prompt_is_used_whole_and_gets_no_cue_example(
@@ -48,7 +48,7 @@ def test_an_inline_prompt_is_used_whole_and_gets_no_cue_example(
     config = load_config()
     assert config.system_prompt == "Answer in one word."
     assert not config.pin_seed
-    assert opening_history(config.system_prompt, seed=config.pin_seed)[1] == 1
+    assert History.opening(config.system_prompt, seed=config.pin_seed, turns=1).pinned == 1
 
 
 def test_a_blank_inline_prompt_still_means_no_system_prompt(

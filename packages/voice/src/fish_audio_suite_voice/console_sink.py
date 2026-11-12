@@ -1,17 +1,23 @@
-"""Print a session to the terminal from its events."""
+"""The plain terminal display: print a session from its events.
+
+The conversation goes to stdout, so piping it keeps the transcript. The reply streams onto
+one line, which stays open until the reply ends or a log line has to be written; the display
+owns that line, and logging asks it to close the line through ``debug.on_terminal_line``.
+"""
 
 from __future__ import annotations
 
+import sys
 from collections.abc import Callable
+from types import TracebackType
+from typing import Any, Final, Self
 
-from fish_audio_suite_kit import LatencySnapshot
-from fish_audio_suite_voice.console import console_print, end_reply_line, write_reply_token
-from fish_audio_suite_voice.debug import conversation, debug, debug_enabled, trace
-from fish_audio_suite_voice.duplex_state import EXIT_OK
+from fish_audio_suite_voice.debug import debug, debug_enabled, on_terminal_line, trace
 from fish_audio_suite_voice.events import (
     Bye,
     Event,
     EventBus,
+    ExitCode,
     Heard,
     Listening,
     Notice,
@@ -19,11 +25,35 @@ from fish_audio_suite_voice.events import (
     ReplyToken,
     TurnEnded,
 )
-from fish_audio_suite_voice.reply import session_summary, turn_summary
+from fish_audio_suite_voice.latency import LatencySnapshot, session_summary, turn_summary
+from fish_audio_suite_voice.log_format import clock_stamp, compose, paint
 
 __all__ = [
     "ConsoleSink",
+    "console_print",
 ]
+
+_ROLE_COLORS: Final = {"you": "96", "llm": "95"}
+
+
+def console_print(*args: object, **kwargs: Any) -> None:
+    """Print a status line. A closed stdout must not drop the spoken reply.
+
+    Parameters
+    ----------
+    *args : object
+        What ``print`` takes.
+    **kwargs : Any
+        What ``print`` takes, such as ``flush=True``.
+    """
+    try:
+        print(*args, **kwargs)
+    except BrokenPipeError:
+        return
+
+
+def _stdout_tty() -> bool:
+    return bool(sys.stdout.isatty())
 
 
 class ConsoleSink:
@@ -40,16 +70,68 @@ class ConsoleSink:
     reply is held and printed whole on one line after the log lines around it,
     and the turn summary goes to the log instead of stdout. When the session
     ends, one line gives the typical (p50) and slow (p90) wait across its turns.
+    Use it as a context manager, or call ``close`` to stop printing.
     """
 
     def __init__(self, bus: EventBus) -> None:
-        self._reply_open = False
+        # The one record of a reply line left open on stdout: it is closed before
+        # anything else is written to the terminal.
+        self._line_open = False
+        # Whether this reply's "llm ▸" label was printed. A warning closes the line
+        # mid-reply, and the reply goes on, unlabelled, on the next.
+        self._reply_started = False
         self._turns: list[LatencySnapshot] = []
         self._unsubscribe: Callable[[], None] = bus.subscribe(self._on_event)
+        self._stop_closing = on_terminal_line(self.end_reply_line)
+
+    def __enter__(self) -> Self:
+        """Return the display, which is already printing."""
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        """Stop printing."""
+        self.close()
 
     def close(self) -> None:
         """Stop printing."""
         self._unsubscribe()
+        self._stop_closing()
+
+    def end_reply_line(self) -> None:
+        """Close the reply line with a newline, if one is open."""
+        if not self._line_open:
+            return
+        try:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+        except BrokenPipeError:
+            pass
+        self._line_open = False
+
+    def _write_reply(self, text: str) -> None:
+        try:
+            sys.stdout.write(text)
+            sys.stdout.flush()
+        except BrokenPipeError:
+            return
+        self._line_open = True
+
+    def _conversation(self, role: str, text: str) -> None:
+        # On a terminal with debug on, the line carries the same time columns and
+        # role tag as the log lines on stderr. Written and flushed in order, it stays
+        # in sequence with them. Piped, or with debug off, it is a plain line.
+        self.end_reply_line()
+        label = f"{role} ▸"
+        if not (debug_enabled() and _stdout_tty()):
+            console_print(f"{label} {text}", flush=True)
+            return
+        body = paint(f"1;{_ROLE_COLORS.get(role, '97')}", text, sys.stdout)
+        console_print(compose(clock_stamp(), role, label, body, sys.stdout), flush=True)
 
     def _print_session(self) -> None:
         summary = session_summary(self._turns)
@@ -66,18 +148,18 @@ class ConsoleSink:
                 if not debug_enabled():
                     console_print("listening…")
             case Heard(text=text):
-                conversation("you", text)
+                self._conversation("you", text)
             case ReplyToken(text=text):
                 if not debug_enabled():
-                    if not self._reply_open:
-                        write_reply_token("llm ▸ ")
-                        self._reply_open = True
-                    write_reply_token(text)
+                    if not self._reply_started:
+                        self._write_reply("llm ▸ ")
+                        self._reply_started = True
+                    self._write_reply(text)
             case ReplyEnd(text=text):
-                end_reply_line()
-                self._reply_open = False
+                self.end_reply_line()
+                self._reply_started = False
                 if text and debug_enabled():
-                    conversation("llm", text)
+                    self._conversation("llm", text)
             case Notice(text=text):
                 console_print(f"  {text}", flush=True)
             case TurnEnded(snapshot=snapshot):
@@ -89,8 +171,10 @@ class ConsoleSink:
                 else:
                     console_print(summary, flush=True)
             case Bye(code=code):
+                # A session that stopped mid-reply never ended the reply.
+                self.end_reply_line()
                 self._print_session()
-                if code == EXIT_OK:
+                if code == ExitCode.OK:
                     console_print("\nbye")
             case _:
                 return

@@ -1,84 +1,39 @@
 """Opt-in duplex debug logs. Off unless FISH_VOICE_DEBUG or --debug.
 
 Level 1 (``--debug``) logs events. Level 2 (``--trace`` or ``FISH_VOICE_DEBUG=2``)
-adds the mic heartbeats, raw websocket audio and HTTP request lines.
+adds the mic heartbeats, raw websocket audio and HTTP request lines. This is the module
+every step logs through: the debug level, ``debug``, ``trace``, ``warn`` and the
+per-turn clock. How lines look is ``log_format``, the run's file is ``log_file``, and
+where loguru sends them is set up by ``log_setup``.
 """
 
 from __future__ import annotations
 
-import atexit
-import contextlib
-import logging
 import os
-import re
 import sys
-import threading
-import time
+from collections.abc import Callable
 from enum import IntEnum
-from pathlib import Path
-from typing import Any, Final, override
+from typing import Any, Final
 
 from loguru import logger
 
 from fish_audio_suite_kit import env_bool
-from fish_audio_suite_voice.console import console_print, end_reply_line
+from fish_audio_suite_voice.log_file import log_file_on, log_record
+from fish_audio_suite_voice.log_format import dim, start_turn_clock, stop_turn_clock
 
 __all__ = [
     "DebugLevel",
     "clear_turn",
-    "configure_voice_logging",
-    "conversation",
     "debug",
     "debug_enabled",
     "debug_level",
+    "fix_debug_level",
     "heartbeat_due",
-    "log_file_path",
-    "log_tag",
-    "log_to_file",
     "mark_turn",
-    "short_model",
+    "on_terminal_line",
     "trace",
     "warn",
-    "with_detail",
 ]
-
-
-def with_detail(message: str, exc: BaseException) -> str:
-    """Add an error's own text to a fixed message, for the local terminal.
-
-    Parameters
-    ----------
-    message : str
-        The fixed message, for example the kit's ``Fish upstream unreachable``.
-    exc : BaseException
-        The error it stands for.
-
-    Returns
-    -------
-    str
-        ``message: text`` when the error has text of its own, otherwise
-        ``message``. Kit keeps client-facing messages free of exception text;
-        voice is a local tool, so the user sees the detail here.
-    """
-    detail = str(exc).strip()
-    return f"{message}: {detail}" if detail and detail != message else message
-
-
-def short_model(model: object) -> str:
-    """Return a model id without its vendor prefix, for display only.
-
-    Parameters
-    ----------
-    model : object
-        An id such as ``vendor/name-7b``. ``None`` or blank gives ``""``.
-
-    Returns
-    -------
-    str
-        The part after the last ``/``. Any ``:suffix`` stays. Use the full id
-        wherever two ids are compared or sent to the API.
-    """
-    return str(model or "").strip().rsplit("/", 1)[-1]
 
 
 class DebugLevel(IntEnum):
@@ -90,19 +45,34 @@ class DebugLevel(IntEnum):
 
 
 class _Debug:
-    """Debug level set by ``configure_voice_logging``. Avoids writing os.environ.
+    """Debug level set by ``fix_debug_level``. Avoids writing os.environ.
 
     ``frozen`` is the effective level once logging is configured. Until then the
     environment is read live, so library callers that never configure logging
-    still honor ``FISH_VOICE_DEBUG``.
+    still honor ``FISH_VOICE_DEBUG``. ``configured`` is True once loguru has a
+    terminal or log sink, so ``warn`` may go through it.
     """
 
     level: DebugLevel = DebugLevel.OFF
     frozen: DebugLevel | None = None
+    configured: bool = False
+
+
+def _nothing() -> None:
+    return None
+
+
+class _Terminal:
+    """What runs before a line is written to the terminal: a display closing its open line."""
+
+    def __init__(self) -> None:
+        self.before_line: Callable[[], None] = _nothing
 
 
 _DEBUG: Final = _Debug()
+_TERMINAL: Final = _Terminal()
 _TRACE_WORDS: Final = frozenset({"2", "trace"})
+_RULE_WIDTH: Final = 56
 
 
 def debug_level() -> DebugLevel:
@@ -111,15 +81,15 @@ def debug_level() -> DebugLevel:
     Returns
     -------
     DebugLevel
-        The level ``configure_voice_logging`` fixed, which is the higher of its
-        argument and ``FISH_VOICE_DEBUG`` at that moment. Before logging is
-        configured the environment is read on each call. ``2`` or ``trace`` is
-        ``TRACE``, any other true value is ``EVENTS``.
+        The level ``fix_debug_level`` fixed, which is the higher of its argument and
+        ``FISH_VOICE_DEBUG`` at that moment. Before logging is configured the
+        environment is read on each call. ``2`` or ``trace`` is ``TRACE``, any other
+        true value is ``EVENTS``.
 
     Notes
     -----
-    Mic frames call this up to every 30 ms on two threads, so after
-    ``configure_voice_logging`` it never touches ``os.environ``.
+    Mic frames call this up to every 30 ms on two threads, so after logging is
+    configured it never touches ``os.environ``.
     """
     if _DEBUG.frozen is not None:
         return _DEBUG.frozen
@@ -130,6 +100,29 @@ def _env_level() -> DebugLevel:
     if os.environ.get("FISH_VOICE_DEBUG", "").strip().lower() in _TRACE_WORDS:
         return DebugLevel.TRACE
     return DebugLevel.EVENTS if env_bool("FISH_VOICE_DEBUG") else DebugLevel.OFF
+
+
+def fix_debug_level(debug: bool | int | DebugLevel) -> DebugLevel:
+    """Fix the debug level for the rest of the run, once logging has its sinks.
+
+    Parameters
+    ----------
+    debug : bool or int or DebugLevel
+        ``False``, 0 or ``OFF`` logs warnings only. ``True``, 1 or ``EVENTS``
+        adds events. 2 or ``TRACE`` adds the heartbeats, raw websocket audio and
+        HTTP request lines. Larger numbers count as ``TRACE``.
+
+    Returns
+    -------
+    DebugLevel
+        The higher of ``debug`` and ``FISH_VOICE_DEBUG``, which ``debug_level`` returns
+        from now on without reading the environment again.
+    """
+    level = max(DebugLevel(min(max(int(debug), 0), DebugLevel.TRACE)), _env_level())
+    _DEBUG.level = level
+    _DEBUG.frozen = level
+    _DEBUG.configured = True
+    return level
 
 
 def debug_enabled() -> bool:
@@ -144,16 +137,39 @@ def debug_enabled() -> bool:
     return debug_level() >= DebugLevel.EVENTS
 
 
+def on_terminal_line(before: Callable[[], None]) -> Callable[[], None]:
+    """Run ``before`` ahead of each line logging writes to the terminal.
+
+    Parameters
+    ----------
+    before : Callable
+        Called first, on the logging thread. The plain display closes the reply line
+        it left open, so the log line does not land in the middle of it.
+
+    Returns
+    -------
+    Callable
+        Call it to stop. It does nothing once another callback has taken over.
+    """
+    _TERMINAL.before_line = before
+
+    def stop() -> None:
+        if _TERMINAL.before_line is before:
+            _TERMINAL.before_line = _nothing
+
+    return stop
+
+
 def debug(message: str, *args: Any, **fields: Any) -> None:
     """Log at debug when FISH_VOICE_DEBUG is on, after closing the token line.
 
     With a log file (``FISH_VOICE_LOG_DIR``) a line that is not shown is still written there.
     """
     if debug_enabled():
-        end_reply_line()
+        _TERMINAL.before_line()
         logger.debug(message, *args, **fields)
-    elif _FILE.on:
-        _FILE.record(message, args, fields)
+    elif log_file_on():
+        log_record(message, args, fields)
 
 
 def trace(message: str, *args: Any, **fields: Any) -> None:
@@ -162,367 +178,35 @@ def trace(message: str, *args: Any, **fields: Any) -> None:
     With a log file a line below that level is still written there.
     """
     if debug_level() >= DebugLevel.TRACE:
-        end_reply_line()
+        _TERMINAL.before_line()
         logger.debug(message, *args, **fields)
-    elif _FILE.on:
-        _FILE.record(message, args, fields)
+    elif log_file_on():
+        log_record(message, args, fields)
 
 
 def heartbeat_due(idle_frames: int, every: int) -> bool:
     """Return whether a heartbeat should print on this idle frame (level 2, or a log file)."""
-    return (debug_level() >= DebugLevel.TRACE or _FILE.on) and idle_frames % every == 0
-
-
-class _Turn:
-    t0: float | None = None
-    count: int = 0
-
-
-_TURN: Final = _Turn()
-_RULE_WIDTH: Final = 56
+    return (debug_level() >= DebugLevel.TRACE or log_file_on()) and idle_frames % every == 0
 
 
 def mark_turn() -> None:
     """Start the per-turn clock and print a rule. Later debug lines show seconds since now."""
-    _TURN.t0 = time.perf_counter()
-    _TURN.count += 1
+    count = start_turn_clock()
     if debug_enabled():
-        end_reply_line()
-        title = f" turn {_TURN.count} "
-        _write_stderr(_dim(title.center(_RULE_WIDTH, "\u2500")) + "\n")
+        _TERMINAL.before_line()
+        title = f" turn {count} "
+        sys.stderr.write(dim(title.center(_RULE_WIDTH, "─")) + "\n")
 
 
 def clear_turn() -> None:
     """Stop the per-turn clock, so listening lines carry no stale offset."""
-    _TURN.t0 = None
-
-
-_TAGGED: Final = re.compile(r"^([a-z]+)\.([a-z_]+)\b ?(.*)$", re.DOTALL)
-_BRACKETED: Final = re.compile(r"^\[([A-Za-z-]+)\]\s*(.*)$", re.DOTALL)
-_TAG_WIDTH: Final = 7
-_TAG_COLORS: Final = {
-    "you": "96",
-    "listen": "36",
-    "asr": "33",
-    "stt": "33",
-    "llm": "35",
-    "turn": "37",
-    "tts": "32",
-    "barge": "31",
-    "aec": "34",
-    "warn": "93",
-}
-
-
-def _color_on(stream: Any = None) -> bool:
-    target = stream if stream is not None else sys.stderr
-    return bool(target.isatty()) and "NO_COLOR" not in os.environ
-
-
-def _dim(text: str, stream: Any = None) -> str:
-    return f"\x1b[2m{text}\x1b[0m" if _color_on(stream) else text
-
-
-def _paint(code: str, text: str, stream: Any = None) -> str:
-    return f"\x1b[{code}m{text}\x1b[0m" if _color_on(stream) else text
-
-
-def _split_tag(message: str, level: str) -> tuple[str, str]:
-    tagged = _TAGGED.match(message)
-    if tagged:
-        tag, name, rest = tagged.groups()
-        return tag, f"{name} {rest}".rstrip()
-    bracketed = _BRACKETED.match(message)
-    if bracketed:
-        return bracketed.group(1).lower(), bracketed.group(2)
-    if message.startswith("HTTP Request:"):
-        return "http", message.removeprefix("HTTP Request:").strip()
-    return ("warn" if level == "WARNING" else "log"), message
-
-
-def log_tag(message: str, level: str) -> tuple[str, str]:
-    """Split a log message into the tag a display shows and the rest.
-
-    Parameters
-    ----------
-    message : str
-        The logged message, such as ``tts.start voice=x``.
-    level : str
-        The log level name, such as ``WARNING``.
-
-    Returns
-    -------
-    tuple of str
-        The tag (``tts``, ``warn``, ``log``) and the text without it.
-    """
-    tag, body = _split_tag(message, level)
-    if level == "WARNING" and tag == "log":
-        tag = "warn"
-    return tag, body
-
-
-def _offset() -> str:
-    t0 = _TURN.t0
-    if t0 is None:
-        return " " * 8
-    return f"{time.perf_counter() - t0:+.2f}s".rjust(8)
-
-
-def _compose(stamp: str, tag: str, label: str, body: str, stream: Any = None) -> str:
-    tag_text = _paint(_TAG_COLORS.get(tag, "90"), label.ljust(_TAG_WIDTH), stream)
-    return f"{_dim(stamp, stream)} {_dim(_offset(), stream)}  {tag_text}{body}"
-
-
-def _format_record(record: Any) -> str:
-    stamp = record["time"].strftime("%H:%M:%S.") + f"{record['time'].microsecond // 1000:03d}"
-    tag, body = _split_tag(str(record["message"]), record["level"].name)
-    if record["level"].name == "WARNING":
-        tag = "warn" if tag == "log" else tag
-        body = _paint("93", body)
-    record["extra"]["line"] = _compose(stamp, tag, tag, body)
-    return "{extra[line]}\n{exception}"
-
-
-def _now_stamp() -> str:
-    now = time.time()
-    millis = int((now % 1) * 1000)
-    return time.strftime("%H:%M:%S", time.localtime(now)) + f".{millis:03d}"
-
-
-_ROLE_COLORS: Final = {"you": "96", "llm": "95"}
-
-
-def _stdout_tty() -> bool:
-    return bool(sys.stdout.isatty())
-
-
-def conversation(role: str, text: str) -> None:
-    """Print one line of the conversation, ``you`` or ``llm``.
-
-    Parameters
-    ----------
-    role : str
-        ``you`` or ``llm``.
-    text : str
-        What was said.
-
-    Notes
-    -----
-    The conversation always goes to stdout, so piping it keeps the transcript.
-    On a terminal with debug on, the line carries the same time columns and
-    role tag as the log lines on stderr. Written and flushed in order, it stays
-    in sequence with them. Piped, or with debug off, it is a plain
-    ``role \u25b8 text`` line.
-    """
-    end_reply_line()
-    label = f"{role} \u25b8"
-    if not (debug_enabled() and _stdout_tty()):
-        console_print(f"{label} {text}", flush=True)
-        return
-    color = _ROLE_COLORS.get(role, "97")
-    body = _paint(f"1;{color}", text, sys.stdout)
-    console_print(_compose(_now_stamp(), role, label, body, sys.stdout), flush=True)
-
-
-class _FileLog:
-    """The log file for ``FISH_VOICE_LOG_DIR``: every line, whatever the screen shows."""
-
-    def __init__(self) -> None:
-        self.path: Path | None = None
-        self._handle: Any = None
-        self._lock = threading.Lock()
-
-    @property
-    def on(self) -> bool:
-        return self._handle is not None
-
-    def start(self, folder: str) -> Path | None:
-        """Open a new log file in ``folder``, once. Returns its path, or None when it cannot."""
-        if self._handle is not None:
-            return self.path
-        stamp = time.strftime("%Y%m%d-%H%M%S")
-        path = Path(folder).expanduser() / f"fish-voice-{stamp}.log"
-        try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            # Private: it holds what was said and what the model answered.
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-            self._handle = os.fdopen(fd, "a", encoding="utf-8", buffering=1)
-        except OSError as exc:
-            _write_stderr(f"fish-voice: cannot write the log file {path}: {exc}\n")
-            return None
-        self.path = path
-        atexit.register(self.close)
-        return path
-
-    def write(self, tag: str, body: str, stamp: str | None = None) -> None:
-        line = f"{stamp or _now_stamp()} {_offset()}  {tag.ljust(_TAG_WIDTH)}{body}".rstrip()
-        with self._lock, contextlib.suppress(OSError, ValueError):
-            if self._handle is not None:
-                self._handle.write(line + "\n")
-
-    def record(self, message: str, args: tuple[Any, ...], fields: dict[str, Any]) -> None:
-        """Write a debug or trace line the screen is not showing."""
-        try:
-            text = message.format(*args, **fields) if args or fields else message
-        except (IndexError, KeyError, ValueError):
-            text = message
-        tag, body = _split_tag(text, "DEBUG")
-        self.write(tag, body)
-
-    def close(self) -> None:
-        with self._lock:
-            handle, self._handle = self._handle, None
-        if handle is not None:
-            with contextlib.suppress(OSError):
-                handle.close()
-
-
-_FILE: Final = _FileLog()
-
-
-def log_file_path() -> Path | None:
-    """Return the log file in use, or None when logging to a file is off."""
-    return _FILE.path if _FILE.on else None
-
-
-def log_to_file(tag: str, text: str) -> None:
-    """Write one line to the log file, if there is one. For the conversation itself."""
-    if _FILE.on:
-        _FILE.write(tag, text)
-
-
-def _file_sink(message: Any) -> None:
-    record = message.record
-    tag, body = _split_tag(str(record["message"]), record["level"].name)
-    if record["level"].name == "WARNING" and tag == "log":
-        tag = "warn"
-    stamp = record["time"].strftime("%H:%M:%S.") + f"{record['time'].microsecond // 1000:03d}"
-    _FILE.write(tag, body, stamp)
-
-
-def displayed(record: Any) -> bool:
-    """Say whether a log record belongs on the screen: not file-only, and not debug when off."""
-    if record["extra"].get("file_only"):
-        return False
-    return record["level"].no >= logger.level("WARNING").no or debug_enabled()
-
-
-def _write_stderr(message: str) -> None:
-    """Write at emit time so a wrapped stderr (pytest, a later redirect) is the one used."""
-    sys.stderr.write(message)
-
-
-class _Configured:
-    """True after the CLI installs the stderr sink. warn() must not configure loguru itself."""
-
-    on: bool = False
-
-
-_CONFIGURED: Final = _Configured()
+    stop_turn_clock()
 
 
 def warn(message: str) -> None:
     """Stderr diagnostic. Closes an open reply line first. Does not configure logging."""
-    end_reply_line()
-    if _CONFIGURED.on:
+    _TERMINAL.before_line()
+    if _DEBUG.configured:
         logger.warning(message)
         return
-    _write_stderr(f"{message}\n")
-
-
-class _InterceptHandler(logging.Handler):
-    @override
-    def emit(self, record: logging.LogRecord) -> None:
-        try:
-            level: str | int = logger.level(record.levelname).name
-        except ValueError:
-            level = record.levelno
-        frame = logging.currentframe()
-        depth = 2
-        while frame is not None and frame.f_code.co_filename == logging.__file__:
-            frame = frame.f_back
-            depth += 1
-        hidden = record.levelno < logging.WARNING and _DEBUG.level < DebugLevel.TRACE
-        scoped = logger.bind(file_only=True) if hidden else logger
-        scoped.opt(depth=depth, exception=record.exc_info).log(level, record.getMessage())
-
-
-_INTERCEPTED: Final = ("httpx", "httpcore", "websockets", "asyncio")
-# httpcore DEBUG prints raw header bytes (b'...'), including Set-Cookie.
-# httpx INFO is the one-line "HTTP Request: METHOD url status" record.
-_HTTPX_DEBUG_LEVEL: Final = logging.INFO
-
-
-def _intercept_libraries(*, level: DebugLevel) -> None:
-    if _FILE.on:
-        level = DebugLevel.TRACE  # the file gets the request lines too
-    handler = _InterceptHandler()
-    for name in _INTERCEPTED:
-        lib = logging.getLogger(name)
-        lib.handlers.clear()
-        lib.addHandler(handler)
-        lib.propagate = False
-        if name == "httpx" and level >= DebugLevel.TRACE:
-            lib.setLevel(_HTTPX_DEBUG_LEVEL)
-        else:
-            lib.setLevel(logging.WARNING)
-
-
-def _stderr_logger(level: str) -> None:
-    logger.remove()
-    logger.add(
-        _write_stderr,
-        level=level,
-        format=_format_record,
-        colorize=False,
-        filter=displayed,
-    )
-
-
-def configure_voice_logging(
-    *, debug: bool | int | DebugLevel, to_stderr: bool = True, log_dir: str = ""
-) -> Path | None:
-    """Idempotent stderr sink. DEBUG when on; otherwise WARNING. Call from the CLI only.
-
-    Parameters
-    ----------
-    debug : bool or int or DebugLevel
-        ``False``, 0 or ``OFF`` logs warnings only. ``True``, 1 or ``EVENTS``
-        adds events. 2 or ``TRACE`` adds the heartbeats, raw websocket audio and
-        HTTP request lines. Larger numbers count as ``TRACE``.
-    to_stderr : bool, optional
-        False installs no stderr sink, for a display that owns the terminal. Log
-        lines then go only to sinks added afterwards, such as ``forward_logs``.
-    log_dir : str, optional
-        A folder to write a complete log to, in a new file for this run. It gets every line at
-        the most detailed level, whatever ``debug`` shows on the screen. Empty keeps an
-        earlier file, or none. Calling again without it keeps the same file.
-
-    Returns
-    -------
-    Path or None
-        The log file in use, or None.
-    """
-    if log_dir:
-        _FILE.start(log_dir)
-    level = max(DebugLevel(min(max(int(debug), 0), DebugLevel.TRACE)), _env_level())
-    _DEBUG.level = level
-    _DEBUG.frozen = level
-    if to_stderr:
-        _stderr_logger("DEBUG" if level >= DebugLevel.EVENTS else "WARNING")
-    else:
-        logger.remove()
-    if _FILE.on:
-        logger.add(_file_sink, level="DEBUG", format="{message}")
-    _CONFIGURED.on = True
-    _intercept_libraries(level=level)
-    if level >= DebugLevel.EVENTS:
-        shown = (
-            "events, heartbeats and raw traffic"
-            if level >= DebugLevel.TRACE
-            else "events (--trace adds more)"
-        )
-        logger.debug("debug.on {}", shown)
-    if log_dir and _FILE.on:
-        _FILE.write("debug", f"log file {_FILE.path}")
-    return log_file_path()
+    sys.stderr.write(f"{message}\n")
