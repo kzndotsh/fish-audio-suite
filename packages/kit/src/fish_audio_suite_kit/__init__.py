@@ -56,6 +56,7 @@ from fish_audio_suite_kit.defaults import (
     known_opus_bitrate,
     normalize_tts_model,
     strip_base,
+    takes_directions,
 )
 from fish_audio_suite_kit.env import (
     clamp_number,
@@ -234,6 +235,7 @@ __all__ = [
     "split_tts_piece",
     "strip_base",
     "strip_cue_tags",
+    "takes_directions",
     "trace_id_of",
     "tts_hold_at",
     "utf8_text",

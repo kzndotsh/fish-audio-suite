@@ -172,6 +172,12 @@ _MD_BREAK_RE = re.compile(
     re.IGNORECASE,
 )
 _MD_HTML_RE = re.compile(rf"<(?!/?\s*whisper\b)/?[A-Za-z][^>\n]{{0,{_TAG}}}>", re.IGNORECASE)
+# A directed model (drama-3) reads these around the words they change, so they are kept for it.
+_DIRECTED_PAIRED_TAGS = ("whisper", "emphasis", "soft", "fast", "slow", "stress", "forceful")
+_MD_HTML_DIRECTED_RE = re.compile(
+    rf"<(?!/?\s*(?:{'|'.join(_DIRECTED_PAIRED_TAGS)})\s*>)/?[A-Za-z][^>\n]{{0,{_TAG}}}>",
+    re.IGNORECASE,
+)
 HTML_ENTITY_RE = re.compile(r"&(#x[0-9A-Fa-f]+|#\d+|[A-Za-z]+);")
 _HTML_NAMED = {"amp": "&", "lt": "<", "gt": ">", "quot": '"', "apos": "'", "nbsp": " "}
 
@@ -400,7 +406,7 @@ def _unwrap_edge_marks(text: str, *, line_start: bool, before: str, after: str) 
     return text
 
 
-def _strip_marks(text: str, *, line_start: bool, edge: _Edge) -> str:
+def _strip_marks(text: str, *, line_start: bool, edge: _Edge, directed: bool) -> str:
     # Entities decode first, so "&lt;br&gt;" is handled as the tag it spells.
     stripped = HTML_ENTITY_RE.sub(html_char, text)
     stripped = blank_table_separators(stripped, line_start=line_start)
@@ -411,7 +417,7 @@ def _strip_marks(text: str, *, line_start: bool, edge: _Edge) -> str:
     stripped = _MD_REF_LINK_RE.sub(_spaced_ref, stripped)
     stripped = _line_sub(_MD_REF_DEF_RE, "", stripped, line_start=line_start)
     stripped = _MD_BREAK_RE.sub(" ", stripped)
-    stripped = _MD_HTML_RE.sub("", stripped)
+    stripped = (_MD_HTML_DIRECTED_RE if directed else _MD_HTML_RE).sub("", stripped)
     stripped = _line_sub(_MD_LIST_RE, "", stripped, line_start=line_start)
     stripped = _line_sub(_MD_TASK_RE, "", stripped, line_start=line_start)
     stripped = _line_sub(_MD_RULE_RE, "", stripped, line_start=line_start)
@@ -419,7 +425,7 @@ def _strip_marks(text: str, *, line_start: bool, edge: _Edge) -> str:
     return _unwrap_marks(stripped, edge)
 
 
-def _strip_markdownish(text: str, *, line_start: bool, edge: _Edge) -> str:
+def _strip_markdownish(text: str, *, line_start: bool, edge: _Edge, directed: bool) -> str:
     cleaned = rewrite_s1_parens(text)
     cleaned = _line_sub(_MD_HEADING_RE, "", cleaned, line_start=line_start)
     cleaned = _replace(cleaned, _markdown_subs(edge))
@@ -429,11 +435,20 @@ def _strip_markdownish(text: str, *, line_start: bool, edge: _Edge) -> str:
     last = 0
     for m in ANGLE_TOKEN_RE.finditer(cleaned):
         parts.append(
-            _strip_marks(cleaned[last : m.start()], line_start=line_start and last == 0, edge=edge)
+            _strip_marks(
+                cleaned[last : m.start()],
+                line_start=line_start and last == 0,
+                edge=edge,
+                directed=directed,
+            )
         )
         parts.append(m.group(0))
         last = m.end()
-    parts.append(_strip_marks(cleaned[last:], line_start=line_start and last == 0, edge=edge))
+    parts.append(
+        _strip_marks(
+            cleaned[last:], line_start=line_start and last == 0, edge=edge, directed=directed
+        )
+    )
     return "".join(parts)
 
 
@@ -548,6 +563,7 @@ def scrub_tts(
     continued: bool = False,
     before: str = "",
     after: str = "",
+    directed: bool = False,
 ) -> str:
     """Strip thoughts, markdown, and stage markup. Keep Fish cues.
 
@@ -567,6 +583,10 @@ def scrub_tts(
     after : str, optional
         Text still held after this chunk. Only its first character is read.
         Default empty.
+    directed : bool, optional
+        True for a model that takes paired tags around words (``takes_directions``).
+        ``<emphasis>``, ``<soft>``, ``<fast>``, ``<slow>``, ``<stress>``, ``<forceful>`` and
+        ``<whisper>`` are then kept. Default False, which removes them as markup.
 
     Returns
     -------
@@ -584,6 +604,8 @@ def scrub_tts(
     --------
     >>> scrub_tts("**Hello** there!")
     'Hello there!'
+    >>> scrub_tts("It is <emphasis>mine</emphasis>, <b>now</b>.", directed=True)
+    'It is <emphasis>mine</emphasis>, now.'
     """
     if not text:
         return ""
@@ -608,7 +630,7 @@ def scrub_tts(
     cleaned = _HTML_BLOCK_TAIL_RE.sub("", cleaned)
     cleaned = _erase_spans(cleaned, _HTML_COMMENT_OPEN_RE, lambda _opener: _HTML_COMMENT_CLOSE_RE)
     cleaned = _HTML_COMMENT_TAIL_RE.sub("", cleaned)
-    cleaned = _strip_markdownish(cleaned, line_start=line_start, edge=edge)
+    cleaned = _strip_markdownish(cleaned, line_start=line_start, edge=edge, directed=directed)
     cleaned = _drop_unclosed(cleaned, "(", ")", keep_digit=True, continued=continued)
     cleaned = _drop_unclosed(cleaned, "（", "）", keep_digit=True, continued=continued)
     cleaned = _drop_unclosed(cleaned, "[", "]", keep_digit=False, continued=continued)

@@ -39,6 +39,7 @@ __all__ = [
     "known_opus_bitrate",
     "normalize_tts_model",
     "strip_base",
+    "takes_directions",
 ]
 
 DEFAULT_SYSTEM_PROMPT: Final = (
@@ -334,6 +335,28 @@ def catalog_tts_model(name: str) -> TtsModel | None:
     True
     """
     return _TTS_MODEL_BY_NAME.get(name.strip().lower())
+
+
+def takes_directions(model: str) -> bool:
+    """Say whether a TTS model is directed in plain language, with paired tags around words.
+
+    Parameters
+    ----------
+    model : str
+        A model id. Compared after strip and lowercase.
+
+    Returns
+    -------
+    bool
+        True for ``drama-3``, which reads a long ``[direction]`` as written and tags such as
+        ``<emphasis>``. False for the S models, whose cues are short and from a known list.
+
+    Examples
+    --------
+    >>> takes_directions(" Drama-3 "), takes_directions("s2.1-pro")
+    (True, False)
+    """
+    return catalog_tts_model(model) == "drama-3"
 
 
 def known_latency(name: str, default: FishLatency) -> FishLatency:

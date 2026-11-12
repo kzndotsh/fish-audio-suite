@@ -742,3 +742,26 @@ def test_the_common_s2_breath_cues_are_cues_in_a_stack_and_as_old_parens() -> No
     assert scrub_tts("[inhale][exhale] Okay.") == "[inhale][exhale] Okay."
     assert scrub_tts("[gasp] No way [inhale] okay.") == "[gasp] No way [inhale] okay."
     assert normalize_cues(scrub_tts("(gasp) wow")) == "[gasping] wow"
+
+
+def test_a_directed_model_keeps_its_paired_tags_and_still_loses_other_markup() -> None:
+    text = (
+        "<emphasis>Mine</emphasis>, <soft>not yours</soft>. <fast>Go</fast> <slow>now</slow> "
+        "<stress>please</stress> <forceful>out</forceful> <whisper>shh</whisper> "
+        "<b>bold</b> <french>bonjour</french> <span class='x'>span</span>"
+    )
+    assert scrub_tts(text, directed=True) == (
+        "<emphasis>Mine</emphasis>, <soft>not yours</soft>. <fast>Go</fast> <slow>now</slow> "
+        "<stress>please</stress> <forceful>out</forceful> <whisper>shh</whisper> "
+        "bold bonjour span"
+    )
+    # Without it they are markup, apart from <whisper>, which becomes a cue later.
+    assert scrub_tts("<emphasis>Mine</emphasis> <whisper>shh</whisper>") == (
+        "Mine <whisper>shh</whisper>"
+    )
+    # A tag with attributes is not one of Fish's, so it goes.
+    assert scrub_tts("<emphasis level='2'>Mine</emphasis>", directed=True) == "Mine</emphasis>"
+
+
+def test_directed_scrubbing_stays_linear_on_hostile_tags() -> None:
+    assert_linear_time(lambda text: scrub_tts(text, directed=True), "<emphasis " * 20000)

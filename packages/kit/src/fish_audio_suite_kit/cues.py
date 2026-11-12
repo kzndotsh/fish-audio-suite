@@ -612,7 +612,12 @@ def _one_sentence(chunk: str, *, lead: bool) -> str:
 
 
 def normalize_cues(
-    text: str, *, lead: bool = False, continued: bool = False, official: bool = False
+    text: str,
+    *,
+    lead: bool = False,
+    continued: bool = False,
+    official: bool = False,
+    directed: bool = False,
 ) -> str:
     """Rewrite third-party mood markup into Fish ``[cue]`` tags.
 
@@ -637,6 +642,10 @@ def normalize_cues(
         removed when no word in it suggests one (``[in a storytelling voice]``). Some voices
         act a description out as a sound, such as a hum, instead of changing tone. Default
         False, which keeps free-form S2 cues as written.
+    directed : bool, optional
+        True for a model that is directed in plain language (``takes_directions``). Every
+        ``[direction]`` is then left exactly as written, ``official`` and ``lead`` are
+        ignored, and ``<whisper>…</whisper>`` stays a paired tag. Default False.
 
     Returns
     -------
@@ -660,9 +669,13 @@ def normalize_cues(
     '[whispering] shh and [happy] day'
     >>> normalize_cues("[excited] Yes! [  calm  ] ok")
     '[excited] Yes! [calm] ok'
+    >>> normalize_cues("[Barely holding it together] <whisper>fine</whisper>", directed=True)
+    '[Barely holding it together] <whisper>fine</whisper>'
     """
     if not text:
         return text
+    if directed:
+        return rewrite_s1_parens(text)
     text = _WHISPER_XML_RE.sub(lambda m: f"[whispering] {m.group(1).strip()}", text)
     text = rewrite_s1_parens(text)
     if official:

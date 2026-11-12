@@ -413,3 +413,20 @@ def test_a_sound_first_sentence_still_gets_the_mood_and_one_with_its_own_is_left
     assert carry.apply("[curious] Really? ") == "[curious] Really? "
     assert carry.apply("Tell me. ") == "[curious] Tell me. "
     assert MoodCarry().apply("No mood yet. ") == "No mood yet. "
+
+
+def test_a_directed_model_gets_every_direction_and_whisper_tag_as_written() -> None:
+    text = "[Barely holding it together, forcing a smile] I'm fine. [shaky breath] <whisper>Really</whisper>. [pause]"
+    assert normalize_cues(text, directed=True) == text
+    # The official mapping would shrink or drop them, so it does not apply.
+    assert normalize_cues(text, directed=True, official=True) == text
+    assert normalize_cues("[Smiling] hi", official=True) == "[happy] hi"
+
+
+def test_only_drama_3_takes_directions() -> None:
+    from fish_audio_suite_kit import takes_directions
+
+    assert takes_directions("drama-3")
+    assert takes_directions(" Drama-3 ")
+    for model in ("s2.1-pro", "s2.1-pro-free", "s2-pro", "s1", "drama-3-preview", ""):
+        assert not takes_directions(model)
