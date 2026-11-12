@@ -22,7 +22,7 @@ def test_health_without_api_key() -> None:
         models = client.get("/v1/models")
         ids = {m["id"] for m in models.json()["data"]}
         assert "s2.1-pro-free" in ids
-        assert "drama-3-preview" in ids
+        assert "drama-3" in ids
         assert "fish-audio/s2.1-pro" in ids
 
 

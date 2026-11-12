@@ -195,7 +195,7 @@ def test_known_latency_returns_a_literal() -> None:
 def test_catalog_tts_model_narrows_only_the_catalog() -> None:
     assert catalog_tts_model(" S2.1-Pro ") == "s2.1-pro"
     assert catalog_tts_model("s1") == "s1"
-    assert catalog_tts_model(" Drama-3-Preview ") == "drama-3-preview"
+    assert catalog_tts_model(" Drama-3 ") == "drama-3"
     assert catalog_tts_model("mystery") is None
 
 

@@ -331,7 +331,7 @@ class FishSpeaker:
         prepared = _spoken(text, lead=self.mood_lead, official=self.official_cues)
         # The whole reply is known, so its length is the partial-cut window. A
         # comma then never splits a short tail such as "honey?" off a sentence,
-        # which drama-3-preview speaks with uneven prosody. Sentence ends still
+        # which drama-3 speaks with uneven prosody. Sentence ends still
         # cut. The window rides in TurnSpec, so a replay cuts the same way.
         partial = len(prepared) or self.partial_chars
         return await run_turn(

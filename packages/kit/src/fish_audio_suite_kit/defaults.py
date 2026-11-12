@@ -251,7 +251,7 @@ FISH_TTS_MODEL_IDS: Final = (
     "s2.1-pro-free",
     "s2-pro",
     "s1",
-    "drama-3-preview",
+    "drama-3",
 )
 # Each table maps a lowercase name to the Literal it stands for, so a lookup
 # narrows the type without a cast.
@@ -279,7 +279,7 @@ _TTS_MODEL_BY_NAME: Final[dict[str, TtsModel]] = {
     "s2-pro": "s2-pro",
     "s2.1-pro": "s2.1-pro",
     "s2.1-pro-free": "s2.1-pro-free",
-    "drama-3-preview": "drama-3-preview",
+    "drama-3": "drama-3",
 }
 
 
@@ -328,8 +328,8 @@ def catalog_tts_model(name: str) -> TtsModel | None:
     --------
     >>> catalog_tts_model(" S2-Pro ")
     's2-pro'
-    >>> catalog_tts_model("Drama-3-Preview")
-    'drama-3-preview'
+    >>> catalog_tts_model("Drama-3")
+    'drama-3'
     >>> catalog_tts_model("mystery") is None
     True
     """
