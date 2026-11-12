@@ -182,7 +182,12 @@ def test_fish_is_asked_for_the_format_the_sink_takes(spec_of: Callable[..., Turn
     spec = spec_of(tts, RecordingSink())
     assert spec.audio_format == "pcm"
     assert spec.config.format == "pcm"
-    mp3 = spec_of(tts, MpvSink())
+
+    # The class, not an instance: building an MpvSink needs mpv installed.
+    class Mp3Sink(RecordingSink):
+        audio_format = MpvSink.audio_format
+
+    mp3 = spec_of(tts, Mp3Sink())
     assert mp3.audio_format == "mp3"
     assert mp3.config.format == "mp3"
 
