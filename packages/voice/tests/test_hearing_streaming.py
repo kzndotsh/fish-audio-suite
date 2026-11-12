@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import AsyncIterator
 from dataclasses import replace
 from typing import Any
 
 import pytest
-from session_fakes import make_ctx
+from session_fakes import FakeBackend, barge_clip, make_ctx
 
+from fish_audio_suite_kit import ChatMessage
+from fish_audio_suite_voice.asr import AsrResult
 from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexContext
 from fish_audio_suite_voice.events import EVENTS, Event, Heard
-from fish_audio_suite_voice.hearing import HeardLine, hear_line
-from fish_audio_suite_voice.streaming import StreamedTurn, StreamFallback
+from fish_audio_suite_voice.heard import HeardLine
+from fish_audio_suite_voice.hearing import hear_line
+from fish_audio_suite_voice.recognised import NoTurn, StreamFallback, Transcript
 from fish_audio_suite_voice.tune import DeepgramTune, SttTune
 
 
@@ -33,8 +37,8 @@ def _stream_returns(monkeypatch: pytest.MonkeyPatch, outcome: object) -> list[di
     return calls
 
 
-def _turn(text: str = "what is the weather") -> StreamedTurn:
-    return StreamedTurn(text=text, asr_ms=240.0, started=123.0, trace_id="a" * 32)
+def _turn(text: str = "what is the weather") -> Transcript:
+    return Transcript(text, asr_ms=240.0, started=123.0, trace_id="a" * 32)
 
 
 def test_a_streamed_turn_becomes_a_line_and_is_announced(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -65,11 +69,11 @@ def test_when_deepgram_cannot_be_reached_the_turn_is_heard_the_usual_way_from_th
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured = b"\x05\x00" * 200
-    _stream_returns(monkeypatch, StreamFallback(captured))
+    _stream_returns(monkeypatch, StreamFallback(((captured, True),), None))
     recorded: list[bytes] = []
 
-    def record(*_args: Any, prefix: bytes = b"", **_kwargs: Any) -> bytes:
-        recorded.append(prefix)
+    def record(*_args: Any, carried: StreamFallback, **_kwargs: Any) -> bytes:
+        recorded.append(carried.pcm)
         return b""
 
     monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", record)
@@ -80,14 +84,14 @@ def test_when_deepgram_cannot_be_reached_the_turn_is_heard_the_usual_way_from_th
 @pytest.mark.parametrize(
     ("outcome", "expected"),
     [
-        ("fatal", HeardLine("fatal", code=EXIT_FATAL)),
-        ("again", HeardLine("again")),
-        ("noise", HeardLine("noise")),
-        ("stopped", HeardLine("noise")),  # a typed line or mute cut it short
+        (NoTurn("fatal"), HeardLine("fatal", code=EXIT_FATAL)),
+        (NoTurn("again"), HeardLine("again")),
+        (NoTurn("noise"), HeardLine("noise")),
+        (NoTurn("stopped"), HeardLine("noise")),  # a typed line or mute cut it short
     ],
 )
 def test_each_way_a_streamed_turn_can_fail_maps_to_what_the_loop_does_next(
-    monkeypatch: pytest.MonkeyPatch, outcome: str, expected: HeardLine
+    monkeypatch: pytest.MonkeyPatch, outcome: NoTurn, expected: HeardLine
 ) -> None:
     _stream_returns(monkeypatch, outcome)
     assert asyncio.run(hear_line(_ctx(), "")) == expected
@@ -95,7 +99,7 @@ def test_each_way_a_streamed_turn_can_fail_maps_to_what_the_loop_does_next(
 
 def test_quitting_during_a_streamed_turn_says_bye(monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = _ctx()
-    _stream_returns(monkeypatch, "stopped")
+    _stream_returns(monkeypatch, NoTurn("stopped"))
     ctx.session.quit_requested.set()
     assert asyncio.run(hear_line(ctx, "")) == HeardLine("bye")
     ctx2 = _ctx()
@@ -109,7 +113,7 @@ def test_a_streamed_transcript_is_judged_like_a_batch_one(monkeypatch: pytest.Mo
     assert asyncio.run(hear_line(_ctx(), "")) == HeardLine("bye")  # a quit word ends the session
     _stream_returns(monkeypatch, _turn("mm-hmm"))
     ctx = _ctx()
-    ctx.carry.prefix = b"\x01\x00" * 100  # said over the reply, so a lone "mm-hmm" means "go on"
+    ctx.carry.keep(barge_clip(b"\x01\x00" * 100), "")  # said over the reply: "mm-hmm" is "go on"
     assert asyncio.run(hear_line(ctx, "")) == HeardLine("noise")
     _stream_returns(monkeypatch, _turn("what is the weather"))
     assert asyncio.run(hear_line(_ctx(), "what is the weather")).kind == "noise"  # a stale copy
@@ -120,12 +124,11 @@ def test_the_barge_prefix_is_handed_to_the_stream_and_cleared(
 ) -> None:
     calls = _stream_returns(monkeypatch, _turn())
     ctx = _ctx()
-    ctx.carry.keep(b"\x02\x00" * 50, "", since=42)
+    clip = barge_clip(b"\x02\x00" * 50, since=42)
+    ctx.carry.keep(clip, "")
     asyncio.run(hear_line(ctx, ""))
-    assert calls[0]["prefix"] == b"\x02\x00" * 50
-    assert calls[0]["since"] == 42
-    assert ctx.carry.prefix == b""
-    assert ctx.carry.since is None
+    assert calls[0]["carried"] == clip
+    assert ctx.carry.clip is None
 
 
 def _eager_ctx() -> DuplexContext:
@@ -176,8 +179,73 @@ def test_a_reply_started_early_is_dropped_when_the_turn_turns_out_to_be_nothing(
 
     async def fake(**kwargs: Any) -> object:
         kwargs["on_eager"]("hmm")
-        return "noise"
+        return NoTurn("noise")
 
     monkeypatch.setattr("fish_audio_suite_voice.hearing.stream_turn", fake)
     assert asyncio.run(hear_line(ctx, "")) == HeardLine("noise")
     assert ctx.speculation is None
+
+
+def _fallback_then_asr(
+    monkeypatch: pytest.MonkeyPatch, said: str
+) -> tuple[list[StreamFallback], DuplexContext]:
+    fallback = StreamFallback(((b"\x05\x00" * 480, True),), since=77)
+    _stream_returns(monkeypatch, fallback)
+    seen: list[StreamFallback] = []
+
+    def record(*_args: Any, carried: StreamFallback, **_kwargs: Any) -> bytes:
+        seen.append(carried)
+        return b"wav"
+
+    async def asr(*_args: object, **_kwargs: object) -> AsrResult:
+        return AsrResult(said)
+
+    monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", record)
+    monkeypatch.setattr("fish_audio_suite_voice.asr.fish_asr", asr)
+    return seen, _ctx()
+
+
+def test_speech_handed_back_by_a_failed_stream_is_a_fresh_turn_not_an_interruption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The fallback used to ride on the barge-in prefix, so "yeah" was taken for "go on" and
+    # skipped, and the batch listen read on from "now", losing the frames in between.
+    carried, ctx = _fallback_then_asr(monkeypatch, "Yeah.")
+    heard = asyncio.run(hear_line(ctx, ""))
+    assert (heard.kind, heard.text) == ("line", "Yeah.")
+    assert carried[0].since == 77  # the batch listen reads on from just after the speech
+
+
+def test_speech_handed_back_by_a_failed_stream_can_still_be_a_stale_repeat(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _carried, ctx = _fallback_then_asr(monkeypatch, "What is the weather?")
+    assert asyncio.run(hear_line(ctx, "what is the weather")) == HeardLine("noise")
+
+
+def test_a_reply_started_early_never_edits_an_unanswered_line_in_the_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The last user line got no reply, so the new one is merged into it. The early reply's
+    # request did that merge in the session's own message, and the confirmed line was
+    # merged a second time on top.
+    ctx = _eager_ctx()
+    ctx.history.append({"role": "user", "content": "are you there"})
+    asked: list[list[ChatMessage]] = []
+
+    async def tokens(messages: list[ChatMessage], **_kwargs: object) -> AsyncIterator[str]:
+        asked.append([message.copy() for message in messages])
+        yield "Hi."
+
+    ctx.backend = FakeBackend(tokens)
+
+    async def fake(**kwargs: Any) -> object:
+        kwargs["on_eager"]("what is the weather")
+        await asyncio.sleep(0.01)
+        return _turn("what is the weather")
+
+    monkeypatch.setattr("fish_audio_suite_voice.hearing.stream_turn", fake)
+    heard = asyncio.run(hear_line(ctx, ""))
+    assert heard.kind == "line"
+    assert ctx.history[-1] == {"role": "user", "content": "are you there"}
+    assert asked[0][-1]["content"] == "are you there\nwhat is the weather"

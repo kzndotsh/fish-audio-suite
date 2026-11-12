@@ -16,6 +16,7 @@ from fish_audio_suite_kit import (
     is_asr_hallucination,
     is_backchannel,
     is_caption_watermark,
+    is_filler,
     is_quit_utterance,
     is_same_utterance,
     is_tts_junk,
@@ -122,6 +123,17 @@ def test_scrub_asr_keeps_speakers_when_asked() -> None:
     out = scrub_asr("Speaker 1: hello there", strip_speakers=False)
     assert "Speaker 1" in out
     assert "hello there" in out
+
+
+@pytest.mark.parametrize("text", ["um", "Um.", "hmm...", "HUH?", "ah", "えっと", "음"])
+def test_a_hesitation_sound_is_a_filler(text: str) -> None:
+    assert is_filler(text)
+
+
+@pytest.mark.parametrize("text", ["yeah", "uh-huh", "嗯", "mm-hmm", "okay", "", "um, can you help"])
+def test_a_word_that_can_answer_is_not_a_filler(text: str) -> None:
+    # A backchannel such as "yeah" answers a question, so only hesitation sounds count.
+    assert not is_filler(text)
 
 
 def test_backchannel() -> None:
@@ -352,7 +364,6 @@ def _clean(
     segments: list[object],
     *,
     strip_cues: bool = False,
-    trim_hallucination: bool = False,
 ) -> CleanTranscript:
     # Fish segments are untrusted JSON, so the tests hand in any shape.
     body = cast(AsrBody, {"text": text, "segments": segments})
@@ -361,7 +372,6 @@ def _clean(
         body,
         strip_speakers=True,
         strip_cues=strip_cues,
-        trim_hallucination=trim_hallucination,
     )
 
 
@@ -408,8 +418,8 @@ def test_clean_transcript_reports_a_hallucination_with_the_scrubbed_text() -> No
     assert clean == CleanTranscript("Thanks for watching!", "Thanks for watching!", "hallucination")
 
 
-def test_trim_hallucination_still_trims_a_watermark_out_of_a_known_phrase() -> None:
+def test_what_is_left_of_a_hallucination_is_never_answered() -> None:
+    # Cutting the watermark segment out of a known caption phrase leaves part of it.
     segments: list[object] = [{"text": "Subscribe."}]
-    assert _clean("Like and subscribe.", segments).source == "hallucination"
-    trimmed = _clean("Like and subscribe.", segments, trim_hallucination=True)
-    assert trimmed == CleanTranscript("Like and", "Like and subscribe.", "trimmed")
+    clean = _clean("Like and subscribe.", segments)
+    assert clean == CleanTranscript("Like and subscribe.", "Like and subscribe.", "hallucination")

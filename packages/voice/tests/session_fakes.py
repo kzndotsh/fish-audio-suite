@@ -17,14 +17,18 @@ import pytest
 from voice_fakes import FakeSink, ScriptedMic, make_result, set_tts
 
 from fish_audio_suite_kit import ChatMessage
+from fish_audio_suite_voice.asr import transcribe_clip
 from fish_audio_suite_voice.config import VoiceCliConfig
 from fish_audio_suite_voice.duplex import duplex_turns
 from fish_audio_suite_voice.duplex_state import DuplexContext
-from fish_audio_suite_voice.hearing import HeardLine
+from fish_audio_suite_voice.heard import Circumstances, HeardLine
+from fish_audio_suite_voice.heard import heard_line as judged
 from fish_audio_suite_voice.inputs import TurnSource
 from fish_audio_suite_voice.llm_tune import LlmTune
+from fish_audio_suite_voice.recognised import BargeIn
 from fish_audio_suite_voice.signals import DuplexSession
 from fish_audio_suite_voice.speaker import FishSpeaker
+from fish_audio_suite_voice.tune import DEFAULT_BARGE_RMS
 from fish_audio_suite_voice.wire import TtsResult
 
 
@@ -141,6 +145,20 @@ def run_session_with(
 
 def heard_line(text: str = "hi there") -> HeardLine:
     return HeardLine("line", text=text)
+
+
+def barge_clip(pcm: bytes = b"clip", since: int | None = None) -> BargeIn:
+    """A barge-in clip as the reply keeps it, admitted at the default gate level."""
+    return BargeIn(pcm, since, DEFAULT_BARGE_RMS)
+
+
+async def recognize(ctx: DuplexContext, wav: bytes, last_user: str) -> HeardLine:
+    """Hear one clip with Fish ASR and judge it, as the batch path does for a fresh turn."""
+    got = await transcribe_clip(
+        wav, ctx.config, cancel=ctx.session.quit_requested, client=ctx.asr_http
+    )
+    at = Circumstances(last_user, None, 0.0, 0.0, ctx.config.repeat_window_s)
+    return judged(got, at, quit_requested=ctx.session.quit_requested)
 
 
 def speak_with_fakes(

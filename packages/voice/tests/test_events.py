@@ -64,7 +64,7 @@ from fish_audio_suite_voice.hearing import HeardLine, hear_line
 from fish_audio_suite_voice.listen import _Listen  # pyright: ignore[reportPrivateUsage]
 from fish_audio_suite_voice.pcm import FRAME_BYTES, MIC_LEVEL_EVERY_FRAMES
 from fish_audio_suite_voice.speaker import FishSpeaker
-from fish_audio_suite_voice.tune import ListenTune
+from fish_audio_suite_voice.tune import BargeTune, ListenTune
 
 
 @pytest.fixture
@@ -136,7 +136,7 @@ def test_hear_line_reports_listening_and_the_transcript(
         return AsrResult("tell me something fun")
 
     monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", lambda *_a, **_k: b"w")
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", asr)
+    monkeypatch.setattr("fish_audio_suite_voice.asr.fish_asr", asr)
     heard = asyncio.run(hear_line(make_ctx(), ""))
     assert heard.kind == "line"
     assert seen[0] == Listening()
@@ -322,7 +322,8 @@ def test_the_barge_gate_reports_the_mic_level_and_the_interruption(
 
     install_vad(monkeypatch, _SpeechVad)
     gate = BargeGate(
-        mic=ScriptedMic(frames), hit_frames=MIC_LEVEL_EVERY_FRAMES + 2, min_rms=1.0, bleed_delay_s=0
+        mic=ScriptedMic(frames),
+        tune=BargeTune(hit_frames=MIC_LEVEL_EVERY_FRAMES + 2, min_rms=1.0, bleed_delay_s=0),
     )
     cancel = threading.Event()
     gate.watch(cancel)

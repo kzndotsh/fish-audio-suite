@@ -34,6 +34,7 @@ __all__ = [
     "is_asr_hallucination",
     "is_backchannel",
     "is_caption_watermark",
+    "is_filler",
     "is_quit_utterance",
     "is_same_utterance",
     "scrub_asr",
@@ -110,6 +111,11 @@ DEFAULT_BACKCHANNELS: Final = frozenset(
         "응",
         "어",
     }
+)
+# Hesitation sounds, never an answer, already folded. "yeah", "yep", "uh-huh" and "嗯" are
+# backchannels too, but after a question they answer it, so they are not here.
+_FILLERS: Final = frozenset(
+    {"ah", "hmm", "huh", "mm", "uh", "um", "えっと", "呃", "唔", "啊", "어", "음"}
 )
 
 # Whole utterance, after folding. These end the session, so they are explicit
@@ -556,7 +562,6 @@ def clean_transcript(
     strip_speakers: bool,
     strip_cues: bool,
     segment_text: Callable[[], str] | None = None,
-    trim_hallucination: bool = False,
 ) -> CleanTranscript:
     """Scrub a Fish transcript and recover the speech from its segments when needed.
 
@@ -581,10 +586,6 @@ def clean_transcript(
         Builds the fallback text from the segments. None joins each segment,
         stripped and scrubbed, with a space, skipping caption watermarks. A caller
         that groups segments into phrases passes its own join.
-    trim_hallucination : bool, optional
-        When the transcript and the segment text are both hallucinations, still
-        try removing watermark segments from the transcript and use that when it
-        is speech. Default False, which reports the hallucination at once.
 
     Returns
     -------
@@ -599,22 +600,22 @@ def clean_transcript(
     """
     segments = body.get("segments")
     scrubbed = scrub_asr(transcript, strip_speakers=strip_speakers, strip_cues=strip_cues)
-    hallucination = is_asr_hallucination(scrubbed)
-    if hallucination:
+    if is_asr_hallucination(scrubbed):
         if segment_text is None:
             alt = _segment_text(segments, strip_speakers=strip_speakers, strip_cues=strip_cues)
         else:
             alt = segment_text()
         if alt and not is_asr_hallucination(alt):
             return CleanTranscript(alt, scrubbed, "segments")
-        if not trim_hallucination:
-            return CleanTranscript(scrubbed, scrubbed, "hallucination")
+        # What is left of a hallucination once its watermark segments are cut out is
+        # part of it ("Like and" from "Like and subscribe."), so it is never trimmed.
+        return CleanTranscript(scrubbed, scrubbed, "hallucination")
     trimmed = without_watermark_segments(
         scrubbed, segments, strip_speakers=strip_speakers, strip_cues=strip_cues
     )
     if trimmed != scrubbed and trimmed and not is_asr_hallucination(trimmed):
         return CleanTranscript(trimmed, scrubbed, "trimmed")
-    return CleanTranscript(scrubbed, scrubbed, "hallucination" if hallucination else "text")
+    return CleanTranscript(scrubbed, scrubbed, "text")
 
 
 def _known_phrase(text: str, phrases: Set[str]) -> bool:
@@ -644,6 +645,31 @@ def is_backchannel(text: str, *, phrases: Set[str] | None = None) -> bool:
     """
     known = DEFAULT_BACKCHANNELS if phrases is None else _folded_phrases(phrases)
     return _known_phrase(text, known)
+
+
+def is_filler(text: str) -> bool:
+    """Return whether the utterance is only a hesitation sound.
+
+    Parameters
+    ----------
+    text : str
+        Short transcript such as ``um`` or ``hmm.``.
+
+    Returns
+    -------
+    bool
+        True for a hesitation sound after case-folding, in English or the Chinese,
+        Japanese and Korean ones models emit. A listener's ``yeah`` or ``uh-huh`` is
+        not one: unlike ``is_backchannel``, this keeps a word that can answer a question.
+
+    Examples
+    --------
+    >>> is_filler("Um.")
+    True
+    >>> is_filler("yeah")
+    False
+    """
+    return _known_phrase(text, _FILLERS)
 
 
 def is_quit_utterance(text: str, *, phrases: Set[str] | None = None) -> bool:

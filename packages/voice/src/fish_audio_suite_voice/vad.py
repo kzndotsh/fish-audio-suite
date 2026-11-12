@@ -6,14 +6,11 @@ import importlib
 from collections.abc import Callable
 from typing import Final, Protocol
 
-from fish_audio_suite_voice.pcm import SAMPLE_RATE
-
 __all__ = [
     "SILERO_THRESHOLDS",
     "VAD_ENGINES",
     "Vad",
     "VadFactory",
-    "frame_is_speech",
     "open_vad",
     "vad_problem",
 ]
@@ -23,7 +20,8 @@ class Vad(Protocol):
     """Scores 30 ms frames of 16 kHz mono int16 PCM, in the order they were heard.
 
     ``webrtcvad.Vad`` already has this shape. A detector may keep state between
-    frames, so each listen and each barge-in watch opens its own.
+    frames, so each listen and each barge-in watch opens its own, and its
+    ``scorer.FrameScorer`` hands it every frame once.
     """
 
     def is_speech(self, buf: bytes, sample_rate: int, /) -> bool:
@@ -133,8 +131,3 @@ def vad_problem(engine: str, strictness: int) -> str | None:
     except Exception as e:  # noqa: BLE001 - a plugin can fail any way; the user is told why
         return f"FISH_VOICE_VAD_ENGINE={engine} failed to open: {e}"
     return None
-
-
-def frame_is_speech(vad: Vad, frame: bytes) -> bool:
-    """Return whether ``vad`` scores this 16 kHz frame as speech."""
-    return bool(vad.is_speech(frame, SAMPLE_RATE))

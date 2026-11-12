@@ -28,8 +28,10 @@ import threading
 import time
 import wave
 from collections.abc import Iterator, Sequence
+from dataclasses import replace
 from pathlib import Path
 
+from fish_audio_suite_kit import MS_PER_S
 from fish_audio_suite_voice.aec import EchoCanceller
 from fish_audio_suite_voice.barge import BargeGate
 from fish_audio_suite_voice.cancel import StopFlag
@@ -41,8 +43,8 @@ from fish_audio_suite_voice.pcm import (
     take_frames,
     write_mono_wav,
 )
-from fish_audio_suite_voice.tune import AecTune, ListenTune
-from fish_audio_suite_voice.vad import frame_is_speech, open_vad, vad_problem
+from fish_audio_suite_voice.tune import AecTune, BargeTune, ListenTune
+from fish_audio_suite_voice.vad import open_vad, vad_problem
 
 _COLUMN_FRAMES = 5  # one timeline column is 150 ms
 _RULER_EVERY_S = 5
@@ -77,8 +79,9 @@ def barge_trips(frames: Sequence[bytes], listen: ListenTune) -> list[int]:
     """Return the frame index of every barge-in, restarting the gate after each one."""
     mic = _FileMic(frames)
     trips: list[int] = []
+    tune = replace(BargeTune(), bleed_delay_s=0)
     while mic.start < len(frames):
-        gate = BargeGate(mic=mic, listen=listen, bleed_delay_s=0)
+        gate = BargeGate(mic=mic, tune=tune, listen=listen)
         gate.watch(threading.Event())
         if gate.resume_at is None:
             break
@@ -104,8 +107,8 @@ def ruler(n_frames: int) -> str:
     columns = -(-n_frames // _COLUMN_FRAMES)
     column_ms = FRAME_MS * _COLUMN_FRAMES
     out = [" "] * columns
-    for second in range(0, columns * column_ms // 1000 + 1, _RULER_EVERY_S):
-        col = round(second * 1000 / column_ms)
+    for second in range(0, columns * column_ms // MS_PER_S + 1, _RULER_EVERY_S):
+        col = round(second * MS_PER_S / column_ms)
         label = f"{second}s"
         out[col : col + len(label)] = label
     return "".join(out)[:columns]
@@ -167,11 +170,11 @@ def compare(frames: Sequence[bytes], engines: Sequence[str], strictness: Sequenc
                 print(f"{name:{width}}  skipped: {problem}")
                 continue
             vad = open_vad(engine, level)
-            voiced = [frame_is_speech(vad, frame) for frame in frames]
+            voiced = [bool(vad.is_speech(frame, SAMPLE_RATE)) for frame in frames]
             listen = ListenTune(vad_aggressiveness=level, vad_engine=engine)
             trips = barge_trips(frames, listen)
             bars, marks = timeline(voiced, trips)
-            at = ", ".join(f"{t * FRAME_MS / 1000:.1f}s" for t in trips) or "none"
+            at = ", ".join(f"{t * FRAME_MS / MS_PER_S:.1f}s" for t in trips) or "none"
             print(f"{name:{width}}  {bars}")
             print(f"{'':{width}}  {marks}")
             share = 100 * sum(voiced) / max(len(voiced), 1)

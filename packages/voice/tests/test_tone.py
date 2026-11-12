@@ -42,7 +42,7 @@ def _asr(monkeypatch: pytest.MonkeyPatch, *results: AsrResult) -> list[dict[str,
         calls.append(dict(kwargs))
         return next(queue)
 
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", asr)
+    monkeypatch.setattr("fish_audio_suite_voice.asr.fish_asr", asr)
     monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", lambda *_a, **_k: b"w")
     return calls
 

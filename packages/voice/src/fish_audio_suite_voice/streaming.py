@@ -20,18 +20,27 @@ import contextlib
 import functools
 import threading
 import time
-from collections.abc import Callable
-from dataclasses import dataclass, replace
+from collections.abc import Callable, Iterator
+from dataclasses import replace
 from pathlib import Path
-from typing import Final, Literal
+from typing import Final
 
 from fish_audio_suite_kit import MS_PER_S, elapsed_ms, make_traceparent, trace_id_of
+from fish_audio_suite_voice.aec import EchoCanceller
 from fish_audio_suite_voice.cancel import StopFlag, any_of
 from fish_audio_suite_voice.debug import debug, trace, warn
 from fish_audio_suite_voice.events import EVENTS, Interim
-from fish_audio_suite_voice.listen import stream_utterance
+from fish_audio_suite_voice.listen import stream_utterance, voice_needed
 from fish_audio_suite_voice.mic import Mic
-from fish_audio_suite_voice.pcm import BYTES_PER_S, FRAME_BYTES, SAMPLE_RATE, write_mono_wav
+from fish_audio_suite_voice.pcm import BYTES_PER_S, SAMPLE_RATE, write_mono_wav
+from fish_audio_suite_voice.portaudio import PortAudioMissingError
+from fish_audio_suite_voice.recognised import (
+    BargeIn,
+    NoTurn,
+    StreamFallback,
+    Transcript,
+    mic_failure,
+)
 from fish_audio_suite_voice.recognisers import recogniser
 from fish_audio_suite_voice.tune import ListenTune
 from fish_audio_suite_voice.turn_stream import (
@@ -49,8 +58,6 @@ from fish_audio_suite_voice.turn_stream import (
 )
 
 __all__ = [
-    "StreamFallback",
-    "StreamedTurn",
     "stream_turn",
 ]
 
@@ -64,44 +71,6 @@ _FORCE_WAIT_S: Final = 2.5
 # Real speech has its first word back well inside this. A knock or a run of taps has none, so
 # the turn is given up on instead of being streamed until the silence timer ends.
 _NO_WORDS_S: Final = 1.2
-
-type Stopped = Literal["stopped", "noise", "again", "fatal"]
-
-
-@dataclass(frozen=True, slots=True)
-class StreamedTurn:
-    """What one streamed turn produced.
-
-    Attributes
-    ----------
-    text : str
-        The whole turn, as the recogniser heard it. Never empty.
-    asr_ms : float
-        From the last moment of speech until the text was final.
-    started : float
-        ``time.perf_counter()`` at the last moment of speech, which the reply's timings count from.
-    trace_id : str or None
-        The trace id for this turn, shared with its reply.
-    """
-
-    text: str
-    asr_ms: float
-    started: float
-    trace_id: str | None
-
-
-@dataclass(frozen=True, slots=True)
-class StreamFallback:
-    """The recogniser could not be reached once speech had started, so use Fish ASR for this turn.
-
-    Attributes
-    ----------
-    prefix : bytes
-        The speech captured so far, the pre-roll included. The batch recogniser carries on from
-        it, so the first words are not lost.
-    """
-
-    prefix: bytes
 
 
 class _Turn:
@@ -186,6 +155,68 @@ async def _send(
             turn.audio += pending
 
 
+type _Frame = tuple[bytes, bool, float]
+
+
+class _Reading:
+    """The session mic, keeping count of where the mic thread has read up to."""
+
+    def __init__(self, mic: Mic) -> None:
+        self._mic = mic
+        self.next: int | None = None  # the position after the last frame read
+
+    @property
+    def aec(self) -> EchoCanceller:
+        """The session mic's echo canceller."""
+        return self._mic.aec
+
+    @property
+    def position(self) -> int:
+        """The number of the next frame to arrive."""
+        return self._mic.position
+
+    def frames(self, stop: StopFlag | None, since: int | None = None) -> Iterator[bytes]:
+        """Yield the mic's frames as ``Mic.frames`` does, counting them.
+
+        Parameters
+        ----------
+        stop : StopFlag or None
+            Ends the stream when set.
+        since : int or None, optional
+            The position to read from. None reads from now.
+
+        Yields
+        ------
+        bytes
+            One frame.
+        """
+        at = self._mic.position if since is None else since
+        self.next = at
+        for frame in self._mic.frames(stop, since=at):
+            at += 1
+            self.next = at
+            yield frame
+
+    def release(self) -> None:
+        """Release the session mic."""
+        self._mic.release()
+
+    def recent(self, since: int) -> list[bytes]:
+        """Return what the session mic kept since ``since``.
+
+        Parameters
+        ----------
+        since : int
+            A position.
+
+        Returns
+        -------
+        list of bytes
+            The frames, oldest first.
+        """
+        return self._mic.recent(since)
+
+
 class _Capture:
     """The mic thread and the queue it feeds, for one turn."""
 
@@ -196,14 +227,14 @@ class _Capture:
         mic: Mic,
         quit_requested: StopFlag,
         stop: StopFlag,
-        prefix: bytes,
+        carried: BargeIn | None,
         listen: ListenTune,
-        since: int | None,
     ) -> None:
         loop = asyncio.get_running_loop()
-        self.frames: asyncio.Queue[tuple[bytes, bool, float] | None] = asyncio.Queue()
-        self.held: list[tuple[bytes, bool, float]] = []  # frames taken while waiting for speech
+        self.frames: asyncio.Queue[_Frame | None] = asyncio.Queue()
+        self.held: list[_Frame] = []  # frames taken while waiting for speech
         self._decided = threading.Event()  # set to stop the mic thread once the turn is decided
+        self._reading = _Reading(mic)
 
         def sink(frame: bytes, voiced: bool) -> None:
             loop.call_soon_threadsafe(self.frames.put_nowait, (frame, voiced, time.perf_counter()))
@@ -212,12 +243,12 @@ class _Capture:
             None,
             functools.partial(
                 listen_fn,
-                mic,
+                self._reading,
                 any_of(quit_requested, stop, self._decided),
                 sink,
-                prefix=prefix,
+                carried=carried,
                 tune=listen,
-                since=since,
+                since=carried.since if carried is not None else None,
             ),
         )
         self.pump.add_done_callback(lambda _done: self.frames.put_nowait(None))
@@ -226,20 +257,31 @@ class _Capture:
         """Stop the mic thread: the turn has its answer."""
         self._decided.set()
 
-    async def captured(self) -> bytes:
-        """Stop the mic thread and return every frame it captured that was not taken yet."""
+    async def fall_back(self, carried: BargeIn | None) -> StreamFallback:
+        """Stop the mic thread and hand every frame it captured to the batch recogniser.
+
+        Parameters
+        ----------
+        carried : BargeIn or None
+            The barge-in clip the turn started from, whose frames come first.
+
+        Returns
+        -------
+        StreamFallback
+            The frames with whether each was speech, and the mic position after the last,
+            so the batch listen loses nothing in between.
+        """
         self._decided.set()
         # Frames the thread handed over are still callbacks on the loop until it has
-        # stopped. The thread's own failure is not this turn's to report. The shield
-        # keeps a cancelled turn from cancelling the pump, which cleanup still awaits.
-        with contextlib.suppress(Exception):
-            await asyncio.shield(self.pump)
-        pieces = [frame for frame, _voiced, _at in self.held]
+        # stopped. The shield keeps a cancelled turn from cancelling the pump, which
+        # cleanup still awaits. A failure of the mic thread is the turn's to report.
+        await asyncio.shield(self.pump)
+        frames = [(frame, voiced) for frame, voiced, _at in self.held]
         while not self.frames.empty():
             item = self.frames.get_nowait()
             if item is not None:
-                pieces.append(item[0])
-        return b"".join(pieces)
+                frames.append((item[0], item[1]))
+        return StreamFallback(tuple(frames), self._reading.next, barge=carried)
 
 
 def _save(folder: str, pcm: bytes | bytearray) -> None:
@@ -257,26 +299,30 @@ def _save(folder: str, pcm: bytes | bytearray) -> None:
     debug("stt.saved {} ({:.1f} s)", path, len(pcm) / BYTES_PER_S)
 
 
-async def _hold_until_voiced(capture: _Capture, need: int, prefix_frames: int) -> Stopped | None:
+async def _hold_until_voiced(
+    capture: _Capture, min_voiced_frames: int, carried: BargeIn | None
+) -> NoTurn | None:
     """Keep the frames until there is enough voiced audio to be speech and not a bump.
 
     Parameters
     ----------
     capture : _Capture
         The mic side.
-    need : int
-        Voiced frames wanted.
-    prefix_frames : int
-        How many of the first frames are a barge-in clip. The interrupt gate already judged
-        that clip to be speech, so the voice in it counts in full, as it does on the batch
-        path: a short interruption must not be dropped for being shorter than ``need``.
+    min_voiced_frames : int
+        Voiced frames a fresh utterance needs.
+    carried : BargeIn or None
+        The barge-in clip the turn starts from, whose frames come first. The voice in it
+        counts in full (``listen.voice_needed``), as it does on the batch path: a short
+        interruption must not be dropped for being shorter than ``min_voiced_frames``.
 
     Returns
     -------
-    str or None
-        None when there is. ``"stopped"`` when the mic was stopped first, ``"noise"`` when the
+    NoTurn or None
+        None when there is. ``stopped`` when the mic was stopped first, ``noise`` when the
         gate ended the turn first: it was a cough or a knock, and nothing was connected or sent.
     """
+    barge_frames = len(carried.frames()) if carried is not None else 0
+    need = min_voiced_frames
     voiced = 0
     taken = 0
     while voiced < need:
@@ -285,24 +331,24 @@ async def _hold_until_voiced(capture: _Capture, need: int, prefix_frames: int) -
             local_end = await capture.pump
             if local_end:
                 debug("stt.noise {} voiced frames of {} needed, nothing sent", voiced, need)
-            return "noise" if local_end else "stopped"
+            return NoTurn("noise" if local_end else "stopped")
         capture.held.append(item)
         voiced += item[1]
         taken += 1
-        if taken == prefix_frames and 0 < voiced < need:
-            need = voiced  # the barge-in clip was speech: that much voice is enough
+        if taken == barge_frames:
+            need = voice_needed(min_voiced_frames, voiced)
     return None
 
 
 async def _connect(
-    stream: TurnStream, capture: _Capture
-) -> StreamFallback | Literal["fatal"] | None:
+    stream: TurnStream, capture: _Capture, carried: BargeIn | None
+) -> StreamFallback | NoTurn | None:
     """Open the connection now that speech has started.
 
     Returns
     -------
-    StreamFallback or str or None
-        None when it is open. ``"fatal"`` when the key is refused. Otherwise a fallback
+    StreamFallback or NoTurn or None
+        None when it is open. ``fatal`` when the key is refused. Otherwise a fallback
         carrying the speech captured while it was trying.
     """
     try:
@@ -310,8 +356,8 @@ async def _connect(
     except SttStreamError as exc:
         warn(f"[stt] {exc}")
         if exc.fatal:
-            return "fatal"
-        return StreamFallback(await capture.captured())
+            return NoTurn("fatal")
+        return await capture.fall_back(carried)
     debug("stt.open connected, sending speech")
     return None
 
@@ -355,20 +401,18 @@ async def _stream_until_decided(
     return local_end
 
 
-def _outcome(
-    turn: _Turn, *, local_end: bool, reader_done: bool
-) -> StreamedTurn | StreamFallback | Stopped:
+def _outcome(turn: _Turn, *, local_end: bool, reader_done: bool) -> Transcript | NoTurn:
     """Turn what happened into the result."""
     if turn.gave_up:
-        return "noise"
+        return NoTurn("noise")
     if turn.error:
         warn(f"[stt] {turn.error}")
-        return "again"
+        return NoTurn("again")
     if reader_done and not turn.ended:
         warn("[stt] the connection closed before the turn ended")
-        return "again"
+        return NoTurn("again")
     if not turn.ended and not local_end:
-        return "stopped"
+        return NoTurn("stopped")
     text = turn.text.strip()
     if not text:
         debug(
@@ -377,10 +421,10 @@ def _outcome(
             turn.sent // 1000,
             turn.sent / BYTES_PER_S,
         )
-        return "noise"
+        return NoTurn("noise")
     started = turn.last_voice or time.perf_counter()
-    return StreamedTurn(
-        text=text,
+    return Transcript(
+        text,
         asr_ms=elapsed_ms(started),
         started=started,
         trace_id=trace_id_of(make_traceparent()),
@@ -394,13 +438,12 @@ async def stream_turn(
     mic: Mic,
     quit_requested: StopFlag,
     stop: StopFlag,
-    prefix: bytes = b"",
-    since: int | None = None,
+    carried: BargeIn | None = None,
     make_stream: Callable[[str, str], TurnStream] | None = None,
     listen_fn: Callable[..., bool] = stream_utterance,
     on_eager: Callable[[str], None] | None = None,
     on_resumed: Callable[[], None] | None = None,
-) -> StreamedTurn | StreamFallback | Stopped:
+) -> Transcript | NoTurn | StreamFallback:
     """Read one turn from the mic, stream it to the recogniser, and return what it heard.
 
     Parameters
@@ -415,10 +458,9 @@ async def stream_turn(
         Set when the session is ending.
     stop : StopFlag
         Set to end the turn early, such as when a line is typed.
-    prefix : bytes, optional
-        PCM kept from the barge-in that interrupted the previous reply. Sent first.
-    since : int or None, optional
-        The mic position just after ``prefix``, read on from there. None reads from now.
+    carried : BargeIn or None, optional
+        The barge-in clip that interrupted the previous reply. Sent first, and the mic is
+        read on from the position after it. None reads from now.
     make_stream : Callable, optional
         Builds the connection from ``(url, key)``. A fake in tests.
     listen_fn : Callable, optional
@@ -431,21 +473,22 @@ async def stream_turn(
 
     Returns
     -------
-    StreamedTurn or StreamFallback or str
-        The turn, or why there is none: ``"stopped"`` (quit or ``stop`` was set), ``"noise"``
-        (nothing recognisable was said), ``"again"`` (the connection failed mid-turn, so listen
-        again), ``"fatal"`` (the key is missing, wrong or unpaid) or a ``StreamFallback``
-        (the recogniser could not be reached, so the batch one takes over this turn).
+    Transcript or NoTurn or StreamFallback
+        The turn, or why there is none: ``stopped`` (quit or ``stop`` was set), ``noise``
+        (nothing recognisable was said), ``again`` (the connection failed mid-turn, so listen
+        again), ``fatal`` (the key is missing, wrong or unpaid, or PortAudio is missing) or a
+        ``StreamFallback`` (the recogniser could not be reached, so the batch one takes over
+        this turn from the speech so far).
     """
     stt = settings.stt
     spec = recogniser(stt.provider)
     if spec is None:
         warn(f"[stt] FISH_VOICE_STT={stt.provider} does not stream")
-        return "fatal"
+        return NoTurn("fatal")
     key = spec.key(settings)
     if not key:
         warn(f"[stt] {spec.key_name} is not set")
-        return "fatal"
+        return NoTurn("fatal")
     url = spec.url(settings)
     stream = make_stream(url, key) if make_stream is not None else spec.stream(url, key, settings)
     if listen.end_silence_frames < spec.min_silence_frames:
@@ -456,9 +499,8 @@ async def stream_turn(
         mic=mic,
         quit_requested=quit_requested,
         stop=stop,
-        prefix=prefix,
+        carried=carried,
         listen=listen,
-        since=since,
     )
     turn = _Turn(spec.label)
     turn.keep = bool(stt.save_dir)
@@ -468,17 +510,18 @@ async def stream_turn(
     try:
         # Nothing is connected or sent until the gate has opened and there is enough voice.
         if (
-            quiet := await _hold_until_voiced(
-                capture, listen.min_voiced_frames, len(prefix) // FRAME_BYTES
-            )
+            quiet := await _hold_until_voiced(capture, listen.min_voiced_frames, carried)
         ) is not None:
             return quiet
-        if (failed := await _connect(stream, capture)) is not None:
+        if (failed := await _connect(stream, capture, carried)) is not None:
             return failed
         local_end = await _stream_until_decided(stream, capture, turn, tasks)
         capture.decided()
         reader_done = tasks[0].done()
         return _outcome(turn, local_end=local_end, reader_done=reader_done)
+    except PortAudioMissingError as exc:
+        # The mic thread could not open the device: the same end as on the batch path.
+        return mic_failure(exc)
     finally:
         capture.decided()
         for task in tasks:

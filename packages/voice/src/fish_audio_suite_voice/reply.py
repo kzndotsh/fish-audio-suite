@@ -12,6 +12,7 @@ from dataclasses import replace
 from typing import Final
 
 from fish_audio_suite_kit import (
+    ChatMessage,
     FishAuthError,
     LatencySnapshot,
     elapsed_ms,
@@ -27,19 +28,23 @@ from fish_audio_suite_voice.console import end_reply_line
 from fish_audio_suite_voice.debug import debug, warn
 from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexContext
 from fish_audio_suite_voice.events import EVENTS, ReplyEnd, ReplyToken, Speaking, notice
-from fish_audio_suite_voice.hearing import HeardLine
-from fish_audio_suite_voice.history import with_tone_hint
+from fish_audio_suite_voice.heard import HeardLine
+from fish_audio_suite_voice.history import remember_user, with_tone_hint
 from fish_audio_suite_voice.llm import ChatUnusableError
 from fish_audio_suite_voice.playback import make_sink
 from fish_audio_suite_voice.portaudio import PortAudioMissingError
+from fish_audio_suite_voice.recognised import BargeIn
+from fish_audio_suite_voice.speculate import Speculation
 from fish_audio_suite_voice.spoken import unspoken_text
 from fish_audio_suite_voice.wire import TtsResult
 
 __all__ = [
     "after_speech",
     "collect_reply",
+    "drop_speculation",
     "session_summary",
     "speak_reply",
+    "start_speculation",
     "stream_turn",
     "turn_summary",
 ]
@@ -104,16 +109,59 @@ class _TokenPipe:
                 yield item
 
 
+def _request(history: list[ChatMessage], tone: tuple[str, ...]) -> list[ChatMessage]:
+    """Return the messages a reply is asked for with: the chat so far, ending with the line.
+
+    ``tone`` is how the line sounded. It goes into this request only, never into history.
+    """
+    return with_tone_hint(history, tone)
+
+
+def start_speculation(ctx: DuplexContext, text: str) -> None:
+    """Start writing the reply for ``text``, which the recogniser thinks is probably the whole turn.
+
+    Parameters
+    ----------
+    ctx : DuplexContext
+        The session. Its history is not touched: it only gains the line once the turn is
+        confirmed.
+    text : str
+        The words so far.
+
+    Notes
+    -----
+    The request is built the way the reply's own is, from a copy of the history with the
+    line added. A streaming recogniser hears no tone, so there is no tone hint, and the
+    turn's trace id does not exist yet.
+    """
+    drop_speculation(ctx)
+    # Each message is copied: adding the line merges it into an unanswered user line in place.
+    asked = [message.copy() for message in ctx.history]
+    remember_user(asked, text, ctx.config.history_turns, ctx.pinned)
+    ctx.speculation = Speculation(ctx.backend, _request(asked, ()), text)
+
+
+def drop_speculation(ctx: DuplexContext) -> None:
+    """Throw away a reply that was being written ahead of time, if there is one.
+
+    Parameters
+    ----------
+    ctx : DuplexContext
+        The session.
+    """
+    if ctx.speculation is not None:
+        ctx.speculation.cancel()
+        ctx.speculation = None
+        debug("llm.speculate dropped")
+
+
 def _tokens_for(
     ctx: DuplexContext,
     llm_cancel: asyncio.Event,
     trace_id: str | None,
     tone: tuple[str, ...] = (),
 ) -> AsyncIterator[str]:
-    """Return the reply's tokens: the one already being written if it answers this line.
-
-    ``tone`` is how the line sounded. It goes into this request only, never into history.
-    """
+    """Return the reply's tokens: the one already being written if it answers this line."""
     ahead, ctx.speculation = ctx.speculation, None
     last_user = (
         ctx.history[-1]["content"] if ctx.history and ctx.history[-1]["role"] == "user" else ""
@@ -124,9 +172,7 @@ def _tokens_for(
     if ahead is not None:
         debug("llm.speculate miss: the words changed, asking again")
         ahead.cancel()
-    return ctx.backend.stream(
-        with_tone_hint(ctx.history, tone), cancel=llm_cancel, trace_id=trace_id
-    )
+    return ctx.backend.stream(_request(ctx.history, tone), cancel=llm_cancel, trace_id=trace_id)
 
 
 async def collect_reply(
@@ -241,9 +287,8 @@ def _keep_for_resume(ctx: DuplexContext, sent: str, result: TtsResult, barge: Ba
     # noise, the rest of the reply is spoken again.
     if result.cancelled and barge.captured:
         ctx.carry.keep(
-            barge.captured,
+            BargeIn(barge.captured, barge.resume_at, barge.tune.min_rms),
             unspoken_text(sent, result.spoken_so_far) if result.got_audio else "",
-            since=barge.resume_at,
         )
 
 

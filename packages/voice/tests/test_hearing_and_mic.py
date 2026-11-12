@@ -11,7 +11,7 @@ from typing import Any
 
 import httpx
 import pytest
-from session_fakes import make_ctx
+from session_fakes import barge_clip, make_ctx, recognize
 
 from fish_audio_suite_kit import FishHttpError
 from fish_audio_suite_voice import barge, console, mic, pcm
@@ -19,7 +19,7 @@ from fish_audio_suite_voice.asr import AsrResult
 from fish_audio_suite_voice.console import console_print, end_reply_line, write_reply_token
 from fish_audio_suite_voice.debug import configure_voice_logging
 from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexContext
-from fish_audio_suite_voice.hearing import hear_line, recognize
+from fish_audio_suite_voice.hearing import hear_line
 from fish_audio_suite_voice.mic import SessionMic
 from fish_audio_suite_voice.pcm import FRAME_BYTES
 from fish_audio_suite_voice.portaudio import PortAudioMissingError
@@ -31,7 +31,7 @@ def _asr_returns(monkeypatch: pytest.MonkeyPatch, outcome: str | BaseException) 
             raise outcome
         return AsrResult(outcome)
 
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", asr)
+    monkeypatch.setattr("fish_audio_suite_voice.asr.fish_asr", asr)
 
 
 def _recognize(ctx: DuplexContext, last_user: str = "") -> str:
@@ -107,28 +107,20 @@ def test_a_batch_turn_reports_the_silence_it_waited_out(monkeypatch: pytest.Monk
 
 def test_a_barge_in_clip_is_never_a_stale_copy(monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = make_ctx()
-    ctx.carry.keep(b"clip", "", since=42)
+    clip = barge_clip(b"clip", since=42)
+    ctx.carry.keep(clip, "")
     seen: dict[str, Any] = {}
 
     def record(*_args: object, **kwargs: object) -> bytes:
-        seen["prefix"] = kwargs["prefix"]
-        seen["since"] = kwargs["since"]
+        seen["carried"] = kwargs["carried"]
         return b"wav"
 
-    async def fake_recognize(*_args: object, **kwargs: object) -> Any:
-        seen.update(kwargs)
-        from fish_audio_suite_voice.hearing import HeardLine
-
-        return HeardLine("line", text="hello there friend")
-
+    _asr_returns(monkeypatch, "hello there friend")
     monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", record)
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.recognize", fake_recognize)
-    asyncio.run(hear_line(ctx, "hello there friend"))
-    assert seen["prefix"] == b"clip"
-    assert seen["since"] == 42
-    assert seen["stale"] is False
-    assert seen["over_reply"] is True
-    assert ctx.carry.prefix == b""
+    heard = asyncio.run(hear_line(ctx, "hello there friend"))
+    assert seen["carried"] == clip  # the listen starts from the clip and reads on after it
+    assert heard.kind == "line"  # the same words as the last line, but said fresh over the reply
+    assert ctx.carry.clip is None
 
 
 class _FakeStream:
@@ -382,3 +374,26 @@ def test_a_reader_that_is_already_stopped_does_not_open_the_device(
     with SessionMic() as source:
         assert list(source.frames(stopped)) == []
     assert _FakeStream.opened == 0
+
+
+def test_a_stop_flag_ends_the_recording_and_quit_still_does_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The stop flag used to replace the quit flag, so a caller that forgot to fold quit into
+    # it left Ctrl+C unable to stop the mic.
+    flags: list[Any] = []
+
+    def record(_mic: object, stop: Any, **_kwargs: object) -> bytes:
+        flags.append(stop)
+        return b""
+
+    monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", record)
+    typed = threading.Event()
+    ctx = make_ctx()
+    asyncio.run(hear_line(ctx, "", stop=typed))
+    assert not flags[0].is_set()
+    typed.set()
+    assert flags[0].is_set()
+    typed.clear()
+    ctx.session.quit_requested.set()
+    assert flags[0].is_set()

@@ -8,7 +8,14 @@ from dataclasses import replace
 from typing import cast
 
 import pytest
-from session_fakes import ScriptedHearing, heard_line, quick_config, run_session, speak_with_fakes
+from session_fakes import (
+    ScriptedHearing,
+    barge_clip,
+    heard_line,
+    quick_config,
+    run_session,
+    speak_with_fakes,
+)
 from voice_fakes import FakeGate, ScriptedMic, install_audio, install_vad, set_tts
 
 from fish_audio_suite_voice import reply
@@ -135,7 +142,7 @@ def test_a_barge_in_skips_the_cooldown(monkeypatch: pytest.MonkeyPatch) -> None:
 
     async def hear(ctx: DuplexContext, last_user: str) -> HeardLine:
         heard.last_user.append(last_user)
-        ctx.carry.prefix = b"clip"  # the user spoke over the reply
+        ctx.carry.keep(barge_clip(), "")  # the user spoke over the reply
         return next(lines)
 
     monkeypatch.setattr("fish_audio_suite_voice.duplex.hear_line", hear)
@@ -219,7 +226,7 @@ def _logged_cooldowns(monkeypatch: pytest.MonkeyPatch, *, barged: bool) -> list[
     async def hear(ctx: DuplexContext, last_user: str) -> HeardLine:
         heard.last_user.append(last_user)
         if barged:
-            ctx.carry.prefix = b"clip"  # the user spoke over the reply
+            ctx.carry.keep(barge_clip(), "")  # the user spoke over the reply
         return next(lines)
 
     monkeypatch.setattr("fish_audio_suite_voice.duplex.hear_line", hear)

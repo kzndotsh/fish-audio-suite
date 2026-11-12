@@ -7,7 +7,14 @@ import threading
 import time
 
 import pytest
-from session_fakes import hello_tokens, make_ctx, quick_config, run_session_with, speak_with_fakes
+from session_fakes import (
+    barge_clip,
+    hello_tokens,
+    make_ctx,
+    quick_config,
+    run_session_with,
+    speak_with_fakes,
+)
 from voice_fakes import ScriptedMic, install_audio
 
 from fish_audio_suite_voice.cancel import StopFlag
@@ -47,7 +54,7 @@ def _turn(source: LiveInput, ctx: DuplexContext) -> HeardLine:
 
 def test_a_typed_line_is_answered_like_a_spoken_one() -> None:
     ctx = make_ctx()
-    ctx.carry.prefix = b"clip"
+    ctx.carry.keep(barge_clip(), "")
     seen: list[Event] = []
     unsubscribe = EVENTS.subscribe(seen.append)
     source = LiveInput()
@@ -57,7 +64,7 @@ def test_a_typed_line_is_answered_like_a_spoken_one() -> None:
     finally:
         unsubscribe()
     assert (heard.kind, heard.text) == ("line", "hello there")
-    assert ctx.carry.prefix == b""
+    assert ctx.carry.clip is None
     assert seen == [Heard("hello there", 0.0)]
 
 

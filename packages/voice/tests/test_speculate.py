@@ -11,15 +11,26 @@ from session_fakes import FakeBackend, make_ctx
 from fish_audio_suite_kit import ChatMessage
 from fish_audio_suite_voice.duplex_state import DuplexContext
 from fish_audio_suite_voice.reply import collect_reply
-from fish_audio_suite_voice.speculate import Speculation, same_words
+from fish_audio_suite_voice.speculate import Speculation
 
 ASKED: list[ChatMessage] = [{"role": "user", "content": "hello there"}]
 
 
 def test_transcripts_match_ignoring_case_and_spacing_but_not_words() -> None:
-    assert same_words("Hello  there.", "hello there.")
-    assert not same_words("hello there", "hello there you")
-    assert not same_words("", "")
+    async def run() -> tuple[bool, bool, bool]:
+        spoken = Speculation(FakeBackend(), ASKED, "Hello  there.")
+        blank = Speculation(FakeBackend(), ASKED, "")
+        try:
+            return (
+                spoken.matches("hello there."),
+                spoken.matches("hello there you"),
+                blank.matches(""),
+            )
+        finally:
+            spoken.cancel()
+            blank.cancel()
+
+    assert asyncio.run(run()) == (True, False, False)
 
 
 async def _read(spec: Speculation, cancel: asyncio.Event | None = None) -> list[str]:

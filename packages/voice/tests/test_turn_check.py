@@ -9,13 +9,14 @@ from dataclasses import replace
 from typing import Any
 
 import pytest
-from session_fakes import make_ctx
+from session_fakes import barge_clip, make_ctx
 
 from fish_audio_suite_kit import FishHttpError
 from fish_audio_suite_voice.asr import AsrResult
 from fish_audio_suite_voice.duplex_state import DuplexContext
 from fish_audio_suite_voice.events import EVENTS, Event, Heard
-from fish_audio_suite_voice.hearing import HeardLine, hear_line
+from fish_audio_suite_voice.heard import HeardLine
+from fish_audio_suite_voice.hearing import hear_line
 from fish_audio_suite_voice.pcm import FRAME_MS
 from fish_audio_suite_voice.tune import ListenTune, TurnTune
 from fish_audio_suite_voice.turn_check import (
@@ -63,7 +64,7 @@ def _asr(monkeypatch: pytest.MonkeyPatch, said: dict[bytes, str | BaseException]
         await asyncio.sleep(0.03)  # the mic keeps listening while the clip is transcribed
         return AsrResult(outcome)
 
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", asr)
+    monkeypatch.setattr("fish_audio_suite_voice.asr.fish_asr", asr)
     return heard
 
 
@@ -134,7 +135,7 @@ def test_the_mic_is_already_listening_for_more_while_the_first_clip_is_transcrib
         started_during_asr.append(len(mic.calls) == 2)
         return AsrResult("What time is it?")
 
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", asr)
+    monkeypatch.setattr("fish_audio_suite_voice.asr.fish_asr", asr)
     _hear(monkeypatch, _ctx(), mic)
     assert started_during_asr == [True]
 
@@ -261,14 +262,15 @@ def test_a_muted_mic_is_not_reopened_for_a_continuation(monkeypatch: pytest.Monk
 
 def test_a_barge_in_clip_goes_to_the_first_recording_only(monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = _ctx()
-    ctx.carry.prefix = b"pcm"
+    clip = barge_clip(b"pcm")
+    ctx.carry.keep(clip, "")
     _asr(monkeypatch, {b"clip1": "Wait,", b"clip2": "stop that please."})
     mic = ScriptedMic(b"clip2")
     heard, _ = _hear(monkeypatch, ctx, mic)
     assert heard.text == "Wait, stop that please."
-    assert mic.calls[0]["prefix"] == b"pcm"
-    assert "prefix" not in mic.calls[1]
-    assert ctx.carry.prefix == b""
+    assert mic.calls[0]["carried"] == clip
+    assert "carried" not in mic.calls[1]
+    assert ctx.carry.clip is None
 
 
 def test_a_joined_line_is_not_taken_for_a_stale_copy_of_the_last_one(

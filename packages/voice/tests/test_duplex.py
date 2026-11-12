@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator, Callable
 
 import httpx
 import pytest
-from session_fakes import FakeBackend, make_config, make_ctx
+from session_fakes import FakeBackend, barge_clip, make_config, make_ctx, recognize
 from voice_fakes import FakeGate, FakeSink, install_audio, make_result, set_tts
 
 from fish_audio_suite_kit import ChatMessage, FishHttpError, LatencySnapshot
@@ -18,10 +18,12 @@ from fish_audio_suite_voice.console_sink import ConsoleSink
 from fish_audio_suite_voice.duplex import duplex_turns
 from fish_audio_suite_voice.duplex_state import DuplexContext
 from fish_audio_suite_voice.events import EVENTS
-from fish_audio_suite_voice.hearing import HeardLine, classify_transcript, hear_line, recognize
+from fish_audio_suite_voice.heard import HeardLine, classify_transcript
+from fish_audio_suite_voice.hearing import hear_line
 from fish_audio_suite_voice.history import opening_history, remember_user, trim_history
 from fish_audio_suite_voice.llm_tune import DEFAULT_HISTORY_TURNS
 from fish_audio_suite_voice.portaudio import PortAudioMissingError
+from fish_audio_suite_voice.recognised import BargeIn
 from fish_audio_suite_voice.reply import (
     _TokenPipe,
     after_speech,
@@ -190,7 +192,7 @@ def test_recognize_fatal_again_and_quit(monkeypatch: pytest.MonkeyPatch) -> None
     async def denied(*_args: object, **_kwargs: object) -> AsrResult:
         raise FishHttpError(401, "nope")
 
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", denied)
+    monkeypatch.setattr("fish_audio_suite_voice.asr.fish_asr", denied)
     fatal = asyncio.run(recognize(ctx, b"wav", ""))
     assert fatal.kind == "fatal"
     assert fatal.code == 2
@@ -198,13 +200,13 @@ def test_recognize_fatal_again_and_quit(monkeypatch: pytest.MonkeyPatch) -> None
     async def down(*_args: object, **_kwargs: object) -> AsrResult:
         raise TimeoutError("late")
 
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", down)
+    monkeypatch.setattr("fish_audio_suite_voice.asr.fish_asr", down)
     assert asyncio.run(recognize(ctx, b"wav", "")).kind == "again"
 
     async def bye_text(*_args: object, **_kwargs: object) -> AsrResult:
         return AsrResult("goodbye")
 
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", bye_text)
+    monkeypatch.setattr("fish_audio_suite_voice.asr.fish_asr", bye_text)
     assert asyncio.run(recognize(ctx, b"wav", "")).kind == "bye"
 
 
@@ -228,7 +230,7 @@ def test_quit_during_asr_does_not_ask_the_llm(
             yield ""
 
     monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", wav)
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", asr)
+    monkeypatch.setattr("fish_audio_suite_voice.asr.fish_asr", asr)
     code = asyncio.run(
         asyncio.wait_for(
             duplex_turns(
@@ -356,7 +358,7 @@ def test_cancelled_speak_keeps_the_audio_that_tripped_barge(
 ) -> None:
     ctx = make_ctx()
 
-    gate = FakeGate(captured=b"clip")
+    gate = FakeGate(captured=b"clip", min_rms=90.0)  # FISH_VOICE_BARGE_RMS=90
     gate.resume_at = 42
     install_audio(monkeypatch, gate=gate)
 
@@ -388,8 +390,8 @@ def test_cancelled_speak_keeps_the_audio_that_tripped_barge(
         )
     )
     assert code is None
-    assert ctx.carry.prefix == b"clip"
-    assert ctx.carry.since == 42  # the next listen reads on from just after the clip
+    # The next listen reads on from just after the clip, scoring it at the gate's own level.
+    assert ctx.carry.clip == BargeIn(b"clip", 42, 90.0)
     assert ctx.history[-1]["content"] == "hello"
 
 
@@ -730,7 +732,7 @@ def test_recognize_listens_again_after_a_network_error(monkeypatch: pytest.Monke
     async def unreachable(*_args: object, **_kwargs: object) -> AsrResult:
         raise httpx.ConnectError("down")
 
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", unreachable)
+    monkeypatch.setattr("fish_audio_suite_voice.asr.fish_asr", unreachable)
     assert asyncio.run(recognize(ctx, b"wav", "")).kind == "again"
 
 
@@ -743,7 +745,7 @@ def test_recognize_does_not_hide_a_programming_error(
     async def broken(*_args: object, **_kwargs: object) -> AsrResult:
         raise bug
 
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", broken)
+    monkeypatch.setattr("fish_audio_suite_voice.asr.fish_asr", broken)
     with pytest.raises(type(bug)):
         asyncio.run(recognize(ctx, b"wav", ""))
 
@@ -888,7 +890,8 @@ def test_hear_line_answers_a_yeah_unless_it_was_said_over_the_reply(
     monkeypatch: pytest.MonkeyPatch, barge_prefix: bytes, kind: str
 ) -> None:
     ctx = make_ctx()
-    ctx.carry.prefix = barge_prefix
+    if barge_prefix:
+        ctx.carry.keep(barge_clip(barge_prefix), "")
 
     def wav(*_args: object, **_kwargs: object) -> bytes:
         return b"RIFFwav"
@@ -897,5 +900,5 @@ def test_hear_line_answers_a_yeah_unless_it_was_said_over_the_reply(
         return AsrResult("Yeah.")
 
     monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", wav)
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", asr)
+    monkeypatch.setattr("fish_audio_suite_voice.asr.fish_asr", asr)
     assert asyncio.run(hear_line(ctx, "")).kind == kind

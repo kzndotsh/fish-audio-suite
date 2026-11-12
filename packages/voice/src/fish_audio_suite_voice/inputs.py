@@ -8,11 +8,11 @@ import time
 from collections import deque
 from typing import Protocol
 
-from fish_audio_suite_voice.cancel import any_of
 from fish_audio_suite_voice.debug import mark_turn
 from fish_audio_suite_voice.duplex_state import DuplexContext
 from fish_audio_suite_voice.events import EVENTS, Heard
-from fish_audio_suite_voice.hearing import HeardLine, hear_line
+from fish_audio_suite_voice.heard import HeardLine
+from fish_audio_suite_voice.hearing import hear_line
 from fish_audio_suite_voice.mic import Mic
 from fish_audio_suite_voice.signals import DuplexSession
 
@@ -191,7 +191,7 @@ class LiveInput:
             self._interrupt.clear()
             if self._has_typed() or self._muted:
                 continue
-            heard = await hear_line(ctx, last_user, stop=any_of(quit_requested, self._interrupt))
+            heard = await hear_line(ctx, last_user, stop=self._interrupt)
             if self._interrupt.is_set() and not quit_requested.is_set():
                 # A typed line or a mute cut the recording short, so what the
                 # mic caught is dropped.
@@ -199,7 +199,7 @@ class LiveInput:
             return heard
 
     def _typed_line(self, ctx: DuplexContext, text: str) -> HeardLine:
-        ctx.carry.take_prefix()  # the typed line replaces what the mic caught
+        ctx.carry.take_clip()  # the typed line replaces what the mic caught
         mark_turn()
         EVENTS.emit(Heard(text, 0.0))
         return HeardLine("line", text=text, started=time.perf_counter())

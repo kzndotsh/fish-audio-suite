@@ -19,7 +19,7 @@ from fish_audio_suite_voice import reply
 from fish_audio_suite_voice.aec import EchoCanceller
 from fish_audio_suite_voice.cancel import StopFlag
 from fish_audio_suite_voice.speaker import FishSpeaker
-from fish_audio_suite_voice.tune import AecTune
+from fish_audio_suite_voice.tune import DEFAULT_BARGE_RMS, AecTune, BargeTune
 from fish_audio_suite_voice.wire import TtsResult
 
 
@@ -86,13 +86,18 @@ class FakeGate:
     ----------
     captured : bytes, optional
         What ``BargeGate.captured`` would hold after a barge-in.
+    min_rms : float, optional
+        The level the gate admits speech at, as ``BargeGate.tune.min_rms``.
     hold : bool, optional
         When True the thread waits for ``cancel`` like the real watcher, so a
         test can check that the caller releases it.
     """
 
-    def __init__(self, captured: bytes = b"", *, hold: bool = False) -> None:
+    def __init__(
+        self, captured: bytes = b"", *, min_rms: float = DEFAULT_BARGE_RMS, hold: bool = False
+    ) -> None:
         self.captured = captured
+        self.tune = BargeTune(min_rms=min_rms)
         self.resume_at: int | None = None
         self.hold = hold
         self.armed = 0

@@ -10,18 +10,17 @@ from __future__ import annotations
 import threading
 from collections import deque
 from collections.abc import Callable
-from dataclasses import replace
 from typing import Final
 
 from fish_audio_suite_voice.aec import EchoCanceller
 from fish_audio_suite_voice.cancel import any_of, never
 from fish_audio_suite_voice.debug import debug, heartbeat_due, trace, warn
-from fish_audio_suite_voice.events import EVENTS, BargedIn, MicLevel
-from fish_audio_suite_voice.floor import AdaptiveFloor
+from fish_audio_suite_voice.events import EVENTS, BargedIn
 from fish_audio_suite_voice.mic import Mic
-from fish_audio_suite_voice.pcm import LISTEN_HEARTBEAT_FRAMES, MIC_LEVEL_EVERY_FRAMES, pcm_rms
-from fish_audio_suite_voice.tune import DEFAULT_BARGE_PLAYING_GAIN, BargeTune, ListenTune
-from fish_audio_suite_voice.vad import frame_is_speech, open_vad
+from fish_audio_suite_voice.pcm import LISTEN_HEARTBEAT_FRAMES
+from fish_audio_suite_voice.scorer import FrameScorer
+from fish_audio_suite_voice.tune import BargeTune, ListenTune
+from fish_audio_suite_voice.vad import open_vad
 
 __all__ = [
     "BARGE_MISS_DECAY_FRAMES",
@@ -78,12 +77,11 @@ def barge_rms_need(
     """Raise the barge floor only when speaker bleed is still in the mic.
 
     With echo cancellation on, the far-end is already subtracted, so raising the floor
-    on the cleaned mic would also block real speech.
+    on the cleaned mic would also block real speech. ``playing_gain`` is at least 1
+    (``BargeTune`` checks it).
     """
     if far_playing and not aec_on:
-        # Below 1 the floor drops while the speaker is on, so bleed trips barge-in.
-        gain = playing_gain if playing_gain >= 1 else DEFAULT_BARGE_PLAYING_GAIN
-        return min_rms * gain
+        return min_rms * playing_gain
     return min_rms
 
 
@@ -117,9 +115,8 @@ class BargeGate:
         The session's mic. Its echo canceller is shared with the playback sink so
         the far-end reference is the audio that sink played.
     tune : BargeTune or None, optional
-        Gate settings. None uses the defaults.
-    bleed_delay_s, hit_frames, min_rms : optional
-        Per-gate overrides of the matching ``tune`` fields.
+        Gate settings. None uses the defaults. For one gate's own values, pass
+        ``dataclasses.replace(tune, ...)``.
     listen : ListenTune or None, optional
         Supplies the voice detector and its strictness. Barge-in uses listen's, so it
         never rejects speech that listen would accept. None uses the defaults.
@@ -132,10 +129,11 @@ class BargeGate:
     -----
     The bleed delay is ``AecTune.bleed_delay_s`` when echo cancellation is loaded and
     ``BargeTune.bleed_delay_s`` otherwise, so the speaker's own voice is not taken for
-    the user. An explicit ``bleed_delay_s`` wins over both. The floor follows the room:
-    it is the quiet-percentile of recent frames, never below ``min_rms``. It is
-    multiplied by ``playing_gain`` while audio plays, only when AEC3 is not running. A frame counts only when it is over the floor and the voice detector calls it
-    speech. A trip keeps the last 20 frames and the mic position after them; the next
+    the user. The floor follows the room: it is the quiet-percentile of recent frames,
+    never below ``min_rms``. It is multiplied by ``playing_gain`` while audio plays,
+    only when AEC3 is not running. A frame counts only when it is over the floor and the
+    voice detector calls it speech; the detector is asked only about frames over the
+    floor (see ``scorer.FrameScorer``). A trip keeps the last 20 frames and the mic position after them; the next
     listen starts from that clip, reads on from that position, and skips the post-reply
     cooldown. Three missed frames in a row take one hit back, so a short gap does not
     reset the phrase.
@@ -146,31 +144,12 @@ class BargeGate:
         *,
         mic: Mic,
         tune: BargeTune | None = None,
-        bleed_delay_s: float | None = None,
-        hit_frames: int | None = None,
-        min_rms: float | None = None,
         listen: ListenTune | None = None,
         muted: Callable[[], bool] | None = None,
     ) -> None:
-        base = tune or BargeTune()
         self.mic: Mic = mic
-        self.tune: BargeTune = replace(
-            base,
-            bleed_delay_s=base.bleed_delay_s
-            if bleed_delay_s is None or bleed_delay_s < 0
-            else bleed_delay_s,
-            hit_frames=base.hit_frames if hit_frames is None or hit_frames < 1 else hit_frames,
-            min_rms=base.min_rms if min_rms is None or min_rms <= 0 else min_rms,
-        )
+        self.tune: BargeTune = tune or BargeTune()
         self.aec: EchoCanceller = self.mic.aec
-        # An explicit delay is the caller's choice. It must win over the shorter
-        # AEC default, or a longer window could never be forced.
-        self._bleed_override = (
-            bleed_delay_s if bleed_delay_s is not None and bleed_delay_s >= 0 else None
-        )
-        self.bleed_delay_s: float = self.tune.bleed_delay_s
-        self.hit_frames: int = self.tune.hit_frames
-        self.min_rms: float = self.tune.min_rms
         self._heard: deque[bytes] = deque(maxlen=BARGE_LOOKBACK_FRAMES)
         self.captured: bytes = b""
         # The mic position just after the frame that tripped the gate.
@@ -180,9 +159,20 @@ class BargeGate:
         self._listen: ListenTune = listen or ListenTune()
 
     def _bleed_wait(self) -> float:
-        if self._bleed_override is not None:
-            return self._bleed_override
-        return self.aec.effective_bleed_s(self.tune.bleed_delay_s)
+        # AEC3 takes the speaker out of the mic, so the watch can start sooner with it.
+        if self.aec.available():
+            return self.aec.tune.bleed_delay_s
+        return self.tune.bleed_delay_s
+
+    def _off_for_this_reply(self, step: Callable[[], None]) -> None:
+        try:
+            step()
+        except Exception as e:  # noqa: BLE001 - daemon-thread boundary, kept in self.failure and reported
+            # A missing PortAudio, a dead device, or a processor or voice detector that
+            # fails to load ends the watch. The reply goes on without barge-in, so the
+            # user is told and the failure is kept for the thread that started the gate.
+            self.failure = e
+            warn(f"[barge-in] off for this reply: {e}")
 
     def watch(self, cancel: threading.Event) -> None:
         """Listen on the mic and set ``cancel`` after enough speech frames.
@@ -192,75 +182,65 @@ class BargeGate:
         cancel : threading.Event
             Set by the caller to stop watching. Set here on a trip.
         """
-        vad = open_vad(self._listen.vad_engine, self._listen.vad_aggressiveness)
+        self._off_for_this_reply(lambda: self._watch(cancel))
+
+    def _watch(self, cancel: threading.Event) -> None:
+        scorer = FrameScorer(
+            open_vad(self._listen.vad_engine, self._listen.vad_aggressiveness),
+            self.tune.min_rms,
+            "barge",
+        )
         hit = 0
         miss = 0
-        floor = AdaptiveFloor(self.min_rms)
         aec_on = self.aec.available()
         debug(
             "barge.arm after {delay}s bleed, {hits} loud frames of rms>={min_rms:.0f} interrupt, "
             "aec={aec}",
-            delay=self.bleed_delay_s,
-            hits=self.hit_frames,
-            min_rms=self.min_rms,
+            delay=self._bleed_wait(),
+            hits=self.tune.hit_frames,
+            min_rms=self.tune.min_rms,
             aec="on" if aec_on else "off",
         )
         # The ring still holds audio from before the bleed delay. Keep only
         # what is about to reach the mic.
         self.aec.align()
         start = self.mic.position
-
-        try:
-            for idle_frames, frame in enumerate(
-                self.mic.frames(any_of(cancel, self._muted), since=start),
-                start=1,
-            ):
-                rms = pcm_rms(frame)
-                far = self.aec.far_end_playing()
-                base_need = floor.value()
-                need = barge_rms_need(
-                    base_need, far_playing=far, playing_gain=self.tune.playing_gain, aec_on=aec_on
-                )
-                if idle_frames % MIC_LEVEL_EVERY_FRAMES == 0:
-                    EVENTS.emit(MicLevel(rms, need, "barge"))
-                _barge_heartbeat(
-                    idle_frames=idle_frames,
-                    rms=rms,
-                    need=need,
-                    far=far,
-                    hit=hit,
-                    aec_on=aec_on,
-                )
-                self._heard.append(frame)
-                voiced = rms >= need and frame_is_speech(vad, frame)
-                # A frame under the floor is room hiss. Loud ones must not
-                # raise it, or the same voice could never trip the gate. The test
-                # uses the floor itself: ``need`` is multiplied while the speaker
-                # plays, and speech between the two would otherwise count as hiss.
-                floor.observe(rms, quiet=rms < base_need)
-                hit, miss, tripped = _barge_step(
-                    hit=hit,
-                    miss=miss,
-                    voiced=voiced,
-                    rms=rms,
-                    need=need,
-                    far=far,
-                    want=self.hit_frames,
-                )
-                if tripped:
-                    self.captured = b"".join(self._heard)
-                    self.resume_at = start + idle_frames
-                    self.aec.clear()
-                    debug("barge.keep frames={} bytes={}", len(self._heard), len(self.captured))
-                    EVENTS.emit(BargedIn())
-                    cancel.set()
-                    return
-        except Exception as e:  # noqa: BLE001 - daemon-thread boundary, kept in self.failure and reported
-            # A missing PortAudio or a dead device ends this watcher thread. The
-            # reply goes on without barge-in, so the user is told and the
-            # failure is kept for the thread that started the gate.
-            self.failure = e
-            warn(f"[barge-in] off for this reply: {e}")
+        for idle_frames, frame in enumerate(
+            self.mic.frames(any_of(cancel, self._muted), since=start),
+            start=1,
+        ):
+            far = self.aec.far_end_playing()
+            need = barge_rms_need(
+                scorer.floor, far_playing=far, playing_gain=self.tune.playing_gain, aec_on=aec_on
+            )
+            heard = scorer.score(frame, detect_from=need)
+            scorer.meter(heard.rms, need)
+            _barge_heartbeat(
+                idle_frames=idle_frames,
+                rms=heard.rms,
+                need=need,
+                far=far,
+                hit=hit,
+                aec_on=aec_on,
+            )
+            self._heard.append(frame)
+            hit, miss, tripped = _barge_step(
+                hit=hit,
+                miss=miss,
+                voiced=heard.voiced,
+                rms=heard.rms,
+                need=need,
+                far=far,
+                want=self.tune.hit_frames,
+            )
+            if tripped:
+                self.captured = b"".join(self._heard)
+                self.resume_at = start + idle_frames
+                self.aec.clear()
+                debug("barge.keep frames={} bytes={}", len(self._heard), len(self.captured))
+                EVENTS.emit(BargedIn())
+                cancel.set()
+                return
 
     def start_after_bleed(self, cancel: threading.Event) -> threading.Thread:
         """Sleep out speaker bleed, then start ``watch`` unless already cancelled.
@@ -276,31 +256,24 @@ class BargeGate:
             The started daemon thread.
         """
 
-        def _run() -> None:
-            try:
-                if self._muted():  # no need to wait out the bleed to find out
-                    debug("barge.muted the mic is muted, so there is no barge-in watch")
-                    return
-                delay = self._bleed_wait()
-                self.bleed_delay_s = delay
-                trace("barge.bleed sleep_s={}", delay)
-                if self._muted():
-                    debug("barge.muted the mic is muted, so there is no barge-in watch")
-                    return
-                # Wait on cancel, not sleep(), so a reply that ends during the bleed
-                # starts no watch and the thread ends at once.
-                if cancel.wait(timeout=delay):
-                    debug("barge.bleed skipped (already cancelled)")
-                    return
-                self.watch(cancel)
-            except Exception as e:  # noqa: BLE001 - daemon-thread boundary, kept in self.failure and reported
-                # Setup can fail before watch() has its own handler, for
-                # example loading the processor or the voice detector. Without
-                # this the thread would die silently and the reply would play
-                # with no barge-in.
-                self.failure = e
-                warn(f"[barge-in] off for this reply: {e}")
+        def _bleed_then_watch() -> None:
+            if self._muted():  # no need to wait out the bleed to find out
+                debug("barge.muted the mic is muted, so there is no barge-in watch")
+                return
+            delay = self._bleed_wait()
+            trace("barge.bleed sleep_s={}", delay)
+            if self._muted():
+                debug("barge.muted the mic is muted, so there is no barge-in watch")
+                return
+            # Wait on cancel, not sleep(), so a reply that ends during the bleed
+            # starts no watch and the thread ends at once.
+            if cancel.wait(timeout=delay):
+                debug("barge.bleed skipped (already cancelled)")
+                return
+            self.watch(cancel)
 
-        thread = threading.Thread(target=_run, daemon=True)
+        thread = threading.Thread(
+            target=self._off_for_this_reply, args=(_bleed_then_watch,), daemon=True
+        )
         thread.start()
         return thread

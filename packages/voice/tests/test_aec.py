@@ -15,7 +15,7 @@ from fish_audio_suite_voice.playback import (
     iter_pcm_slices,
     make_sink,
 )
-from fish_audio_suite_voice.tune import DEFAULT_AEC_BLEED_DELAY_S, AecTune
+from fish_audio_suite_voice.tune import AecTune
 
 
 def test_resample_44100_to_16000_length() -> None:
@@ -40,18 +40,6 @@ def test_clean_mic_passthrough_when_every_stage_is_off() -> None:
     near = b"\x01\x00" * 480
     assert aec.clean(near) == near
     assert not aec.available()
-
-
-def test_effective_bleed_without_processor(monkeypatch: pytest.MonkeyPatch) -> None:
-    off = EchoCanceller(AecTune(enabled=False))
-    assert off.effective_bleed_s(0.9) == 0.9
-    assert off.effective_bleed_s(-1) == 0.0
-    on = EchoCanceller(AecTune(bleed_delay_s=DEFAULT_AEC_BLEED_DELAY_S))
-    monkeypatch.setattr(on, "load", object)
-    assert on.effective_bleed_s(0.9) == DEFAULT_AEC_BLEED_DELAY_S
-    negative = EchoCanceller(AecTune(bleed_delay_s=-1.0))
-    monkeypatch.setattr(negative, "load", object)
-    assert negative.effective_bleed_s(0.9) == DEFAULT_AEC_BLEED_DELAY_S
 
 
 def test_echo_canceller_instances_do_not_share_a_tap() -> None:

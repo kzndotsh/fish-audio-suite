@@ -518,3 +518,21 @@ def test_tone_is_not_returned_by_default(monkeypatch: pytest.MonkeyPatch) -> Non
     _tone_client(monkeypatch)
     got = asyncio.run(fish_asr_result(b"wav", "key", base="https://api.fish.audio"))
     assert got == AsrResult("Oh that is great. Really.")
+
+
+def test_fish_asr_never_answers_what_is_left_of_a_hallucination(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Cutting the watermark segment out of "Like and subscribe." used to leave "Like and",
+    # which the loop answered. The whole line is the hallucination, so it is kept whole and
+    # the hearing gate drops it.
+    text, _client = _run_asr(
+        monkeypatch,
+        [
+            _FakeAsrResponse(
+                200,
+                payload={"text": "Like and subscribe.", "segments": [{"text": "Subscribe."}]},
+            )
+        ],
+    )
+    assert text == "Like and subscribe."

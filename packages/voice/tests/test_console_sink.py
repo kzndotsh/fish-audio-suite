@@ -136,7 +136,7 @@ def test_a_whole_turn_prints_the_same_transcript_as_before(
         return AsrResult("tell me something fun")
 
     monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", lambda *_a, **_k: b"w")
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", asr)
+    monkeypatch.setattr("fish_audio_suite_voice.asr.fish_asr", asr)
     assert run_session_with(quick_config(), tts, hello_tokens, _OneTurn(real=True)) == 0
     out = capsys.readouterr().out.splitlines()
     assert out[:3] == ["listening…", "you ▸ tell me something fun", "llm ▸ Hello there friend."]

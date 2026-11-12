@@ -6,6 +6,7 @@ import sys
 import threading
 import types
 import wave
+from dataclasses import replace
 
 import pytest
 from voice_fakes import ScriptedMic, install_vad
@@ -24,15 +25,19 @@ from fish_audio_suite_voice.listen import (
     _encode_wav,
     _Listen,
     _prime_listen,
+    cooldown_report,
     listen_reject_reason,
     record_utterance,
     spike_start_allowed,
     start_frames_needed,
     start_hit,
     trailing_start_hits,
+    voice_needed,
 )
 from fish_audio_suite_voice.pcm import FRAME_BYTES, take_frames
+from fish_audio_suite_voice.recognised import BargeIn, StreamFallback
 from fish_audio_suite_voice.tune import (
+    DEFAULT_AEC_BLEED_DELAY_S,
     DEFAULT_BARGE_HIT_FRAMES,
     DEFAULT_BARGE_PLAYING_GAIN,
     DEFAULT_BARGE_RMS,
@@ -200,7 +205,7 @@ def test_trimmed_barge_credit_does_not_keep_a_short_tail() -> None:
     tune = ListenTune(1, 40, 1, 200.0, 4, 12)
     heard = _Listen(tune, Vad())
     loud = _pcm(800)
-    _prime_listen(heard, loud * 4)
+    _prime_listen(heard, BargeIn(loud * 4, None, DEFAULT_BARGE_RMS))
     assert heard.primed_hits == 4
     quiet = _pcm(0)
     for _ in range(MAX_UTTERANCE_FRAMES):
@@ -224,7 +229,7 @@ def test_encode_wav_keeps_pcm_samples() -> None:
 
 
 def test_bleed_wait_ends_when_the_turn_is_cancelled() -> None:
-    gate = BargeGate(mic=ScriptedMic(), bleed_delay_s=30)
+    gate = BargeGate(mic=ScriptedMic(), tune=BargeTune(bleed_delay_s=30))
     cancel = threading.Event()
     thread = gate.start_after_bleed(cancel)
     cancel.set()
@@ -251,8 +256,7 @@ def test_the_barge_watch_scores_speech_with_the_detector_listen_uses(
     monkeypatch.setitem(sys.modules, "barge_vad_plugin", plugin)
     gate = BargeGate(
         mic=ScriptedMic([(3000).to_bytes(2, "little", signed=True) * (FRAME_BYTES // 2)] * 2),
-        hit_frames=2,
-        min_rms=1.0,
+        tune=BargeTune(hit_frames=2, min_rms=1.0),
         listen=ListenTune(vad_aggressiveness=3, vad_engine="barge_vad_plugin:Vad"),
     )
     cancel = threading.Event()
@@ -267,22 +271,23 @@ def test_barge_tune_reads_env_once(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FISH_VOICE_BARGE_RMS", "500")
     gate = BargeGate(mic=ScriptedMic(), tune=BargeTune.from_env())
     monkeypatch.setenv("FISH_VOICE_BARGE_FRAMES", "2")
-    assert gate.bleed_delay_s == 1.5
-    assert gate.hit_frames == 9
-    assert gate.min_rms == 500.0
+    assert gate.tune.bleed_delay_s == 1.5
+    assert gate.tune.hit_frames == 9
+    assert gate.tune.min_rms == 500.0
 
 
 def test_barge_bleed_delay_cannot_be_negative(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FISH_VOICE_BLEED_DELAY", "-1")
     no_aec = EchoCanceller(AecTune(enabled=False))
     gate = BargeGate(mic=ScriptedMic(aec=no_aec), tune=BargeTune.from_env())
-    assert gate.bleed_delay_s == DEFAULT_BLEED_DELAY_S
+    assert gate.tune.bleed_delay_s == DEFAULT_BLEED_DELAY_S
     assert gate._bleed_wait() == DEFAULT_BLEED_DELAY_S
+    with pytest.raises(ValueError, match="bleed_delay_s"):
+        BargeTune(bleed_delay_s=-0.5)
     assert (
-        BargeGate(mic=ScriptedMic(aec=no_aec), bleed_delay_s=-0.5)._bleed_wait()
-        == DEFAULT_BLEED_DELAY_S
+        BargeGate(mic=ScriptedMic(aec=no_aec), tune=BargeTune(bleed_delay_s=0.0))._bleed_wait()
+        == 0.0
     )
-    assert BargeGate(mic=ScriptedMic(aec=no_aec), bleed_delay_s=0.0)._bleed_wait() == 0.0
 
 
 def test_barge_hit_frames_must_be_positive(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -290,21 +295,24 @@ def test_barge_hit_frames_must_be_positive(monkeypatch: pytest.MonkeyPatch) -> N
     assert BargeTune.from_env().hit_frames == DEFAULT_BARGE_HIT_FRAMES
     monkeypatch.setenv("FISH_VOICE_BARGE_FRAMES", "-2")
     assert BargeTune.from_env().hit_frames == DEFAULT_BARGE_HIT_FRAMES
-    assert BargeGate(mic=ScriptedMic(), hit_frames=0).hit_frames == DEFAULT_BARGE_HIT_FRAMES
+    with pytest.raises(ValueError, match="hit_frames"):
+        BargeTune(hit_frames=0)
     monkeypatch.setenv("FISH_VOICE_BARGE_RMS", "0")
     assert BargeTune.from_env().min_rms == DEFAULT_BARGE_RMS
-    assert BargeGate(mic=ScriptedMic(), min_rms=-1).min_rms == DEFAULT_BARGE_RMS
-    assert BargeGate(mic=ScriptedMic(), min_rms=10).min_rms == 10
+    with pytest.raises(ValueError, match="min_rms"):
+        BargeTune(min_rms=-1)
+    assert BargeGate(mic=ScriptedMic(), tune=BargeTune(min_rms=10)).tune.min_rms == 10
 
 
-def test_barge_gate_explicit_kwargs_win(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_barge_gate_explicit_values_win(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FISH_VOICE_BLEED_DELAY", "9.9")
     gate = BargeGate(
-        mic=ScriptedMic(), tune=BargeTune.from_env(), bleed_delay_s=0.2, hit_frames=3, min_rms=10.0
+        mic=ScriptedMic(),
+        tune=replace(BargeTune.from_env(), bleed_delay_s=0.2, hit_frames=3, min_rms=10.0),
     )
-    assert gate.bleed_delay_s == 0.2
-    assert gate.hit_frames == 3
-    assert gate.min_rms == 10.0
+    assert gate.tune.bleed_delay_s == 0.2
+    assert gate.tune.hit_frames == 3
+    assert gate.tune.min_rms == 10.0
 
 
 def test_barge_keeps_the_lookback_that_tripped() -> None:
@@ -322,14 +330,14 @@ def test_barge_prefix_meets_the_listen_minimum() -> None:
     tune = ListenTune(1, 1, 4, 200.0, 20, DEFAULT_MIN_VOICED_FRAMES)
     heard = _Listen(tune, _UnusedVad())
     loud = (1000).to_bytes(2, "little", signed=True) * (FRAME_BYTES // 2)
-    _prime_listen(heard, loud * DEFAULT_BARGE_HIT_FRAMES)
+    _prime_listen(heard, BargeIn(loud * DEFAULT_BARGE_HIT_FRAMES, None, DEFAULT_BARGE_RMS))
     assert heard.speech_hits == DEFAULT_BARGE_HIT_FRAMES
     wav = _clip_wav(heard, tune)
     assert wav is not None
     assert wav.startswith(b"RIFF")
     spike = (4000).to_bytes(2, "little", signed=True) * (FRAME_BYTES // 2)
     bang = _Listen(tune, _UnusedVad())
-    _prime_listen(bang, spike * DEFAULT_BARGE_HIT_FRAMES)
+    _prime_listen(bang, BargeIn(spike * DEFAULT_BARGE_HIT_FRAMES, None, DEFAULT_BARGE_RMS))
     kept = _clip_wav(bang, tune)
     assert kept is not None
     assert kept.startswith(b"RIFF")
@@ -350,7 +358,9 @@ def test_barge_prefix_counts_under_a_higher_listen_floor() -> None:
     heard = _Listen(tune, _UnusedVad())
     speech = (256).to_bytes(2, "little", signed=True) * (FRAME_BYTES // 2)
     quiet = b"\x01\x00" * (FRAME_BYTES // 2)
-    _prime_listen(heard, quiet + speech * DEFAULT_BARGE_HIT_FRAMES)
+    _prime_listen(
+        heard, BargeIn(quiet + speech * DEFAULT_BARGE_HIT_FRAMES, None, DEFAULT_BARGE_RMS)
+    )
     assert heard.speech_hits == DEFAULT_BARGE_HIT_FRAMES
     assert _clip_wav(heard, tune) is not None
 
@@ -360,7 +370,7 @@ def test_prime_listen_counts_loud_prefix_frames() -> None:
     heard = _Listen(tune, _UnusedVad())
     loud = b"\x00\x10" * 480
     quiet = b"\x01\x00" * 480
-    _prime_listen(heard, quiet + loud)
+    _prime_listen(heard, BargeIn(quiet + loud, None, DEFAULT_BARGE_RMS))
     assert heard.triggered
     assert len(heard.clip_frames) == 2
     assert heard.speech_hits == 1
@@ -372,8 +382,8 @@ def test_barge_defaults_without_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("FISH_VOICE_BARGE_FRAMES", raising=False)
     monkeypatch.delenv("FISH_VOICE_COOLDOWN", raising=False)
     gate = BargeGate(mic=ScriptedMic(), tune=BargeTune.from_env())
-    assert gate.bleed_delay_s == DEFAULT_BLEED_DELAY_S
-    assert gate.hit_frames == DEFAULT_BARGE_HIT_FRAMES
+    assert gate.tune.bleed_delay_s == DEFAULT_BLEED_DELAY_S
+    assert gate.tune.hit_frames == DEFAULT_BARGE_HIT_FRAMES
     assert BargeTune.from_env().cooldown_s == 0.8
     monkeypatch.setenv("FISH_VOICE_COOLDOWN", "0.3")
     assert BargeTune.from_env().cooldown_s == 0.3
@@ -389,9 +399,11 @@ def test_barge_over_speaker_raises_need() -> None:
         220.0 * 2.2
     )
     assert barge_rms_need(220.0, far_playing=True, playing_gain=2.2, aec_on=True) == 220.0
-    assert barge_rms_need(220.0, far_playing=True, playing_gain=0, aec_on=False) == pytest.approx(
-        220.0 * DEFAULT_BARGE_PLAYING_GAIN
-    )
+    with pytest.raises(ValueError, match="playing_gain"):
+        BargeTune(playing_gain=0)
+    assert barge_rms_need(
+        220.0, far_playing=True, playing_gain=BargeTune().playing_gain, aec_on=False
+    ) == pytest.approx(220.0 * DEFAULT_BARGE_PLAYING_GAIN)
     assert barge_rms_need(220.0, far_playing=True, playing_gain=1, aec_on=False) == 220.0
 
 
@@ -471,7 +483,9 @@ def test_barge_watch_logs_a_mic_failure_without_cancelling(
         raise OSError("no device")
 
     install_vad(monkeypatch, SpeechVad)
-    gate = BargeGate(mic=ScriptedMic(boom), hit_frames=2, min_rms=1.0, bleed_delay_s=0)
+    gate = BargeGate(
+        mic=ScriptedMic(boom), tune=BargeTune(hit_frames=2, min_rms=1.0, bleed_delay_s=0)
+    )
     cancel = threading.Event()
     gate.watch(cancel)
     assert not cancel.is_set()
@@ -485,7 +499,7 @@ def test_barge_watch_logs_a_mic_failure_without_cancelling(
 def test_bleed_thread_skips_the_mic_when_already_cancelled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    gate = BargeGate(mic=ScriptedMic(), bleed_delay_s=0)
+    gate = BargeGate(mic=ScriptedMic(), tune=BargeTune(bleed_delay_s=0))
     watched: list[bool] = []
 
     def watch(cancel: threading.Event) -> None:
@@ -718,7 +732,7 @@ def test_speech_between_the_floor_and_the_boosted_need_does_not_raise_the_floor(
         yield from [_constant_frame(300)] * 5
 
     install_vad(monkeypatch, SilentVad)
-    monkeypatch.setattr("fish_audio_suite_voice.barge.AdaptiveFloor", Floor)
+    monkeypatch.setattr("fish_audio_suite_voice.scorer.AdaptiveFloor", Floor)
     aec = EchoCanceller(AecTune(enabled=False))
     # The speaker is playing and AEC is off, so ``need`` is 220 x 2.2 = 484.
     aec.tap_playback(b"\x00\x00" * 16000, 16000)
@@ -734,16 +748,35 @@ def test_a_gate_without_an_aec_runs_without_one() -> None:
     assert gate._bleed_wait() == gate.tune.bleed_delay_s
 
 
-def test_an_explicit_bleed_delay_wins_over_the_aec_default(
+def test_with_echo_cancellation_the_aec_bleed_delay_applies(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    aec = EchoCanceller(AecTune(enabled=True, bleed_delay_s=0.3))
-    monkeypatch.setattr(aec, "available", lambda: True)
-    mic = ScriptedMic(aec=aec)
-    assert BargeGate(mic=mic)._bleed_wait() == 0.3
-    assert BargeGate(mic=mic, bleed_delay_s=1.5)._bleed_wait() == 1.5
-    assert BargeGate(mic=mic, bleed_delay_s=0.0)._bleed_wait() == 0.0
-    assert BargeGate(mic=mic, bleed_delay_s=-1.0)._bleed_wait() == 0.3
+    def gate(aec_bleed: float, barge_bleed: float = DEFAULT_BLEED_DELAY_S) -> BargeGate:
+        aec = EchoCanceller(AecTune(enabled=True, bleed_delay_s=aec_bleed))
+        monkeypatch.setattr(aec, "available", lambda: True)
+        return BargeGate(mic=ScriptedMic(aec=aec), tune=BargeTune(bleed_delay_s=barge_bleed))
+
+    assert gate(0.3)._bleed_wait() == 0.3
+    assert gate(1.5)._bleed_wait() == 1.5
+    assert gate(0.0)._bleed_wait() == 0.0
+    assert gate(0.3, barge_bleed=1.5)._bleed_wait() == 0.3
+    with pytest.raises(ValueError, match="bleed_delay_s"):
+        AecTune(bleed_delay_s=-1.0)
+
+
+def test_the_bleed_wait_follows_whether_echo_cancellation_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    off = EchoCanceller(AecTune(enabled=False))
+    assert (
+        BargeGate(mic=ScriptedMic(aec=off), tune=BargeTune(bleed_delay_s=0.9))._bleed_wait() == 0.9
+    )
+    on = EchoCanceller(AecTune(bleed_delay_s=DEFAULT_AEC_BLEED_DELAY_S))
+    monkeypatch.setattr(on, "load", object)
+    assert (
+        BargeGate(mic=ScriptedMic(aec=on), tune=BargeTune(bleed_delay_s=0.9))._bleed_wait()
+        == DEFAULT_AEC_BLEED_DELAY_S
+    )
 
 
 def test_a_small_floor_window_still_warms_up() -> None:
@@ -764,7 +797,7 @@ def test_a_setup_failure_in_the_watcher_thread_is_reported(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    gate = BargeGate(mic=ScriptedMic(), hit_frames=2, min_rms=1.0, bleed_delay_s=0)
+    gate = BargeGate(mic=ScriptedMic(), tune=BargeTune(hit_frames=2, min_rms=1.0, bleed_delay_s=0))
 
     def broken_bleed() -> float:
         raise RuntimeError("aec failed to load")
@@ -785,7 +818,7 @@ def test_a_reply_that_starts_muted_is_not_watched_and_the_mic_is_not_opened(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     mic = ScriptedMic()
-    gate = BargeGate(mic=mic, bleed_delay_s=0, muted=lambda: True)
+    gate = BargeGate(mic=mic, tune=BargeTune(bleed_delay_s=0), muted=lambda: True)
     gate.start_after_bleed(threading.Event()).join(timeout=1)
     assert mic.opened == 0
     assert gate.failure is None
@@ -840,3 +873,113 @@ def test_a_trip_records_where_the_next_listen_reads_on_from(
     assert cancel.is_set()
     assert source.since == 100  # read from where the mic was when the watch began
     assert gate.resume_at == 103  # the trip came on the third frame
+
+
+def _level(rms: int) -> bytes:
+    return rms.to_bytes(2, "little", signed=True) * (FRAME_BYTES // 2)
+
+
+@pytest.mark.parametrize(("gate_rms", "credited"), [(100.0, 10), (DEFAULT_BARGE_RMS, 0)])
+def test_a_barge_clip_is_scored_at_the_level_its_own_gate_admitted_it(
+    gate_rms: float, credited: int
+) -> None:
+    # FISH_VOICE_BARGE_RMS=100 let a soft interruption at 150 stop the reply. Scored at the
+    # default 220 instead, none of it counted and the words that stopped the reply were lost.
+    tune = ListenTune(1, 40, 4, DEFAULT_MIN_SPEECH_RMS, 20, DEFAULT_MIN_VOICED_FRAMES)
+    heard = _Listen(tune, _UnusedVad())
+    _prime_listen(heard, BargeIn(_level(150) * 10, None, gate_rms))
+    assert heard.primed_hits == credited
+    assert (_clip_wav(heard, tune) is not None) is (credited > 0)
+
+
+def test_a_fallback_clip_goes_on_as_ordinary_speech_with_no_barge_in_credit() -> None:
+    tune = ListenTune(1, 40, 4, DEFAULT_MIN_SPEECH_RMS, 20, DEFAULT_MIN_VOICED_FRAMES)
+    flags = [False, True, True, False, True]
+    heard = _Listen(tune, _UnusedVad())
+    _prime_listen(heard, StreamFallback(tuple((_level(600), f) for f in flags), 7))
+    assert heard.triggered  # speech already started: the first words are kept
+    assert heard.speech_flags == flags  # as the listen gate judged each frame
+    assert heard.primed_hits == 0  # not an interruption, so it needs the voice any turn needs
+    assert _clip_wav(heard, tune) is None
+
+
+def test_a_fallback_from_a_barged_turn_keeps_the_credit_of_the_barge_in_clip() -> None:
+    tune = ListenTune(1, 40, 4, DEFAULT_MIN_SPEECH_RMS, 20, DEFAULT_MIN_VOICED_FRAMES)
+    barge = BargeIn(_level(600) * 4, 3, DEFAULT_BARGE_RMS)
+    frames = ((_level(600), True),) * 4 + ((_level(600), True), (_level(5), False))
+    heard = _Listen(tune, _UnusedVad())
+    _prime_listen(heard, StreamFallback(frames, 9, barge=barge))
+    assert heard.primed_hits == 4
+    assert _clip_wav(heard, tune) is not None  # 5 voiced frames: enough after a barge-in
+
+
+@pytest.mark.parametrize(
+    ("min_voiced", "credited", "need"), [(12, 0, 12), (12, 4, 4), (12, 20, 12), (3, 4, 3)]
+)
+def test_the_voice_a_clip_needs_counts_a_barge_in_in_full(
+    min_voiced: int, credited: int, need: int
+) -> None:
+    assert voice_needed(min_voiced, credited) == need
+    assert (
+        listen_reject_reason(
+            clip_frames=40,
+            speech_hits=need,
+            peak_rms=300.0,
+            min_voiced_frames=min_voiced,
+            min_speech_rms=200.0,
+            credited_hits=credited,
+        )
+        is None
+    )
+
+
+class _CountingVad:
+    """Calls every frame speech and counts how often it was asked about each one."""
+
+    def __init__(self) -> None:
+        self.asked: collections.Counter[bytes] = collections.Counter()
+
+    def is_speech(self, frame: bytes, rate: int) -> bool:
+        del rate
+        self.asked[frame] += 1
+        return True
+
+
+def _counting_engine(monkeypatch: pytest.MonkeyPatch) -> tuple[str, list[_CountingVad]]:
+    opened: list[_CountingVad] = []
+
+    def make(strictness: int) -> _CountingVad:
+        del strictness
+        opened.append(_CountingVad())
+        return opened[-1]
+
+    plugin = types.ModuleType("counting_vad_plugin")
+    vars(plugin)["make"] = make
+    monkeypatch.setitem(sys.modules, "counting_vad_plugin", plugin)
+    return "counting_vad_plugin:make", opened
+
+
+def test_each_gate_asks_its_detector_about_a_frame_at_most_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Distinct levels, so each frame is its own key: quiet ones under every floor, loud ones over.
+    quiet = [_level(n) for n in range(1, 31)]
+    loud = [_level(1000 + n) for n in range(4)]
+    frames = [*quiet, *loud, *quiet[:5]]
+    engine, opened = _counting_engine(monkeypatch)
+    listen = ListenTune(vad_engine=engine, end_silence_frames=40)
+    record_utterance(ScriptedMic(frames), tune=listen)
+    cooldown = _CountingVad()
+    cooldown_report(frames, listen, cooldown)
+    gate = BargeGate(
+        mic=ScriptedMic(frames, aec=EchoCanceller(AecTune(enabled=False))),
+        tune=BargeTune(hit_frames=len(frames) + 1),
+        listen=listen,
+    )
+    gate.watch(threading.Event())
+    listened, barged = opened
+    # A listen and the cooldown log hear every frame once, as a stateful detector needs.
+    assert listened.asked == collections.Counter(frames)
+    assert cooldown.asked == collections.Counter(frames)
+    # Barge-in asks only about frames at its level, once each: quiet frames are never heard.
+    assert barged.asked == collections.Counter(loud)

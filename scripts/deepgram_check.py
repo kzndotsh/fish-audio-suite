@@ -31,7 +31,8 @@ from pathlib import Path
 from fish_audio_suite_voice.envfile import apply_cli_env_files
 from fish_audio_suite_voice.events import EVENTS, Event, Interim
 from fish_audio_suite_voice.mic import SessionMic
-from fish_audio_suite_voice.streaming import StreamedTurn, StreamFallback, stream_turn
+from fish_audio_suite_voice.recognised import NoTurn, StreamFallback, Transcript
+from fish_audio_suite_voice.streaming import stream_turn
 from fish_audio_suite_voice.tune import ListenTune, SttTune
 from fish_audio_suite_voice.turn_stream import RecogniserSettings
 
@@ -74,15 +75,17 @@ async def run(turns: int, device: str | int | None) -> int:
                 quit_requested=quit_requested,
                 stop=quit_requested,
             )
-            if isinstance(outcome, StreamedTurn):
-                print(f"  final: {outcome.text}")
-                print(f"  {outcome.asr_ms:.0f} ms from your last speech to the final text")
-            else:
-                print(
-                    f"  no turn: {'could not reach Deepgram' if isinstance(outcome, StreamFallback) else outcome}"
-                )
-                if isinstance(outcome, StreamFallback) or outcome == "fatal":
+            match outcome:
+                case Transcript():
+                    print(f"  final: {outcome.text}")
+                    print(f"  {outcome.asr_ms:.0f} ms from your last speech to the final text")
+                case StreamFallback():
+                    print("  no turn: could not reach Deepgram")
                     return 2
+                case NoTurn(reason=reason):
+                    print(f"  no turn: {reason}")
+                    if reason == "fatal":
+                        return 2
     finally:
         mic.close()
         stop_showing()

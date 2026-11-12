@@ -404,6 +404,12 @@ class BargeTune:
         cancellation is off, the ``aec`` extra is missing, or the processor failed to start.
     cooldown_s : float
         Seconds to wait after a reply before the mic opens again.
+
+    Raises
+    ------
+    ValueError
+        When a value is out of the range ``from_env`` accepts: ``hit_frames`` under 1,
+        ``min_rms`` not above 0, ``playing_gain`` under 1, a negative delay or cooldown.
     """
 
     hit_frames: int = DEFAULT_BARGE_HIT_FRAMES
@@ -411,6 +417,31 @@ class BargeTune:
     playing_gain: float = DEFAULT_BARGE_PLAYING_GAIN
     bleed_delay_s: float = DEFAULT_BLEED_DELAY_S
     cooldown_s: float = DEFAULT_POST_SPEAK_COOLDOWN_S
+
+    def __post_init__(self) -> None:
+        """Reject values the barge gate cannot use.
+
+        Raises
+        ------
+        ValueError
+            When a value is out of range.
+        """
+        if self.hit_frames < 1:
+            msg = f"BargeTune.hit_frames must be at least 1, not {self.hit_frames}"
+            raise ValueError(msg)
+        if self.min_rms <= 0:
+            msg = f"BargeTune.min_rms must be above 0, not {self.min_rms}"
+            raise ValueError(msg)
+        # Below 1 the floor would drop while the speaker plays, so bleed trips barge-in.
+        if self.playing_gain < 1:
+            msg = f"BargeTune.playing_gain must be at least 1, not {self.playing_gain}"
+            raise ValueError(msg)
+        if self.bleed_delay_s < 0 or self.cooldown_s < 0:
+            msg = (
+                "BargeTune.bleed_delay_s and cooldown_s cannot be negative, not "
+                f"{self.bleed_delay_s} and {self.cooldown_s}"
+            )
+            raise ValueError(msg)
 
     @classmethod
     def from_env(cls) -> Self:
@@ -451,6 +482,11 @@ class AecTune:
         Raise a quiet voice to a steady level, as a call app does.
     noise_suppression_db : int
         Attenuation of steady background noise: 0 (off), 6, 12, 18 or 21.
+
+    Raises
+    ------
+    ValueError
+        When ``bleed_delay_s`` is negative.
     """
 
     enabled: bool = True
@@ -458,6 +494,18 @@ class AecTune:
     bleed_delay_s: float = DEFAULT_AEC_BLEED_DELAY_S
     auto_gain: bool = True
     noise_suppression_db: int = DEFAULT_NOISE_SUPPRESSION_DB
+
+    def __post_init__(self) -> None:
+        """Reject a negative bleed delay, which the barge gate cannot wait.
+
+        Raises
+        ------
+        ValueError
+            When ``bleed_delay_s`` is negative.
+        """
+        if self.bleed_delay_s < 0:
+            msg = f"AecTune.bleed_delay_s cannot be negative, not {self.bleed_delay_s}"
+            raise ValueError(msg)
 
     @classmethod
     def from_env(cls) -> Self:

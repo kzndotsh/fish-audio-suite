@@ -1,9 +1,15 @@
-"""Fish ASR over httpx. Retries 429, 5xx and network errors."""
+"""Fish ASR over httpx, and the recogniser the batch path hears a clip with.
+
+``fish_asr`` is the request: it retries 429, 5xx and network errors and returns the cleaned
+text. ``transcribe_clip`` is the recogniser: it times the request, shares its trace id with the
+reply, and turns every failure into the reason there is no turn.
+"""
 
 from __future__ import annotations
 
 import json
 import threading
+import time
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from typing import Any, Final
@@ -13,6 +19,7 @@ import httpx
 from fish_audio_suite_kit import (
     FISH_ASR_PATH,
     FISH_RETRY_ATTEMPTS,
+    FishAuthError,
     FishHttpError,
     SuiteDefaults,
     asr_language_hint,
@@ -21,17 +28,22 @@ from fish_audio_suite_kit import (
     clean_transcript,
     cut_at_control,
     describe_request_error,
+    elapsed_ms,
     fish_attempt_exhausted,
     fish_backoff_s,
     fish_request_id,
+    make_traceparent,
     parse_asr_body,
     parse_fish_error,
     retry_after_s,
     strip_base,
+    trace_id_of,
 )
 from fish_audio_suite_voice.cancel import never
-from fish_audio_suite_voice.debug import debug, with_detail
+from fish_audio_suite_voice.config import VoiceCliConfig
+from fish_audio_suite_voice.debug import debug, warn, with_detail
 from fish_audio_suite_voice.pause import sleep_unless
+from fish_audio_suite_voice.recognised import NoTurn, Transcript
 from fish_audio_suite_voice.tune import HTTP_KEEPALIVE_S
 from fish_audio_suite_voice.ws_tap import public_meta
 
@@ -39,6 +51,7 @@ __all__ = [
     "AsrResult",
     "asr_client",
     "fish_asr",
+    "transcribe_clip",
 ]
 
 _ASR_TIMEOUT_S: Final = 60.0
@@ -250,6 +263,74 @@ async def fish_asr(
         parsed,
         strip_speakers=True,
         strip_cues=True,
-        trim_hallucination=True,
     )
     return AsrResult(clean.text, tone)
+
+
+async def transcribe_clip(
+    wav: bytes,
+    config: VoiceCliConfig,
+    *,
+    cancel: threading.Event,
+    client: httpx.AsyncClient,
+) -> Transcript | NoTurn:
+    """Hear one clip with Fish ASR.
+
+    Parameters
+    ----------
+    wav : bytes
+        One utterance.
+    config : VoiceCliConfig
+        The key, base, language hint, model and whether to keep the tone.
+    cancel : threading.Event
+        The session's quit flag. Once it is set the clip is ``stopped``, whatever the request
+        did, and no failure is reported.
+    client : httpx.AsyncClient
+        The session's ASR client.
+
+    Returns
+    -------
+    Transcript or NoTurn
+        The words, timed from the start of the request, with the trace id the reply's TTS
+        turn shares. Otherwise ``fatal`` when Fish refuses the key, ``again`` for any other
+        Fish or network failure, which is worth another listen, or ``stopped`` on quit.
+
+    Raises
+    ------
+    Exception
+        Anything that is not a Fish or network failure is a bug and propagates, instead of
+        the loop listening again in silence.
+    """
+    started = time.perf_counter()
+    parent = make_traceparent()
+    try:
+        heard = await fish_asr(
+            wav,
+            config.fish_api_key,
+            base=config.fish_base,
+            language=config.fish_asr_language,
+            model=config.asr_model,
+            extra_headers={"traceparent": parent},
+            cancel=cancel,
+            client=client,
+            hear_tone=config.hear_tone,
+        )
+    except FishHttpError as e:
+        if cancel.is_set():
+            return NoTurn("stopped")
+        warn(f"[asr] {e.status} {e.message}")
+        return NoTurn("fatal" if isinstance(e, FishAuthError) else "again")
+    except (httpx.HTTPError, OSError) as e:
+        if cancel.is_set():
+            return NoTurn("stopped")
+        warn(f"[asr] {e}")
+        return NoTurn("again")
+    if cancel.is_set():
+        return NoTurn("stopped")
+    return Transcript(
+        heard.text,
+        tone=heard.tone,
+        asr_ms=elapsed_ms(started),
+        started=started,
+        trace_id=trace_id_of(parent),
+    )

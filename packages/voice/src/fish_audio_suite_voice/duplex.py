@@ -15,7 +15,8 @@ from fish_audio_suite_voice.console_sink import ConsoleSink
 from fish_audio_suite_voice.debug import debug, debug_enabled
 from fish_audio_suite_voice.duplex_state import EXIT_CRASH, EXIT_FATAL, EXIT_OK, DuplexContext
 from fish_audio_suite_voice.events import EVENTS, Bye, TurnEnded
-from fish_audio_suite_voice.hearing import HeardLine, hear_line
+from fish_audio_suite_voice.heard import HeardLine
+from fish_audio_suite_voice.hearing import hear_line
 from fish_audio_suite_voice.history import opening_history, remember_user
 from fish_audio_suite_voice.inputs import TurnSource
 from fish_audio_suite_voice.listen import cooldown_report
