@@ -42,6 +42,7 @@ from fish_audio_suite_kit import (
     is_tts_junk,
     parse_asr_body,
     scrub_asr,
+    takes_directions,
     trace_id_of,
     without_watermark_segments,
 )
@@ -54,7 +55,7 @@ from fish_audio_suite_proxy.errors import (
     proxy_error_response,
     read_json_object,
 )
-from fish_audio_suite_proxy.models import catalog_ids, resolve_asr_model
+from fish_audio_suite_proxy.models import catalog_ids, resolve_asr_model, resolve_tts_model
 from fish_audio_suite_proxy.phrases import caption_cues
 from fish_audio_suite_proxy.request_fields import prepare_tts_text, read_flag, traced_model_headers
 from fish_audio_suite_proxy.settings import ProxySettings, load_settings
@@ -187,6 +188,9 @@ def _spoken_line(body: dict[str, Any], settings: ProxySettings) -> tuple[str, st
         raw_input,
         dialogue_only=dialogue_only,
         mood_lead=settings.tts_mood_lead,
+        directed=takes_directions(
+            resolve_tts_model(body.get("model"), settings.defaults.tts_model, settings.tts_aliases)
+        ),
     )
     preview = spoken.replace("\n", " ")[:_PREVIEW_CHARS]
     log.info(

@@ -639,3 +639,34 @@ def test_an_unreadable_error_body_keeps_the_status_fish_sent(
     assert b"error body could not be read" in body
     assert b"10.0.0.5" not in body
     assert b"connection dropped" not in body
+
+
+def test_a_language_tag_is_passed_to_fish_and_a_bad_one_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fresh_app_env(monkeypatch)
+    sent, captured = post_speech(
+        monkeypatch, {"input": "Hello there friend", "language": " zh-CN "}
+    )
+    assert sent.status_code == 200
+    assert captured["json"]["language"] == "zh-CN"
+    plain, captured = post_speech(monkeypatch, {"input": "Hello there friend"})
+    assert plain.status_code == 200
+    assert "language" not in captured["json"]
+    for bad in ("en US", "x" * 36, "en\nfr"):
+        refused, _ = post_speech(monkeypatch, {"input": "Hello there friend", "language": bad})
+        assert refused.status_code == 400
+
+
+def test_a_request_for_drama_3_keeps_its_directions_and_paired_tags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fresh_app_env(monkeypatch)
+    text = "[Barely holding it together] It is <emphasis>mine</emphasis>, <b>now</b>."
+    _, captured = post_speech(monkeypatch, {"input": text, "model": "fish-audio/drama-3"})
+    assert captured["headers"]["model"] == "drama-3"
+    assert captured["json"]["text"] == (
+        "[Barely holding it together] It is <emphasis>mine</emphasis>, now."
+    )
+    _, captured = post_speech(monkeypatch, {"input": text, "model": "s2.1-pro"})
+    assert captured["json"]["text"] == "[barely holding it together] It is mine, now."

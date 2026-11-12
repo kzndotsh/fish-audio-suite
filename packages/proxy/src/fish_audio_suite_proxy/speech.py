@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
-from typing import Any, TypedDict
+from typing import Any, Final, TypedDict
 
 import ormsgpack
 from fastapi.responses import JSONResponse
@@ -379,6 +379,10 @@ def _seed(value: Any) -> int | None:
     return parsed
 
 
+# Fish's own limit for the text's language tag, which it uses to read numbers and dates.
+_LANGUAGE_RE: Final = re.compile(r"[A-Za-z0-9_-]{1,35}")
+
+
 def _optional_tts(payload: dict[str, Any], body: dict[str, Any], *, quality_guard: bool) -> None:
     voice = read_reference_id(body)
     if voice:
@@ -393,6 +397,11 @@ def _optional_tts(payload: dict[str, Any], body: dict[str, Any], *, quality_guar
         payload["use_memory_cache"] = cache
     if _want_quality_guard(body, quality_guard):
         payload["features"] = ["quality-guard"]
+    language = body.get("language")
+    if isinstance(language, str) and (tag := language.strip()):
+        if not _LANGUAGE_RE.fullmatch(tag):
+            raise ProxyError(400, "language must be a BCP-47 tag such as en or zh-CN")
+        payload["language"] = tag
     pd = body.get("pronunciation_dictionary")
     if pd is not None:
         if not isinstance(pd, list) or len(pd) > _MAX_PRONUNCIATION_ENTRIES:

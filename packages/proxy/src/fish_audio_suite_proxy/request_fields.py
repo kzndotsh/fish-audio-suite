@@ -166,6 +166,7 @@ def prepare_tts_text(
     *,
     dialogue_only: bool,
     mood_lead: bool = False,
+    directed: bool = False,
 ) -> str:
     """Scrub model text into what Fish should speak.
 
@@ -179,6 +180,9 @@ def prepare_tts_text(
     mood_lead : bool, optional
         When True, a sentence that opens with a mood word becomes a cue.
         Default False, so ordinary sentences are spoken as written.
+    directed : bool, optional
+        True when the model takes plain-language directions and paired tags
+        (``takes_directions``), which are then sent as written. Default False.
 
     Returns
     -------
@@ -187,10 +191,10 @@ def prepare_tts_text(
         then ``normalize_cues``. Cue-only junk is detected later by
         ``is_tts_junk``.
     """
-    cleaned = scrub_tts(raw_input)
+    cleaned = scrub_tts(raw_input, directed=directed)
     if dialogue_only:
         cleaned = extract_quoted_speech(cleaned)
-    return normalize_cues(cleaned, lead=mood_lead)
+    return normalize_cues(cleaned, lead=mood_lead, directed=directed)
 
 
 def traced_model_headers(model: str, incoming: Mapping[str, str]) -> dict[str, str]:
