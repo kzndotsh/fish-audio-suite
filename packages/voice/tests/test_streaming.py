@@ -16,22 +16,23 @@ import pytest
 from voice_fakes import ScriptedMic
 
 from fish_audio_suite_voice import streaming
-from fish_audio_suite_voice.deepgram import (
-    DeepgramError,
-    EagerTurnEnd,
-    FluxMessage,
-    FluxStream,
-    StreamError,
-    StreamWarning,
-    TurnEnded,
-    TurnResumed,
-    TurnStarted,
-    TurnUpdate,
-)
+from fish_audio_suite_voice.deepgram import FluxStream
 from fish_audio_suite_voice.events import EVENTS, Event, Interim
 from fish_audio_suite_voice.mic import FRAME_BYTES, Mic, StopFlag
 from fish_audio_suite_voice.streaming import StreamedTurn, StreamFallback, stream_turn
 from fish_audio_suite_voice.tune import ListenTune, SttTune
+from fish_audio_suite_voice.turn_stream import (
+    EagerTurnEnd,
+    StreamError,
+    StreamWarning,
+    SttStreamError,
+    TurnDropped,
+    TurnEnded,
+    TurnMessage,
+    TurnResumed,
+    TurnStarted,
+    TurnUpdate,
+)
 
 CHUNK = streaming._SEND_BYTES  # 80 ms of audio: the size Deepgram recommends
 FRAME = b"\x01\x00" * (FRAME_BYTES // 2)
@@ -45,10 +46,10 @@ class _FakeFlux(FluxStream):
 
     def __init__(
         self,
-        on_audio: Callable[[int], Sequence[FluxMessage | None]] | None = None,
-        on_force: list[FluxMessage] | None = None,
+        on_audio: Callable[[int], Sequence[TurnMessage | None]] | None = None,
+        on_force: list[TurnMessage] | None = None,
         *,
-        open_errors: list[DeepgramError] | None = None,
+        open_errors: list[SttStreamError] | None = None,
         drops_while_idle: bool = False,
     ) -> None:
         super().__init__("wss://fake/v2/listen", "secret")
@@ -61,7 +62,7 @@ class _FakeFlux(FluxStream):
         self._open_errors = open_errors or []
         self._drops = drops_while_idle
         self._connected = False
-        self._inbox: asyncio.Queue[FluxMessage | None] = asyncio.Queue()  # None closes it
+        self._inbox: asyncio.Queue[TurnMessage | None] = asyncio.Queue()  # None closes it
 
     @property
     def connected(self) -> bool:
@@ -75,7 +76,7 @@ class _FakeFlux(FluxStream):
 
     async def send_audio(self, pcm: bytes) -> None:
         self.sent.append(pcm)
-        answers: Sequence[FluxMessage | None] = (
+        answers: Sequence[TurnMessage | None] = (
             self._on_audio(sum(map(len, self.sent))) if self._on_audio else ()
         )
         for message in answers:
@@ -86,7 +87,7 @@ class _FakeFlux(FluxStream):
         for message in self._on_force:
             self._inbox.put_nowait(message)
 
-    async def messages(self) -> AsyncIterator[FluxMessage]:
+    async def messages(self) -> AsyncIterator[TurnMessage]:
         while (message := await self._inbox.get()) is not None:
             yield message
 
@@ -240,8 +241,8 @@ def test_a_missing_key_and_a_refused_connection_are_fatal_but_an_outage_hands_ov
 ):
     no_key = SttTune(provider="deepgram", deepgram_key="")
     assert _run(_FakeFlux(), _mic(1), stt=no_key) == "fatal"
-    assert _run(_FakeFlux(open_errors=[DeepgramError("HTTP 401", fatal=True)]), _mic(1)) == "fatal"
-    outage = _run(_FakeFlux(open_errors=[DeepgramError("no route")]), _mic(3))
+    assert _run(_FakeFlux(open_errors=[SttStreamError("HTTP 401", fatal=True)]), _mic(1)) == "fatal"
+    outage = _run(_FakeFlux(open_errors=[SttStreamError("no route")]), _mic(3))
     # Deepgram could not be reached once speech had started, so the batch recogniser takes
     # over from the speech captured so far, and the first words are not lost.
     assert isinstance(outage, StreamFallback)
@@ -271,7 +272,7 @@ def test_an_outage_hands_over_the_frames_the_mic_was_still_passing_on() -> None:
         sink(tail, True)
         return False
 
-    outage = _run(_FakeFlux(open_errors=[DeepgramError("no route")]), listen)
+    outage = _run(_FakeFlux(open_errors=[SttStreamError("no route")]), listen)
     assert isinstance(outage, StreamFallback)
     assert outage.prefix == FRAME * 3 + tail * 2
 
@@ -296,7 +297,7 @@ def test_a_turn_cancelled_while_the_mic_lets_go_still_closes_the_stream() -> Non
         released.wait(5)  # a mic thread slow to let go
         return False
 
-    fake = _FakeFlux(open_errors=[DeepgramError("no route")])
+    fake = _FakeFlux(open_errors=[SttStreamError("no route")])
 
     async def go() -> None:
         turn = asyncio.create_task(
@@ -457,7 +458,7 @@ def test_the_connection_goes_to_the_regional_endpoint_that_was_chosen() -> None:
 
     def make(url: str, _key: str) -> _FakeFlux:
         urls.append(url)
-        return _FakeFlux(open_errors=[DeepgramError("stop here")])
+        return _FakeFlux(open_errors=[SttStreamError("stop here")])
 
     async def go(region: str) -> object:
         return await stream_turn(
@@ -595,3 +596,54 @@ def test_a_turn_whose_words_arrive_in_time_is_not_given_up_on(
     result = _run(fake, _mic(6))
     assert isinstance(result, StreamedTurn)
     assert result.text == "hello there"
+
+
+def test_fish_realtime_connects_to_the_fish_base_with_the_fish_key_and_the_eager_setting() -> None:
+    from fish_audio_suite_voice.fish_realtime import FishRealtimeStream
+
+    made: list[tuple[str, str]] = []
+
+    def make(url: str, key: str) -> _FakeFlux:
+        made.append((url, key))
+        return _FakeFlux(open_errors=[SttStreamError("stop here")])
+
+    async def go(fish_key: str = "", fish_base: str = "https://api.fish.audio") -> object:
+        return await stream_turn(
+            stt=SttTune(provider="fish-realtime"),
+            listen=ONE_VOICED,
+            mic=ScriptedMic(),
+            quit_requested=threading.Event(),
+            stop=threading.Event(),
+            make_stream=make,
+            listen_fn=_mic(1),
+            fish_key=fish_key,
+            fish_base=fish_base,
+        )
+
+    assert asyncio.run(go()) == "fatal"  # no Fish key: nothing is connected
+    assert made == []
+    outcome = asyncio.run(go(fish_key="fish-secret", fish_base="https://fish.example"))
+    assert isinstance(outcome, StreamFallback)  # an outage still hands the speech to Fish ASR
+    assert made == [("wss://fish.example/v1/asr/realtime", "fish-secret")]
+
+    for threshold, eager in ((0.0, False), (0.5, True)):
+        endpoint = streaming._endpoint(
+            SttTune(provider="fish-realtime", eager_eot_threshold=threshold), "k", "https://f"
+        )
+        assert endpoint is not None
+        stream = endpoint[2]("wss://f/v1/asr/realtime", "k")
+        assert isinstance(stream, FishRealtimeStream)
+        assert stream._config["turn_detection"] == {"mode": "auto", "eager": eager}
+
+
+def test_a_turn_the_recogniser_drops_is_noise_even_after_words_arrived() -> None:
+    fake = _FakeFlux(
+        on_audio=lambda sent: [TurnUpdate("mm-hmm"), TurnDropped()] if sent == CHUNK else []
+    )
+    events, stop_events = _events()
+    try:
+        assert _run(fake, _mic(6)) == "noise"
+    finally:
+        stop_events()
+    assert Interim("mm-hmm") in events
+    assert fake.closed

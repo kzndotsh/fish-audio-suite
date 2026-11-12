@@ -11,19 +11,21 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 
 from fish_audio_suite_voice.deepgram import (
-    DeepgramError,
-    EagerTurnEnd,
     FluxStream,
-    StreamError,
-    StreamWarning,
-    TurnEnded,
-    TurnResumed,
-    TurnStarted,
-    TurnUpdate,
     _websockets_connect,
     flux_base,
     flux_url,
     parse_flux_message,
+)
+from fish_audio_suite_voice.turn_stream import (
+    EagerTurnEnd,
+    StreamError,
+    StreamWarning,
+    SttStreamError,
+    TurnEnded,
+    TurnResumed,
+    TurnStarted,
+    TurnUpdate,
 )
 
 
@@ -226,7 +228,7 @@ def test_a_refused_connection_says_whether_trying_again_could_help(
 
     for status, fatal in ((401, True), (402, True), (403, True), (500, False), (503, False)):
         monkeypatch.setattr("websockets.asyncio.client.connect", refuse(status))
-        with pytest.raises(DeepgramError) as raised:
+        with pytest.raises(SttStreamError) as raised:
             asyncio.run(_websockets_connect("wss://x/y", key="k"))
         assert raised.value.fatal is fatal, status
         assert str(status) in str(raised.value)
@@ -239,7 +241,7 @@ def test_an_unreachable_server_is_a_retryable_error_not_a_fatal_one(
         raise OSError("no route to host")
 
     monkeypatch.setattr("websockets.asyncio.client.connect", connect)
-    with pytest.raises(DeepgramError, match="no route") as raised:
+    with pytest.raises(SttStreamError, match="no route") as raised:
         asyncio.run(_websockets_connect("wss://x/y", key="k"))
     assert not raised.value.fatal
 

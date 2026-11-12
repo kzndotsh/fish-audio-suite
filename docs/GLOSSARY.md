@@ -6,7 +6,7 @@ Terms used across the fish-audio-suite docs and code.
 | --- | --- |
 | **AEC / AEC3** | Acoustic echo cancellation. WebRTC's AEC3 removes the bot's own voice from the microphone signal, using what was sent to the speakers as the reference ("far end") |
 | **AGC** | Automatic gain control. Part of the mic cleanup: it raises a quiet voice to a steady level (`FISH_VOICE_AGC`, on by default) |
-| **ASR** | Automatic speech recognition: Fish's speech-to-text, which hears one finished clip. `FISH_VOICE_STT=deepgram` streams to Deepgram Flux instead |
+| **ASR** | Automatic speech recognition: Fish's speech-to-text, which hears one finished clip. `FISH_VOICE_STT=deepgram` streams to Deepgram Flux instead, and `FISH_VOICE_STT=fish-realtime` to Fish's realtime speech to text |
 | **Backchannel** | A listener noise such as "mm-hmm" or "yeah". Over a reply it means "go on" and is ignored; on its own turn "yeah" is an answer |
 | **Barge-in** | Talking over the bot. Enough loud voiced frames in a row cancel the reply and start a new listen |
 | **Barge floor** | The loudness a frame must pass to count toward a barge-in: the quiet percentile of recent mic frames, never below `FISH_VOICE_BARGE_RMS` |

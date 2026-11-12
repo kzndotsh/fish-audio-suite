@@ -79,7 +79,7 @@ On NixOS, use `dev.sh` or `nix run` as above. Both bring PortAudio with them.
 
 ### Optional parts
 
-The `cli` extra pulls in what `fish-voice` needs to talk and listen. The full-screen app, Deepgram streaming and the Silero voice detector are separate extras (`--extra tui`, `--extra deepgram`, `--extra silero`). The Nix package includes all three. To install only some of it:
+The `cli` extra pulls in what `fish-voice` needs to talk and listen. The full-screen app, streaming speech recognition and the Silero voice detector are separate extras (`--extra tui`, `--extra deepgram`, `--extra fish-realtime`, `--extra silero`). The Nix package includes all four. To install only some of it:
 
 | Extra | Adds | Without it |
 | --- | --- | --- |
@@ -90,6 +90,7 @@ The `cli` extra pulls in what `fish-voice` needs to talk and listen. The full-sc
 | `silero` | `pysilero-vad`, for `FISH_VOICE_VAD_ENGINE=silero` | The start-up check stops with a message naming the extra |
 | `tui` | `textual`, for `fish-voice --tui` | `--tui` says how to install it and exits 2 |
 | `deepgram` | `websockets`, for `FISH_VOICE_STT=deepgram` (streaming speech recognition) | The start-up check stops with a message naming the extra |
+| `fish-realtime` | `websockets`, for `FISH_VOICE_STT=fish-realtime` (streaming speech recognition on the Fish key) | The start-up check stops with a message naming the extra |
 
 ## The proxy
 

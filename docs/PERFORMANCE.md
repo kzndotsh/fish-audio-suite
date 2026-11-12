@@ -89,7 +89,6 @@ In normal use, scrubbing costs about 50 µs per token. Per-frame mic work stays 
 
 | Setting | Default | Faster | Trade-off |
 | --- | --- | --- | --- |
-| `FISH_ASR_MODEL` | `transcribe-1-pro` | `transcribe-1` | Fish describes the non-pro model as faster for short recordings. Pro adds speaker labels and emotion cues, which a one-person conversation does not use. Worth an A/B test |
 | `FISH_ASR_LANGUAGE` | detected | `en` (or yours) | With `transcribe-1-pro` it changes nothing you hear: Fish detects the language either way, and the hint is only reported when detection fails. A short "Uh, …" can still be labelled Finnish or Tagalog while the text comes back right |
 
 Fish's speech-to-text has no streaming mode; each clip is sent once after you stop talking.
@@ -98,8 +97,8 @@ Fish's speech-to-text has no streaming mode; each clip is sent once after you st
 
 As Fish documents them in October 2026; check Fish's pricing page for today's numbers.
 
-- **Text to speech:** $15 per million UTF-8 bytes, so a 1,200-character reply costs about 2 cents. Cue tags count as text, and a CJK character is 3 bytes. `FISH_TTS_MODEL=s2.1-pro-free` is the same model at no cost for testing, under fair use and with no latency guarantee.
-- **Speech to text:** $0.36 per audio hour for `transcribe-1` and `transcribe-1-pro` alike. The whole clip is billed, silence included, rounded up to the second. With `FISH_VOICE_STT=deepgram` Fish ASR is not used, and Deepgram bills separately.
+- **Text to speech:** $15 per million UTF-8 bytes, so a 1,200-character reply costs about 2 cents. Cue tags count as text, and a CJK character is 3 bytes. `FISH_TTS_MODEL=s2.1-pro-free` is the same model at no cost for testing, under fair use and with no latency guarantee. Fish's changelog lists it as free through November 30, 2026, and its pricing page gives no end date. `drama-3` costs $50 per million bytes.
+- **Speech to text:** $0.36 per audio hour. The whole clip is billed, silence included, rounded up to the second. With `FISH_VOICE_STT=deepgram` Fish ASR is not used, and Deepgram bills separately. With `FISH_VOICE_STT=fish-realtime` Fish bills each connection by the second at the same $0.36 per hour, and a connection is open only while you speak.
 - **Concurrency:** 5 requests on the starter tier (under $100 paid), 15 from $100 and 50 from $1,000. The limit counts every request on the account, a text-to-speech socket holds its slot for the whole reply, and a 429 carries no `Retry-After` header. One chat is nowhere near it; several sessions or a busy proxy could be.
 
 ### Turn-taking
@@ -112,6 +111,7 @@ As Fish documents them in October 2026; check Fish's pricing page for today's nu
 | `FISH_VOICE_MIN_VOICED_FRAMES` | `12` (360 ms) | `7` (210 ms) | A one-word answer is about 200 to 250 ms of voice. Lower lets "yes" and "no" through, but some coughs and desk taps reach speech-to-text too, where they usually come back empty |
 | `FISH_VOICE_SPEECH_FRAMES` | `4` (120 ms) | | How long a sound must last before it starts a turn |
 | `FISH_VOICE_STT` | `fish` | `deepgram` | Streams your speech to Deepgram Flux while you talk, which ends the turn by the model's own judgment instead of a fixed silence. Needs the `deepgram` extra and a key. Quiet speech was missed more often than with Fish ASR in testing, and near-homophones can differ |
+| `FISH_VOICE_STT` | `fish` | `fish-realtime` | The same, with Fish's `transcribe-stream-1` (preview) on the Fish key. Needs the `fish-realtime` extra. Not yet measured here |
 | `FISH_VOICE_EOT_THRESHOLD` | `0.7` | `0.6` | How sure Flux must be that you have finished. Lower ends turns sooner but may cut in on a long pause. Turns that end at `trigger=manual` waited for the silence timer instead |
 | `FISH_VOICE_EAGER_EOT_THRESHOLD` | `0` (off) | `0.5` | Starts the reply on Flux's early guess, held back until it is confirmed. Faster, and costs 50 to 70 percent more model calls |
 

@@ -210,7 +210,12 @@ def test_the_voice_session_reports_through_events_and_never_writes_to_the_termin
 
 @pytest.mark.parametrize(
     ("package", "extra"),
-    [("textual", "tui"), ("websockets", "deepgram"), ("pysilero-vad", "silero")],
+    [
+        ("textual", "tui"),
+        ("websockets", "deepgram"),
+        ("websockets", "fish-realtime"),
+        ("pysilero-vad", "silero"),
+    ],
 )
 def test_an_extras_version_bound_is_the_same_in_the_extra_and_the_test_group(
     package: str, extra: str

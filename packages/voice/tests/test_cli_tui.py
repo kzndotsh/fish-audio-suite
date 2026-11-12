@@ -258,6 +258,19 @@ def test_choosing_deepgram_needs_its_key_and_its_extra(
     assert "deepgram extra" in capsys.readouterr().err
 
 
+def test_choosing_fish_realtime_needs_only_its_extra(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from fish_audio_suite_voice.cli import _preflight
+    from fish_audio_suite_voice.tune import SttTune
+
+    ready = replace(_configured(monkeypatch), stt=SttTune(provider="fish-realtime"))
+    assert _preflight(ready) is None  # the Fish key is already required, and it is the only one
+    monkeypatch.setattr("importlib.util.find_spec", lambda name, *_a: None)
+    assert _preflight(ready) == EXIT_FATAL
+    assert "fish-realtime extra" in capsys.readouterr().err
+
+
 def test_a_voice_detector_that_cannot_load_stops_the_start(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

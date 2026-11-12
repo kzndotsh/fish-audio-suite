@@ -1,4 +1,7 @@
-"""Hear one turn by streaming it to Deepgram Flux while the user is still speaking.
+"""Hear one turn by streaming it to a recogniser while the user is still speaking.
+
+The recogniser is Deepgram Flux or Fish's realtime speech to text (``SttTune.provider``); both
+are a ``TurnStream``, called Flux below where the two behave alike.
 
 The mic is gated as it always is: nothing leaves the machine until the voice detector hears
 speech start, and the connection is not even opened until then (Deepgram closes a connection
@@ -21,26 +24,27 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal
 
-from fish_audio_suite_kit import elapsed_ms, make_traceparent, trace_id_of
+from fish_audio_suite_kit import SuiteDefaults, elapsed_ms, make_traceparent, trace_id_of
 from fish_audio_suite_voice.debug import debug, trace, warn
-from fish_audio_suite_voice.deepgram import (
-    DeepgramError,
-    EagerTurnEnd,
-    FluxStream,
-    StreamError,
-    StreamWarning,
-    TurnEnded,
-    TurnResumed,
-    TurnStarted,
-    TurnUpdate,
-    flux_base,
-    flux_url,
-)
+from fish_audio_suite_voice.deepgram import FluxStream, flux_base, flux_url
 from fish_audio_suite_voice.events import EVENTS, Interim
+from fish_audio_suite_voice.fish_realtime import FishRealtimeStream, realtime_url
 from fish_audio_suite_voice.listen import stream_utterance
 from fish_audio_suite_voice.mic import FRAME_BYTES, SAMPLE_RATE, Mic, StopFlag
 from fish_audio_suite_voice.playback import write_mono_wav
 from fish_audio_suite_voice.tune import ListenTune, SttTune
+from fish_audio_suite_voice.turn_stream import (
+    EagerTurnEnd,
+    StreamError,
+    StreamWarning,
+    SttStreamError,
+    TurnDropped,
+    TurnEnded,
+    TurnResumed,
+    TurnStarted,
+    TurnStream,
+    TurnUpdate,
+)
 
 __all__ = [
     "StreamFallback",
@@ -87,7 +91,7 @@ class StreamedTurn:
 
 @dataclass(frozen=True, slots=True)
 class StreamFallback:
-    """Deepgram could not be reached once speech had started, so use Fish ASR for this turn.
+    """The recogniser could not be reached once speech had started, so use Fish ASR for this turn.
 
     Attributes
     ----------
@@ -131,7 +135,7 @@ class _Turn:
             EVENTS.emit(Interim(text))
 
 
-async def _read(stream: FluxStream, turn: _Turn) -> None:
+async def _read(stream: TurnStream, turn: _Turn) -> None:
     async for message in stream.messages():
         match message:
             case TurnStarted(text=text) | TurnUpdate(text=text):
@@ -145,6 +149,11 @@ async def _read(stream: FluxStream, turn: _Turn) -> None:
                 debug("stt.eager {!r}", text)
                 if turn.on_eager is not None and text.strip():
                     turn.on_eager(text)
+            case TurnDropped():
+                debug("stt.dropped not the user's turn")
+                turn.text = ""
+                turn.ended = True
+                return
             case TurnResumed():
                 debug("stt.resumed the speaker carried on")
                 if turn.on_resumed is not None:
@@ -160,7 +169,7 @@ async def _read(stream: FluxStream, turn: _Turn) -> None:
 
 
 async def _send(
-    stream: FluxStream,
+    stream: TurnStream,
     frames: asyncio.Queue[tuple[bytes, bool, float] | None],
     held: list[tuple[bytes, bool, float]],
     turn: _Turn,
@@ -297,7 +306,7 @@ async def _hold_until_voiced(capture: _Capture, need: int, prefix_frames: int) -
 
 
 async def _connect(
-    stream: FluxStream, capture: _Capture
+    stream: TurnStream, capture: _Capture
 ) -> StreamFallback | Literal["fatal"] | None:
     """Open the connection now that speech has started.
 
@@ -309,7 +318,7 @@ async def _connect(
     """
     try:
         await stream.open()
-    except DeepgramError as exc:
+    except SttStreamError as exc:
         warn(f"[stt] {exc}")
         if exc.fatal:
             return "fatal"
@@ -319,7 +328,7 @@ async def _connect(
 
 
 async def _stream_until_decided(
-    stream: FluxStream,
+    stream: TurnStream,
     capture: _Capture,
     turn: _Turn,
     tasks: list[asyncio.Task[None]],
@@ -387,6 +396,37 @@ def _outcome(
     )
 
 
+def _endpoint(
+    stt: SttTune, fish_key: str, fish_base: str
+) -> tuple[str, str, Callable[[str, str], TurnStream]] | None:
+    """Return the address, the key and the connection class for the chosen recogniser.
+
+    Returns
+    -------
+    tuple or None
+        None when its key is not set, after saying which.
+    """
+    if stt.provider == "fish-realtime":
+        if not fish_key:
+            warn("[stt] FISH_API_KEY is not set")
+            return None
+        make = functools.partial(
+            FishRealtimeStream, sample_rate=SAMPLE_RATE, eager=stt.eager_eot_threshold > 0
+        )
+        return realtime_url(fish_base), fish_key, make
+    if not stt.deepgram_key:
+        warn("[stt] DEEPGRAM_API_KEY is not set")
+        return None
+    url = flux_url(
+        stt.deepgram_model,
+        sample_rate=SAMPLE_RATE,
+        eot_threshold=stt.eot_threshold,
+        eager_eot_threshold=stt.eager_eot_threshold,
+        base=flux_base(stt.deepgram_region),
+    )
+    return url, stt.deepgram_key, FluxStream
+
+
 async def stream_turn(
     *,
     stt: SttTune,
@@ -396,17 +436,19 @@ async def stream_turn(
     stop: StopFlag,
     prefix: bytes = b"",
     since: int | None = None,
-    make_stream: Callable[[str, str], FluxStream] = FluxStream,
+    fish_key: str = "",
+    fish_base: str = SuiteDefaults().fish_base,
+    make_stream: Callable[[str, str], TurnStream] | None = None,
     listen_fn: Callable[..., bool] = stream_utterance,
     on_eager: Callable[[str], None] | None = None,
     on_resumed: Callable[[], None] | None = None,
 ) -> StreamedTurn | StreamFallback | Stopped:
-    """Read one turn from the mic, stream it to Flux, and return what it heard.
+    """Read one turn from the mic, stream it to the recogniser, and return what it heard.
 
     Parameters
     ----------
     stt : SttTune
-        The Deepgram key, model and end-of-turn setting.
+        Which recogniser, and the Deepgram key, model and end-of-turn setting.
     listen : ListenTune
         The voice-activity settings that decide when speech starts.
     mic : Mic
@@ -419,13 +461,17 @@ async def stream_turn(
         PCM kept from the barge-in that interrupted the previous reply. Sent first.
     since : int or None, optional
         The mic position just after ``prefix``, read on from there. None reads from now.
+    fish_key : str, optional
+        The Fish API key, for ``fish-realtime``.
+    fish_base : str, optional
+        The Fish API base, for ``fish-realtime``.
     make_stream : Callable, optional
         Builds the connection from ``(url, key)``. A fake in tests.
     listen_fn : Callable, optional
         Gates the mic and passes frames on, as ``stream_utterance`` does. A fake in tests.
     on_eager : Callable, optional
-        Called with the words so far when Flux thinks the turn is probably over. Needs
-        ``eager_eot_threshold`` to be set.
+        Called with the words so far when the recogniser thinks the turn is probably over.
+        Needs ``eager_eot_threshold`` to be set.
     on_resumed : Callable, optional
         Called when the speaker carried on after that.
 
@@ -435,19 +481,13 @@ async def stream_turn(
         The turn, or why there is none: ``"stopped"`` (quit or ``stop`` was set), ``"noise"``
         (nothing recognisable was said), ``"again"`` (the connection failed mid-turn, so listen
         again), ``"fatal"`` (the key is missing, wrong or unpaid) or a ``StreamFallback``
-        (Deepgram could not be reached, so the batch recogniser takes over this turn).
+        (the recogniser could not be reached, so the batch one takes over this turn).
     """
-    if not stt.deepgram_key:
-        warn("[stt] DEEPGRAM_API_KEY is not set")
+    endpoint = _endpoint(stt, fish_key, fish_base)
+    if endpoint is None:
         return "fatal"
-    url = flux_url(
-        stt.deepgram_model,
-        sample_rate=SAMPLE_RATE,
-        eot_threshold=stt.eot_threshold,
-        eager_eot_threshold=stt.eager_eot_threshold,
-        base=flux_base(stt.deepgram_region),
-    )
-    stream = make_stream(url, stt.deepgram_key)
+    url, key, default_stream = endpoint
+    stream = (make_stream or default_stream)(url, key)
     capture = _Capture(
         listen_fn,
         mic=mic,

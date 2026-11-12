@@ -97,6 +97,8 @@ the history. A custom `FISH_VOICE_SYSTEM_PROMPT` gets no seed, so it stays in co
 
 How Fish's S2 models read cues, from Fish's guides: a cue is square brackets around plain language, so `[warm and happy]` and `[laughing nervously]` work as well as the official names. Layered cues work (`[sad][whispering]`, at most three per sentence is advised), a sentence's emotion cue works best at its start, and sound cues can go anywhere. Follow a sound with the words of it (`[laughing] Ha ha`), use cues sparingly, and do not stack conflicting emotions. The kit keeps stacks whole, rewrites the older S1 `(parenthesis)` and alias spellings (`[laugh]` becomes `[laughing]`), and never speaks a cue. The S1 model uses parentheses and a fixed list, and the app does not write them back for it, so `FISH_TTS_MODEL=s1` is not supported for cues.
 
+`drama-3` is directed differently: long plain-language directions (`[barely holding it together, forcing a smile]`), sounds where they occur (`[shaky breath]`), and paired tags around words (`<emphasis>`, `<soft>`, `<fast>`, `<slow>`, `<stress>`, `<forceful>`, `<whisper>`). The app does not support that yet. With `FISH_TTS_CUES=official` a long direction is mapped to one official word or dropped, so set `FISH_TTS_CUES=free` with `drama-3`. In either mode the paired tags are removed, and `<whisper>` becomes a `[whispering]` cue on the words that follow.
+
 Free-form cues are risky on some voices: a description of a face or a voice (`[smiling]`, `[soft chuckle]`, `[echoing voice]`) can be acted out as a hum or a small sound, which sounds like an "mhm" between sentences. The default prompt therefore asks for one word from a list of about 20 moods, and `FISH_TTS_CUES=official` (the default) is the safety net: any cue Fish does not list becomes the nearest official one (`smiling` to `happy`, `gentle` to `calm`, `soft chuckle` to `chuckling`) or is removed (`in a storytelling voice`). `FISH_TTS_CUES=free` sends cues as written. Whatever the mode, a sentence the model wrote without a cue is sent with the mood the last sentence had, because each piece goes to Fish on its own and a sentence with no cue starts cold; a piece that only continues a sentence is left alone.
 
 ### Characters and system prompts
@@ -236,6 +238,30 @@ uv run --package fish-audio-suite-voice --extra cli --extra tui fish-voice --tui
 
 While it runs, the app asks the sound card for a bigger playback buffer (`FISH_VOICE_OUTPUT_LATENCY`, `high` in `--tui` by default), lets the playback thread in sooner, and collects garbage less often, because drawing the screen shares a process with playback and otherwise makes it click. Ctrl+C is not quit here, because the app uses it to copy. Without the `tui` extra, `fish-voice --tui` says how to install it and exits 2. The panels shrink with the terminal: under 72 columns the timings and the log go, under 22 rows the timings go, and under 50x14 it asks for a bigger window (typing and Ctrl+Q still work). With no terminal on stdin or stdout, `--tui` falls back to the plain loop. `NO_COLOR` is honoured, and `TEXTUAL_ANIMATIONS=none` stops the pulsing "you" line, the listening cursor and the thinking wave from moving. A modern terminal works best; macOS's Terminal.app is limited to 256 colors, so use iTerm2, Kitty, WezTerm or Ghostty there.
 
+### Streaming speech recognition (Fish realtime)
+
+`FISH_VOICE_STT=fish-realtime` streams your speech to Fish's own realtime speech to text
+(`transcribe-stream-1`) on your Fish key, with no second account. Fish marks the model as a
+preview, so its behavior may change.
+
+```bash
+uv sync --extra fish-realtime     # or pip install 'fish-audio-suite-voice[fish-realtime]'
+FISH_VOICE_STT=fish-realtime fish-voice
+```
+
+It runs the same way as the Deepgram path described next: nothing is sent until you speak, one
+connection carries one turn, an outage hands that turn to Fish ASR, and a transcript is judged
+the same. What differs:
+
+- Fish ends the turn from what you said and how you said it. There is no threshold to set, so
+  `FISH_VOICE_EOT_THRESHOLD` does nothing here, and any `FISH_VOICE_EAGER_EOT_THRESHOLD` above
+  0 turns Fish's early end of turn on.
+- A turn Fish judges not to be yours (noise, another voice) is dropped without an answer.
+- Fish bills the session by the second at the batch price, and each open connection counts
+  toward your account's concurrency limit. The connection is open only while you speak.
+- The `FISH_VOICE_DEEPGRAM_*` settings and the Deepgram privacy options do not apply. The audio
+  goes to `FISH_BASE`.
+
 ### Streaming speech recognition (Deepgram)
 
 By default `fish-voice` waits for a pause, then sends the whole utterance to Fish ASR. With
@@ -271,7 +297,7 @@ What happens, and what leaves your machine:
 - `FISH_VOICE_EAGER_EOT_THRESHOLD` starts the model's reply early. Nothing is shown, spoken or
   added to the history until Flux confirms the same words; if you carried on, or the words
   differ, the early reply is thrown away and asked for again.
-- Fish's own realtime transcription (the OpenAI-compatible socket) is not an alternative: it returns the transcript once, after a `commit`, with no words while you speak, and it refuses server-side voice detection. Deepgram Flux is the streaming option.
+- Fish's OpenAI-compatible realtime socket is not an alternative: it returns the transcript once, after a `commit`, with no words while you speak, and it refuses server-side voice detection. Fish's native realtime socket is one: see [Fish realtime](#streaming-speech-recognition-fish-realtime) below.
 - A transcript is judged exactly as a Fish one is: quit words, stray "mm-hmm" over a reply, and
   stale copies of the last line are dropped.
 - Only the PortAudio microphone path streams. Typed lines, mute and interrupt work as before.
@@ -337,6 +363,7 @@ arrives and brings it to `FISH_VOICE_LOUDNESS_TARGET_DB` (-18 dBFS while speakin
 | `silero` | `pysilero-vad`, for `FISH_VOICE_VAD_ENGINE=silero` |
 | `tui` | `textual`, for `fish-voice --tui` |
 | `deepgram` | `websockets`, for `FISH_VOICE_STT=deepgram` |
+| `fish-realtime` | `websockets`, for `FISH_VOICE_STT=fish-realtime` |
 
 `import fish_audio_suite_voice` works without them. The heavy imports happen inside the functions that need them.
 
@@ -404,7 +431,7 @@ Speech:
 | `FISH_MIN_CHUNK_LENGTH` | `50`. 0 to 100 |
 | `FISH_SAMPLE_RATE` | `44100` |
 | `FISH_ASR_LANGUAGE` | omitted, so Fish detects the language |
-| `FISH_ASR_MODEL` | `transcribe-1-pro` (or `transcribe-1`). Any other id uses the default |
+| `FISH_ASR_MODEL` | `transcribe-1-pro`. Fish retires `transcribe-1` on December 31, 2026 and serves it as `transcribe-1-pro` from then on. Any other id uses the default |
 | `FISH_VOICE_PLAYBACK` | `sounddevice`, or `file`, `stdout`, `mpv`. Duplex exits 2 on `file`, an unknown name, or `mpv` when it is not on `PATH` |
 | `FISH_VOICE_DEVICE` | host default. A PortAudio index or name, used for both the mic and the speaker |
 | `FISH_VOICE_OUTPUT_LATENCY` | `auto`, or `low` / `high`. A bigger playback buffer (`high`) stops clicks when the machine is busy, and starts the sound a little later. `auto` is `high` in `--tui` and `low` otherwise |
@@ -436,7 +463,7 @@ Speech recognition. See [Streaming speech recognition](#streaming-speech-recogni
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `FISH_VOICE_STT` | `fish` | `fish` sends a clip to Fish ASR when you stop. `deepgram` streams your speech to Deepgram Flux |
+| `FISH_VOICE_STT` | `fish` | `fish` sends a clip to Fish ASR when you stop. `deepgram` streams your speech to Deepgram Flux. `fish-realtime` streams it to Fish's realtime speech to text (preview) |
 | `DEEPGRAM_API_KEY` | none | Your Deepgram key. Required when `FISH_VOICE_STT=deepgram` |
 | `FISH_VOICE_DEEPGRAM_MODEL` | `flux-general-en` | `flux-general-multi` for ten languages. Only Flux models stream turns, so any other name uses the default |
 | `FISH_VOICE_DEEPGRAM_REGION` | `global` | `eu`, `au` or `in` to have Deepgram process the audio inside the European Union, Australia or India. A regional request fails instead of going elsewhere |

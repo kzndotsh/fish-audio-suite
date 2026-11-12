@@ -38,6 +38,7 @@ from fish_audio_suite_voice.mic import FRAME_MS, StopFlag
 from fish_audio_suite_voice.playback import PortAudioMissingError
 from fish_audio_suite_voice.speculate import Speculation
 from fish_audio_suite_voice.streaming import StreamedTurn, StreamFallback, stream_turn
+from fish_audio_suite_voice.tune import STREAMING_STT_PROVIDERS
 from fish_audio_suite_voice.turn_check import (
     OpenTurn,
     Reopened,
@@ -313,7 +314,7 @@ async def hear_line(
     EVENTS.emit(Listening())
     clear_turn()
     trace("listen.waiting device={}", ctx.device)
-    if ctx.config.stt.provider == "deepgram" and (
+    if ctx.config.stt.provider in STREAMING_STT_PROVIDERS and (
         streamed := await _hear_streaming(ctx, last_user, stop)
     ):
         if streamed.kind != "line":
@@ -469,7 +470,7 @@ def _speculate(ctx: DuplexContext, text: str) -> None:
 async def _hear_streaming(
     ctx: DuplexContext, last_user: str, stop: StopFlag | None
 ) -> HeardLine | None:
-    """Hear one turn through Deepgram, or return None to use the batch recogniser instead.
+    """Hear one turn through the streaming recogniser, or return None to use the batch one.
 
     Parameters
     ----------
@@ -498,6 +499,8 @@ async def _hear_streaming(
         stop=quit_requested if stop is None else stop,
         prefix=clip.pcm,
         since=clip.since,
+        fish_key=ctx.config.fish_api_key,
+        fish_base=ctx.config.fish_base,
         on_eager=functools.partial(_speculate, ctx) if eager else None,
         on_resumed=functools.partial(drop_speculation, ctx) if eager else None,
     )

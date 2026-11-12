@@ -101,6 +101,7 @@
               "cli"
               "tui"
               "deepgram"
+              "fish-realtime"
               "silero"
             ];
           };

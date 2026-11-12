@@ -26,6 +26,8 @@ dependencies = [
     "numpy>=2.0",
     "fish-audio-suite-kit>=0.1,<0.2",
     "loguru>=0.7.3",
+    # The realtime speech-to-text socket speaks MessagePack. The Fish SDK needs it too.
+    "ormsgpack>=1.5.0",
 ]
 
 [project.optional-dependencies]
@@ -42,6 +44,8 @@ tui = ["textual>=8.2.8"]
 # Streaming speech recognition through Deepgram (FISH_VOICE_STT=deepgram). The new asyncio
 # client (websockets.asyncio) starts at 14. Keep the bound equal to the root test group's.
 deepgram = ["websockets>=14"]
+# Fish's realtime speech to text (FISH_VOICE_STT=fish-realtime), over the same client.
+fish-realtime = ["websockets>=14"]
 cli = [
     "sounddevice>=0.5",
     "webrtcvad-wheels>=2.0.14",

@@ -13,23 +13,26 @@ from __future__ import annotations
 
 import contextlib
 import json
-import ssl
 from collections.abc import AsyncIterator, Awaitable, Callable
-from dataclasses import dataclass
 from typing import Any, Final
 from urllib.parse import urlencode
 
+from fish_audio_suite_voice.turn_stream import (
+    EagerTurnEnd,
+    StreamError,
+    StreamWarning,
+    TurnEnded,
+    TurnMessage,
+    TurnResumed,
+    TurnStarted,
+    TurnUpdate,
+    is_closed,
+    websockets_connect,
+)
+
 __all__ = [
     "FLUX_URL",
-    "DeepgramError",
-    "EagerTurnEnd",
     "FluxStream",
-    "StreamError",
-    "StreamWarning",
-    "TurnEnded",
-    "TurnResumed",
-    "TurnStarted",
-    "TurnUpdate",
     "flux_base",
     "flux_url",
     "parse_flux_message",
@@ -43,127 +46,6 @@ _REGION_HOSTS: Final = {
     "in": "api.in.deepgram.com",
 }
 DEFAULT_EOT_TIMEOUT_MS: Final = 5000  # Flux ends a turn after this much silence at the latest
-_OPEN_TIMEOUT_S: Final = 10.0
-_CLOSE_TIMEOUT_S: Final = 2.0
-_AUTH_STATUSES: Final = frozenset({401, 402, 403})
-
-
-class DeepgramError(Exception):
-    """Deepgram could not be reached or refused the connection.
-
-    Attributes
-    ----------
-    fatal : bool
-        True when trying again cannot help: a missing, wrong or unpaid key.
-    """
-
-    def __init__(self, message: str, *, fatal: bool = False) -> None:
-        super().__init__(message)
-        self.fatal = fatal
-
-
-@dataclass(frozen=True, slots=True)
-class TurnStarted:
-    """The speaker began a turn.
-
-    Attributes
-    ----------
-    text : str
-        The words so far, which may be empty.
-    """
-
-    text: str
-
-
-@dataclass(frozen=True, slots=True)
-class TurnUpdate:
-    """The words of the turn so far, sent about four times a second while it goes on.
-
-    Attributes
-    ----------
-    text : str
-        Everything heard so far in this turn.
-    """
-
-    text: str
-
-
-@dataclass(frozen=True, slots=True)
-class TurnEnded:
-    """Flux judged that the speaker has finished.
-
-    Attributes
-    ----------
-    text : str
-        The whole turn.
-    confidence : float
-        How sure Flux is that the turn is over, from 0 to 1.
-    trigger : str
-        What ended it: ``"model"``, ``"manual"`` (asked for) or ``"timeout"``.
-    """
-
-    text: str
-    confidence: float
-    trigger: str
-
-
-@dataclass(frozen=True, slots=True)
-class EagerTurnEnd:
-    """Flux thinks the speaker has probably finished, a little before it is sure.
-
-    Only sent when ``eager_eot_threshold`` is set. The speaker may still carry on
-    (``TurnResumed``), so a reply started from this must be held back until
-    ``TurnEnded`` confirms it.
-
-    Attributes
-    ----------
-    text : str
-        The words so far. A confirming ``TurnEnded`` carries the same text.
-    """
-
-    text: str
-
-
-@dataclass(frozen=True, slots=True)
-class TurnResumed:
-    """The speaker carried on after an ``EagerTurnEnd``, so that guess was wrong."""
-
-
-@dataclass(frozen=True, slots=True)
-class StreamError:
-    """Deepgram reported an error on an open connection.
-
-    Attributes
-    ----------
-    code : str
-        Deepgram's error code.
-    description : str
-        What it says went wrong.
-    """
-
-    code: str
-    description: str
-
-
-@dataclass(frozen=True, slots=True)
-class StreamWarning:
-    """Deepgram flagged something on an open connection and kept it open.
-
-    Attributes
-    ----------
-    code : str
-        Deepgram's code for the condition, in ``SCREAMING_SNAKE_CASE``.
-    description : str
-        What it says.
-    """
-
-    code: str
-    description: str
-
-
-type FluxMessage = (
-    TurnStarted | TurnUpdate | TurnEnded | EagerTurnEnd | TurnResumed | StreamError | StreamWarning
-)
 
 
 def flux_base(region: str) -> str:
@@ -249,7 +131,7 @@ def _number(value: object) -> float:
         return 0.0
 
 
-def parse_flux_message(raw: str | bytes) -> FluxMessage | None:
+def parse_flux_message(raw: str | bytes) -> TurnMessage | None:
     """Read one message from Flux.
 
     Parameters
@@ -306,53 +188,11 @@ def parse_flux_message(raw: str | bytes) -> FluxMessage | None:
             return None
 
 
-def _is_closed(exc: Exception) -> bool:
-    """Say whether ``exc`` is the connection closing, which is the end of the stream."""
-    try:
-        from websockets.exceptions import ConnectionClosed  # noqa: PLC0415 - optional extra
-    except ImportError:
-        return False
-    return isinstance(exc, ConnectionClosed)
-
-
-def _tls_context() -> ssl.SSLContext:
-    """Trust the same certificate authorities as the HTTP client: certifi's, when installed.
-
-    ``websockets`` uses the system store alone, which some installs (Nix, some Pythons from
-    uv) do not have, so the handshake fails with ``CERTIFICATE_VERIFY_FAILED`` while the Fish
-    and LLM calls, which use certifi, work.
-    """
-    try:
-        import certifi  # noqa: PLC0415 - a dependency of httpx, so normally present
-    except ImportError:
-        return ssl.create_default_context()
-    return ssl.create_default_context(cafile=certifi.where())
-
-
 async def _websockets_connect(url: str, *, key: str) -> Any:
-    """Open a real connection. Imported here so the extra is only needed when this runs."""
-    try:
-        from websockets.asyncio.client import connect  # noqa: PLC0415 - optional extra
-        from websockets.exceptions import InvalidStatus  # noqa: PLC0415
-    except ImportError as exc:
-        msg = "Deepgram needs the deepgram extra: pip install 'fish-audio-suite-voice[deepgram]'"
-        raise DeepgramError(msg, fatal=True) from exc
-    try:
-        return await connect(
-            url,
-            ssl=_tls_context(),
-            additional_headers={"Authorization": f"Token {key}"},
-            open_timeout=_OPEN_TIMEOUT_S,
-            close_timeout=_CLOSE_TIMEOUT_S,
-            max_size=None,
-        )
-    except InvalidStatus as exc:
-        status = exc.response.status_code
-        raise DeepgramError(
-            f"Deepgram refused the connection (HTTP {status})", fatal=status in _AUTH_STATUSES
-        ) from exc
-    except (OSError, TimeoutError) as exc:
-        raise DeepgramError(f"could not reach Deepgram: {exc}") from exc
+    """Open a real connection to Deepgram, with the key as a header."""
+    return await websockets_connect(
+        url, {"Authorization": f"Token {key}"}, service="Deepgram", extra="deepgram"
+    )
 
 
 class FluxStream:
@@ -381,7 +221,7 @@ class FluxStream:
         self._socket: Any = None
 
     async def open(self) -> None:
-        """Connect. Raises ``DeepgramError`` when Deepgram cannot be reached or says no."""
+        """Connect. Raises ``SttStreamError`` when Deepgram cannot be reached or says no."""
         self._socket = await self._connect(self._url, key=self._key)
 
     async def send_audio(self, pcm: bytes) -> None:
@@ -401,7 +241,7 @@ class FluxStream:
         if self._socket is not None:
             await self._socket.send(json.dumps({"type": "ForceEndTurn"}))
 
-    async def messages(self) -> AsyncIterator[FluxMessage]:
+    async def messages(self) -> AsyncIterator[TurnMessage]:
         """Read messages until the connection closes.
 
         Yields
@@ -417,7 +257,7 @@ class FluxStream:
                 if (message := parse_flux_message(raw)) is not None:
                     yield message
         except Exception as exc:
-            if not _is_closed(exc):
+            if not is_closed(exc):
                 raise
 
     async def close(self) -> None:

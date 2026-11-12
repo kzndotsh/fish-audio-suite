@@ -111,11 +111,19 @@ In the log, `listen speech_start` comes within a few hundred ms of `listen waiti
 
 These are deliberate. A transcript that is only a hesitation ("um", "hmm") is skipped, as are lines speech-to-text invents in silence, such as "Thanks for watching". Said over the bot, "yeah" and "mm-hmm" are skipped as well, because they mean "go on". On a turn of its own, "yeah" is answered.
 
-## Streaming speech recognition (Deepgram)
+## Streaming speech recognition (Deepgram, Fish realtime)
 
 ### `BLOCKER: FISH_VOICE_STT=deepgram needs ...`
 
 Set `DEEPGRAM_API_KEY`, and install the `deepgram` extra (`uv sync --extra deepgram`, or `pip install 'fish-audio-suite-voice[deepgram]'`). The Nix package already includes it.
+
+### `BLOCKER: FISH_VOICE_STT=fish-realtime needs the fish-realtime extra`
+
+Install it (`uv sync --extra fish-realtime`, or `pip install 'fish-audio-suite-voice[fish-realtime]'`). It needs no key besides `FISH_API_KEY`.
+
+### `stt Fish realtime speech to text refused the connection (HTTP 429)`
+
+Your account is at its concurrency limit, which every open Fish request and connection counts toward. That turn is heard with Fish ASR instead. HTTP 401 or 402 means the key was refused or has no credit, and the app stops.
 
 ### `stt could not reach Deepgram: ... CERTIFICATE_VERIFY_FAILED`
 

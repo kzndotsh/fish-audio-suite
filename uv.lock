@@ -389,6 +389,7 @@ dependencies = [
     { name = "httpx" },
     { name = "loguru" },
     { name = "numpy" },
+    { name = "ormsgpack" },
 ]
 
 [package.optional-dependencies]
@@ -402,6 +403,9 @@ cli = [
     { name = "webrtcvad-wheels" },
 ]
 deepgram = [
+    { name = "websockets" },
+]
+fish-realtime = [
     { name = "websockets" },
 ]
 silero = [
@@ -425,6 +429,7 @@ requires-dist = [
     { name = "loguru", specifier = ">=0.7.3" },
     { name = "numpy", specifier = ">=2.0" },
     { name = "openrouter", marker = "extra == 'cli'", specifier = ">=1.2" },
+    { name = "ormsgpack", specifier = ">=1.5.0" },
     { name = "pysilero-vad", marker = "extra == 'silero'", specifier = ">=3.4.0" },
     { name = "pywebrtc-audio", marker = "extra == 'aec'", specifier = ">=0.2" },
     { name = "pywebrtc-audio", marker = "extra == 'cli'", specifier = ">=0.2" },
@@ -434,8 +439,9 @@ requires-dist = [
     { name = "webrtcvad-wheels", marker = "extra == 'cli'", specifier = ">=2.0.14" },
     { name = "webrtcvad-wheels", marker = "extra == 'vad'", specifier = ">=2.0.14" },
     { name = "websockets", marker = "extra == 'deepgram'", specifier = ">=14" },
+    { name = "websockets", marker = "extra == 'fish-realtime'", specifier = ">=14" },
 ]
-provides-extras = ["speakers", "vad", "silero", "aec", "tui", "deepgram", "cli"]
+provides-extras = ["speakers", "vad", "silero", "aec", "tui", "deepgram", "fish-realtime", "cli"]
 
 [[package]]
 name = "grimp"

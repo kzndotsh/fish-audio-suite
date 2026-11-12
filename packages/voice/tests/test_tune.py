@@ -36,7 +36,16 @@ def test_the_defaults_keep_fish_asr_and_need_no_deepgram_setting() -> None:
     assert tune.deepgram_model == DEFAULT_DEEPGRAM_MODEL == "flux-general-en"
     assert tune.eot_threshold == DEFAULT_EOT_THRESHOLD == 0.7
     assert tune.deepgram_region == "global"
-    assert STT_PROVIDERS == ("fish", "deepgram")
+    assert STT_PROVIDERS == ("fish", "deepgram", "fish-realtime")
+
+
+def test_fish_realtime_is_chosen_by_name_and_needs_no_key_of_its_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FISH_VOICE_STT", " Fish-Realtime ")
+    tune = SttTune.from_env()
+    assert tune.provider == "fish-realtime"
+    assert tune.deepgram_key == ""
 
 
 def test_deepgram_is_chosen_by_name_in_any_case_with_its_key_and_settings(

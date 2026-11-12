@@ -95,7 +95,7 @@ sequenceDiagram
     You-)Out: talking over the reply cancels it (barge-in)
 ```
 
-With `FISH_VOICE_STT=deepgram` the first two arrows change: the speech is streamed to Deepgram's Flux while it is spoken, and Flux ends the turn, so there is no clip, no fixed silence to wait out and no upload and transcribe step.
+With `FISH_VOICE_STT=deepgram` the first two arrows change: the speech is streamed to Deepgram's Flux while it is spoken, and Flux ends the turn, so there is no clip, no fixed silence to wait out and no upload and transcribe step. `FISH_VOICE_STT=fish-realtime` runs the same path against Fish's realtime speech to text; where the text below says Flux, it holds for both unless it names a Deepgram setting.
 
 ```mermaid
 sequenceDiagram
@@ -146,7 +146,9 @@ flowchart LR
 | `listen` | Starts and ends an utterance with the voice detector and a loudness floor (`floor`), and logs what the mic heard in the post-reply cooldown (`cooldown_report`) |
 | `vad` | The `Vad` interface (`is_speech(frame, sample_rate)`), the named engines (`webrtc`, `silero`) and `package.module:factory` plugins, chosen by `FISH_VOICE_VAD_ENGINE`. Listen, barge-in and the cooldown log each open a fresh detector through `open_vad` |
 | `asr` | Sends the WAV clip to Fish ASR. With `FISH_VOICE_HEAR_TONE` it also returns the tone marks Fish heard (`AsrResult`) |
+| `turn_stream` | What a streaming recogniser says about a turn (`TurnStarted`, `TurnUpdate`, `TurnEnded`, `EagerTurnEnd`, `TurnResumed`, `TurnDropped`), the `TurnStream` interface and the shared `websockets` connection |
 | `deepgram` | Deepgram Flux's protocol and connection: the address, the turn messages, a connection a test can fake |
+| `fish_realtime` | Fish's realtime speech to text (`transcribe-stream-1`): MessagePack frames in both directions, read into the same turn messages |
 | `streaming` | One turn streamed to Flux: the mic gate feeds frames to the connection, and Flux says when the turn is over |
 | `speculate` | A reply written ahead of time for a turn Flux thinks is probably over: held back, then used if the same words are confirmed, or thrown away |
 | `hearing` | Skips hallucinations, fillers and stale repeats; detects quit. Transcribes each clip (`transcribe`) and, with the turn check on, carries a turn across clips |
@@ -206,7 +208,7 @@ There is no frontend. The user-facing parts are an HTTP API (the proxy) and a te
 - **Description:** two things in one package.
   - A **library**: `FishSpeaker.speak(text, sink)` and `speak_stream(tokens, sink)` run one Fish TTS websocket turn on a private thread and loop, and write audio to a `PlaybackSink` (speakers, a file, stdout or mpv).
   - **`fish-voice`**: a full-duplex voice chat built on the library, with mic cleanup (echo cancellation, automatic gain, noise suppression), a voice detector, Fish ASR or Deepgram Flux, an LLM, streamed Fish TTS and barge-in.
-- **Technologies:** fish-audio-sdk (websocket TTS), httpx (ASR, OpenAI-compatible SSE), numpy, loguru. The `cli` extra adds sounddevice (PortAudio), webrtcvad-wheels, pywebrtc-audio (WebRTC's audio processor) and the openrouter SDK. The `silero` extra adds pysilero-vad (`FISH_VOICE_VAD_ENGINE=silero`), the `tui` extra adds textual, and the `deepgram` extra adds websockets (Deepgram Flux).
+- **Technologies:** fish-audio-sdk (websocket TTS), httpx (ASR, OpenAI-compatible SSE), numpy, loguru. The `cli` extra adds sounddevice (PortAudio), webrtcvad-wheels, pywebrtc-audio (WebRTC's audio processor) and the openrouter SDK. The `silero` extra adds pysilero-vad (`FISH_VOICE_VAD_ENGINE=silero`), the `tui` extra adds textual, and the `deepgram` and `fish-realtime` extras add websockets (Deepgram Flux, Fish realtime speech to text).
 - **Deployment:** runs on the user's machine: `uv run --package fish-audio-suite-voice --extra cli fish-voice`, `./packages/voice/dev.sh`, or the flake app `fish-audio-suite-voice`.
 - **Key modules by job** (the import order between them is the `voice-direction` contract in `pyproject.toml`; see [the invariants](#package-boundaries)):
 
@@ -215,7 +217,7 @@ There is no frontend. The user-facing parts are an HTTP API (the proxy) and a te
 | Settings | `config` (`VoiceCliConfig`), `tune` (listen, barge, turn and AEC tunes, env readers), `llm_tune` (`LlmTune`, provider table) |
 | Duplex loop | `duplex` (the loop), `duplex_state` (`DuplexContext`, `CarryOver`), `hearing` (listen and ASR), `turn_check` (end-of-turn check), `reply` (answer and speak), `history`, `signals` (cancel and quit flags) |
 | Audio in | `mic` (`SessionMic`), `aec` (`EchoCanceller`), `vad`, `listen`, `barge`, `floor` |
-| Streaming STT | `deepgram` (Flux protocol and connection), `streaming` (one turn streamed to Flux), `speculate` (a reply written ahead of time) |
+| Streaming STT | `turn_stream` (the turn messages and the `TurnStream` interface), `deepgram` (Flux protocol and connection), `fish_realtime` (Fish realtime protocol and connection), `streaming` (one turn streamed to either), `speculate` (a reply written ahead of time) |
 | Speech out | `speaker` (`FishSpeaker`), `tts_turn` (one turn with retry, and `SdkSocket`, the Fish SDK behind the `FishSocket` seam), `wire` (`FishSocket`, websocket pump, `TtsResult`), `declick` (fades the start and end of each sentence that meets silence), `loudness` (levels the reply), `stream_scrub`, `playback`, `spoken` |
 | LLM | `llm` (`ChatBackend`, retry, stats), `transports` (OpenRouter SDK or httpx SSE, each event read into one `ChatChunk`; a refused request raises `ChatHttpError`) |
 | Events | `events` (`EVENTS`, the typed events a display follows, `StateTracker`, `EventQueue`, `forward_logs`, `mirror_conversation`), `console_sink` (the plain terminal display, one subscriber), `inputs` (`TurnSource`, and `LiveInput` for typed lines and mute), `session_view` (`reduce_view` folds events into one immutable `SessionView`), `tui` (the Textual app, `fish-voice --tui`, needs the `tui` extra) |
@@ -235,7 +237,7 @@ There is no frontend. The user-facing parts are an HTTP API (the proxy) and a te
 | Service | Purpose | Method |
 | --- | --- | --- |
 | Fish Audio TTS | Speech for both programs | Proxy: REST `POST /v1/tts` (JSON, or msgpack with reference audio). Voice: the live websocket `/v1/tts/live` through `fish-audio-sdk` |
-| Fish Audio ASR | Speech-to-text | REST `POST /v1/asr`, multipart. Models `transcribe-1` and `transcribe-1-pro` |
+| Fish Audio ASR | Speech-to-text | REST `POST /v1/asr`, multipart. Voice can instead stream to the websocket `/v1/asr/realtime` (`transcribe-stream-1`, preview). Model `transcribe-1-pro` (`transcribe-1` retires on December 31, 2026) |
 | OpenRouter | Default LLM for `fish-voice` | The `openrouter` SDK, streamed; sends `provider.sort` (latency by default) and attribution headers |
 | Any OpenAI-compatible server | Alternative LLM (Experiential, a self-hosted server, Ollama) | httpx Server-Sent Events against `/chat/completions` |
 
@@ -310,12 +312,13 @@ The rules most easily broken, each with its reason. A test or a lint rule enforc
 - **Every frame is cleaned once, in order, as it arrives.** The `mic` thread runs `EchoCanceller.clean` on each frame whether or not anyone is reading, so AEC3 sees the mic and the speaker in step and the gain and noise estimates follow the room between replies. A reader never cleans a frame again. Every level a gate measures (`FISH_VOICE_BARGE_RMS`, the listen floor) is therefore after automatic gain, and changing `FISH_VOICE_AGC` moves them (issue #58).
 - **Each listen and each barge-in watch opens a fresh detector.** A `Vad` may keep state between frames (Silero rebuffers 30 ms frames into its own chunks and keeps the last score), so `open_vad` returns a new one each time and none is shared. `FISH_VOICE_VAD` sets the strictness for both. When the chosen engine cannot open, start-up stops and says why (`vad_problem`). There is no fallback to another engine.
 - **With a streaming recogniser, only speech leaves the machine.** Nothing is connected or sent while the mic waits for speech to start, nor until the turn has `min_voiced_frames` voiced frames (a knock or a cough passes the start gate too, and the batch path drops them only after recording, so `streaming._hold_until_voiced` does it before connecting) (Deepgram closes a connection left without audio, about 10 s on its general STT API, so connecting early would only fail). The same gate (`listen._Listen`) as the batch path decides when it starts, the pre-roll and any barge-in prefix go first, and every connection sets `mip_opt_out=true`. A recogniser that streamed all the time would send a room's worth of audio nobody meant to share. A test checks that nothing is sent before speech.
-- **The batch path stays the default and the fallback.** `FISH_VOICE_STT` is `fish` unless set, and a turn Deepgram cannot serve (an outage, not a bad key) is heard with Fish ASR: `StreamFallback.prefix` carries the speech captured so far into the batch path as the barge-in prefix, so the first words are kept. A bad or missing key is fatal at startup instead, because falling back would hide it.
+- **The batch path stays the default and the fallback.** `FISH_VOICE_STT` is `fish` unless set, and a turn the streaming recogniser cannot serve (an outage, not a bad key) is heard with Fish ASR: `StreamFallback.prefix` carries the speech captured so far into the batch path as the barge-in prefix, so the first words are kept. A bad or missing key is fatal at startup instead, because falling back would hide it.
 - **Mute closes every mic path.** `LiveInput.mute` releases the session's `SessionMic` at once, closing the device and dropping the two seconds it kept; the next unmuted read opens it again. `LiveInput.next_turn` gives the context its mute switch (`DuplexContext.muted`), and `BargeGate` takes it as `muted`: a reply that starts muted opens no mic at all, and muting mid-reply ends the watch through `_CancelOrMuted` without setting the cancel flag. Typing a line or Escape still interrupts. Do not add a mic reader that ignores the switch.
 - **The end-of-turn check never loses the first clip and never opens a muted mic.** With `FISH_VOICE_TURN_CHECK` the first clip ends on a short silence, and `hearing._hear_checked` keeps the mic listening (`turn_check.Reopened`) while it is transcribed. Its words join the turn (`OpenTurn`) whatever happens to a continuation: nothing said, noise, a failed request. The continuation is not started when `ctx.muted()` is true, and it listens through the same stop flag as the first clip, so quit, mute and a typed line end it. A stop that is not quit drops the whole turn before `Heard` is announced, as it does for a clip. A recording it no longer needs is closed before `hear_line` returns, so the reply's barge-in watch and the next listen do not find the device busy. The Deepgram path never goes through it. The cap on continuations is `TurnTune.max_extensions`, and a joined line is never marked stale.
 - **A streamed turn is dropped early when it is not speech.** A barge-in clip counts as speech in full when `_hold_until_voiced` checks for enough voice, as `listen_reject_reason` does on the batch path, or a short interruption would be dropped as noise and the cut-off reply would go on. If Flux returns no words within `_NO_WORDS_S` (1.2 s) of streaming starting, the turn is given up on as noise, so a run of taps is not sent until the silence limit.
 - **A reply written ahead of time is invisible until it is confirmed.** With `FISH_VOICE_EAGER_EOT_THRESHOLD`, the model is asked on Flux's early end-of-turn, but its tokens stay in `speculate.Speculation`: no `ReplyToken`, no speech, no history entry. `reply._tokens_for` replays them only if `EndOfTurn` carries the same words; any other outcome (`TurnResumed`, different words, no turn, a rejected line) cancels it. Nothing else may read a speculative reply, or a turn the user was still speaking would be answered twice.
-- **`DEEPGRAM_API_KEY` is read with the other settings, never at import, and `websockets` is imported when a connection opens.** The voice package imports without the `deepgram` extra.
+- **`DEEPGRAM_API_KEY` is read with the other settings, never at import, and `websockets` is imported when a connection opens.** The voice package imports without the `deepgram` or `fish-realtime` extra.
+- **A streaming recogniser is a `TurnStream` that reads its protocol into the `turn_stream` messages.** `streaming` knows no provider beyond choosing the connection (`_endpoint`). A turn the recogniser closes as not the user's is `TurnDropped`, and its words are never answered. Fish's realtime socket carries one turn per connection here, so nothing is sent between turns or during a reply; its `agent_speaking` and backchannel messages would need a connection open while the bot talks, and are not used.
 
 ### Speaking
 
@@ -391,7 +394,7 @@ Known architectural debt and likely changes, roughly in order of value:
 - **Repository:** https://github.com/kzndotsh/fish-audio-suite
 - **Maintainer:** kzndotsh
 - **License:** MIT ([LICENSE](../LICENSE))
-- **Last updated:** 2026-10-25
+- **Last updated:** 2026-11-11
 
 ## 12. Glossary
 

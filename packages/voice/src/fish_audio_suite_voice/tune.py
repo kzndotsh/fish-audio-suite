@@ -39,6 +39,7 @@ __all__ = [
     "HTTP_KEEPALIVE_S",
     "IMPULSE_START_EXTRA",
     "MAX_UTTERANCE_FRAMES",
+    "STREAMING_STT_PROVIDERS",
     "STT_PROVIDERS",
     "TURN_EXTENSIONS_MAX",
     "AecTune",
@@ -54,7 +55,9 @@ __all__ = [
 
 # Which speech recognition hears the user: Fish's, on a clip sent when they stop, or Deepgram's
 # Flux, streamed while they speak.
-STT_PROVIDERS: Final = ("fish", "deepgram")
+STT_PROVIDERS: Final = ("fish", "deepgram", "fish-realtime")
+# The ones that hear a turn as it is spoken and end it themselves.
+STREAMING_STT_PROVIDERS: Final = ("deepgram", "fish-realtime")
 DEFAULT_STT: Final = "fish"
 DEFAULT_DEEPGRAM_MODEL: Final = "flux-general-en"
 # Where Deepgram processes the audio. The regional hosts never route outside their region.
@@ -521,7 +524,8 @@ class SttTune:
     provider : str
         ``"fish"`` sends one clip to Fish ASR when the user stops speaking. ``"deepgram"``
         streams the speech to Deepgram's Flux while the user talks, which decides for itself
-        when the turn is over.
+        when the turn is over. ``"fish-realtime"`` does the same with Fish's realtime speech
+        to text (``transcribe-stream-1``, in preview), on the Fish key.
     deepgram_key : str
         The Deepgram API key. Empty unless the environment sets it.
     deepgram_model : str
@@ -532,7 +536,8 @@ class SttTune:
     eager_eot_threshold : float
         0 (the default) is off. From 0.3 to 0.9, and no higher than ``eot_threshold``, it asks
         Flux to say when a turn is probably over, a little before it is sure, so the reply can
-        start being written early. Costs 50 to 70 percent more model calls.
+        start being written early. Costs 50 to 70 percent more model calls. Fish's realtime
+        recogniser has no threshold: any value above 0 turns its early end of turn on.
     deepgram_region : str
         ``"global"``, or ``"eu"``, ``"au"`` or ``"in"`` to have the audio processed within the
         European Union, Australia or India. Deepgram fails a regional request rather than

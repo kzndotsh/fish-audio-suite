@@ -48,6 +48,7 @@ from fish_audio_suite_voice.playback import (
 )
 from fish_audio_suite_voice.signals import DuplexSession
 from fish_audio_suite_voice.speaker import FishSpeaker
+from fish_audio_suite_voice.tune import STREAMING_STT_PROVIDERS
 from fish_audio_suite_voice.vad import vad_problem
 from fish_audio_suite_voice.ws_tap import install_fish_ws_tap
 
@@ -196,19 +197,20 @@ def _preflight(c: VoiceCliConfig) -> int | None:
     if vad is not None:
         warn(f"BLOCKER: {vad}")
         return EXIT_FATAL
-    return _require_deepgram(c)
+    return _require_streaming_stt(c)
 
 
-def _require_deepgram(c: VoiceCliConfig) -> int | None:
-    """Return an exit code when Deepgram is chosen but cannot be used."""
-    if c.stt.provider != "deepgram":
+def _require_streaming_stt(c: VoiceCliConfig) -> int | None:
+    """Return an exit code when a streaming recogniser is chosen but cannot be used."""
+    provider = c.stt.provider
+    if provider not in STREAMING_STT_PROVIDERS:
         return None
-    if not c.stt.deepgram_key:
+    if provider == "deepgram" and not c.stt.deepgram_key:
         return _blocker("DEEPGRAM_API_KEY (FISH_VOICE_STT=deepgram)")
     if importlib.util.find_spec("websockets") is None:
         warn(
-            "BLOCKER: FISH_VOICE_STT=deepgram needs the deepgram extra: "
-            "pip install 'fish-audio-suite-voice[deepgram]' (or uv sync --extra deepgram)"
+            f"BLOCKER: FISH_VOICE_STT={provider} needs the {provider} extra: "
+            f"pip install 'fish-audio-suite-voice[{provider}]' (or uv sync --extra {provider})"
         )
         return EXIT_FATAL
     return None
