@@ -20,24 +20,22 @@ from fish_audio_suite_kit import (
     UNIT_INTERVAL_HI,
     UNIT_INTERVAL_LO,
     AudioFormat,
+    CueStyle,
     FishLatency,
     SuiteDefaults,
     clamp_number,
     known_mp3_bitrate,
-    normalize_cues,
     normalize_tts_model,
-    scrub_tts,
     strip_base,
-    takes_directions,
     utf8_text,
 )
 from fish_audio_suite_voice.cancel import is_cancel_noise
 from fish_audio_suite_voice.debug import warn
 from fish_audio_suite_voice.playback import PlaybackSink
-from fish_audio_suite_voice.stream_scrub import delta_events
-from fish_audio_suite_voice.tts_turn import TurnSpec, run_isolated, run_turn, text_events
+from fish_audio_suite_voice.tts_text import WholeText, delta_events
+from fish_audio_suite_voice.tts_turn import run_isolated, run_turn
 from fish_audio_suite_voice.tune import DEFAULT_FADE_MS
-from fish_audio_suite_voice.wire import TtsResult
+from fish_audio_suite_voice.wire import TtsResult, TurnSpec
 
 __all__ = [
     "FishSpeaker",
@@ -120,12 +118,6 @@ def _sdk_volume(volume: float) -> float:
     return min(_SDK_VOLUME_HI, max(_SDK_VOLUME_LO, volume))
 
 
-def _spoken(text: str, *, lead: bool, official: bool, directed: bool) -> str:
-    return normalize_cues(
-        scrub_tts(text, directed=directed), lead=lead, official=official, directed=directed
-    )
-
-
 def _quiet_result(cancelled: bool) -> TtsResult:
     return TtsResult(
         spoken_so_far="",
@@ -143,6 +135,10 @@ class FishSpeaker:
 
     The turn never shares the caller's event loop, so the LLM stream is not
     held up. Do not merge the LLM socket onto this websocket.
+
+    ``cue_style`` says how cues are shaped before Fish reads them (``CueStyle``). When it
+    is None, the style is ``CueStyle.for_model(model, official=False, lead=False)``:
+    every cue as written, or directions as written for a directed model.
     """
 
     api_key: str = field(repr=False)
@@ -158,8 +154,7 @@ class FishSpeaker:
     chunk_length: int = _STOCK.chunk_length
     min_chunk_length: int = _STOCK.min_chunk_length
     volume: float = _STOCK.volume
-    mood_lead: bool = False
-    official_cues: bool = False
+    cue_style: CueStyle | None = None
     partial_chars: int = _STOCK.tts_partial_chars
     fade_ms: float = DEFAULT_FADE_MS
     loudness_db: float | None = None
@@ -170,6 +165,11 @@ class FishSpeaker:
         """Strip the Fish base URL and copy the trace header map."""
         self.base_url = strip_base(self.base_url)
         self.trace_headers = dict(self.trace_headers)
+
+    def _style(self) -> CueStyle:
+        if self.cue_style is not None:
+            return self.cue_style
+        return CueStyle.for_model(self.model, official=False, lead=False)
 
     def speak(
         self,
@@ -184,7 +184,8 @@ class FishSpeaker:
         Parameters
         ----------
         text : str
-            Full reply. Scrubbed and given a lead cue inside ``speak``.
+            Full reply. It is shaped with the speaker's cue style (``CueStyle.shape``)
+            inside ``speak``.
         sink : PlaybackSink
             Where PCM or encoded audio is written.
         cancel : threading.Event or None, optional
@@ -214,6 +215,42 @@ class FishSpeaker:
         ``to_thread``. The Fish websocket must not share the LLM's event loop.
         On cancel, close the httpx client. Do not ``aclose()`` the websocket
         iterator.
+        """
+        return self.speak_shaped(
+            self._style().shape(text), sink, cancel=cancel, on_first_audio=on_first_audio
+        )
+
+    def speak_shaped(
+        self,
+        text: str,
+        sink: PlaybackSink,
+        *,
+        cancel: threading.Event | None = None,
+        on_first_audio: Callable[[], None] | None = None,
+    ) -> TtsResult:
+        """Speak a whole reply that is already shaped, as ``speak`` does after shaping it.
+
+        Parameters
+        ----------
+        text : str
+            The reply as Fish should read it, shaped once with the speaker's cue style.
+        sink : PlaybackSink
+            Where PCM or encoded audio is written.
+        cancel : threading.Event or None, optional
+            Set to stop the turn. A new event is created when omitted.
+        on_first_audio : Callable or None, optional
+            Called once on the websocket's thread at the first audio chunk.
+
+        Returns
+        -------
+        TtsResult
+            How much was spoken, as for ``speak``.
+
+        Notes
+        -----
+        A caller that checks or edits the shaped text before speaking it (the duplex
+        loop gives a reply a lead cue and drops junk) uses this, so the text is not
+        shaped a second time. It raises what ``speak`` raises.
         """
         stop = cancel or threading.Event()
         return self._run_on_thread(
@@ -312,7 +349,7 @@ class FishSpeaker:
         Parameters
         ----------
         text : str
-            Reply text. Cues are normalized before the websocket opens.
+            Shaped reply text.
         sink : PlaybackSink
             Playback target.
         cancel : threading.Event
@@ -331,21 +368,16 @@ class FishSpeaker:
         ``speak`` calls this on a private loop, which keeps the caller's loop
         free for the LLM.
         """
-        directed = takes_directions(self.model)
-        prepared = _spoken(
-            text, lead=self.mood_lead, official=self.official_cues, directed=directed
-        )
         # The whole reply is known, so its length is the partial-cut window. A
         # comma then never splits a short tail such as "honey?" off a sentence,
         # which drama-3 speaks with uneven prosody. Sentence ends still
-        # cut. The window rides in TurnSpec, so a replay cuts the same way.
-        partial = len(prepared) or self.partial_chars
+        # cut. The window rides with the text, so a replay cuts the same way.
+        partial = len(text) or self.partial_chars
         return await run_turn(
-            self._spec(partial_chars=partial),
-            text_events(prepared, cancel, partial, directed=directed),
+            self._spec(),
+            WholeText(text, partial, self._style()),
             sink,
             cancel,
-            sent_text=prepared,
             on_first_audio=on_first_audio,
         )
 
@@ -394,18 +426,15 @@ class FishSpeaker:
                 deltas,
                 cancel,
                 partial_chars=self.partial_chars,
-                mood_lead=self.mood_lead,
-                official=self.official_cues,
-                directed=takes_directions(self.model),
+                style=self._style(),
                 early_flush=early_flush,
             ),
             sink,
             cancel,
-            sent_text="",
             on_first_audio=on_first_audio,
         )
 
-    def _spec(self, *, partial_chars: int | None = None) -> TurnSpec:
+    def _spec(self) -> TurnSpec:
         return TurnSpec(
             api_key=self.api_key,
             base_url=self.base_url,
@@ -417,7 +446,6 @@ class FishSpeaker:
             latency=_sdk_latency(self.latency),
             speed=_sdk_speed(self.speed),
             sample_rate=_sdk_sample_rate(self.sample_rate),
-            partial_chars=partial_chars if partial_chars is not None else self.partial_chars,
             trace_headers=MappingProxyType(dict(self.trace_headers)),
             config=self._tts_config(),
             fade_ms=self.fade_ms,

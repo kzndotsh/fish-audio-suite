@@ -40,7 +40,6 @@ def _turn() -> TurnRun:
         latency="balanced",
         speed=1.0,
         sample_rate=44100,
-        partial_chars=40,
         trace_headers={},
         config=TTSConfig(),
     )

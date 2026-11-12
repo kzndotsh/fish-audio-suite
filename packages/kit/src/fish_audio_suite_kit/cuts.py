@@ -3,24 +3,27 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
+from typing import Final
 
 from fish_audio_suite_kit._charsets import (
     ASCII_STOPS,
     IDEOGRAPHIC_STOPS,
+    LATIN_CLOSER_CHARS,
     SENTENCE_CLOSER_CHARS,
     SENTENCE_CLOSERS,
     SPACED_STOPS,
 )
-from fish_audio_suite_kit.defaults import SuiteDefaults
 
 __all__ = [
     "ends_sentence",
     "next_tts_cut",
+    "sentence_cuts",
     "split_tts_piece",
 ]
 
-# Flush a long clause when no sentence end has arrived.
-_PARTIAL_CHARS = SuiteDefaults().tts_partial_chars
+# Flush a long clause when no sentence end has arrived. ``SuiteDefaults.tts_partial_chars``.
+PARTIAL_CHARS: Final = 40
 # A partial cut at the last space is used only when that space is at least this
 # far in. Earlier than that, a hard cut at the window beats a tiny first piece.
 _MIN_WORD_CUT = 12
@@ -99,6 +102,9 @@ _ABBREVIATIONS = frozenset(
 # a sentence. These words count as abbreviations only when the text after the
 # period says so. With nothing after it yet, the period ends the sentence.
 _COMPANY_SUFFIXES = ("ltd", "inc", "corp", "llc", "plc", "&")
+# The stops and Latin closers that may sit between a number's period and a digit that
+# continues it ("3.14"). The guillemets and CJK closers are not in this run.
+_NUMBER_STOP_RUN = ASCII_STOPS + LATIN_CLOSER_CHARS
 # How far before a stop the abbreviation check reads.
 _LOOKBACK = 64
 
@@ -134,7 +140,7 @@ def _skip_abbreviation(buf: str, end_start: int) -> bool:
         # not its own sentence. "page 12." and "10:30." do end the sentence,
         # or the next mood is spoken as a word.
         index = end_start
-        while index < len(buf) and buf[index] in ".!?…\"'”’)":
+        while index < len(buf) and buf[index] in _NUMBER_STOP_RUN:
             index += 1
         if index < len(buf) and buf[index].isdigit():
             return True
@@ -265,7 +271,7 @@ def _cut_outside_brackets(buf: str, cut: int) -> int:
     return cut
 
 
-def next_tts_cut(buf: str, *, partial_chars: int = _PARTIAL_CHARS) -> int:
+def next_tts_cut(buf: str, *, partial_chars: int = PARTIAL_CHARS) -> int:
     """Return how many leading characters are ready for one Fish TTS send.
 
     Parameters
@@ -347,3 +353,39 @@ def split_tts_piece(buf: str, partial_chars: int, *, flush_rest: bool) -> tuple[
             return None
         return buf, ""
     return buf[:cut], buf[cut:]
+
+
+def sentence_cuts(text: str) -> Iterator[int]:
+    """Yield the end of each finished sentence in ``text``, in order.
+
+    Parameters
+    ----------
+    text : str
+        Model text.
+
+    Yields
+    ------
+    int
+        The index just past a sentence end, with its closers and one following space,
+        as ``next_tts_cut`` places it. Text after the last one, with no sentence end of
+        its own, is not yielded.
+
+    Notes
+    -----
+    This is ``next_tts_cut`` with no window: only a real sentence end cuts, never a
+    long clause or a word, so ``Dr. Happy`` is one sentence.
+
+    Examples
+    --------
+    >>> list(sentence_cuts("Hi there. Dr. Who is here! And"))
+    [10, 27]
+    """
+    at = 0
+    while at < len(text):
+        rest = text[at:]
+        # A window longer than the text disables the partial cut.
+        cut = next_tts_cut(rest, partial_chars=len(rest) + 1)
+        if cut < 1:
+            return
+        at += cut
+        yield at

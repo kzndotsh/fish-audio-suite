@@ -11,12 +11,14 @@ from urllib.parse import urlsplit
 
 from fish_audio_suite_kit import (
     CHUNK_LENGTH_LO,
+    DEFAULT_SYSTEM_PROMPT,
     MIN_CHUNK_LENGTH_HI,
     MIN_CHUNK_LENGTH_LO,
     TTS_SPEED_HI,
     TTS_SPEED_LO,
     UNIT_INTERVAL_HI,
     UNIT_INTERVAL_LO,
+    CueStyle,
     FishLatency,
     SuiteDefaults,
     chunk_length_hi,
@@ -155,9 +157,14 @@ class VoiceCliConfig:
     loudness_db: float | None = None
 
     @property
-    def official_cues(self) -> bool:
-        """Return whether cues other than Fish's own are mapped or removed."""
-        return self.tts_cues == "official"
+    def cue_style(self) -> CueStyle:
+        """Return how cues are shaped for ``tts_model``, from ``tts_cues`` and ``mood_lead``.
+
+        The speaker and the reply both take it from here, so they shape alike.
+        """
+        return CueStyle.for_model(
+            self.tts_model, official=self.tts_cues == "official", lead=self.mood_lead
+        )
 
     @property
     def sink_latency(self) -> str:
@@ -262,7 +269,7 @@ def load_config() -> VoiceCliConfig:
     d = SuiteDefaults()
     fish_base = env_base("FISH_BASE", d.fish_base)
     sample_rate = env_int("FISH_SAMPLE_RATE", d.sample_rate)
-    prompt = _system_prompt(d.system_prompt)
+    prompt = _system_prompt(DEFAULT_SYSTEM_PROMPT)
     return VoiceCliConfig(
         fish_api_key=env_text("FISH_API_KEY"),
         fish_base=fish_base,

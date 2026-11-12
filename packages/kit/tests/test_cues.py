@@ -12,7 +12,21 @@ from fish_audio_suite_kit import (
     strip_cue_tags,
     tts_hold_at,
 )
-from fish_audio_suite_kit.cues import last_emotion, mood_lead_hold_at, official_cue
+from fish_audio_suite_kit.cues import is_paren_cue, last_emotion, official_cue
+from fish_audio_suite_kit.stream_holds import mood_lead_hold_at
+
+
+def test_every_alias_is_a_known_tag_like_the_tag_it_stands_for() -> None:
+    # (sob), (groan) and (cry) were aliases but not known tags, so they were left as
+    # asides and [groan] and [sob] were kept as words.
+    assert normalize_cues("(sob) hi (groan) (cry) (laugh)") == (
+        "[sobbing] hi [groaning] [sobbing] [laughing]"
+    )
+    assert strip_cue_tags("[groan] hi [sob] [laugh]") == "hi"
+    assert is_paren_cue("groan")
+    for alias in ("groan", "yawn", "sob", "cry", "laugh", "pause", "whisper"):
+        assert is_paren_cue(alias), alias
+        assert official_cue(alias) is not None, alias
 
 
 def test_mood_lead_becomes_cue() -> None:

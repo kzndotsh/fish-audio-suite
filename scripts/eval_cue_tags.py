@@ -39,10 +39,9 @@ import eval_models
 
 from fish_audio_suite_kit import (
     DEFAULT_SYSTEM_PROMPT,
+    CueStyle,
     last_emotion,
-    normalize_cues,
     official_cue,
-    scrub_tts,
     split_cues,
 )
 from fish_audio_suite_voice.envfile import load_dotenv
@@ -160,7 +159,7 @@ def cues_in(text: str, *, official: bool = False) -> list[str]:
     >>> cues_in("[Happy] Hi! [soft chuckle] Ha. [in a storytelling voice] So.", official=True)
     ['happy', 'chuckling']
     """
-    shaped = normalize_cues(scrub_tts(text), official=official)
+    shaped = CueStyle("official" if official else "free").shape(text)
     return [piece.strip()[1:-1].strip() for piece, is_cue in split_cues(shaped) if is_cue]
 
 
@@ -174,9 +173,7 @@ def _evenness(counts: Counter[str]) -> float:
 
 def _bare_sentences(text: str) -> tuple[int, int]:
     """Count a reply's sentences, and how many of them carry no cue."""
-    pieces = [
-        piece for piece in _SENTENCE_END.split(normalize_cues(scrub_tts(text))) if piece.strip()
-    ]
+    pieces = [piece for piece in _SENTENCE_END.split(CueStyle().shape(text)) if piece.strip()]
     bare = sum(1 for piece in pieces if not any(is_cue for _, is_cue in split_cues(piece)))
     return len(pieces), bare
 

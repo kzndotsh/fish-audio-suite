@@ -188,13 +188,13 @@ def test_a_continuation_that_is_noise_is_dropped_and_the_first_words_stand(
 
 
 def test_a_failed_continuation_keeps_the_first_words(monkeypatch: pytest.MonkeyPatch) -> None:
-    _asr(monkeypatch, {b"clip1": "Let me think,", b"clip2": FishHttpError.from_status(503, "down")})
+    _asr(monkeypatch, {b"clip1": "Let me think,", b"clip2": FishHttpError(503, "down")})
     heard, _ = _hear(monkeypatch, _ctx(), ScriptedMic(b"clip2"))
     assert (heard.kind, heard.text) == ("line", "Let me think,")
 
 
 def test_a_failed_first_clip_is_listened_for_again(monkeypatch: pytest.MonkeyPatch) -> None:
-    _asr(monkeypatch, {b"clip1": FishHttpError.from_status(503, "down")})
+    _asr(monkeypatch, {b"clip1": FishHttpError(503, "down")})
     heard, _ = _hear(monkeypatch, _ctx(), ScriptedMic())
     assert heard.kind == "again"
 

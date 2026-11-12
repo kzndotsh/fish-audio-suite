@@ -12,11 +12,12 @@ from wire_helpers import (
 )
 
 from fish_audio_suite_kit import (
+    CueStyle,
     normalize_cues,
     scrub_tts,
 )
 from fish_audio_suite_voice.speaker import FishSpeaker
-from fish_audio_suite_voice.stream_scrub import delta_events
+from fish_audio_suite_voice.tts_text import delta_events, text_events
 from fish_audio_suite_voice.wire import (
     FlushEvent,
     TextEvent,
@@ -547,7 +548,7 @@ def test_stream_scrub_leaves_a_mood_word_alone_by_default() -> None:
             ["Curious, ", "isn't it today my friend."],
             threading.Event(),
             partial_chars=tts.partial_chars,
-            mood_lead=mood_lead,
+            style=CueStyle(lead=mood_lead),
         )
         return "".join([e.text async for e in events if isinstance(e, TextEvent)])
 
@@ -562,7 +563,11 @@ def test_early_flush_speaks_the_first_piece_then_flushes_again_at_the_end() -> N
         return [
             event
             async for event in delta_events(
-                deltas, threading.Event(), partial_chars=tts.partial_chars, early_flush=True
+                deltas,
+                threading.Event(),
+                partial_chars=tts.partial_chars,
+                style=CueStyle(),
+                early_flush=True,
             )
         ]
 
@@ -581,6 +586,7 @@ def test_early_flush_with_one_piece_does_not_flush_twice() -> None:
                 ["Hello there my friend."],
                 threading.Event(),
                 partial_chars=FishSpeaker(api_key="k", voice_id="v").partial_chars,
+                style=CueStyle(),
                 early_flush=True,
             )
         ]
@@ -593,7 +599,7 @@ def test_early_flush_on_an_empty_reply_sends_nothing() -> None:
         return [
             event
             async for event in delta_events(
-                [], threading.Event(), partial_chars=50, early_flush=True
+                [], threading.Event(), partial_chars=50, style=CueStyle(), early_flush=True
             )
         ]
 
@@ -609,6 +615,7 @@ def test_early_flush_is_not_sent_after_a_cancel() -> None:
             ["Hello there my friend. ", "How are you doing today?"],
             cancel,
             partial_chars=40,
+            style=CueStyle(),
             early_flush=True,
         ):
             kinds.append(type(event).__name__)
@@ -626,7 +633,7 @@ def test_a_mood_word_inside_a_long_sentence_is_not_rewritten_as_a_cue() -> None:
         pieces = ["a " * 20, "Excited, people talk. "]
         text = ""
         async for event in delta_events(
-            pieces, threading.Event(), partial_chars=40, mood_lead=True
+            pieces, threading.Event(), partial_chars=40, style=CueStyle(lead=True)
         ):
             text += getattr(event, "text", "") or ""
         return text
@@ -646,7 +653,9 @@ def test_a_long_held_span_streams_without_rechecking_everything_per_token(opener
     pieces = [text[i : i + 4] for i in range(0, len(text), 4)]
 
     async def drain() -> None:
-        events = delta_events(pieces, threading.Event(), partial_chars=40, mood_lead=True)
+        events = delta_events(
+            pieces, threading.Event(), partial_chars=40, style=CueStyle(lead=True)
+        )
         async for _event in events:
             pass
 
@@ -657,7 +666,12 @@ def test_a_long_held_span_streams_without_rechecking_everything_per_token(opener
 
 def _streamed_pieces(tokens: list[str], *, official: bool = False) -> list[str]:
     async def run() -> list[str]:
-        events = delta_events(tokens, threading.Event(), partial_chars=40, official=official)
+        events = delta_events(
+            tokens,
+            threading.Event(),
+            partial_chars=40,
+            style=CueStyle("official" if official else "free"),
+        )
         return [event.text async for event in events if isinstance(event, TextEvent)]
 
     return asyncio.run(run())
@@ -695,7 +709,10 @@ def test_a_directed_model_is_streamed_its_directions_and_paired_tags_as_written(
 
     async def run(*, directed: bool) -> str:
         events = delta_events(
-            tokens, threading.Event(), partial_chars=40, official=True, directed=directed
+            tokens,
+            threading.Event(),
+            partial_chars=40,
+            style=CueStyle("directed" if directed else "official"),
         )
         return "".join([event.text async for event in events if isinstance(event, TextEvent)])
 
@@ -707,3 +724,25 @@ def test_a_directed_model_is_streamed_its_directions_and_paired_tags_as_written(
     plain = asyncio.run(run(directed=False))
     assert "<emphasis>" not in plain
     assert "[barely holding it together]" not in plain
+
+
+@pytest.mark.parametrize("lead", [False, True])
+def test_a_mood_word_held_to_the_end_is_shaped_as_the_whole_reply_shapes_it(lead: bool) -> None:
+    # The strikethrough holds "Excited," back until the stream ends, so the last chunk
+    # is shaped at a sentence start. With the lead off it once became "[excited]" here
+    # while the whole reply kept the word.
+    tokens = ["Hi. ", "~~Excited, there"]
+    style = CueStyle(lead=lead)
+
+    async def streamed() -> str:
+        events = delta_events(tokens, threading.Event(), partial_chars=40, style=style)
+        return "".join([event.text async for event in events if isinstance(event, TextEvent)])
+
+    async def whole() -> str:
+        shaped = style.shape("".join(tokens))
+        events = text_events(shaped, threading.Event(), 40, style=style)
+        return "".join([event.text async for event in events if isinstance(event, TextEvent)])
+
+    sent = asyncio.run(streamed())
+    assert sent == asyncio.run(whole())
+    assert sent == ("Hi. [excited] there" if lead else "Hi. Excited, there")

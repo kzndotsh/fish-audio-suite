@@ -1,9 +1,9 @@
 """Closed value sets the three packages share. Types only, no behavior.
 
-A helper that reads one of these from a string (``known_latency``,
-``known_audio_format``) narrows it with a table lookup, so no caller needs a
-``cast``. ``normalize_tts_model`` stays ``str`` because another model id passes
-through; ``catalog_tts_model`` narrows to ``TtsModel``.
+A helper that reads one of these from a string (``known_latency``) narrows it with a
+table lookup built from the type, so no caller needs a ``cast`` and each set is
+written once. ``normalize_tts_model`` stays ``str`` because another model id passes
+through.
 """
 
 from __future__ import annotations
@@ -16,7 +16,6 @@ __all__ = [
     "ChatRole",
     "FishLatency",
     "TtsModel",
-    "TurnReason",
 ]
 
 # Fish realtime latency modes, from fastest and roughest to slowest and best.
@@ -25,17 +24,7 @@ FishLatency = Literal["low", "balanced", "normal"]
 AudioFormat = Literal["wav", "pcm", "mp3", "opus"]
 # Response formats a transcription request can ask for.
 AsrFormat = Literal["json", "text", "verbose_json", "srt", "vtt"]
-# Catalog TTS models. A caller may still pass another id through, so the models
-# helpers return ``str`` and ``catalog_tts_model`` narrows to this set.
-TtsModel = Literal["s1", "s2-pro", "s2.1-pro", "s2.1-pro-free", "drama-3"]
+# Catalog TTS models, in the order ``FISH_TTS_MODEL_IDS`` lists them. A caller may
+# still pass another id through, so the model helpers return ``str``.
+TtsModel = Literal["s2.1-pro", "s2.1-pro-free", "s2-pro", "s1", "drama-3"]
 ChatRole = Literal["system", "user", "assistant"]
-# What decided that a transcript looks finished or not (``judge_turn``).
-TurnReason = Literal[
-    "empty",
-    "open_punctuation",
-    "dangling_word",
-    "number_list",
-    "terminal_punctuation",
-    "short_answer",
-    "complete",
-]

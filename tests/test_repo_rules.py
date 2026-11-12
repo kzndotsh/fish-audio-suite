@@ -146,6 +146,48 @@ def test_proxy_and_voice_import_kit_only_through_its_root() -> None:
     )
 
 
+_CUE_FLAG_CALLS = frozenset({"scrub_tts", "normalize_cues", "tts_hold_at"})
+_CUE_FLAGS = frozenset({"lead", "official", "directed"})
+
+
+def _called_name(call: ast.Call) -> str:
+    if isinstance(call.func, ast.Name):
+        return call.func.id
+    if isinstance(call.func, ast.Attribute):
+        return call.func.attr
+    return ""
+
+
+def _loose_cue_flags(path: Path) -> list[str]:
+    """Return each call that hands kit a cue flag by hand or asks whether a model is directed."""
+    found: list[str] = []
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if not isinstance(node, ast.Call):
+            continue
+        name = _called_name(node)
+        if name == "takes_directions":
+            found.append(f"{node.lineno} calls takes_directions")
+        elif name in _CUE_FLAG_CALLS:
+            flags = sorted(k.arg for k in node.keywords if k.arg in _CUE_FLAGS)
+            if flags:
+                found.append(f"{node.lineno} passes {', '.join(flags)} to {name}")
+    return found
+
+
+def test_proxy_and_voice_shape_cues_through_one_cue_style() -> None:
+    """Shape with ``CueStyle``, so the flags and the step order cannot differ between callers."""
+    offenders = [
+        f"{path.relative_to(ROOT)}:{where}"
+        for package in ("proxy", "voice")
+        for path in _modules(ROOT / "packages" / package / "src")
+        for where in _loose_cue_flags(path)
+    ]
+    assert not offenders, (
+        "build one CueStyle (CueStyle.for_model) and call its shape or hold_at:\n"
+        + "\n".join(offenders)
+    )
+
+
 def test_the_nixos_module_default_matches_the_proxy_graceful_shutdown() -> None:
     """The module's drain time must equal ``DEFAULT_GRACEFUL_S``; its timeouts add 10 s to it."""
     nix = (ROOT / "nix" / "module.nix").read_text(encoding="utf-8")

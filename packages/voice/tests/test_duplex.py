@@ -188,7 +188,7 @@ def test_recognize_fatal_again_and_quit(monkeypatch: pytest.MonkeyPatch) -> None
     ctx = make_ctx()
 
     async def denied(*_args: object, **_kwargs: object) -> AsrResult:
-        raise FishHttpError.from_status(401, "nope")
+        raise FishHttpError(401, "nope")
 
     monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", denied)
     fatal = asyncio.run(recognize(ctx, b"wav", ""))

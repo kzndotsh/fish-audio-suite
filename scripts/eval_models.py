@@ -42,9 +42,8 @@ from loguru import logger
 from fish_audio_suite_kit import (
     DEFAULT_SYSTEM_PROMPT,
     ChatMessage,
+    CueStyle,
     is_tts_junk,
-    normalize_cues,
-    scrub_tts,
 )
 from fish_audio_suite_voice.config import system_prompt_from_file
 from fish_audio_suite_voice.debug import configure_voice_logging
@@ -247,7 +246,7 @@ def voice_checks(text: str) -> Checks:
     Checks
         The counts and flags described on ``Checks``.
     """
-    spoken = scrub_tts(normalize_cues(text))
+    spoken = CueStyle().shape(text)
     plain = _CUE.sub(" ", spoken)
     return Checks(
         words=len(plain.split()),

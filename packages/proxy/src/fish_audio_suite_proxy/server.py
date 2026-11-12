@@ -33,6 +33,7 @@ from fish_audio_suite_kit import (
     FISH_TTS_PATH,
     AsrBody,
     CaptionCue,
+    CueStyle,
     FishHttpError,
     bearer,
     env_text,
@@ -42,7 +43,6 @@ from fish_audio_suite_kit import (
     is_tts_junk,
     parse_asr_body,
     scrub_asr,
-    takes_directions,
     trace_id_of,
     without_watermark_segments,
 )
@@ -55,7 +55,7 @@ from fish_audio_suite_proxy.errors import (
     proxy_error_response,
     read_json_object,
 )
-from fish_audio_suite_proxy.models import catalog_ids, resolve_asr_model, resolve_tts_model
+from fish_audio_suite_proxy.models import catalog_ids, resolve_asr_model
 from fish_audio_suite_proxy.phrases import caption_cues
 from fish_audio_suite_proxy.request_fields import prepare_tts_text, read_flag, traced_model_headers
 from fish_audio_suite_proxy.settings import ProxySettings, load_settings
@@ -181,17 +181,11 @@ def _unauthorized(request: Request) -> JSONResponse | None:
     return json_error(401, "Invalid API key")
 
 
-def _spoken_line(body: dict[str, Any], settings: ProxySettings) -> tuple[str, str]:
+def _spoken_line(body: dict[str, Any], settings: ProxySettings, model: str) -> tuple[str, str]:
     raw_input = body.get("input", "") or ""
     dialogue_only = read_flag(body, "dialogue_only", default=settings.tts_dialogue_only)
-    spoken = prepare_tts_text(
-        raw_input,
-        dialogue_only=dialogue_only,
-        mood_lead=settings.tts_mood_lead,
-        directed=takes_directions(
-            resolve_tts_model(body.get("model"), settings.defaults.tts_model, settings.tts_aliases)
-        ),
-    )
+    style = CueStyle.for_model(model, official=False, lead=settings.tts_mood_lead)
+    spoken = prepare_tts_text(raw_input, style, dialogue_only=dialogue_only)
     preview = spoken.replace("\n", " ")[:_PREVIEW_CHARS]
     log.info(
         "tts scrub model=%s raw_len=%d spoken_len=%d",
@@ -327,7 +321,7 @@ async def speech(request: Request) -> Response:
     controls = speech_controls(
         body, defaults, settings.tts_aliases, default_format=settings.tts_format
     )
-    spoken, preview = _spoken_line(body, settings)
+    spoken, preview = _spoken_line(body, settings, controls.model)
     if is_tts_junk(spoken, drop_narration=settings.tts_drop_narration):
         log.info("tts skip junk chars=%d", len(spoken))
         if settings.log_text:

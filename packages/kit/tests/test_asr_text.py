@@ -13,6 +13,7 @@ from fish_audio_suite_kit import (
     is_caption_watermark,
     is_quit_utterance,
     is_same_utterance,
+    is_tts_junk,
     scrub_asr,
     scrub_tts,
     without_watermark_segments,
@@ -250,11 +251,25 @@ def test_a_lone_letter_or_mark_is_a_hallucination(noise: str) -> None:
     assert is_asr_hallucination(noise)
 
 
-def test_the_letter_floor_is_a_parameter() -> None:
-    assert is_asr_hallucination("go on", min_letters=9, short_words=frozenset())
-    assert not is_asr_hallucination("no", min_letters=9)
-    assert not is_asr_hallucination("sure", min_letters=9, short_words=frozenset({"sure"}))
-    assert is_asr_hallucination("no", min_letters=9, short_words=frozenset())
+@pytest.mark.parametrize(
+    ("text", "tts_junk", "asr_noise"),
+    [
+        ("a", True, True),
+        ("ok", False, False),
+        ("100", False, False),
+        ("好", True, True),
+        ("好好", False, False),
+        # The ASR gate reads one CJK character beside a letter as speech; the TTS gate
+        # needs two. A lone one is ASR noise even before three digits.
+        ("a好", True, False),
+        ("好123", False, True),
+    ],
+)
+def test_the_tts_and_asr_gates_share_one_speech_floor(
+    text: str, tts_junk: bool, asr_noise: bool
+) -> None:
+    assert is_tts_junk(text) is tts_junk
+    assert is_asr_hallucination(text) is asr_noise
 
 
 @pytest.mark.parametrize("word", ["stop", "please stop", "stop now", "Stop, please."])
@@ -319,7 +334,6 @@ def test_asr_tone_drops_anything_that_is_not_a_few_plain_words(raw: str) -> None
 
 def test_asr_tone_is_capped_and_keeps_the_first_cues() -> None:
     assert asr_tone("[a] [b] [c] [d]") == ("a", "b", "c")
-    assert asr_tone("[a] [b] [c]", limit=1) == ("a",)
 
 
 @pytest.mark.perf

@@ -19,9 +19,6 @@ from fish_audio_suite_kit import (
     is_same_utterance,
     is_tts_junk,
     make_traceparent,
-    normalize_cues,
-    scrub_tts,
-    takes_directions,
 )
 from fish_audio_suite_voice.barge import BargeGate
 from fish_audio_suite_voice.cancel import is_cancel_noise, is_own_cancel
@@ -233,15 +230,9 @@ def after_speech(
     )
 
 
-def _shaped(reply: str, c: VoiceCliConfig) -> str:
-    """Scrub a reply and shape its cues the way the session's TTS model takes them."""
-    directed = takes_directions(c.tts_model)
-    return normalize_cues(
-        scrub_tts(reply, directed=directed),
-        lead=c.mood_lead,
-        official=c.official_cues,
-        directed=directed,
-    )
+def _prepared(reply: str, c: VoiceCliConfig) -> str:
+    """Shape a whole reply the way the session's TTS model takes it, led by a cue."""
+    return ensure_lead_cue(c.cue_style.shape(reply), default="calm")
 
 
 def _keep_for_resume(ctx: DuplexContext, sent: str, result: TtsResult, barge: BargeGate) -> None:
@@ -271,11 +262,8 @@ async def speak_reply(
     off, and it joins the last assistant message in history.
     """
     c = ctx.config
-    scrubbed = ensure_lead_cue(
-        _shaped(reply, c),
-        default="calm",
-    )
-    if is_tts_junk(scrubbed, drop_narration=c.drop_narration):
+    prepared = _prepared(reply, c)
+    if is_tts_junk(prepared, drop_narration=c.drop_narration):
         notice("  (skip junk TTS)")
         return snapshot, None
     barge = BargeGate(mic=ctx.mic, tune=c.barge, listen=c.listen, muted=ctx.muted)
@@ -294,8 +282,8 @@ async def speak_reply(
         try:
             first_audio: list[float] = []
             result = await asyncio.to_thread(
-                ctx.tts.speak,
-                scrubbed,
+                ctx.tts.speak_shaped,
+                prepared,
                 sink,
                 cancel=cancel,
                 on_first_audio=lambda: _first_audio(first_audio),
@@ -303,7 +291,7 @@ async def speak_reply(
         except PortAudioMissingError as exc:
             warn(str(exc))
             return snapshot, EXIT_FATAL
-        _keep_for_resume(ctx, scrubbed, result, barge)
+        _keep_for_resume(ctx, prepared, result, barge)
         return after_speech(
             ctx,
             snapshot,
@@ -424,15 +412,9 @@ async def stream_turn(
         except PortAudioMissingError as exc:
             warn(str(exc))
             return snapshot, EXIT_FATAL
-        _keep_for_resume(
-            ctx,
-            ensure_lead_cue(
-                _shaped(reply, c),
-                default="calm",
-            ),
-            result,
-            barge,
-        )
+        # Not the pieces the stream sent: the resumed rest is cut from the reply shaped
+        # whole, as the reply would have been spoken without streaming.
+        _keep_for_resume(ctx, _prepared(reply, c), result, barge)
     finally:
         cancel.set()
         for thread in barge_threads:

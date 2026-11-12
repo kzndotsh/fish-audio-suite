@@ -8,8 +8,9 @@ from typing import Any
 
 from fishaudio.types import TTSConfig
 
+from fish_audio_suite_kit import CueStyle
 from fish_audio_suite_voice.speaker import FishSpeaker
-from fish_audio_suite_voice.stream_scrub import delta_events
+from fish_audio_suite_voice.tts_text import delta_events, text_events
 from fish_audio_suite_voice.wire import (
     AudioArrival,
     FlushEvent,
@@ -17,7 +18,6 @@ from fish_audio_suite_voice.wire import (
     TextEvent,
     TurnRun,
     TurnSpec,
-    text_events,
 )
 
 
@@ -82,7 +82,6 @@ def make_run() -> tuple[TurnRun, RecordingSink]:
         latency="balanced",
         speed=1.0,
         sample_rate=44100,
-        partial_chars=40,
         trace_headers={},
         config=TTSConfig(),
     )
@@ -102,13 +101,13 @@ def collect_events(
     prepared: str, cancel: threading.Event, partial: int
 ) -> list[TextEvent | FlushEvent]:
     async def collect() -> list[TextEvent | FlushEvent]:
-        return [event async for event in text_events(prepared, cancel, partial)]
+        return [event async for event in text_events(prepared, cancel, partial, style=CueStyle())]
 
     return asyncio.run(collect())
 
 
 def stream_events(tts: FishSpeaker, deltas: Iterable[str], cancel: threading.Event):
-    return delta_events(deltas, cancel, partial_chars=tts.partial_chars, mood_lead=True)
+    return delta_events(deltas, cancel, partial_chars=tts.partial_chars, style=CueStyle(lead=True))
 
 
 def stream_text(deltas: list[str], partial_chars: int) -> str:

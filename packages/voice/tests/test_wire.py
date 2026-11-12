@@ -22,19 +22,20 @@ from wire_helpers import (
 
 from fish_audio_suite_kit import (
     FISH_RETRY_ATTEMPTS,
+    CueStyle,
     FishAuthError,
     FishLatency,
     SuiteDefaults,
 )
 from fish_audio_suite_voice.playback import PlaybackSink
 from fish_audio_suite_voice.speaker import FishSpeaker
+from fish_audio_suite_voice.tts_text import WholeText, text_events
 from fish_audio_suite_voice.tts_turn import run_turn
 from fish_audio_suite_voice.wire import (
     FlushEvent,
     TextEvent,
     TtsResult,
     _pump_ws_audio,
-    text_events,
     tts_result,
     turn_failure,
 )
@@ -55,7 +56,7 @@ def test_text_events_cancel_drops_the_flush() -> None:
     cancel = threading.Event()
 
     async def collect() -> list[TextEvent | FlushEvent]:
-        stream = text_events("word " * 30, cancel, 20)
+        stream = text_events("word " * 30, cancel, 20, style=CueStyle())
         first = await anext(stream)
         cancel.set()
         rest = [event async for event in stream]
@@ -288,17 +289,12 @@ def test_cancel_scope_after_audio_keeps_only_the_played_words(
     )
     run, sink = make_run()
 
-    async def no_events():
-        if False:
-            yield ""
-
     result = asyncio.run(
         run_turn(
             run.spec,
-            no_events(),
+            WholeText("hello there friend", 40, CueStyle()),
             sink,
             threading.Event(),
-            sent_text="hello there friend",
             socket=socket,
         )
     )
@@ -560,7 +556,8 @@ def test_a_whole_reply_for_a_directed_model_carries_no_mood_between_sentences() 
     cancel = threading.Event()
 
     async def run(*, directed: bool) -> str:
-        events = text_events(text, cancel, 30, directed=directed)
+        style = CueStyle("directed" if directed else "free")
+        events = text_events(text, cancel, 30, style=style)
         return "".join([event.text async for event in events if isinstance(event, TextEvent)])
 
     assert asyncio.run(run(directed=True)).count("[happy]") == 1

@@ -1,18 +1,11 @@
-"""Fish websocket audio: text events, the pump, and how much was spoken."""
+"""Fish websocket audio: the pump that sends a turn's text events, and how much was spoken."""
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
 import threading
-from collections.abc import (
-    AsyncIterable,
-    AsyncIterator,
-    Awaitable,
-    Callable,
-    Iterable,
-    Mapping,
-)
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Final, Protocol
 
@@ -25,14 +18,10 @@ from fish_audio_suite_kit import (
     FISH_RETRY_ATTEMPTS,
     AudioFormat,
     FishHttpError,
-    MoodCarry,
     describe_request_error,
     elapsed_ms,
     fish_attempt_exhausted,
-    is_empty_delta,
     should_retry_fish_status,
-    split_tts_piece,
-    takes_directions,
 )
 from fish_audio_suite_voice.cancel import is_cancel_noise, reap
 from fish_audio_suite_voice.debug import debug, warn, with_detail
@@ -49,11 +38,7 @@ __all__ = [
     "TtsResult",
     "TurnRun",
     "TurnSpec",
-    "as_async",
-    "flush_if_sent",
-    "reap",
     "send_turn",
-    "text_events",
     "tts_result",
     "turn_failure",
 ]
@@ -107,7 +92,7 @@ class TtsResult:
     def __post_init__(self) -> None:
         """Derive ``error`` from ``error_status`` when only the status was given."""
         if self.error is None and self.error_status is not None:
-            error = FishHttpError.from_status(self.error_status, self.error_message or "")
+            error = FishHttpError(self.error_status, self.error_message or "")
             object.__setattr__(self, "error", error)
 
 
@@ -118,8 +103,7 @@ class TurnSpec:
     Notes
     -----
     ``trace_headers`` are copied onto the httpx client that upgrades the
-    socket. ``partial_chars`` is the cut size: ``FishSpeaker.partial_chars`` for a
-    streamed reply, the whole reply's length for ``speak``. A replay cuts with it too.
+    socket.
     """
 
     api_key: str = field(repr=False)
@@ -130,7 +114,6 @@ class TurnSpec:
     latency: LatencyMode
     speed: float
     sample_rate: int
-    partial_chars: int
     trace_headers: Mapping[str, str]
     config: TTSConfig
     fade_ms: float = 0.0
@@ -167,84 +150,6 @@ class TurnRun:
     error_status: int | None = None
     error_message: str | None = None
     on_first_audio: Callable[[], None] | None = None
-
-
-async def text_events(
-    prepared: str,
-    cancel: threading.Event,
-    partial_chars: int,
-    *,
-    directed: bool = False,
-) -> AsyncIterator[Any]:
-    """Yield Fish text events for a whole reply, then one flush.
-
-    Parameters
-    ----------
-    prepared : str
-        Already scrubbed text.
-    cancel : threading.Event
-        Stops before the next piece. A cancel after zero pieces yields no flush.
-    partial_chars : int
-        Passed to ``split_tts_piece``. ``flush_rest`` is True, so the tail
-        is not left buffered.
-    directed : bool, optional
-        The model takes each direction where it is written (``takes_directions``), so no
-        mood is carried onto the next sentence. Default False.
-
-    Yields
-    ------
-    TextEvent or FlushEvent
-        Empty pieces are skipped. ``FlushEvent`` is yielded only after at
-        least one ``TextEvent``. A bare flush on an empty turn is invalid.
-    """
-    buf = prepared
-    sent = 0
-    carry = MoodCarry()
-    while buf:
-        if cancel.is_set():
-            break
-        split = split_tts_piece(buf, partial_chars, flush_rest=True)
-        if split is None:
-            break
-        piece, buf = split
-        if is_empty_delta(piece):
-            continue
-        # A sentence the model wrote without a cue gets the mood the last one had.
-        yield TextEvent(text=piece if directed else carry.apply(piece))
-        sent += 1
-    flush = flush_if_sent(sent, cancel)
-    if flush is not None:
-        yield flush
-
-
-def flush_if_sent(sent: int, cancel: threading.Event) -> FlushEvent | None:
-    """Return a flush only when text was sent and the turn was not cancelled.
-
-    Parameters
-    ----------
-    sent : int
-        How many ``TextEvent`` values were yielded.
-    cancel : threading.Event
-        When set, return None so Fish is not asked to flush a dead turn.
-
-    Returns
-    -------
-    FlushEvent or None
-        None when ``sent`` is 0. An empty turn plus a bare flush is invalid.
-    """
-    if sent and not cancel.is_set():
-        return FlushEvent()
-    return None
-
-
-async def as_async(deltas: Iterable[str] | AsyncIterable[str]) -> AsyncIterator[str]:
-    """Yield text deltas from either an async or a plain iterable."""
-    if isinstance(deltas, AsyncIterable):
-        async for item in deltas:
-            yield item
-        return
-    for item in deltas:
-        yield item
 
 
 class FishSocket(Protocol):
@@ -287,25 +192,13 @@ async def send_turn(socket: FishSocket, events: AsyncIterator[Any], run: TurnRun
     socket : FishSocket
         Opens the websocket. Closed on barge-in or Ctrl+C, which ends it.
     events : AsyncIterator
-        Text events. Ignored when ``run.sent_text`` is set, because the turn
-        is replayed from that string.
+        This attempt's text events. A retry passes a fresh stream.
     run : TurnRun
         Mutable turn state. First-audio time and flushed text land here.
     """
-    spec = run.spec
     run.acc.pieces.clear()
     run.acc.tts_first_text_ms = None
-    replay = (
-        text_events(
-            run.sent_text,
-            run.cancel,
-            spec.partial_chars,
-            directed=takes_directions(spec.model),
-        )
-        if run.sent_text
-        else events
-    )
-    stream = socket.stream(_tee_text_events(replay, run.t0, run.acc), spec)
+    stream = socket.stream(_tee_text_events(events, run.t0, run.acc), run.spec)
     await _pump_ws_audio(stream, run, socket.close)
 
 
@@ -541,7 +434,7 @@ def tts_result(run: TurnRun) -> TtsResult:
         error=(
             None
             if run.error_status is None
-            else FishHttpError.from_status(run.error_status, run.error_message or "")
+            else FishHttpError(run.error_status, run.error_message or "")
         ),
     )
 

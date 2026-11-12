@@ -16,7 +16,7 @@ handling with no network calls:
 You will see the cleaned text, then one line per piece that would be sent.
 """
 
-from fish_audio_suite_kit import next_tts_cut, normalize_cues, scrub_tts
+from fish_audio_suite_kit import CueStyle, next_tts_cut
 
 # A typical messy reply. It has a `<think>` block the user should never hear,
 # markdown bold, a markdown link, an oddly capitalized cue tag, and extra spaces.
@@ -31,11 +31,11 @@ LLM_OUTPUT = (
 
 def main() -> None:
     # Step 1. Clean the whole reply.
-    # `scrub_tts` removes the `<think>` block, the `**` marks, and turns the link
-    # into its plain words ("the guide"). `normalize_cues` then rewrites cue tags
-    # into the exact form Fish expects, so `[Happy]` becomes `[happy]`. Run them
-    # in this order: scrub first, then normalize.
-    cleaned = normalize_cues(scrub_tts(LLM_OUTPUT))
+    # `CueStyle().shape` scrubs first: it removes the `<think>` block, the `**` marks,
+    # and turns the link into its plain words ("the guide"). Then it rewrites cue tags
+    # into the exact form Fish expects, so `[Happy]` becomes `[happy]`. Build the style
+    # with `CueStyle.for_model(model, official=..., lead=...)` to shape for one model.
+    cleaned = CueStyle().shape(LLM_OUTPUT)
     print(f"cleaned: {cleaned!r}")
 
     # Step 2. Cut a stream into pieces.

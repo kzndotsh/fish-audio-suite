@@ -223,7 +223,7 @@ max-branches = 15
 ]
 # Cue and ASR text patterns use the real unicode quotes and dashes.
 "packages/kit/src/fish_audio_suite_kit/{asr_text,_charsets,cues,cuts,dialogue,_single_pass,scrub_tts,stream_holds}.py" = ["RUF001"]
-"packages/voice/src/fish_audio_suite_voice/{spoken,stream_scrub}.py" = ["RUF001"]
+"packages/voice/src/fish_audio_suite_voice/{spoken,tts_text}.py" = ["RUF001"]
 "packages/proxy/src/fish_audio_suite_proxy/phrases.py" = ["RUF001"]
 "packages/proxy/tests/test_proxy_asr_phrases.py" = ["RUF001"]
 "packages/kit/tests/{test_asr_text,test_cues,test_dialogue,test_scrub_tts}.py" = ["RUF001"]
@@ -276,6 +276,22 @@ source_modules = ["fish_audio_suite_kit"]
 forbidden_modules = ["fish_audio_suite_proxy", "fish_audio_suite_voice"]
 
 [[tool.importlinter.contracts]]
+id = "kit-layers"
+name = "kit imports point down: stream holds, then scrubbing, cues, sentence cuts, and the character sets at the bottom"
+type = "layers"
+containers = ["fish_audio_suite_kit"]
+# Each row may import the rows below it, never the rows above. Modules in one row may
+# import each other. A new module goes in the lowest row it fits.
+layers = [
+    "cue_style : stream_holds : junk",
+    "scrub_tts : dialogue : prompt : defaults",
+    "cues",
+    "cuts : catalog : asr_text : env : http_errors : captions : trace_context : turn",
+    "urls : _single_pass : _speech_floor : payloads",
+    "_charsets : literals : _values : timing : _version",
+]
+
+[[tool.importlinter.contracts]]
 id = "voice-direction"
 name = "voice imports point down: the CLI, the session and displays, a turn, capture and speech, adapters, settings"
 type = "layers"
@@ -286,9 +302,9 @@ layers = [
     "cli",
     "duplex : tui : console_sink : inputs",
     "reply : hearing : streaming",
-    "listen : barge : speaker : duplex_state : speculate : stream_scrub : tts_turn : turn_check",
+    "listen : barge : speaker : duplex_state : speculate : tts_turn : turn_check",
     "config : mic : wire : llm : playback : transports : vad : deepgram : fish_realtime : turn_stream : asr : aec : loudness : spoken : signals : session_view",
-    "tune : llm_tune : events : debug : envfile : cancel : ws_tap : console : declick : floor : history : pause",
+    "tune : llm_tune : events : debug : envfile : cancel : ws_tap : console : declick : floor : history : pause : tts_text",
 ]
 
 [tool.basedpyright]

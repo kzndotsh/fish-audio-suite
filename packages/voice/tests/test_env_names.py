@@ -8,7 +8,7 @@ from typing import Any, NamedTuple
 
 import pytest
 
-from fish_audio_suite_kit import SuiteDefaults
+from fish_audio_suite_kit import DEFAULT_SYSTEM_PROMPT
 from fish_audio_suite_voice.config import VoiceCliConfig, load_config
 from fish_audio_suite_voice.llm_tune import DEFAULT_HISTORY_TURNS
 
@@ -68,7 +68,7 @@ def test_a_blank_system_prompt_means_no_prompt(monkeypatch: pytest.MonkeyPatch) 
 def test_unset_keeps_the_defaults() -> None:
     c = load_config()
     assert c.history_turns == DEFAULT_HISTORY_TURNS
-    assert c.system_prompt == SuiteDefaults().system_prompt
+    assert c.system_prompt == DEFAULT_SYSTEM_PROMPT
 
 
 def test_an_unknown_output_latency_is_ignored_and_auto_means_low_outside_the_screen(
@@ -85,9 +85,9 @@ def test_cues_are_official_by_default_and_an_unknown_choice_is_ignored(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     assert load_config().tts_cues == "official"
-    assert load_config().official_cues
+    assert load_config().cue_style.mode == "official"
     monkeypatch.setenv("FISH_TTS_CUES", "free")
-    assert not load_config().official_cues
+    assert load_config().cue_style.mode == "free"
     monkeypatch.setenv("FISH_TTS_CUES", "everything")
     assert load_config().tts_cues == "official"
     assert "FISH_TTS_CUES" in capsys.readouterr().err

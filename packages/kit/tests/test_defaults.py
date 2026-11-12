@@ -8,20 +8,23 @@ from fish_audio_suite_kit import (
     SuiteDefaults,
     chunk_length_hi,
     clamp_number,
+    cut_at_control,
     env_base,
     env_bool,
     env_float,
     env_int,
-    env_off,
     env_text,
     env_token,
+    is_header_safe,
     is_insecure_fish_base,
     known_latency,
     known_mp3_bitrate,
     known_opus_bitrate,
     normalize_tts_model,
+    parse_flag,
     parse_number,
 )
+from fish_audio_suite_kit.cues import FISH_BREAKS, FISH_EMOTIONS, FISH_SOUNDS
 
 
 def test_bitrate_snaps_to_documented_values() -> None:
@@ -61,7 +64,6 @@ def test_suite_defaults_and_timing() -> None:
     d = SuiteDefaults()
     assert d.tts_model == "s2.1-pro"
     assert d.tts_partial_chars == 40
-    assert d.system_prompt == DEFAULT_SYSTEM_PROMPT
     assert "no markdown" in DEFAULT_SYSTEM_PROMPT.lower()
     assert "never spoken" in DEFAULT_SYSTEM_PROMPT
     assert "excited," in DEFAULT_SYSTEM_PROMPT  # the list of one-word moods
@@ -114,11 +116,6 @@ def test_env_number_keeps_default_when_blank_or_junk(monkeypatch: pytest.MonkeyP
     monkeypatch.setenv("FISH_TEST_FLAG", "   ")
     assert env_bool("FISH_TEST_FLAG", default=True) is True
     assert env_bool("FISH_TEST_FLAG_MISSING") is False
-    assert env_off("FISH_TEST_OFF_MISSING") is False
-    monkeypatch.setenv("FISH_TEST_OFF", " maybe ")
-    assert env_off("FISH_TEST_OFF") is False
-    monkeypatch.setenv("FISH_TEST_OFF", " OFF ")
-    assert env_off("FISH_TEST_OFF") is True
     assert env_base("FISH_TEST_BASE_MISSING", "https://api.fish.audio/") == "https://api.fish.audio"
     assert env_text("FISH_TEST_TEXT_MISSING", "plain") == "plain"
     monkeypatch.setenv("FISH_TEST_TEXT", "  kept  ")
@@ -167,11 +164,6 @@ def test_chunk_length_hi_reads_the_hostname(base: str, expected: int) -> None:
     assert chunk_length_hi(base) == expected
 
 
-def test_chunk_length_hi_can_be_forced() -> None:
-    assert chunk_length_hi("https://fish.internal", self_hosted=False) == 300
-    assert chunk_length_hi("https://api.fish.audio", self_hosted=True) == 1000
-
-
 def test_latency_snapshot_keeps_its_positional_fields() -> None:
     snapshot = LatencySnapshot(1.0, 2.0, 3.0, 4.0, 5.0, "trace", 6.0)
     assert snapshot == LatencySnapshot(
@@ -208,21 +200,6 @@ def test_cloud_is_detected_from_the_host_even_with_a_double_slash_in_the_path(
     base: str, expected: int
 ) -> None:
     assert chunk_length_hi(base) == expected
-
-
-def test_the_package_root_still_exports_the_helpers_it_used_to() -> None:
-    import fish_audio_suite_kit as kit
-
-    for name in (
-        "FISH_LATENCIES",
-        "canonical_traceparent",
-        "fish_error_body",
-        "describe_transport_error",
-        "mood_lead_hold_at",
-        "sentence_closer_hold_at",
-    ):
-        assert name in kit.__all__
-        assert callable(getattr(kit, name)) or getattr(kit, name)
 
 
 @pytest.mark.parametrize(
@@ -295,5 +272,62 @@ def test_the_default_prompt_offers_every_emotion_fish_documents_and_nothing_else
     assert listed is not None
     moods = listed.group(1).split(", ")
     assert len(moods) == len(set(moods)) == 49  # every emotion Fish documents, none twice
+    assert set(moods) == set(FISH_EMOTIONS)
     assert all(official_cue(mood) == mood for mood in moods)
     assert "do not fall back on the same few" in DEFAULT_SYSTEM_PROMPT
+
+
+def test_every_sound_and_pause_the_default_prompt_names_is_a_fish_cue() -> None:
+    import re
+
+    from fish_audio_suite_kit import official_cue
+
+    listed = re.search(r"Sounds are cues too: ([^.]+)\.", DEFAULT_SYSTEM_PROMPT)
+    assert listed is not None
+    sounds = re.findall(r"\[([^\]]+)\]", listed.group(1))
+    assert sounds
+    assert set(sounds) <= FISH_SOUNDS
+    assert all(official_cue(sound) == sound for sound in sounds)
+    short, long = FISH_BREAKS
+    assert f"[{short}] is a short pause and [{long}] a longer one" in DEFAULT_SYSTEM_PROMPT
+
+
+@pytest.mark.parametrize(
+    ("word", "lenient", "strict"),
+    [
+        ("1", True, True),
+        (" TRUE ", True, True),
+        ("yes", True, None),
+        ("on", True, None),
+        ("0", False, False),
+        ("False", False, False),
+        ("no", False, None),
+        ("off", False, None),
+        ("", None, None),
+        ("maybe", None, None),
+    ],
+)
+def test_parse_flag_reads_on_and_off_words(
+    word: str, lenient: bool | None, strict: bool | None
+) -> None:
+    assert parse_flag(word) is lenient
+    assert parse_flag(word, strict=True) is strict
+
+
+def test_cut_at_control_keeps_one_line() -> None:
+    assert cut_at_control("plain") == "plain"
+    assert cut_at_control(" a\nb") == " a"
+    assert cut_at_control("a\tb") == "a"
+    assert cut_at_control("\nb") == ""
+    assert cut_at_control("caf\u00e9 ok") == "caf\u00e9 ok"
+
+
+def test_is_header_safe_accepts_printable_ascii_only() -> None:
+    assert is_header_safe("Bearer abc")
+    assert is_header_safe("")
+    assert not is_header_safe("a\nb")
+    assert not is_header_safe("caf\u00e9")
+    assert not is_header_safe("\x7f")
+    assert is_header_safe("s2-pro", token=True)
+    assert not is_header_safe("s2 pro", token=True)
+    assert not is_header_safe("", token=True)

@@ -16,6 +16,7 @@ from proxy_helpers import (
 )
 
 from fish_audio_suite_kit import (
+    CueStyle,
     SuiteDefaults,
     chunk_length_hi,
     is_tts_junk,
@@ -39,21 +40,26 @@ from fish_audio_suite_proxy.speech import (
 
 
 def test_prepare_tts_normalizes_cues() -> None:
-    spoken = prepare_tts_text("Excited, hello there friend", dialogue_only=False, mood_lead=True)
+    spoken = prepare_tts_text(
+        "Excited, hello there friend", CueStyle(lead=True), dialogue_only=False
+    )
     assert spoken.startswith("[excited]")
     assert "hello" in spoken
 
 
 def test_a_mood_word_is_spoken_as_written_unless_the_lead_is_on() -> None:
-    assert prepare_tts_text("Curious, isn't it?", dialogue_only=False) == "Curious, isn't it?"
+    assert (
+        prepare_tts_text("Curious, isn't it?", CueStyle(), dialogue_only=False)
+        == "Curious, isn't it?"
+    )
 
 
 def test_dialogue_only_drops_the_stage_note() -> None:
     raw = 'She smiles. "Hello there friend."'
-    spoken = prepare_tts_text(raw, dialogue_only=True)
+    spoken = prepare_tts_text(raw, CueStyle(), dialogue_only=True)
     assert "Hello there friend" in spoken
     assert "smiles" not in spoken
-    assert "smiles" in prepare_tts_text(raw, dialogue_only=False)
+    assert "smiles" in prepare_tts_text(raw, CueStyle(), dialogue_only=False)
 
 
 def test_read_flag_keeps_false_and_uses_the_default_when_absent() -> None:
@@ -125,18 +131,19 @@ def test_junk_pcm_and_wav_are_silence() -> None:
 
 
 def test_junk_unclosed_cue() -> None:
-    spoken = prepare_tts_text("[warm,", dialogue_only=False)
+    spoken = prepare_tts_text("[warm,", CueStyle(), dialogue_only=False)
     assert is_tts_junk(spoken)
 
 
 def test_whisper_alias_on_speech_path() -> None:
-    spoken = prepare_tts_text("[whispers] keep this quiet now", dialogue_only=False)
+    spoken = prepare_tts_text("[whispers] keep this quiet now", CueStyle(), dialogue_only=False)
     assert "[whispering]" in spoken
 
 
 def test_prepare_keeps_stacked_cues_and_speaker_token() -> None:
     spoken = prepare_tts_text(
         "<|speaker:0|> [sad][whispering] I miss you so much",
+        CueStyle(),
         dialogue_only=False,
     )
     assert "<|speaker:0|>" in spoken
@@ -381,7 +388,7 @@ def test_surrogate_in_pronunciation_still_encodes() -> None:
 
 def test_surrogate_in_speech_text_still_encodes() -> None:
     raw = "Hello \ud800 there friend"
-    spoken = prepare_tts_text(raw, dialogue_only=False)
+    spoken = prepare_tts_text(raw, CueStyle(), dialogue_only=False)
     assert "\ud800" not in spoken
     assert "Hello" in spoken
     assert "there friend" in spoken

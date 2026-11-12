@@ -5,12 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from fish_audio_suite_kit import (
-    ensure_trace_headers,
-    extract_quoted_speech,
-    normalize_cues,
-    scrub_tts,
-)
+from fish_audio_suite_kit import CueStyle, ensure_trace_headers
 from fish_audio_suite_proxy.audio import CLIENT_FORMATS, SUPPORTED_FORMATS, ClientFormat
 from fish_audio_suite_proxy.errors import ProxyError
 
@@ -161,40 +156,26 @@ def read_format(body: dict[str, Any], default: ClientFormat) -> ClientFormat:
     raise ProxyError(400, f"unsupported response_format {raw[:32]!r}; use one of: {supported}")
 
 
-def prepare_tts_text(
-    raw_input: str,
-    *,
-    dialogue_only: bool,
-    mood_lead: bool = False,
-    directed: bool = False,
-) -> str:
+def prepare_tts_text(raw_input: str, style: CueStyle, *, dialogue_only: bool) -> str:
     """Scrub model text into what Fish should speak.
 
     Parameters
     ----------
     raw_input : str
         OpenAI ``input``.
+    style : CueStyle
+        How cues are shaped for the request's resolved model.
     dialogue_only : bool
         When True, keep quoted speech and drop the text around it. This suits
         fiction or roleplay output where narration sits between the lines.
-    mood_lead : bool, optional
-        When True, a sentence that opens with a mood word becomes a cue.
-        Default False, so ordinary sentences are spoken as written.
-    directed : bool, optional
-        True when the model takes plain-language directions and paired tags
-        (``takes_directions``), which are then sent as written. Default False.
 
     Returns
     -------
     str
-        ``scrub_tts``, then ``extract_quoted_speech`` when ``dialogue_only``,
-        then ``normalize_cues``. Cue-only junk is detected later by
-        ``is_tts_junk``.
+        ``style.shape``: scrubbed, reduced to quoted speech when ``dialogue_only``,
+        then with its cues shaped. Cue-only junk is detected later by ``is_tts_junk``.
     """
-    cleaned = scrub_tts(raw_input, directed=directed)
-    if dialogue_only:
-        cleaned = extract_quoted_speech(cleaned)
-    return normalize_cues(cleaned, lead=mood_lead, directed=directed)
+    return style.shape(raw_input, dialogue_only=dialogue_only)
 
 
 def traced_model_headers(model: str, incoming: Mapping[str, str]) -> dict[str, str]:

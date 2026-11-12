@@ -17,7 +17,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Final
 
-from fish_audio_suite_kit import SuiteDefaults
+from fish_audio_suite_kit import DEFAULT_SYSTEM_PROMPT
 from fish_audio_suite_voice.aec import EchoCanceller
 from fish_audio_suite_voice.config import (
     VoiceCliConfig,
@@ -132,8 +132,7 @@ def _fish_tts(c: VoiceCliConfig, audio_format: str) -> FishSpeaker:
         chunk_length=c.chunk_length,
         min_chunk_length=c.min_chunk_length,
         volume=c.volume,
-        mood_lead=c.mood_lead,
-        official_cues=c.official_cues,
+        cue_style=c.cue_style,
         fade_ms=c.fade_ms,
         loudness_db=c.loudness_db,
         base_url=c.fish_base,
@@ -468,7 +467,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.playback:
         c = replace(c, playback=playback_key(args.playback))
     if args.prompt_file:
-        composed = system_prompt_from_file(str(args.prompt_file), SuiteDefaults().system_prompt)
+        composed = system_prompt_from_file(str(args.prompt_file), DEFAULT_SYSTEM_PROMPT)
         if composed is None:
             return EXIT_FATAL
         c = replace(c, system_prompt=composed, pin_seed=True)

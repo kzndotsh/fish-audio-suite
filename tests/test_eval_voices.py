@@ -83,7 +83,8 @@ def test_every_voice_and_model_is_saved_and_a_failure_does_not_stop_the_run(
         assert clip.getnframes() == 44100
     table = capsys.readouterr().out
     assert "FAILED: voice not found" in table
-    assert all(kwargs["official_cues"] for kwargs in _FakeSpeaker.built)  # the app's default
+    # The app's default: only Fish's own cues.
+    assert all(kwargs["cue_style"].mode == "official" for kwargs in _FakeSpeaker.built)
     assert "voice1" in table
     assert "1.0" in table  # seconds
 

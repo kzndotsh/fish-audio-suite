@@ -177,12 +177,12 @@ def set_tts(
     tts : FishSpeaker
         The object to patch.
     speak : Callable or None, optional
-        Replaces ``speak``.
+        Replaces ``speak_shaped``, the call the loop makes for a whole reply.
     speak_stream : Callable or None, optional
         Replaces ``speak_stream``.
     """
     if speak is not None:
-        monkeypatch.setattr(tts, "speak", speak)
+        monkeypatch.setattr(tts, "speak_shaped", speak)
     if speak_stream is not None:
         monkeypatch.setattr(tts, "speak_stream", speak_stream)
 
@@ -208,11 +208,7 @@ def make_result(
         tts_first_text_ms=tts_first_text_ms,
         error_status=error_status,
         error_message=error_message,
-        error=(
-            None
-            if error_status is None
-            else FishHttpError.from_status(error_status, error_message or "")
-        ),
+        error=(None if error_status is None else FishHttpError(error_status, error_message or "")),
     )
 
 

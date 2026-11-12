@@ -1,18 +1,17 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import random
 
 import pytest
 
 from fish_audio_suite_kit import (
-    FISH_RETRY_ATTEMPTS,
     FishErrorBody,
     FishHttpError,
     bearer,
+    describe_request_error,
     fish_backoff_s,
-    fish_sleep_before_retry,
+    fish_request_id,
     parse_asr_body,
     parse_fish_error,
     should_retry_fish_status,
@@ -20,46 +19,41 @@ from fish_audio_suite_kit import (
 from fish_audio_suite_kit.http_errors import (
     FISH_BACKOFF_CAP_S,
     FISH_RETRY_AFTER_CAP_S,
-    describe_transport_error,
-    fish_error_body,
 )
 
 
 def test_fish_error_message_is_utf8() -> None:
-    body = fish_error_body(502, "bad \ud800 byte")
-    assert "\ud800" not in str(body["message"])
-    str(body["message"]).encode("utf-8")
+    body = FishErrorBody.of(502, "bad \ud800 byte")
+    assert "\ud800" not in body.message
+    body.message.encode("utf-8")
     err = FishHttpError(502, "bad \ud800 byte")
     err.message.encode("utf-8")
 
 
-def test_transport_error_timeout_and_blank() -> None:
-    status, message = describe_transport_error(TimeoutError("late"), timed_out=True)
+def test_transport_error_timeout_and_unreachable() -> None:
+    status, message = describe_request_error(TimeoutError("late"), TimeoutError)
     assert status == 504
     assert message == "Fish request timed out"
-    status, message = describe_transport_error(None, timed_out=False)
-    assert status == 502
-    assert message == "Fish upstream unreachable"
-    status, message = describe_transport_error(ConnectionError("reset"), timed_out=False)
+    status, message = describe_request_error(ConnectionError("reset"), TimeoutError)
     assert (status, message) == (502, "Fish upstream unreachable")
 
 
 def test_transport_error_text_never_reaches_the_message() -> None:
     secret = "connect to 10.0.0.5:443 refused [Errno 111]"
-    status, message = describe_transport_error(ConnectionError(secret), timed_out=False)
+    status, message = describe_request_error(ConnectionError(secret), TimeoutError)
     assert status == 502
     assert "10.0.0.5" not in message
     assert "Errno" not in message
-    _status, timeout_message = describe_transport_error(TimeoutError(secret), timed_out=True)
+    _status, timeout_message = describe_request_error(TimeoutError(secret), TimeoutError)
     assert "10.0.0.5" not in timeout_message
 
 
 def test_fish_error_ignores_a_body_status_that_is_not_an_error() -> None:
     success = parse_fish_error(500, {"message": "nope", "status": 200})
-    assert success["status"] == 500
-    assert success["message"] == "nope"
-    assert parse_fish_error(429, {"message": "slow", "status": 0})["status"] == 429
-    assert parse_fish_error(500, {"message": "nope", "status": 402})["status"] == 402
+    assert success.status == 500
+    assert success.message == "nope"
+    assert parse_fish_error(429, {"message": "slow", "status": 0}).status == 429
+    assert parse_fish_error(500, {"message": "nope", "status": 402}).status == 402
 
 
 def test_fish_validation_array_uses_the_field_messages() -> None:
@@ -67,56 +61,56 @@ def test_fish_validation_array_uses_the_field_messages() -> None:
         {"loc": ["body", "text"], "msg": "Field required"},
         {"loc": ["body", "format"], "msg": "unexpected format"},
     ]
-    assert parse_fish_error(422, body)["message"] == "Field required; unexpected format"
+    assert parse_fish_error(422, body).message == "Field required; unexpected format"
     mixed = [
         {"loc": ["body", "text"], "msg": "Field required"},
         {"loc": ["body", "format"]},
         "nope",
     ]
-    assert parse_fish_error(422, mixed)["message"] == "Field required"
+    assert parse_fish_error(422, mixed).message == "Field required"
     encoded = parse_fish_error(422, json.dumps(body).encode())
-    assert encoded["status"] == 422
-    assert encoded["message"] == "Field required; unexpected format"
-    assert parse_fish_error(422, b"[1, 2]")["message"] == "[1, 2]"
+    assert encoded.status == 422
+    assert encoded.message == "Field required; unexpected format"
+    assert parse_fish_error(422, b"[1, 2]").message == "[1, 2]"
     wrapped = {"detail": [{"loc": ["body", "input"], "msg": "field required", "type": "missing"}]}
-    assert parse_fish_error(422, wrapped)["message"] == "field required"
+    assert parse_fish_error(422, wrapped).message == "field required"
     named = {"detail": [{"loc": ["body", "voice"], "message": "field required"}]}
-    assert parse_fish_error(422, named)["message"] == "field required"
-    assert parse_fish_error(400, {"message": ["bad voice", "too long"]})["message"] == (
+    assert parse_fish_error(422, named).message == "field required"
+    assert parse_fish_error(400, {"message": ["bad voice", "too long"]}).message == (
         "bad voice; too long"
     )
 
 
 def test_one_validation_object_uses_the_field_message() -> None:
     body = {"detail": {"loc": ["body", "input"], "msg": "field required", "type": "missing"}}
-    assert parse_fish_error(422, body)["message"] == "field required"
+    assert parse_fish_error(422, body).message == "field required"
     hidden = {"message": {"message": None}, "detail": {"msg": "bad voice"}}
-    assert parse_fish_error(400, hidden)["message"] == "bad voice"
+    assert parse_fish_error(400, hidden).message == "bad voice"
     nested = {"message": {"message": [{"msg": "field required"}, {"msg": "bad format"}]}}
-    assert parse_fish_error(422, nested)["message"] == "field required; bad format"
+    assert parse_fish_error(422, nested).message == "field required; bad format"
     words = {"detail": {"message": ["bad voice", "too long"]}}
-    assert parse_fish_error(400, words)["message"] == "bad voice; too long"
+    assert parse_fish_error(400, words).message == "bad voice; too long"
 
 
 def test_blank_fish_message_does_not_hide_detail() -> None:
-    assert parse_fish_error(400, {"message": "", "detail": "voice not found"})["message"] == (
+    assert parse_fish_error(400, {"message": "", "detail": "voice not found"}).message == (
         "voice not found"
     )
-    assert parse_fish_error(400, {"message": "  ", "detail": "voice not found"})["message"] == (
+    assert parse_fish_error(400, {"message": "  ", "detail": "voice not found"}).message == (
         "voice not found"
     )
-    assert parse_fish_error(502, {"message": "", "error": {"message": "upstream"}})["message"] == (
+    assert parse_fish_error(502, {"message": "", "error": {"message": "upstream"}}).message == (
         "upstream"
     )
     kept = parse_fish_error(400, {"message": "bad voice", "detail": "ignored"})
-    assert kept["message"] == "bad voice"
+    assert kept.message == "bad voice"
 
 
 def test_fish_error_falls_back_when_the_body_is_empty() -> None:
-    assert parse_fish_error(500, "")["message"] == "HTTP 500"
-    assert parse_fish_error(500, None)["message"] == "HTTP 500"
-    assert parse_fish_error(500, b'{"message": "down"}')["message"] == "down"
-    assert parse_fish_error(500, {"message": {"message": None}})["message"] == "error"
+    assert parse_fish_error(500, "").message == "HTTP 500"
+    assert parse_fish_error(500, None).message == "HTTP 500"
+    assert parse_fish_error(500, b'{"message": "down"}').message == "down"
+    assert parse_fish_error(500, {"message": {"message": None}}).message == "error"
 
 
 def test_parse_asr_body_text_or_502() -> None:
@@ -153,7 +147,6 @@ def test_fish_error_shape_and_retry_policy() -> None:
     )
     assert parse_fish_error(400, b"not json").message == "not json"
     assert parse_fish_error(502, {"error": {"message": "upstream"}}).message == "upstream"
-    assert fish_error_body(402, "Insufficient credits")["status"] == 402
 
 
 class _FixedRandom(random.Random):
@@ -185,19 +178,6 @@ def test_backoff_honors_retry_after_up_to_a_cap() -> None:
     assert 0.5 <= fish_backoff_s(0) <= 1.0
 
 
-def test_sleep_before_retry_reports_whether_to_try_again(monkeypatch: pytest.MonkeyPatch) -> None:
-    slept: list[float] = []
-
-    async def fake_sleep(seconds: float) -> None:
-        slept.append(seconds)
-
-    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
-    assert asyncio.run(fish_sleep_before_retry(0, retry_after=3, rng=_FixedRandom(0.0))) is True
-    assert slept == [3]
-    assert asyncio.run(fish_sleep_before_retry(FISH_RETRY_ATTEMPTS - 1)) is False
-    assert slept == [3]
-
-
 def test_fish_http_error_constructors_carry_the_documented_status_and_message() -> None:
     for built, status, message in (
         (FishHttpError.for_unreachable(), 502, "Fish upstream unreachable"),
@@ -212,5 +192,21 @@ def test_fish_http_error_constructors_carry_the_documented_status_and_message() 
 def test_a_deeply_nested_error_body_is_kept_as_text() -> None:
     body = "[" * 20_000
     parsed = parse_fish_error(502, body)
-    assert parsed["status"] == 502
-    assert str(parsed["message"]).startswith("[[[")
+    assert parsed.status == 502
+    assert parsed.message.startswith("[[[")
+
+
+def test_fish_request_id_reads_the_body_or_the_header_and_keeps_one_short_line() -> None:
+    body = {"request_id": "req-body", "status": 400}
+    headers = {"x-request-id": "req-header"}
+    assert fish_request_id(body, headers) == "req-body"
+    assert fish_request_id(body, headers, header_first=True) == "req-header"
+    assert fish_request_id({}, headers) == "req-header"
+    assert fish_request_id(body, None, header_first=True) == "req-body"
+    assert fish_request_id(["not", "an", "object"], {}) == ""
+    assert fish_request_id({"request_id": True}, {}) == ""
+    assert fish_request_id({"request_id": 42}, {}) == "42"
+    assert fish_request_id({"request_id": " a\r\nX-Evil: 1"}, {}) == "a"
+    assert fish_request_id({"request_id": "x\ty"}, {}) == "x"
+    assert fish_request_id({"request_id": " \n "}, {"x-request-id": "h"}) == "h"
+    assert fish_request_id({"request_id": "x" * 500}, {}) == "x" * 128

@@ -16,12 +16,14 @@ from wire_helpers import (
 )
 
 from fish_audio_suite_kit import (
+    CueStyle,
     FishAuthError,
     FishRateLimitError,
 )
 from fish_audio_suite_voice.speaker import FishSpeaker
+from fish_audio_suite_voice.tts_text import WholeText, text_events
 from fish_audio_suite_voice.tts_turn import SdkSocket, run_turn
-from fish_audio_suite_voice.wire import TurnSpec, text_events
+from fish_audio_suite_voice.wire import TurnSpec
 
 
 def test_run_turn_closes_the_sink_when_start_fails(
@@ -46,14 +48,10 @@ def test_run_turn_closes_the_sink_when_start_fails(
     run, _sink = make_run()
     sink = _Boom()
 
-    async def no_events():
-        if False:
-            yield ""
-
     with pytest.raises(RuntimeError, match="dac"):
         asyncio.run(
             run_turn(
-                run.spec, no_events(), sink, threading.Event(), sent_text="hello", socket=socket
+                run.spec, WholeText("hello", 40, CueStyle()), sink, threading.Event(), socket=socket
             )
         )
     assert sink.opened is True
@@ -73,18 +71,13 @@ def test_run_turn_closes_the_client_when_finish_fails(
 
     run, _sink = make_run()
 
-    async def no_events():
-        if False:
-            yield ""
-
     with pytest.raises(RuntimeError, match="disk"):
         asyncio.run(
             run_turn(
                 run.spec,
-                no_events(),
+                WholeText("hello", 40, CueStyle()),
                 _FinishBoom(),
                 threading.Event(),
-                sent_text="hello",
                 socket=socket,
             )
         )
@@ -151,11 +144,9 @@ def test_run_turn_stops_when_the_api_key_cannot_be_a_header(
     run, sink = make_run()
     spec = replace(run.spec, api_key="sk-\nbad")
 
-    async def no_events():
-        if False:
-            yield ""
-
-    result = asyncio.run(run_turn(spec, no_events(), sink, threading.Event(), sent_text="hello"))
+    result = asyncio.run(
+        run_turn(spec, WholeText("hello", 40, CueStyle()), sink, threading.Event())
+    )
     assert opened == []
     assert result.error_status == 401
     assert isinstance(result.error, FishAuthError)
@@ -176,12 +167,10 @@ def test_run_turn_retries_before_audio_and_stops_after(
     monkeypatch.setattr("fish_audio_suite_voice.pause.asyncio.sleep", fake_sleep)
     run, sink = make_run()
 
-    async def no_events():
-        if False:
-            yield ""
-
     result = asyncio.run(
-        run_turn(run.spec, no_events(), sink, threading.Event(), sent_text="hello", socket=socket)
+        run_turn(
+            run.spec, WholeText("hello", 40, CueStyle()), sink, threading.Event(), socket=socket
+        )
     )
     assert socket.streams == 2
     # Jitter: half to all of the 2**0 base.
@@ -193,7 +182,9 @@ def test_run_turn_retries_before_audio_and_stops_after(
     socket = ScriptedSocket([b"abcd", RateLimitError(429, "slow", None)])
     run, sink = make_run()
     failed = asyncio.run(
-        run_turn(run.spec, no_events(), sink, threading.Event(), sent_text="hello", socket=socket)
+        run_turn(
+            run.spec, WholeText("hello", 40, CueStyle()), sink, threading.Event(), socket=socket
+        )
     )
     assert socket.streams == 1
     assert slept == []
@@ -208,10 +199,9 @@ def test_run_turn_retries_before_audio_and_stops_after(
     dropped = asyncio.run(
         run_turn(
             run.spec,
-            no_events(),
+            WholeText("hello there friend", 40, CueStyle()),
             sink,
             threading.Event(),
-            sent_text="hello there friend",
             socket=socket,
         )
     )
@@ -234,12 +224,8 @@ def test_retry_backoff_does_not_replay_after_cancel(
     monkeypatch.setattr("fish_audio_suite_voice.pause.asyncio.sleep", fake_sleep)
     run, sink = make_run()
 
-    async def no_events():
-        if False:
-            yield ""
-
     result = asyncio.run(
-        run_turn(run.spec, no_events(), sink, cancel, sent_text="hello", socket=socket)
+        run_turn(run.spec, WholeText("hello", 40, CueStyle()), sink, cancel, socket=socket)
     )
     assert socket.streams == 1
     assert result.cancelled is True
@@ -257,10 +243,9 @@ def test_a_keyboard_interrupt_in_a_turn_is_not_treated_as_a_fish_failure(
         asyncio.run(
             run_turn(
                 run.spec,
-                text_events("hi", run.cancel, 40),
+                text_events("hi", run.cancel, 40, style=CueStyle()),
                 sink,
                 run.cancel,
-                sent_text="",
                 socket=socket,
             )
         )

@@ -40,8 +40,8 @@ def _recognize(ctx: DuplexContext, last_user: str = "") -> str:
 @pytest.mark.parametrize(
     ("error", "kind"),
     [
-        (FishHttpError.from_status(401, "bad key"), "fatal"),
-        (FishHttpError.from_status(503, "down"), "again"),
+        (FishHttpError(401, "bad key"), "fatal"),
+        (FishHttpError(503, "down"), "again"),
         (httpx.ConnectError("no route"), "again"),
     ],
 )
@@ -52,9 +52,7 @@ def test_an_asr_failure_is_fatal_only_for_a_bad_key(
     assert _recognize(make_ctx()) == kind
 
 
-@pytest.mark.parametrize(
-    "error", [FishHttpError.from_status(503, "down"), httpx.ConnectError("cancelled")]
-)
+@pytest.mark.parametrize("error", [FishHttpError(503, "down"), httpx.ConnectError("cancelled")])
 def test_a_failure_after_quit_is_just_a_bye(
     monkeypatch: pytest.MonkeyPatch, error: BaseException
 ) -> None:

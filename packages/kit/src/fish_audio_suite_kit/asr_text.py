@@ -10,14 +10,16 @@ from typing import Final, cast
 
 from fish_audio_suite_kit._charsets import (
     ANGLE_TOKEN_RE,
+    ASCII_STOPS,
     BREAKS_RE,
+    IDEOGRAPHIC_STOPS,
+    LATIN_CLOSER_CHARS,
     SENTENCE_STOPS,
-    cjk_latin_counts,
     plain_breaks,
     utf8_text,
 )
 from fish_audio_suite_kit._single_pass import collapse_space_before_stop
-from fish_audio_suite_kit.junk import DEFAULT_MIN_LETTERS, DEFAULT_SHORT_WORDS
+from fish_audio_suite_kit._speech_floor import too_little_speech
 from fish_audio_suite_kit.payloads import AsrSegment
 
 __all__ = [
@@ -144,12 +146,19 @@ _EN_HALLUCINATION_PHRASES = frozenset(
 )
 # Same watermarks in Chinese. Punctuation is stripped before this lookup.
 _CJK_HALLUCINATION_PHRASES = frozenset({"谢谢观看", "感谢观看", "请订阅", "字幕"})
-# Strip spaces and quotes too, so "谢谢观看。" matches the phrase with no marks.
-_ASR_PUNCT_RE = re.compile(r"[\s.。、，,!?！？…·・~～'\"“”‘’]+")
+# Pause marks folded away with the stops: commas, middle dots and tildes.
+_PAUSE_MARKS = "、，,·・~～"
+# Strip spaces and quotes too, so "谢谢观看。" matches the phrase with no marks. The
+# spaced stops (Arabic, Devanagari, Urdu) are not stripped here: these phrases are CJK.
+_ASR_PUNCT_RE = re.compile(
+    rf"[\s{re.escape(ASCII_STOPS + IDEOGRAPHIC_STOPS + _PAUSE_MARKS)}'\"“”‘’]+"
+)
 # Fold for phrase lists. Spaces stay, so "uh huh" does not become "uhhuh".
-# Includes the Arabic comma, semicolon, and question mark, plus the danda and
-# Urdu stop, so the same utterance folds the same way in every script.
-_FOLD_PUNCT_RE = re.compile(r"[.。、，,!?！？…·・~～؟،؛।۔]+")
+# Every sentence stop, including the danda and Urdu stop, plus the Arabic comma and
+# semicolon, so the same utterance folds the same way in every script.
+_FOLD_PUNCT_RE = re.compile(
+    f"[{re.escape(''.join(sorted(SENTENCE_STOPS)) + _PAUSE_MARKS + '،؛')}]+"
+)
 _SPACE_RE = re.compile(r"\s+")
 # Below this size, gzip ratio is noise. A stuck caption loop compresses past the ratio.
 _GZIP_MIN_BYTES = 48
@@ -278,20 +287,19 @@ _TONE_CUE_RE = re.compile(r"[^\W\d_]+(?:[ '-][^\W\d_]+){0,2}")
 _TONE_CUES_MAX = 3
 
 
-def asr_tone(text: str, *, limit: int = _TONE_CUES_MAX) -> tuple[str, ...]:
+def asr_tone(text: str) -> tuple[str, ...]:
     """List the tone annotations ``transcribe-1-pro`` left in a raw transcript.
 
     Parameters
     ----------
     text : str
         The transcript before ``scrub_asr`` removed its annotations.
-    limit : int, optional
-        The most cues to return. Default 3.
 
     Returns
     -------
     tuple of str
-        Each distinct annotation in order, lowercased, such as ``("laughter", "tired")``. An
+        The first three distinct annotations in order, lowercased, such as
+        ``("laughter", "tired")``. An
         annotation that is not one to three plain words (a timestamp, a long phrase,
         anything with a digit or a symbol) is left out, so the result is safe to put in a
         prompt.
@@ -308,7 +316,7 @@ def asr_tone(text: str, *, limit: int = _TONE_CUES_MAX) -> tuple[str, ...]:
         cue = " ".join(match.group()[1:-1].split()).casefold()
         if _TONE_CUE_RE.fullmatch(cue) and cue not in found:
             found.append(cue)
-            if len(found) >= limit:
+            if len(found) >= _TONE_CUES_MAX:
                 break
     return tuple(found)
 
@@ -345,7 +353,7 @@ def is_caption_watermark(text: str) -> bool:
 
 # A caption after any sentence stop is a separate clause, so it is dropped.
 _STOP_CLASS = re.escape("".join(sorted(SENTENCE_STOPS)))
-_CLAUSE_END_RE = re.compile(rf"[{_STOP_CLASS}][\"'”’)\]]*\s*$")
+_CLAUSE_END_RE = re.compile(rf"[{_STOP_CLASS}][{re.escape(LATIN_CLOSER_CHARS)}\]]*\s*$")
 _WATERMARK_STOP_RE = re.compile(rf"[{_STOP_CLASS}]")
 
 
@@ -458,24 +466,13 @@ def _without_marks(s: str) -> str | None:
     return tagged or None
 
 
-def is_asr_hallucination(
-    text: str,
-    *,
-    min_letters: int = DEFAULT_MIN_LETTERS,
-    short_words: Set[str] | None = None,
-) -> bool:
+def is_asr_hallucination(text: str) -> bool:
     """Return whether an ASR string is silence, a caption watermark, or too thin.
 
     Parameters
     ----------
     text : str
         Transcript, usually after ``scrub_asr``.
-    min_letters : int, optional
-        Fewest letters that count as speech. Default 2, so ``no``, ``ok``,
-        and ``hi`` are kept and a lone letter is dropped.
-    short_words : AbstractSet of str or None, optional
-        Lowercase words kept even below ``min_letters``. Default
-        ``DEFAULT_SHORT_WORDS``. Matters when a caller raises the floor.
 
     Returns
     -------
@@ -483,15 +480,14 @@ def is_asr_hallucination(
         True for empty text, ``nospeech``, YouTube-caption boilerplate
         (thanks-for-watching, Amara, 谢谢观看), gzip-repetitive text, emoji-only
         or angle-token-only text, a single CJK character with no other letter,
-        or fewer than ``min_letters`` letters. ``Été`` and a Russian sentence
-        are speech. Three or more digits are a number, so ``100`` is kept, and
-        a longer CJK sentence is kept.
+        or fewer than two letters unless it is a short answer such as ``no``,
+        ``ok`` or ``hi``. ``Été`` and a Russian sentence are speech. Three or more
+        digits are a number, so ``100`` is kept, and a longer CJK sentence is kept.
 
     Notes
     -----
     A caller uses this to drop a turn before the LLM, so a false positive
-    discards real speech. Callers who want a stricter gate can raise
-    ``min_letters`` and rely on ``short_words`` for the answers they keep.
+    discards real speech.
     """
     if not text or not text.strip():
         return True
@@ -501,17 +497,7 @@ def is_asr_hallucination(
     tagged = _without_marks(s)
     if tagged is None or _gzip_repetitive(tagged):
         return True
-    cjk, letters = cjk_latin_counts(s)
-    if letters == 0 and cjk == 1:
-        return True
-    if cjk:
-        return False
-    if sum(ch.isdigit() for ch in s) >= 3:
-        return False
-    words = DEFAULT_SHORT_WORDS if short_words is None else short_words
-    if "".join(ch for ch in s.lower() if ch.isalnum()) in words:
-        return False
-    return letters < min_letters
+    return too_little_speech(s, any_cjk=True)
 
 
 def _known_phrase(text: str, phrases: Set[str]) -> bool:

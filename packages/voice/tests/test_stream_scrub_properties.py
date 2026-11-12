@@ -11,8 +11,8 @@ from fishaudio import FlushEvent, TextEvent
 from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 
-from fish_audio_suite_kit import ends_sentence, is_empty_delta
-from fish_audio_suite_voice.stream_scrub import delta_events
+from fish_audio_suite_kit import CueStyle, ends_sentence
+from fish_audio_suite_voice.tts_text import delta_events
 
 # Pieces that exercise the scrubber's state machine: spans that hold text until
 # they close, line and sentence starts, cues, and the break characters it folds.
@@ -95,7 +95,7 @@ def _run(
                 tokens,
                 cancel,
                 partial_chars=partial,
-                mood_lead=mood_lead,
+                style=CueStyle(lead=mood_lead),
                 early_flush=early_flush,
             )
         ]
@@ -112,7 +112,7 @@ def test_only_text_and_flush_events_come_out_and_never_an_empty_one(
     for event in events:
         assert isinstance(event, TextEvent | FlushEvent)
         if isinstance(event, TextEvent):
-            assert not is_empty_delta(event.text)
+            assert event.text.strip()
 
 
 @_SETTINGS
@@ -168,7 +168,11 @@ async def _events_of(tokens: list[str], *, partial: int = 40) -> list[tuple[str,
     return [
         ("text", ev.text) if isinstance(ev, TextEvent) else ("flush", "")
         async for ev in delta_events(
-            tokens, threading.Event(), partial_chars=partial, mood_lead=False, early_flush=True
+            tokens,
+            threading.Event(),
+            partial_chars=partial,
+            style=CueStyle(),
+            early_flush=True,
         )
     ]
 

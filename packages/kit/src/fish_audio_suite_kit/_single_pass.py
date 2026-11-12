@@ -10,6 +10,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 
+from fish_audio_suite_kit._charsets import (
+    ASCII_STOPS,
+    CLAUSE_MARKS,
+    EMPHASIS_MARKS,
+    IDEOGRAPHIC_STOPS,
+    PUNCT_BEFORE_CLOSER,
+)
+
 __all__ = [
     "blank_table_separators",
     "collapse_space_before_stop",
@@ -19,9 +27,8 @@ __all__ = [
 ]
 
 _SPACES = frozenset(" \t")
-_STOPS = frozenset(".!?…。！？,;:，；：")
-_MARKS = frozenset("*_`~")
-_AFTER_WORD_PUNCT = frozenset(",.!?;:，！：")
+_STOPS = frozenset(ASCII_STOPS + IDEOGRAPHIC_STOPS + CLAUSE_MARKS)
+_MARKS = frozenset(EMPHASIS_MARKS)
 _SEPARATOR_CHARS = frozenset(" \t|:-")
 
 
@@ -193,7 +200,7 @@ def _wrap_end(text: str, start: int, run_end: int) -> int:
             return found
     attached = (
         after_word
-        or (start >= 2 and prev in _AFTER_WORD_PUNCT and _is_word(text[start - 2]))
+        or (start >= 2 and prev in PUNCT_BEFORE_CLOSER and _is_word(text[start - 2]))
         or prev == "]"
     )
     if attached:

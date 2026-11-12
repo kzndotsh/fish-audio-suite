@@ -121,7 +121,7 @@ async def _post_fish(
             response = await client.post(url, **kwargs)
         except httpx.RequestError as exc:
             status, message = describe_request_error(exc, httpx.TimeoutException)
-            last_error = FishHttpError.from_status(status, with_detail(message, exc))
+            last_error = FishHttpError(status, with_detail(message, exc))
             if await _pause_or_raise(attempt, last_error, exc, cancel):
                 return None
             continue
@@ -131,7 +131,7 @@ async def _post_fish(
             message = (
                 f"{detail.message} (request_id {request_id})" if request_id else detail.message
             )
-            last_error = FishHttpError.from_status(
+            last_error = FishHttpError(
                 detail.status,
                 message,
                 retry_after=retry_after_s(response.headers),

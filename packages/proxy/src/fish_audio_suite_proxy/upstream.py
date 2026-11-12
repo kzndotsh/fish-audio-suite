@@ -170,7 +170,7 @@ async def _closed_error(upstream: httpx.Response) -> tuple[JSONResponse, FishHtt
         log.warning("fish error body unreadable status=%s: %s", code, exc)
         ids = _fish_error_ids(b"", upstream.headers)
         _log_fish_error(code, ids)
-        failure = FishHttpError.from_status(
+        failure = FishHttpError(
             code,
             _BODY_UNREADABLE.format(code=code),
             retry_after=retry_after_s(upstream.headers),
@@ -182,7 +182,7 @@ async def _closed_error(upstream: httpx.Response) -> tuple[JSONResponse, FishHtt
     ids = _fish_error_ids(body, upstream.headers)
     _log_fish_error(upstream.status_code, ids)
     # The HTTP status decides whether to retry, even when the body names another.
-    failure = FishHttpError.from_status(
+    failure = FishHttpError(
         upstream.status_code,
         detail.message,
         retry_after=retry_after_s(upstream.headers),

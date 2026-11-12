@@ -1,9 +1,10 @@
-"""Incremental scrub for a streamed reply: hold unclosed spans, cut, then send.
+"""The text events Fish is sent for one turn, from a whole reply or a token stream.
 
-It backs ``FishSpeaker.speak_stream``, and through it the duplex loop when
-``FISH_VOICE_STREAM_TTS`` is on: tokens are cleaned and cut as they arrive, so Fish
-speaks the first sentence while the model is still writing. With streaming off,
-the loop scrubs the whole reply at once instead.
+``text_events`` cuts a whole reply that is already shaped. ``delta_events`` shapes a
+streamed reply as it arrives: it holds an unclosed span, shapes each stable chunk with the
+turn's ``CueStyle`` and cuts it, so Fish speaks the first sentence while the model is still
+writing. Both send each piece through the same step (skip a blank one, carry the mood
+unless the model is directed) and flush only after text.
 """
 
 from __future__ import annotations
@@ -11,68 +12,164 @@ from __future__ import annotations
 import re
 import threading
 from collections.abc import AsyncIterable, AsyncIterator, Iterable, Iterator
+from dataclasses import dataclass
 from typing import Any, Final
 
 from fishaudio import FlushEvent, TextEvent
 
-from fish_audio_suite_kit import (
-    MoodCarry,
-    ends_sentence,
-    is_empty_delta,
-    normalize_cues,
-    scrub_tts,
-    split_tts_piece,
-    tts_hold_at,
-)
-from fish_audio_suite_voice.wire import as_async, flush_if_sent
+from fish_audio_suite_kit import CueStyle, MoodCarry, ends_sentence, split_tts_piece
 
 __all__ = [
+    "WholeText",
+    "as_async",
     "delta_events",
+    "flush_if_sent",
+    "text_events",
 ]
 
 
-def _text_event(piece: str) -> TextEvent | None:
-    # The piece was already scrubbed, including one edge space. Scrubbing
-    # again strips that space and the next cut is spoken as one word.
-    if is_empty_delta(piece):
-        return None
-    return TextEvent(text=piece)
+def flush_if_sent(sent: int, cancel: threading.Event) -> FlushEvent | None:
+    """Return a flush only when text was sent and the turn was not cancelled.
+
+    Parameters
+    ----------
+    sent : int
+        How many ``TextEvent`` values were yielded.
+    cancel : threading.Event
+        When set, return None so Fish is not asked to flush a dead turn.
+
+    Returns
+    -------
+    FlushEvent or None
+        None when ``sent`` is 0. An empty turn plus a bare flush is invalid.
+    """
+    if sent and not cancel.is_set():
+        return FlushEvent()
+    return None
 
 
-def _hold_at(
-    text: str,
+async def as_async(deltas: Iterable[str] | AsyncIterable[str]) -> AsyncIterator[str]:
+    """Yield text deltas from either an async or a plain iterable.
+
+    Parameters
+    ----------
+    deltas : Iterable or AsyncIterable of str
+        The text pieces.
+
+    Yields
+    ------
+    str
+        Each piece, in order.
+    """
+    if isinstance(deltas, AsyncIterable):
+        async for item in deltas:
+            yield item
+        return
+    for item in deltas:
+        yield item
+
+
+class _Pieces:
+    """Turn shaped pieces into text events, one at a time, as Fish is sent them."""
+
+    def __init__(self, style: CueStyle) -> None:
+        self._carry = MoodCarry() if style.carries_mood else None
+
+    def event(self, piece: str) -> TextEvent | None:
+        # The piece is already shaped, including one edge space. Shaping it again
+        # would strip that space, and the next cut would be spoken as one word.
+        if not piece.strip():
+            return None
+        # Each piece goes to Fish on its own, so a sentence the model wrote without a cue
+        # would start cold: it gets the mood the last sentence had. A directed model reads
+        # each direction where it is written, so it gets none.
+        return TextEvent(text=piece if self._carry is None else self._carry.apply(piece))
+
+
+async def text_events(
+    prepared: str,
+    cancel: threading.Event,
+    partial_chars: int,
     *,
-    line_start: bool,
-    sentence_start: bool,
-    before: str = "",
-    lead: bool = False,
-) -> int:
-    return tts_hold_at(
-        text,
-        line_start=line_start,
-        sentence_start=sentence_start,
-        before=before,
-        lead=lead,
-    )
+    style: CueStyle,
+) -> AsyncIterator[Any]:
+    """Yield Fish text events for a whole reply, then one flush.
+
+    Parameters
+    ----------
+    prepared : str
+        The reply, already shaped with ``style``.
+    cancel : threading.Event
+        Stops before the next piece. A cancel after zero pieces yields no flush.
+    partial_chars : int
+        Passed to ``split_tts_piece``. ``flush_rest`` is True, so the tail
+        is not left buffered.
+    style : CueStyle
+        The turn's cue style. Only whether it carries a mood is read here.
+
+    Yields
+    ------
+    TextEvent or FlushEvent
+        Empty pieces are skipped. ``FlushEvent`` is yielded only after at
+        least one ``TextEvent``. A bare flush on an empty turn is invalid.
+    """
+    buf = prepared
+    sent = 0
+    pieces = _Pieces(style)
+    while buf:
+        if cancel.is_set():
+            break
+        split = split_tts_piece(buf, partial_chars, flush_rest=True)
+        if split is None:
+            break
+        piece, buf = split
+        event = pieces.event(piece)
+        if event is None:
+            continue
+        yield event
+        sent += 1
+    flush = flush_if_sent(sent, cancel)
+    if flush is not None:
+        yield flush
+
+
+@dataclass(frozen=True, slots=True)
+class WholeText:
+    """A whole reply, already shaped, that a turn can send again after a failed attempt.
+
+    Attributes
+    ----------
+    text : str
+        The reply as Fish reads it, already shaped with ``style``.
+    partial_chars : int
+        The cut window for ``text_events``.
+    style : CueStyle
+        The turn's cue style.
+    """
+
+    text: str
+    partial_chars: int
+    style: CueStyle
+
+    def events(self, cancel: threading.Event) -> AsyncIterator[Any]:
+        """Return a fresh ``text_events`` stream over ``text``.
+
+        Parameters
+        ----------
+        cancel : threading.Event
+            Stops the stream.
+
+        Returns
+        -------
+        AsyncIterator
+            Text events, then one flush.
+        """
+        return text_events(self.text, cancel, self.partial_chars, style=self.style)
 
 
 def _at_line_start(ready: str) -> bool:
     text = ready.rstrip(" \t")
     return not text or text.endswith("\n")
-
-
-def _stable_prefix(
-    text: str,
-    *,
-    line_start: bool,
-    sentence_start: bool,
-    before: str = "",
-    lead: bool = False,
-) -> tuple[str, str]:
-    cut = _hold_at(
-        text, line_start=line_start, sentence_start=sentence_start, before=before, lead=lead
-    )
-    return text[:cut], text[cut:]
 
 
 # A closer split from its word ("words" then "** ") is not an operator.
@@ -129,18 +226,17 @@ def _continues_sentence(ready: str, incoming: str = "") -> bool:
     return not (incoming[:1].isspace() and ends_sentence(ready + incoming[:1]))
 
 
-def _scrub_chunk(
+def _shape_chunk(
     text: str,
+    style: CueStyle,
     *,
-    lead: bool = True,
-    line_start: bool = True,
-    before: str = "",
+    sentence_start: bool,
+    line_start: bool,
+    before: str,
     after: str = "",
-    continued: bool = False,
-    official: bool = False,
-    directed: bool = False,
+    continued: bool,
 ) -> str:
-    """Scrub one stable stream chunk with the text already accepted around it."""
+    """Shape one stable stream chunk with the text already accepted around it."""
     if not text:
         return ""
     # A chunk edge is the middle of the reply. Whole-string scrub strips
@@ -151,18 +247,17 @@ def _scrub_chunk(
     body = text.lstrip(" \t")
     lead_breaks = min(len(body) - len(body.lstrip("\n")), 2)
     ended_line = text.rstrip(" \t").endswith("\n")
-    cleaned = scrub_tts(
+    spoken = style.shape(
         text,
         line_start=line_start,
         continued=continued,
         before=before[-1:],
         after=after[:1],
-        directed=directed,
+        sentence_start=sentence_start,
     )
-    spoken = normalize_cues(cleaned, lead=lead, official=official, directed=directed)
-    if (lead_space or cleaned[:1] == " ") and spoken[:1] != " ":
+    if lead_space and spoken[:1] != " ":
         spoken = f" {spoken}"
-    if (trail_space or cleaned[-1:] == " ") and spoken[-1:] != " ":
+    if trail_space and spoken[-1:] != " ":
         spoken = f"{spoken} "
     if lead_breaks and not spoken.startswith("\n"):
         spoken = ("\n" * lead_breaks) + spoken.lstrip(" ")
@@ -175,7 +270,7 @@ def _scrub_chunk(
 _EARLY_FLUSH_WINDOWS: Final = 2
 
 
-class _StreamScrubber:
+class _StreamShaper:
     """State machine behind ``delta_events``: tokens in, Fish events out.
 
     ``feed`` and ``finish`` are generators, so ``cancel`` is read at the same
@@ -188,17 +283,13 @@ class _StreamScrubber:
         cancel: threading.Event,
         *,
         partial_chars: int,
-        mood_lead: bool,
+        style: CueStyle,
         early_flush: bool,
-        official: bool = False,
-        directed: bool = False,
     ) -> None:
         self._cancel = cancel
-        self._official = official
-        self._directed = directed
-        self._carry = MoodCarry()
+        self._style = style
+        self._pieces = _Pieces(style)
         self._partial_chars = partial_chars
-        self._mood_lead = mood_lead
         self._early_flush = early_flush
         self._raw = ""
         self._ready = ""
@@ -226,12 +317,7 @@ class _StreamScrubber:
         return piece
 
     def _emit(self, piece: str) -> Iterator[Any]:
-        if is_empty_delta(piece):
-            return
-        # Each piece goes to Fish on its own, so a sentence the model wrote without a cue
-        # would start cold. It gets the mood the last sentence had.
-        # A directed model takes each direction where it is written, so none is carried on.
-        event = _text_event(piece if self._directed else self._carry.apply(piece))
+        event = self._pieces.event(piece)
         if event is None:
             return
         self._sent += 1
@@ -247,6 +333,21 @@ class _StreamScrubber:
                 self._sent_text = ""
                 yield FlushEvent()
 
+    def _accept(self, stable: str, *, sentence_start: bool, after: str = "") -> None:
+        accepted = self._sent_line + self._ready
+        self._ready = _glue_sentence_stop(
+            self._ready,
+            _shape_chunk(
+                stable,
+                self._style,
+                sentence_start=sentence_start,
+                line_start=_at_line_start(accepted),
+                before=self._ready[-1:] or self._last,
+                after=after,
+                continued=bool(accepted.strip()),
+            ),
+        )
+
     def feed(self, tok: str) -> Iterator[Any]:
         """Take one model token and yield the events it makes ready."""
         # A space-only token is not a TextEvent, but it is the boundary
@@ -255,28 +356,16 @@ class _StreamScrubber:
         # The line already sent counts too: once a piece leaves, ``ready`` is empty
         # and a mood word inside a long sentence would look like a new one.
         sentence_start = not _continues_sentence(self._sent_line + self._ready, self._raw)
-        stable, self._raw = _stable_prefix(
+        cut = self._style.hold_at(
             self._raw,
             line_start=_at_line_start(self._sent_line + self._ready),
             sentence_start=sentence_start,
             before=self._ready,
-            lead=self._mood_lead,
         )
+        stable, self._raw = self._raw[:cut], self._raw[cut:]
         if stable:
             stable = _drop_orphan_closer(stable, self._ready)
-            self._ready = _glue_sentence_stop(
-                self._ready,
-                _scrub_chunk(
-                    stable,
-                    lead=sentence_start and self._mood_lead,
-                    line_start=_at_line_start(self._sent_line + self._ready),
-                    before=self._ready[-1:] or self._last,
-                    after=self._raw[:1],
-                    continued=bool((self._sent_line + self._ready).strip()),
-                    official=self._official,
-                    directed=self._directed,
-                ),
-            )
+            self._accept(stable, sentence_start=sentence_start, after=self._raw[:1])
             if self._ready:
                 self._last = self._ready[-1]
         while (piece := self._take_ready()) is not None:
@@ -284,22 +373,11 @@ class _StreamScrubber:
             yield from self._emit(piece)
 
     def finish(self) -> Iterator[Any]:
-        """Scrub what is still held, send it, and yield the closing flush."""
+        """Shape what is still held, send it, and yield the closing flush."""
         if not self._cancel.is_set() and self._raw:
-            lead = not _continues_sentence(self._sent_line + self._ready, self._raw)
+            sentence_start = not _continues_sentence(self._sent_line + self._ready, self._raw)
             self._raw = _drop_orphan_closer(self._raw, self._ready)
-            self._ready = _glue_sentence_stop(
-                self._ready,
-                _scrub_chunk(
-                    self._raw,
-                    lead=lead,
-                    line_start=_at_line_start(self._sent_line + self._ready),
-                    before=self._ready[-1:] or self._last,
-                    continued=bool((self._sent_line + self._ready).strip()),
-                    official=self._official,
-                    directed=self._directed,
-                ),
-            )
+            self._accept(self._raw, sentence_start=sentence_start)
         # A span held until the end can be longer than the send window.
         # One cut would speak the first words and drop the rest.
         while self._ready and not self._cancel.is_set():
@@ -321,12 +399,10 @@ async def delta_events(
     cancel: threading.Event,
     *,
     partial_chars: int,
-    mood_lead: bool = False,
+    style: CueStyle,
     early_flush: bool = False,
-    official: bool = False,
-    directed: bool = False,
 ) -> AsyncIterator[Any]:
-    """Cut model deltas into Fish text events, scrubbing as each span closes.
+    """Cut model deltas into Fish text events, shaping each span as it closes.
 
     Parameters
     ----------
@@ -336,14 +412,8 @@ async def delta_events(
         Stops the stream.
     partial_chars : int
         Size of one Fish text event.
-    mood_lead : bool, optional
-        Rewrite a sentence-leading mood word into a ``[cue]``. Default False.
-    official : bool, optional
-        Keep only Fish's own cues, mapping or removing the rest. Default False.
-    directed : bool, optional
-        The model is directed in plain language (``takes_directions``): directions and
-        paired tags go through as written, and no mood is carried between sentences.
-        Default False.
+    style : CueStyle
+        How cues are shaped, the same style a whole reply is shaped with.
     early_flush : bool, optional
         Flush once at the end of the first sentence, so Fish speaks it while
         the model is still writing. Default False. Fish holds text until a
@@ -365,18 +435,13 @@ async def delta_events(
     A thought, parenthesis, bracket, or URL stays buffered until it closes, so
     a cut cannot speak the inside of a span the closer would remove.
     """
-    scrubber = _StreamScrubber(
-        cancel,
-        partial_chars=partial_chars,
-        mood_lead=mood_lead,
-        early_flush=early_flush,
-        official=official,
-        directed=directed,
+    shaper = _StreamShaper(
+        cancel, partial_chars=partial_chars, style=style, early_flush=early_flush
     )
     async for tok in as_async(deltas):
         if cancel.is_set():
             break
-        for event in scrubber.feed(tok):
+        for event in shaper.feed(tok):
             yield event
-    for event in scrubber.finish():
+    for event in shaper.finish():
         yield event

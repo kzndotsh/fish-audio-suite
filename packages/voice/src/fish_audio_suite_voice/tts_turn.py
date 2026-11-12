@@ -24,6 +24,7 @@ from fish_audio_suite_voice.cancel import is_cancel_noise, quiet_shutdown
 from fish_audio_suite_voice.debug import debug
 from fish_audio_suite_voice.pause import sleep_unless
 from fish_audio_suite_voice.playback import PlaybackSink
+from fish_audio_suite_voice.tts_text import WholeText
 from fish_audio_suite_voice.wire import (
     AudioArrival,
     FishSocket,
@@ -31,9 +32,7 @@ from fish_audio_suite_voice.wire import (
     TtsResult,
     TurnRun,
     TurnSpec,
-    as_async,
     send_turn,
-    text_events,
     tts_result,
     turn_failure,
 )
@@ -42,13 +41,8 @@ _WS_TIMEOUT_S: Final = 240.0
 
 __all__ = [
     "SdkSocket",
-    "TtsResult",
-    "TurnSpec",
-    "as_async",
-    "is_cancel_noise",
     "run_isolated",
     "run_turn",
-    "text_events",
 ]
 
 
@@ -130,6 +124,13 @@ class SdkSocket:
 class _Turn:
     run: TurnRun
     socket: FishSocket
+    source: WholeText | AsyncIterator[Any]
+
+    def events(self) -> AsyncIterator[Any]:
+        # A whole reply is cut afresh for each attempt. A stream can be read only once.
+        if isinstance(self.source, WholeText):
+            return self.source.events(self.run.cancel)
+        return self.source
 
 
 async def _retry_pause(cancel: threading.Event, attempt: int) -> bool:
@@ -139,13 +140,13 @@ async def _retry_pause(cancel: threading.Event, attempt: int) -> bool:
     return await sleep_unless(fish_backoff_s(attempt), cancel.is_set)
 
 
-async def _one_attempt(turn: _Turn, events: AsyncIterator[Any], attempt: int) -> bool:
+async def _one_attempt(turn: _Turn, attempt: int) -> bool:
     """Return whether this attempt should stop the turn. False means retry before audio."""
     run = turn.run
     if run.cancel.is_set():
         return True
     try:
-        await send_turn(turn.socket, events, run)
+        await send_turn(turn.socket, turn.events(), run)
     except (asyncio.CancelledError, GeneratorExit) as exc:
         await turn.socket.close()
         if run.cancel.is_set() or is_cancel_noise(exc):
@@ -185,11 +186,10 @@ def _turn_headers(spec: TurnSpec, sent_text: str) -> dict[str, str]:
 
 async def run_turn(
     spec: TurnSpec,
-    events: AsyncIterator[Any],
+    source: WholeText | AsyncIterator[Any],
     sink: PlaybackSink,
     cancel: threading.Event,
     *,
-    sent_text: str,
     on_first_audio: Callable[[], None] | None = None,
     socket: FishSocket | None = None,
 ) -> TtsResult:
@@ -199,16 +199,13 @@ async def run_turn(
     ----------
     spec : TurnSpec
         Voice, model, and format.
-    events : AsyncIterator
-        Text and flush events. Replayed from ``sent_text`` when that string
-        is non-empty.
+    source : WholeText or AsyncIterator
+        A whole shaped reply, which a failed attempt can send again, or a stream of
+        text and flush events, which cannot be repeated.
     sink : PlaybackSink
         Started here and finished in ``finally``, including on cancel.
     cancel : threading.Event
         Barge-in or Ctrl+C.
-    sent_text : str
-        Full text to replay. Empty means the original ``events`` iterator is
-        the only source, so a failed attempt cannot be repeated.
     on_first_audio : Callable or None, optional
         Called once, on the websocket's thread, when the first audio chunk
         arrives. It must not block.
@@ -225,6 +222,7 @@ async def run_turn(
     ``turn_failure`` decides what is retryable. The socket is closed here. The
     websocket iterator is not ``aclose()``'d; closing the socket ends it.
     """
+    sent_text = source.text if isinstance(source, WholeText) else ""
     run = TurnRun(
         spec=spec,
         sink=sink,
@@ -236,14 +234,14 @@ async def run_turn(
         on_first_audio=on_first_audio,
     )
     headers = _turn_headers(spec, sent_text)
-    turn = _Turn(run=run, socket=SdkSocket(headers) if socket is None else socket)
+    turn = _Turn(run=run, socket=SdkSocket(headers) if socket is None else socket, source=source)
 
     try:
         # start() can open the DAC and then raise. finish() still has to
         # close that stream, or the device stays busy for the next turn.
         sink.start()
         for attempt in range(FISH_RETRY_ATTEMPTS):
-            if await _one_attempt(turn, events, attempt):
+            if await _one_attempt(turn, attempt):
                 break
     finally:
         try:
