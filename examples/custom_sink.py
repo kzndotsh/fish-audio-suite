@@ -17,6 +17,9 @@ A sink only needs these members (the `PlaybackSink` protocol):
 - `output_latency_s`: how many seconds of audio the sink holds before it is
   heard. Use `0.0` when there is no buffering.
 
+A sink may also set `audio_format` to the format it takes (`"pcm"`, `"wav"`,
+`"mp3"` or `"opus"`). This one leaves it out, so Fish sends raw PCM.
+
 There is no base class to inherit from. Any class with these members works.
 
 This sink plays nothing. It draws a bar of `#` marks for every 100 ms of
@@ -105,9 +108,9 @@ def main() -> None:
 
     speaker = FishSpeaker(api_key=api_key, voice_id=voice_id)
 
-    # Pass `speaker.sample_rate` so the meter's 100 ms windows match the audio.
+    # Pass `speaker.tune.sample_rate` so the meter's 100 ms windows match the audio.
     result = speaker.speak(
-        "[calm] Watch the meter follow my voice.", MeterSink(speaker.sample_rate)
+        "[calm] Watch the meter follow my voice.", MeterSink(speaker.tune.sample_rate)
     )
     if result.error:
         sys.exit(f"Fish failed: {type(result.error).__name__}: {result.error.message}")

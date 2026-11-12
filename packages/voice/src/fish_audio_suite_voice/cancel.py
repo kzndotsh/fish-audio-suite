@@ -11,7 +11,9 @@ from fish_audio_suite_voice.debug import debug
 
 __all__ = [
     "StopFlag",
+    "all_cancel_noise",
     "any_of",
+    "first_real_error",
     "is_cancel_noise",
     "is_own_cancel",
     "never",
@@ -104,6 +106,58 @@ def is_cancel_noise(exc: BaseException, *, cancelled: bool = False) -> bool:
         debug("cancel.noise matched by message: {}", msg)
         return True
     return False
+
+
+def all_cancel_noise(exc: BaseException, *, cancelled: bool = False) -> bool:
+    """Return whether ``exc``, and every error inside it when it is a group, is cancel noise.
+
+    Parameters
+    ----------
+    exc : BaseException
+        An error from a stream, possibly an exception group from a task group.
+    cancelled : bool, optional
+        Passed to ``is_cancel_noise`` for each error.
+
+    Returns
+    -------
+    bool
+        True for a non-empty group whose every leaf is noise, or a single error that is.
+        A group that holds one real error is not noise: it must be reported, or the reply
+        stops unexplained.
+    """
+    if isinstance(exc, BaseExceptionGroup):
+        return bool(exc.exceptions) and all(
+            all_cancel_noise(item, cancelled=cancelled) for item in exc.exceptions
+        )
+    return is_cancel_noise(exc, cancelled=cancelled)
+
+
+def first_real_error(exc: BaseException) -> BaseException:
+    """Return the first error in ``exc`` that is not cancel noise, unwrapping groups.
+
+    Parameters
+    ----------
+    exc : BaseException
+        An error from one Fish attempt, possibly an exception group.
+
+    Returns
+    -------
+    BaseException
+        The first leaf, depth first, that ``is_cancel_noise`` does not match. When every
+        leaf is noise, the first leaf. ``exc`` itself when it is not a group.
+
+    Notes
+    -----
+    The first entry of a group is often the cancel from a sibling task. Stopping there
+    would hide a 503, and a turn with no audio would not be retried.
+    """
+    if isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+        for item in exc.exceptions:
+            found = first_real_error(item)
+            if not is_cancel_noise(found):
+                return found
+        return first_real_error(exc.exceptions[0])
+    return exc
 
 
 def is_own_cancel(flag: asyncio.Event | threading.Event | None) -> bool:

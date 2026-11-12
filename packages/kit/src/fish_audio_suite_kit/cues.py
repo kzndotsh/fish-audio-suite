@@ -109,7 +109,9 @@ SPOKEN_MOOD_LEAD_RE: Final = re.compile(
 )
 
 
-def cue_pattern(max_chars: int, *, min_chars: int = 1, capture: bool = False) -> str:
+def cue_pattern(
+    max_chars: int, *, min_chars: int = 1, capture: bool = False, flat: bool = False
+) -> str:
     """Return the regex source for one ``[cue]``: a bracket with no newline or ``]`` inside.
 
     Parameters
@@ -121,13 +123,24 @@ def cue_pattern(max_chars: int, *, min_chars: int = 1, capture: bool = False) ->
         The shortest cue text. Default 1; 0 also matches ``[]``.
     capture : bool, optional
         Put the cue text in a group. Default False, to embed in a larger pattern.
+    flat : bool, optional
+        Refuse a ``[`` inside the cue too, so ``[[calm]`` matches only ``[calm]``.
+        Default False.
 
     Returns
     -------
     str
         The pattern source.
+
+    Examples
+    --------
+    >>> import re
+    >>> re.findall(cue_pattern(80, flat=True), "[[calm] hi [a [sad]")
+    ['[calm]', '[sad]']
     """
-    body = rf"[^\]\n]{{{min_chars},{max_chars}}}"
+    body = (
+        rf"[^\[\]\n]{{{min_chars},{max_chars}}}" if flat else rf"[^\]\n]{{{min_chars},{max_chars}}}"
+    )
     return rf"\[({body})\]" if capture else rf"\[{body}\]"
 
 
@@ -583,7 +596,7 @@ def normalize_cues(
     return "".join(out)
 
 
-_LEADING_CUES_RE: Final = re.compile(rf"^\s*((?:\[[^\[\]\n]{{1,{_MAX_CUE_CHARS}}}\]\s*)*)")
+_LEADING_CUES_RE: Final = re.compile(rf"^\s*((?:{cue_pattern(_MAX_CUE_CHARS, flat=True)}\s*)*)")
 
 
 class MoodCarry:

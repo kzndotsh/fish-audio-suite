@@ -39,6 +39,7 @@ def test_the_root_exports_the_types_public_signatures_use() -> None:
         "LlmTune",
         "PortAudioMissingError",
         "TtsResult",
+        "TtsTune",
         "DuplexSession",
         "ChatBackend",
         "PlaybackKind",

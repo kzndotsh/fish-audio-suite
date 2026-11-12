@@ -18,7 +18,6 @@ import httpx
 
 from fish_audio_suite_kit import (
     FISH_ASR_PATH,
-    FISH_RETRY_ATTEMPTS,
     FishAuthError,
     FishHttpError,
     SuiteDefaults,
@@ -30,7 +29,6 @@ from fish_audio_suite_kit import (
     describe_request_error,
     elapsed_ms,
     fish_attempt_exhausted,
-    fish_backoff_s,
     fish_request_id,
     make_traceparent,
     parse_asr_body,
@@ -42,10 +40,10 @@ from fish_audio_suite_kit import (
 from fish_audio_suite_voice.cancel import never
 from fish_audio_suite_voice.config import VoiceCliConfig
 from fish_audio_suite_voice.debug import debug, warn, with_detail
-from fish_audio_suite_voice.pause import sleep_unless
+from fish_audio_suite_voice.log_meta import public_meta
+from fish_audio_suite_voice.pause import Retry, fish_retries
 from fish_audio_suite_voice.recognised import NoTurn, Transcript
 from fish_audio_suite_voice.tune import HTTP_KEEPALIVE_S
-from fish_audio_suite_voice.ws_tap import public_meta
 
 __all__ = [
     "AsrResult",
@@ -83,23 +81,6 @@ def _json_or_none(text: str) -> object:
         return None
 
 
-async def _pause_or_raise(
-    attempt: int,
-    error: FishHttpError,
-    cause: BaseException | None,
-    cancel: threading.Event | None,
-    retry_after: float | None = None,
-) -> bool:
-    """Return whether quit landed during the backoff and the next post must not run."""
-    if fish_attempt_exhausted(attempt):
-        if cause is None:
-            raise error
-        raise error from cause
-    wait = fish_backoff_s(attempt, retry_after=retry_after)
-    # Quit during the wait must not post the next try.
-    return await sleep_unless(wait, cancel.is_set if cancel is not None else never)
-
-
 async def _post_fish(
     client: httpx.AsyncClient,
     url: str,
@@ -107,18 +88,15 @@ async def _post_fish(
     **kwargs: Any,
 ) -> httpx.Response | None:
     """Post once per attempt. None means the quit flag stopped the retries."""
-    last_error: FishHttpError | None = None
-    for attempt in range(FISH_RETRY_ATTEMPTS):
-        if cancel is not None and cancel.is_set():
-            return None
+
+    async def attempt(number: int) -> httpx.Response | Retry:
         try:
             response = await client.post(url, **kwargs)
         except httpx.RequestError as exc:
             status, message = describe_request_error(exc, httpx.TimeoutException)
-            last_error = FishHttpError(status, with_detail(message, exc))
-            if await _pause_or_raise(attempt, last_error, exc, cancel):
-                return None
-            continue
+            if fish_attempt_exhausted(number):
+                raise FishHttpError(status, with_detail(message, exc)) from exc
+            return Retry()
         if response.status_code >= 400:
             detail = parse_fish_error(response.status_code, response.text)
             request_id = fish_request_id(
@@ -127,18 +105,17 @@ async def _post_fish(
             message = (
                 f"{detail.message} (request_id {request_id})" if request_id else detail.message
             )
-            last_error = FishHttpError(
+            error = FishHttpError(
                 detail.status,
                 message,
                 retry_after=retry_after_s(response.headers),
             )
-            if last_error.retryable:
-                if await _pause_or_raise(attempt, last_error, None, cancel, last_error.retry_after):
-                    return None
-                continue
-            raise last_error
+            if not error.retryable or fish_attempt_exhausted(number):
+                raise error
+            return Retry(error.retry_after)
         return response
-    raise last_error or FishHttpError.for_unreachable()
+
+    return await fish_retries(attempt, cancel.is_set if cancel is not None else never)
 
 
 def asr_client() -> httpx.AsyncClient:

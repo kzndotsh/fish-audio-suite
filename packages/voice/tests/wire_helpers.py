@@ -6,11 +6,12 @@ import time
 from collections.abc import AsyncIterator, Iterable, Sequence
 from typing import Any
 
-from fishaudio.types import TTSConfig
+from fishaudio.types import Prosody, TTSConfig
 
 from fish_audio_suite_kit import CueStyle
 from fish_audio_suite_voice.speaker import FishSpeaker
 from fish_audio_suite_voice.tts_text import delta_events, text_events
+from fish_audio_suite_voice.tts_tune import TtsTune
 from fish_audio_suite_voice.wire import (
     AudioArrival,
     FlushEvent,
@@ -78,12 +79,10 @@ def make_run() -> tuple[TurnRun, RecordingSink]:
         base_url="https://api.fish.audio",
         voice_id="v",
         model="s2.1-pro",
-        audio_format="pcm",
-        latency="balanced",
-        speed=1.0,
-        sample_rate=44100,
         trace_headers={},
-        config=TTSConfig(),
+        config=TTSConfig(
+            format="pcm", latency="balanced", sample_rate=44100, prosody=Prosody(speed=1.0)
+        ),
     )
     run = TurnRun(
         spec=spec,
@@ -107,11 +106,13 @@ def collect_events(
 
 
 def stream_events(tts: FishSpeaker, deltas: Iterable[str], cancel: threading.Event):
-    return delta_events(deltas, cancel, partial_chars=tts.partial_chars, style=CueStyle(lead=True))
+    return delta_events(
+        deltas, cancel, partial_chars=tts.tune.partial_chars, style=CueStyle(lead=True)
+    )
 
 
 def stream_text(deltas: list[str], partial_chars: int) -> str:
-    tts = FishSpeaker(api_key="k", voice_id="v", partial_chars=partial_chars)
+    tts = FishSpeaker(api_key="k", voice_id="v", tune=TtsTune(partial_chars=partial_chars))
 
     async def collect() -> str:
         events = [event async for event in stream_events(tts, deltas, threading.Event())]

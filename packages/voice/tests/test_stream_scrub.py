@@ -18,6 +18,7 @@ from fish_audio_suite_kit import (
 )
 from fish_audio_suite_voice.speaker import FishSpeaker
 from fish_audio_suite_voice.tts_text import delta_events, text_events
+from fish_audio_suite_voice.tts_tune import TtsTune
 from fish_audio_suite_voice.wire import (
     FlushEvent,
     TextEvent,
@@ -499,7 +500,7 @@ def test_three_character_chunks_match_a_one_shot_scrub() -> None:
 
 
 def test_streaming_space_token_stays_between_words() -> None:
-    tts = FishSpeaker(api_key="k", voice_id="v", partial_chars=20)
+    tts = FishSpeaker(api_key="k", voice_id="v", tune=TtsTune(partial_chars=20))
     sentence = "The quick brown fox jumps today."
     deltas: list[str] = []
     for word in sentence.split(" "):
@@ -515,7 +516,7 @@ def test_streaming_space_token_stays_between_words() -> None:
 
 
 def test_streaming_deltas_cut_inside_the_window() -> None:
-    tts = FishSpeaker(api_key="k", voice_id="v", partial_chars=20)
+    tts = FishSpeaker(api_key="k", voice_id="v", tune=TtsTune(partial_chars=20))
     cancel = threading.Event()
 
     async def collect() -> list[TextEvent | FlushEvent]:
@@ -541,13 +542,13 @@ def test_streaming_deltas_cut_inside_the_window() -> None:
 
 
 def test_stream_scrub_leaves_a_mood_word_alone_by_default() -> None:
-    tts = FishSpeaker(api_key="k", voice_id="v", partial_chars=40)
+    tts = FishSpeaker(api_key="k", voice_id="v", tune=TtsTune(partial_chars=40))
 
     async def collect(mood_lead: bool) -> str:
         events = delta_events(
             ["Curious, ", "isn't it today my friend."],
             threading.Event(),
-            partial_chars=tts.partial_chars,
+            partial_chars=tts.tune.partial_chars,
             style=CueStyle(lead=mood_lead),
         )
         return "".join([e.text async for e in events if isinstance(e, TextEvent)])
@@ -565,7 +566,7 @@ def test_early_flush_speaks_the_first_piece_then_flushes_again_at_the_end() -> N
             async for event in delta_events(
                 deltas,
                 threading.Event(),
-                partial_chars=tts.partial_chars,
+                partial_chars=tts.tune.partial_chars,
                 style=CueStyle(),
                 early_flush=True,
             )
@@ -585,7 +586,7 @@ def test_early_flush_with_one_piece_does_not_flush_twice() -> None:
             async for event in delta_events(
                 ["Hello there my friend."],
                 threading.Event(),
-                partial_chars=FishSpeaker(api_key="k", voice_id="v").partial_chars,
+                partial_chars=FishSpeaker(api_key="k", voice_id="v").tune.partial_chars,
                 style=CueStyle(),
                 early_flush=True,
             )

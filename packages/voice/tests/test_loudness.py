@@ -12,6 +12,8 @@ from hypothesis import strategies as st
 from wire_helpers import make_run
 
 from fish_audio_suite_voice.loudness import LoudnessMatch
+from fish_audio_suite_voice.playback import StdoutSink
+from fish_audio_suite_voice.tts_tune import TtsTune
 from fish_audio_suite_voice.wire import _pump_ws_audio
 
 RATE = 44100
@@ -60,9 +62,9 @@ def test_the_gain_is_bounded() -> None:
     out = _samples(_run(quiet, _pcm(_voice(2.0, -44.0)), RATE // 10))
     assert quiet.gain_db == pytest.approx(12.0)
     assert _db(out) == pytest.approx(-32.0, abs=1.0)
-    loud = LoudnessMatch(RATE, -30.0, max_cut_db=6.0)
+    loud = LoudnessMatch(RATE, -30.0)
     _run(loud, _pcm(_voice(2.0, -6.0)), RATE // 10)
-    assert loud.gain_db == pytest.approx(-6.0)
+    assert loud.gain_db == pytest.approx(-12.0)
 
 
 def test_silence_is_not_boosted_and_does_not_move_the_gain() -> None:
@@ -178,10 +180,11 @@ def test_the_speaker_hands_its_target_level_to_each_turn_and_defaults_to_none() 
     from fish_audio_suite_voice.cli import _fish_tts  # pyright: ignore[reportPrivateUsage]
     from fish_audio_suite_voice.speaker import FishSpeaker
 
-    assert FishSpeaker(api_key="k", voice_id="v")._spec().loudness_db is None  # pyright: ignore[reportPrivateUsage]
-    on = FishSpeaker(api_key="k", voice_id="v", loudness_db=-20.0)
-    assert on._spec().loudness_db == -20.0  # pyright: ignore[reportPrivateUsage]
+    sink = StdoutSink()
+    assert FishSpeaker(api_key="k", voice_id="v")._spec(sink, None).loudness_db is None  # pyright: ignore[reportPrivateUsage]
+    on = FishSpeaker(api_key="k", voice_id="v", tune=TtsTune(loudness_db=-20.0))
+    assert on._spec(sink, None).loudness_db == -20.0  # pyright: ignore[reportPrivateUsage]
     from session_fakes import make_config
 
-    config = replace(make_config(), loudness_db=-16.0)
-    assert _fish_tts(config, "pcm").loudness_db == -16.0
+    config = replace(make_config(), tts=TtsTune(loudness_db=-16.0))
+    assert _fish_tts(config).tune.loudness_db == -16.0

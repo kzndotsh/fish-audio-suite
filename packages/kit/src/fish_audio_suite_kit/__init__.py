@@ -47,6 +47,7 @@ from fish_audio_suite_kit.catalog import (
 from fish_audio_suite_kit.cue_style import CueMode, CueStyle
 from fish_audio_suite_kit.cues import (
     MoodCarry,
+    cue_pattern,
     ensure_lead_cue,
     last_emotion,
     normalize_cues,
@@ -168,6 +169,7 @@ __all__ = [
     "chunk_length_hi",
     "clamp_number",
     "clean_transcript",
+    "cue_pattern",
     "cut_at_control",
     "describe_request_error",
     "elapsed_ms",

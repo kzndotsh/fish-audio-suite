@@ -109,9 +109,9 @@ DEFAULTS = {
         "DEFAULT_BARGE_PLAYING_GAIN",
         "voice",
     ),
-    "FISH_VOICE_FADE_MS": ("fish_audio_suite_voice.tune", "DEFAULT_FADE_MS", "voice"),
+    "FISH_VOICE_FADE_MS": ("fish_audio_suite_voice.tts_tune", "DEFAULT_FADE_MS", "voice"),
     "FISH_VOICE_LOUDNESS_TARGET_DB": (
-        "fish_audio_suite_voice.tune",
+        "fish_audio_suite_voice.tts_tune",
         "DEFAULT_LOUDNESS_TARGET_DB",
         "voice",
     ),

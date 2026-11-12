@@ -38,13 +38,14 @@ from fish_audio_suite_voice.duplex import EXIT_FATAL, EXIT_OK, bye, duplex_turns
 from fish_audio_suite_voice.envfile import apply_cli_env_files
 from fish_audio_suite_voice.events import forward_logs, mirror_conversation
 from fish_audio_suite_voice.inputs import LiveInput
-from fish_audio_suite_voice.llm import ChatUnusableError, open_chat_backend
-from fish_audio_suite_voice.llm_tune import LlmTune, provider_for_base
-from fish_audio_suite_voice.playback import FileSink, audio_format_for, duplex_playback_problem
+from fish_audio_suite_voice.llm import open_chat_backend
+from fish_audio_suite_voice.llm_tune import OPENAI_KEY_ENV, LlmTune, provider_for_base
+from fish_audio_suite_voice.playback import FileSink, duplex_playback_problem
 from fish_audio_suite_voice.playback_kind import playback_key
 from fish_audio_suite_voice.recognisers import recogniser
 from fish_audio_suite_voice.signals import DuplexSession
 from fish_audio_suite_voice.speaker import FishSpeaker
+from fish_audio_suite_voice.transports import ChatUnusableError
 from fish_audio_suite_voice.turn_stream import RecogniserSettings
 from fish_audio_suite_voice.vad import vad_problem
 from fish_audio_suite_voice.ws_tap import install_fish_ws_tap
@@ -94,7 +95,7 @@ def llm_setting_names(llm: LlmTune) -> tuple[str, str]:
     """Name the key and model variables the selected provider reads."""
     provider = provider_for_base(llm.base)
     if provider is None:
-        return "OPENAI_API_KEY", "FISH_LLM_MODEL"
+        return OPENAI_KEY_ENV, "FISH_LLM_MODEL"
     return provider.key_env, f"{provider.model_env} / FISH_LLM_MODEL"
 
 
@@ -111,24 +112,13 @@ def _require_fish(c: VoiceCliConfig) -> int | None:
     return None
 
 
-def _fish_tts(c: VoiceCliConfig, audio_format: str) -> FishSpeaker:
+def _fish_tts(c: VoiceCliConfig) -> FishSpeaker:
     return FishSpeaker(
         api_key=c.fish_api_key,
         voice_id=c.fish_voice_id,
         model=c.tts_model,
-        latency=c.latency,
-        speed=c.speed,
-        audio_format=audio_format,
-        sample_rate=c.sample_rate,
-        temperature=c.temperature,
-        top_p=c.top_p,
-        repetition_penalty=c.repetition_penalty,
-        chunk_length=c.chunk_length,
-        min_chunk_length=c.min_chunk_length,
-        volume=c.volume,
+        tune=c.tts,
         cue_style=c.cue_style,
-        fade_ms=c.fade_ms,
-        loudness_db=c.loudness_db,
         base_url=c.fish_base,
     )
 
@@ -158,8 +148,8 @@ async def smoke_test(c: VoiceCliConfig, out: Path | None = None) -> int:
             prefix="fish-audio-suite-smoke-", suffix=".wav", delete=False
         ) as handle:
             out = Path(handle.name)
-    tts = _fish_tts(c, "pcm")
-    sink = FileSink(out, sample_rate=c.sample_rate, wav=True)
+    tts = _fish_tts(c)
+    sink = FileSink(out, sample_rate=c.tts.sample_rate, wav=True)
     result = tts.speak("Hello there.", sink)
     if result.error_status is not None:
         warn(f"smoke: FAIL {result.error_status} {result.error_message}")
@@ -235,13 +225,13 @@ async def run_loop(c: VoiceCliConfig) -> int:
     playback = c.playback
     console_print(
         f"fish-voice ready | tts={c.tts_model} voice={c.fish_voice_id} "
-        f"asr_lang={c.fish_asr_language or 'auto'} latency={c.latency} "
+        f"asr_lang={c.fish_asr_language or 'auto'} latency={c.tts.latency} "
         f"playback={playback} | "
         f"llm={c.llm.provider}:{short_model(c.llm.model)} | Ctrl+C quit",
         flush=True,
     )
 
-    tts = _fish_tts(c, audio_format_for(playback))
+    tts = _fish_tts(c)
     session = DuplexSession(aec=EchoCanceller(c.aec))
 
     def _before_quit() -> None:
@@ -290,7 +280,7 @@ async def run_tui(c: VoiceCliConfig, *, debug: DebugLevel) -> int:
 
     live = LiveInput()
     session = DuplexSession(aec=EchoCanceller(c.aec))
-    tts = _fish_tts(c, audio_format_for(c.playback))
+    tts = _fish_tts(c)
     device = _parse_device(c.device)
     # From here the screen owns the terminal, so logging moves into the log pane.
     configure_voice_logging(debug=debug, to_stderr=False)

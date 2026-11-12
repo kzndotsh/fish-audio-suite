@@ -6,7 +6,7 @@ import time
 from collections.abc import AsyncIterator
 
 import pytest
-from fishaudio.types import TTSConfig
+from fishaudio.types import Prosody, TTSConfig
 
 from fish_audio_suite_voice.wire import AudioArrival, SentText, TurnRun, TurnSpec, _pump_ws_audio
 
@@ -36,12 +36,10 @@ def _turn() -> TurnRun:
         base_url="https://api.fish.audio",
         voice_id="v",
         model="s2.1-pro",
-        audio_format="pcm",
-        latency="balanced",
-        speed=1.0,
-        sample_rate=44100,
         trace_headers={},
-        config=TTSConfig(),
+        config=TTSConfig(
+            format="pcm", latency="balanced", sample_rate=44100, prosody=Prosody(speed=1.0)
+        ),
     )
     return TurnRun(
         spec=spec,

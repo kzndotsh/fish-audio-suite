@@ -19,7 +19,7 @@ from fish_audio_suite_voice.debug import (
     short_model,
     trace,
 )
-from fish_audio_suite_voice.ws_tap import header_meta, public_meta, ws_event_view
+from fish_audio_suite_voice.log_meta import public_meta, ws_event_view
 
 
 def test_configure_voice_logging_replaces_library_handlers() -> None:
@@ -140,20 +140,7 @@ def test_public_meta_drops_text_and_secrets() -> None:
     assert "Authorization" not in meta
 
 
-def test_header_meta_keeps_x_headers() -> None:
-    got = header_meta(
-        {
-            "Authorization": "Bearer x",
-            "x-request-id": "abc",
-            "Content-Type": "application/json",
-        }
-    )
-    assert got["x-request-id"] == "abc"
-    assert "Authorization" not in got
-    assert got["Content-Type"] == "application/json"
-    hidden = header_meta({"x-api-key": "sk-secret", "x-request-id": "abc"})
-    assert "x-api-key" not in hidden
-    assert hidden["x-request-id"] == "abc"
+def test_public_meta_drops_a_key_named_like_a_secret() -> None:
     body = public_meta({"api_key": "sk-secret", "language": "en"})
     assert "api_key" not in body
     assert body["language"] == "en"

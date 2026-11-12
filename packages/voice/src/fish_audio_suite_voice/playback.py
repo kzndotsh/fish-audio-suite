@@ -10,7 +10,7 @@ import threading
 import time
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Final, Protocol, runtime_checkable
+from typing import Any, Final, Protocol, get_args, runtime_checkable
 
 from fish_audio_suite_kit import MS_PER_S, AudioFormat, SuiteDefaults
 from fish_audio_suite_voice.aec import EchoCanceller
@@ -26,14 +26,15 @@ __all__ = [
     "PlaybackSink",
     "SounddeviceSink",
     "StdoutSink",
-    "audio_format_for",
     "dac_slice_bytes",
     "duplex_playback_problem",
     "iter_pcm_slices",
     "make_sink",
+    "sink_format",
 ]
 
 _DEFAULT_RATE: Final = SuiteDefaults().sample_rate
+_AUDIO_FORMATS: Final[tuple[AudioFormat, ...]] = get_args(AudioFormat)
 
 
 @runtime_checkable
@@ -44,6 +45,10 @@ class PlaybackSink(Protocol):
     chunks. ``finish`` closes them; ``kill=True`` means barge-in, so mpv
     should stop instead of playing out the buffer. ``bytes_played`` is what
     the sink accepted for playback, which ``spoken_so_far`` is cut to.
+
+    A sink may also set ``audio_format`` (``"pcm"``, ``"wav"``, ``"mp3"`` or ``"opus"``)
+    to say what it takes, and the speaker asks Fish for that format. A sink without it
+    is sent 16-bit mono PCM, so a custom sink need not declare it. ``sink_format`` reads it.
     """
 
     def start(self) -> None:
@@ -121,6 +126,9 @@ class _LevelTap:
 
 
 class _Played:
+    # Every shipped sink but mpv plays or stores 16-bit mono PCM.
+    audio_format: AudioFormat = "pcm"
+
     def __init__(self) -> None:
         self._played = 0
         self.output_latency_s: float = 0.0
@@ -219,9 +227,9 @@ _MPV_KILL_S: Final = 2
 _MPV_BUFFER_S: Final = 0.2
 
 
-def dac_slice_bytes(sample_rate: int, frame_ms: int = DAC_SLICE_MS) -> int:
-    """Return an even int16 byte count for one DAC slice."""
-    return max(1, sample_rate * frame_ms // MS_PER_S) * SAMPLE_BYTES
+def dac_slice_bytes(sample_rate: int) -> int:
+    """Return an even int16 byte count for one DAC slice of ``DAC_SLICE_MS``."""
+    return max(1, sample_rate * DAC_SLICE_MS // MS_PER_S) * SAMPLE_BYTES
 
 
 def iter_pcm_slices(chunk: bytes, slice_bytes: int) -> Iterator[bytes]:
@@ -375,6 +383,8 @@ def _reap(proc: subprocess.Popen[bytes], *, timeout: float) -> None:
 class MpvSink(_Played):
     """Optional mp3 stdin player. Not required on PATH for other sinks."""
 
+    audio_format: AudioFormat = "mp3"
+
     def __init__(self) -> None:
         super().__init__()
         self.proc: subprocess.Popen[bytes] | None = None
@@ -447,22 +457,31 @@ def duplex_playback_problem(name: str) -> str | None:
     return None
 
 
-def audio_format_for(playback: str) -> AudioFormat:
-    """Fish format for a sink.
+def sink_format(sink: PlaybackSink) -> AudioFormat:
+    """Return the audio format ``sink`` takes, which Fish is asked for.
 
     Parameters
     ----------
-    playback : str
-        Sink name.
+    sink : PlaybackSink
+        Any sink. A shipped one declares ``audio_format``: ``mp3`` for mpv, and ``pcm``
+        for sounddevice, file and stdout.
 
     Returns
     -------
-    str
-        ``mp3`` for mpv. ``pcm`` for sounddevice, file, and stdout.
+    AudioFormat
+        The sink's ``audio_format``, or ``"pcm"`` when it has none.
+
+    Raises
+    ------
+    ValueError
+        ``audio_format`` is set to something Fish does not send.
     """
-    if parse_playback(playback) is PlaybackKind.MPV:
-        return "mp3"
-    return "pcm"
+    declared: object = getattr(sink, "audio_format", "pcm")
+    for known in _AUDIO_FORMATS:
+        if declared == known:
+            return known
+    names = ", ".join(_AUDIO_FORMATS)
+    raise ValueError(f"sink audio_format {declared!r} is not one of {names}")
 
 
 def make_sink(

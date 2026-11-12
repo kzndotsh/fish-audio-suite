@@ -9,6 +9,7 @@ import pytest
 
 from fish_audio_suite_voice.cancel import is_own_cancel, reap
 from fish_audio_suite_voice.llm import llm_token_stream
+from fish_audio_suite_voice.llm_tune import LlmTune
 from fish_audio_suite_voice.transports import ChatChunk
 
 
@@ -130,9 +131,12 @@ def _stream(
     monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", lambda _call: events)
     return llm_token_stream(
         [{"role": "user", "content": "hi"}],
-        base="https://api.example.com/v1",
-        key="sk-test",
-        model="org/model",
+        tune=LlmTune(
+            backend="openai",
+            base="https://api.example.com/v1",
+            api_key="sk-test",
+            model="org/model",
+        ),
         cancel=cancel,
     )
 

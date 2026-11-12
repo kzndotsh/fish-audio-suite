@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from typing import Final
 
-from fish_audio_suite_kit import strip_cue_tags
+from fish_audio_suite_kit import cue_pattern, strip_cue_tags
 from fish_audio_suite_voice.pcm import SAMPLE_BYTES
 
 __all__ = [
@@ -22,14 +22,16 @@ __all__ = [
 # this is an estimate and the cut is always rounded down to a word.
 CHARS_PER_S: Final = 16
 _MIN_SPEED: Final = 0.1
+# A cue is a short bracketed stage direction. Brackets are never speech here.
+_CUE_SPAN_RE: Final = re.compile(cue_pattern(80, flat=True))
 # A model can still write [clear]. That is a throat-clear, not words, so it
 # stays out of the next turn's history. Other cues stay, so the model keeps
 # seeing the style it used.
-_CLEAR_TAG_RE: Final = re.compile(r"\[clear\]", re.IGNORECASE)
+_CLEAR: Final = "[clear]"
 
 
-def _audible_text(text: str) -> str:
-    return strip_cue_tags(text)
+def _without_clear(text: str) -> str:
+    return _CUE_SPAN_RE.sub(lambda m: " " if m.group().lower() == _CLEAR else m.group(), text)
 
 
 def _pcm_chars(bytes_played: int, sample_rate: int, speed: float, latency_s: float) -> int:
@@ -190,7 +192,7 @@ def spoken_prefix(
         # pipe. History should not record a reply the speaker never played.
         return ""
     if not (cancelled or failed):
-        return " ".join(_CLEAR_TAG_RE.sub(" ", sent_text).split())
+        return " ".join(_without_clear(sent_text).split())
     # Encoded audio has no fixed bytes-per-second, so a partial turn cannot be
     # cut. Recording the whole reply would tell the next turn it was heard.
     if audio_format != "pcm":
@@ -198,11 +200,9 @@ def spoken_prefix(
     chars = _pcm_chars(bytes_played, sample_rate, speed, output_latency_s)
     if chars <= 0:
         return ""
-    return _word_prefix(_audible_text(sent_text), chars)
+    return _word_prefix(strip_cue_tags(sent_text), chars)
 
 
-# A cue is a short bracketed stage direction. Brackets are never speech here.
-_CUE_SPAN_RE: Final = re.compile(r"\[[^\[\]\n]{1,80}\]")
 # Punctuation and closers that stay with the word they follow.
 _CLOSERS: Final = frozenset(".,!?;:…‥。！？，、；：\"'”’»›)]}」』）】〉》〕〗")
 # Fewer letters than this are not worth speaking again: "right?" after a barge-in.

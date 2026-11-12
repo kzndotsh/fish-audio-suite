@@ -6,8 +6,10 @@ import pytest
 from fish_audio_suite_voice.config import VoiceCliConfig, warn_if_insecure_base
 from fish_audio_suite_voice.debug import with_detail
 from fish_audio_suite_voice.llm_tune import LlmTune
+from fish_audio_suite_voice.playback import StdoutSink
 from fish_audio_suite_voice.speaker import FishSpeaker
-from fish_audio_suite_voice.wire import _classify_fish_exc
+from fish_audio_suite_voice.tts_tune import TtsTune
+from fish_audio_suite_voice.tts_turn import _classify_fish_exc
 
 SECRET = "sk-very-secret-value"
 
@@ -24,15 +26,7 @@ def _config(
         fish_voice_id="voice",
         fish_asr_language="",
         tts_model="s2.1-pro",
-        latency="balanced",
-        speed=1.0,
-        temperature=0.7,
-        top_p=0.7,
-        repetition_penalty=1.2,
-        chunk_length=200,
-        min_chunk_length=50,
-        volume=0.0,
-        sample_rate=44100,
+        tts=TtsTune(latency="balanced", temperature=0.7, top_p=0.7, repetition_penalty=1.2),
         playback="stdout",
         system_prompt="be brief",
         device=None,
@@ -54,7 +48,7 @@ def test_no_secret_appears_in_the_tts_client_or_turn_spec_repr() -> None:
     assert SECRET not in repr(tts)
     assert SECRET not in str(tts)
     assert "voice_id" in repr(tts)
-    assert SECRET not in repr(tts._spec())
+    assert SECRET not in repr(tts._spec(StdoutSink(), None))
 
 
 def test_with_detail_adds_the_errors_own_text() -> None:

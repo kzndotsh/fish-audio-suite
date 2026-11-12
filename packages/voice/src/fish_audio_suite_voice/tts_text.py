@@ -400,7 +400,7 @@ async def delta_events(
     *,
     partial_chars: int,
     style: CueStyle,
-    early_flush: bool = False,
+    early_flush: bool = True,
 ) -> AsyncIterator[Any]:
     """Cut model deltas into Fish text events, shaping each span as it closes.
 
@@ -416,7 +416,8 @@ async def delta_events(
         How cues are shaped, the same style a whole reply is shaped with.
     early_flush : bool, optional
         Flush once at the end of the first sentence, so Fish speaks it while
-        the model is still writing. Default False. Fish holds text until a
+        the model is still writing. Default True, which is what the speaker
+        sends; False sends one flush at the end only. Fish holds text until a
         chunk fills or a flush arrives, so without this a streamed reply is
         silent until the model finishes. The flush waits for a sentence end,
         because a flush mid-sentence makes Fish end that fragment as a finished

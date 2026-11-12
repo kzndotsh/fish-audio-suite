@@ -323,7 +323,7 @@ layers = [
     "reply : hearing : streaming",
     "listen : barge : speaker : duplex_state : heard : speculate : tts_turn",
     "mic : wire : llm : playback : transports : recognisers : deepgram : fish_realtime : turn_stream : asr : aec : signals : session_view",
-    "config : tune : llm_tune : events : debug : envfile : cancel : ws_tap : console : declick : floor : history : pause : tts_text : pcm : portaudio : playback_kind : vad : scorer : loudness : spoken : turn_check : recognised",
+    "config : tune : llm_tune : tts_tune : events : debug : envfile : cancel : ws_tap : log_meta : console : declick : audio_chain : floor : history : pause : tts_text : pcm : portaudio : playback_kind : vad : scorer : loudness : spoken : turn_check : recognised",
 ]
 
 [tool.basedpyright]

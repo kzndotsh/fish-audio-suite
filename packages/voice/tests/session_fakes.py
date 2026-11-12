@@ -28,6 +28,7 @@ from fish_audio_suite_voice.llm_tune import LlmTune
 from fish_audio_suite_voice.recognised import BargeIn
 from fish_audio_suite_voice.signals import DuplexSession
 from fish_audio_suite_voice.speaker import FishSpeaker
+from fish_audio_suite_voice.tts_tune import TtsTune
 from fish_audio_suite_voice.tune import DEFAULT_BARGE_RMS
 from fish_audio_suite_voice.wire import TtsResult
 
@@ -39,15 +40,7 @@ def make_config() -> VoiceCliConfig:
         fish_voice_id="voice",
         fish_asr_language="",
         tts_model="s2.1-pro",
-        latency="balanced",
-        speed=1.0,
-        temperature=0.7,
-        top_p=0.7,
-        repetition_penalty=1.2,
-        chunk_length=200,
-        min_chunk_length=50,
-        volume=0.0,
-        sample_rate=44100,
+        tts=TtsTune(latency="balanced", temperature=0.7, top_p=0.7, repetition_penalty=1.2),
         playback="stdout",
         system_prompt="be brief",
         device=None,
@@ -167,13 +160,21 @@ def speak_with_fakes(
     said: list[str] = []
 
     def speak(
-        text: str, sink: FakeSink, cancel: object = None, on_first_audio: object = None
+        text: str,
+        sink: FakeSink,
+        cancel: object = None,
+        on_first_audio: object = None,
+        trace_headers: object = None,
     ) -> TtsResult:
         said.append(text)
         return make_result(text, bytes_played=4, got_audio=True, tts_first_audio_ms=3.0)
 
     def speak_stream(
-        deltas: object, sink: FakeSink, cancel: object, on_first_audio: object = None
+        deltas: object,
+        sink: FakeSink,
+        cancel: object,
+        on_first_audio: object = None,
+        trace_headers: object = None,
     ) -> TtsResult:
         async def drain() -> str:
             return "".join([token async for token in deltas])  # type: ignore[attr-defined]

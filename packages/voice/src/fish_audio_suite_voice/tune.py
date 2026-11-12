@@ -24,8 +24,6 @@ __all__ = [
     "DEFAULT_DEEPGRAM_MODEL",
     "DEFAULT_END_SILENCE_FRAMES",
     "DEFAULT_EOT_THRESHOLD",
-    "DEFAULT_FADE_MS",
-    "DEFAULT_LOUDNESS_TARGET_DB",
     "DEFAULT_MIN_SPEECH_RMS",
     "DEFAULT_MIN_VOICED_FRAMES",
     "DEFAULT_NOISE_SUPPRESSION_DB",
@@ -104,11 +102,6 @@ DEFAULT_AEC_WET: Final = 0.85
 # a quiet voice in a measured recording; 18 dB did not.
 NOISE_SUPPRESSION_STEPS_DB: Final = (0, 6, 12, 18, 21)
 DEFAULT_NOISE_SUPPRESSION_DB: Final = 18
-# Fade, in milliseconds, at each edge between a sound and silence, so a sentence does not
-# click when it starts or stops. 0 turns it off.
-DEFAULT_FADE_MS: Final = 4.0
-# The level, in dB below full scale, that a reply is brought to when loudness is normalised.
-DEFAULT_LOUDNESS_TARGET_DB: Final = -18.0
 # Idle seconds an ASR or LLM connection stays open. httpx's default of 5 s is
 # shorter than the gap between two turns, so each turn would pay a new TLS
 # handshake.

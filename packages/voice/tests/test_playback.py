@@ -24,17 +24,15 @@ from fish_audio_suite_voice.playback import (
     SounddeviceSink,
     StdoutSink,
     _LevelTap,
-    audio_format_for,
     duplex_playback_problem,
     make_sink,
+    sink_format,
 )
 from fish_audio_suite_voice.playback_kind import PlaybackKind, parse_playback
 from fish_audio_suite_voice.portaudio import PortAudioMissingError, missing_portaudio
 from fish_audio_suite_voice.speaker import FishSpeaker
-from fish_audio_suite_voice.wire import (
-    TtsResult,
-    _classify_fish_exc,
-)
+from fish_audio_suite_voice.tts_turn import _classify_fish_exc
+from fish_audio_suite_voice.wire import TtsResult
 
 
 def test_zero_sample_rate_still_writes_a_wav(tmp_path: Path) -> None:
@@ -169,8 +167,8 @@ def test_mpv_kill_does_not_close_stdin_first(monkeypatch: pytest.MonkeyPatch) ->
 
 
 def test_mpv_playback_uses_mp3() -> None:
-    assert audio_format_for(" MPV ") == "mp3"
-    assert audio_format_for("speakers") == "pcm"
+    assert sink_format(make_sink(" MPV ")) == "mp3"
+    assert sink_format(make_sink("speakers")) == "pcm"
     assert isinstance(make_sink("MPV"), MpvSink)
 
 
@@ -301,10 +299,11 @@ def test_sounddevice_sink_skips_write_when_cancelled() -> None:
 
 def test_speak_works_inside_asyncio_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     async def fake_speak(
-        self: FishSpeaker,
-        text: str,
+        spec: object,
+        source: object,
         sink: FileSink,
         cancel: threading.Event,
+        *,
         on_first_audio: object = None,
     ) -> TtsResult:
         sink.start()
@@ -314,7 +313,7 @@ def test_speak_works_inside_asyncio_run(monkeypatch: pytest.MonkeyPatch, tmp_pat
             "ok", bytes_played=128, got_audio=True, tts_first_audio_ms=1.0, tts_first_text_ms=1.0
         )
 
-    monkeypatch.setattr(FishSpeaker, "_speak_here", fake_speak)
+    monkeypatch.setattr("fish_audio_suite_voice.speaker.run_turn", fake_speak)
     tts = FishSpeaker(api_key="k", voice_id="v")
     sink = FileSink(tmp_path / "t.wav", sample_rate=44100, wav=True)
 

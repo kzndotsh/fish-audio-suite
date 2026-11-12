@@ -27,18 +27,23 @@ from fish_audio_suite_kit import (
     FishLatency,
     SuiteDefaults,
 )
-from fish_audio_suite_voice.playback import PlaybackSink
+from fish_audio_suite_voice.playback import MpvSink, PlaybackSink
 from fish_audio_suite_voice.speaker import FishSpeaker
 from fish_audio_suite_voice.tts_text import WholeText, text_events
-from fish_audio_suite_voice.tts_turn import run_turn
+from fish_audio_suite_voice.tts_tune import TtsTune
+from fish_audio_suite_voice.tts_turn import run_turn, turn_failure
 from fish_audio_suite_voice.wire import (
     FlushEvent,
     TextEvent,
     TtsResult,
+    TurnSpec,
     _pump_ws_audio,
     tts_result,
-    turn_failure,
 )
+
+
+def _spec(tts: FishSpeaker, sink: object | None = None) -> TurnSpec:
+    return tts._spec(cast(PlaybackSink, sink or RecordingSink()), None)
 
 
 def test_text_events_flush_only_after_text() -> None:
@@ -87,7 +92,7 @@ def test_split_strikethrough_is_not_spoken() -> None:
 def test_partial_cut_does_not_split_a_cue() -> None:
     # A 40-character hard cut used to send "[whi" and then "spering]".
     # A period inside the cue used to send "[hello." and then "there]".
-    tts = FishSpeaker(api_key="k", voice_id="v", partial_chars=40)
+    tts = FishSpeaker(api_key="k", voice_id="v", tune=TtsTune(partial_chars=40))
 
     async def pieces_of(sample: str) -> list[str]:
         events = [event async for event in stream_events(tts, [sample], threading.Event())]
@@ -107,19 +112,27 @@ def test_sdk_limits_are_applied_before_the_socket() -> None:
     tts = FishSpeaker(
         api_key="k",
         voice_id="v",
-        latency="low",
-        chunk_length=800,
-        volume=25,
-        speed=4,
-        temperature=1.5,
-        top_p=-0.2,
+        tune=TtsTune(
+            latency="low",
+            chunk_length=800,
+            volume=25,
+            speed=4,
+            temperature=1.5,
+            top_p=-0.2,
+        ),
     )
-    spec = tts._spec()
+    spec = _spec(tts)
     assert spec.latency == "balanced"
     # Out-of-contract spellings that a caller reading an env var could pass.
-    loud = FishSpeaker(api_key="k", voice_id="v", latency=cast(FishLatency, " LOW "))._spec()
+    loud = _spec(
+        FishSpeaker(api_key="k", voice_id="v", tune=TtsTune(latency=cast(FishLatency, " LOW ")))
+    )
     assert loud.latency == "balanced"
-    spaced = FishSpeaker(api_key="k", voice_id="v", latency=cast(FishLatency, " balanced "))._spec()
+    spaced = _spec(
+        FishSpeaker(
+            api_key="k", voice_id="v", tune=TtsTune(latency=cast(FishLatency, " balanced "))
+        )
+    )
     assert spaced.latency == "balanced"
     assert spec.speed == 2.0
     assert spec.config.temperature == 1.0
@@ -127,41 +140,51 @@ def test_sdk_limits_are_applied_before_the_socket() -> None:
     assert spec.config.chunk_length == 300
     assert spec.config.prosody is not None
     assert spec.config.prosody.volume == 20.0
-    quiet = FishSpeaker(api_key="k", voice_id="v", volume=-40)
-    prosody = quiet._tts_config().prosody
+    quiet = FishSpeaker(api_key="k", voice_id="v", tune=TtsTune(volume=-40))
+    prosody = _spec(quiet).config.prosody
     assert prosody is not None
     assert prosody.volume == -20.0
 
 
 def test_voice_id_and_model_survive_the_socket_start() -> None:
-    spec = FishSpeaker(
-        api_key="k",
-        voice_id="voice-\ud800",
-        model="s2.1-pro\nbad",
-    )._spec()
+    spec = _spec(
+        FishSpeaker(
+            api_key="k",
+            voice_id="voice-\ud800",
+            model="s2.1-pro\nbad",
+        )
+    )
     assert "\ud800" not in spec.voice_id
     assert spec.voice_id.startswith("voice-")
     assert spec.model == SuiteDefaults().tts_model
     assert "\n" not in spec.model
     ormsgpack.packb({"reference_id": spec.voice_id})
-    kept = FishSpeaker(api_key="k", voice_id="v", model="MyModel")._spec()
+    kept = _spec(FishSpeaker(api_key="k", voice_id="v", model="MyModel"))
     assert kept.model == "MyModel"
 
 
 def test_zero_sample_rate_is_replaced_before_the_socket() -> None:
     for rate in (0, 2**32):
-        spec = FishSpeaker(api_key="k", voice_id="v", sample_rate=rate)._spec()
+        spec = _spec(FishSpeaker(api_key="k", voice_id="v", tune=TtsTune(sample_rate=rate)))
         assert spec.sample_rate == SuiteDefaults().sample_rate
         assert spec.config.sample_rate == SuiteDefaults().sample_rate
 
 
-def test_pcm16_is_a_format_the_socket_accepts() -> None:
-    spec = FishSpeaker(api_key="k", voice_id="v", audio_format="pcm16")._spec()
+def test_fish_is_asked_for_the_format_the_sink_takes() -> None:
+    tts = FishSpeaker(api_key="k", voice_id="v")
+    # A sink that does not say, such as one written before sinks declared a format, gets PCM.
+    spec = _spec(tts, RecordingSink())
     assert spec.audio_format == "pcm"
     assert spec.config.format == "pcm"
-    mp3 = FishSpeaker(api_key="k", voice_id="v", audio_format="AAC")._spec()
+    mp3 = _spec(tts, MpvSink())
     assert mp3.audio_format == "mp3"
     assert mp3.config.format == "mp3"
+
+    class OggSink(RecordingSink):
+        audio_format = "ogg"
+
+    with pytest.raises(ValueError, match="'ogg'"):
+        _spec(tts, OggSink())
 
 
 def test_turn_failure_retries_only_before_audio(capsys: pytest.CaptureFixture[str]) -> None:
@@ -306,7 +329,7 @@ def test_cancel_scope_after_audio_keeps_only_the_played_words(
 
 def test_cancelled_encoded_turn_leaves_history_empty() -> None:
     run, sink = make_run()
-    run.spec = replace(run.spec, audio_format="mp3")
+    run.spec = replace(run.spec, config=run.spec.config.model_copy(update={"format": "mp3"}))
     run.sent_text = "hello there friend"
     run.audio.got_audio = True
     run.cancel.set()
@@ -330,16 +353,14 @@ def test_spoken_estimate_uses_speed_and_the_sinks_output_latency() -> None:
     assert tts_result(run).spoken_so_far == ""
 
 
-def test_tts_spec_warns_once_when_it_swaps_a_format_or_latency(
+def test_tts_spec_warns_once_when_it_swaps_a_latency(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    FishSpeaker(api_key="k", voice_id="v", audio_format="flac")._spec()
-    FishSpeaker(api_key="k", voice_id="v", audio_format="flac")._spec()
-    FishSpeaker(api_key="k", voice_id="v", audio_format="ogg")._spec()
-    FishSpeaker(api_key="k", voice_id="v", latency="low")._spec()
+    _spec(FishSpeaker(api_key="k", voice_id="v", tune=TtsTune(latency=cast(FishLatency, "turbo"))))
+    _spec(FishSpeaker(api_key="k", voice_id="v", tune=TtsTune(latency=cast(FishLatency, "turbo"))))
+    _spec(FishSpeaker(api_key="k", voice_id="v", tune=TtsTune(latency="low")))
     err = capsys.readouterr().err
-    assert err.count("'flac'") == 1
-    assert "'ogg'" in err
+    assert err.count("'turbo'") == 1
     assert "'low'" in err
 
 
@@ -404,9 +425,9 @@ def test_pump_waits_for_the_cancelled_reader_to_unwind() -> None:
 
 
 def test_a_turn_spec_copies_and_freezes_its_trace_headers() -> None:
-    tts = FishSpeaker(api_key="k", voice_id="v", trace_headers={"traceparent": "00-a"})
-    spec = tts._spec()
-    tts.trace_headers["traceparent"] = "00-changed"
+    headers = {"traceparent": "00-a"}
+    spec = FishSpeaker(api_key="k", voice_id="v")._spec(RecordingSink(), headers)
+    headers["traceparent"] = "00-changed"
     assert spec.trace_headers["traceparent"] == "00-a"
     with pytest.raises(TypeError):
         cast(Any, spec.trace_headers)["x"] = "y"

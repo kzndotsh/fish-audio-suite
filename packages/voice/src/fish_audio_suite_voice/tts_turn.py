@@ -1,4 +1,8 @@
-"""Fish websocket turn: retry before the first audio byte, on a private loop."""
+"""Fish websocket turn: retry before the first audio byte, on a private loop.
+
+``run_turn`` plays one turn through the shared Fish retry loop (``pause.fish_retries``), and
+``turn_failure`` decides which failure of an attempt is worth another one.
+"""
 
 from __future__ import annotations
 
@@ -12,38 +16,42 @@ from typing import Any, Final, cast
 
 import httpx
 from fishaudio import AsyncFishAudio
-from fishaudio.exceptions import AuthenticationError
+from fishaudio.exceptions import APIError, AuthenticationError, ValidationError, WebSocketError
 from fishaudio.types import Model
 
 from fish_audio_suite_kit import (
     FISH_RETRY_ATTEMPTS,
+    describe_request_error,
     ensure_trace_headers,
-    fish_backoff_s,
+    fish_attempt_exhausted,
     is_header_safe,
+    should_retry_fish_status,
 )
-from fish_audio_suite_voice.cancel import is_cancel_noise, quiet_shutdown
-from fish_audio_suite_voice.debug import debug
-from fish_audio_suite_voice.pause import sleep_unless
+from fish_audio_suite_voice.cancel import first_real_error, is_cancel_noise, quiet_shutdown
+from fish_audio_suite_voice.debug import debug, warn, with_detail
+from fish_audio_suite_voice.pause import Retry, fish_retries
 from fish_audio_suite_voice.playback import PlaybackSink
 from fish_audio_suite_voice.tts_text import WholeText
 from fish_audio_suite_voice.wire import (
     AudioArrival,
     FishSocket,
     SentText,
+    SinkError,
     TtsResult,
     TurnRun,
     TurnSpec,
     send_turn,
     tts_result,
-    turn_failure,
 )
 
 _WS_TIMEOUT_S: Final = 240.0
 
 __all__ = [
     "SdkSocket",
+    "TtsFailure",
     "run_isolated",
     "run_turn",
+    "turn_failure",
 ]
 
 
@@ -97,13 +105,12 @@ class SdkSocket:
             base_url=spec.base_url,
             httpx_client=http,
         )
-        # TTSConfig has no features. Quality-guard stays on the proxy HTTP path.
+        # TTSConfig has no features. Quality-guard stays on the proxy HTTP path. The format,
+        # latency and speed travel in the config only: the SDK's keyword overrides would
+        # send the same values again.
         return self.client.tts.stream_websocket(
             events,
             reference_id=spec.voice_id,
-            format=spec.audio_format,
-            latency=spec.latency,
-            speed=spec.speed,
             config=spec.config,
             model=cast(Model, spec.model),
         )
@@ -134,25 +141,23 @@ class _Turn:
         return self.source
 
 
-async def _retry_pause(cancel: threading.Event, attempt: int) -> bool:
-    """Wait out a Fish backoff with jitter. True means the turn was cancelled."""
-    # A plain sleep would ignore barge-in. The next attempt would speak after
-    # the user had interrupted, or Ctrl+C would wait out the full backoff.
-    return await sleep_unless(fish_backoff_s(attempt), cancel.is_set)
-
-
-async def _one_attempt(turn: _Turn, attempt: int) -> bool:
-    """Return whether this attempt should stop the turn. False means retry before audio."""
+async def _one_attempt(turn: _Turn, attempt: int) -> Retry | None:
+    """Play one attempt. ``Retry`` asks for another, before any audio; None ends the turn."""
     run = turn.run
-    if run.cancel.is_set():
-        return True
     try:
         await send_turn(turn.socket, turn.events(), run)
     except (asyncio.CancelledError, GeneratorExit) as exc:
         await turn.socket.close()
         if run.cancel.is_set() or is_cancel_noise(exc):
-            return True
+            return None
         raise
+    except SinkError as exc:
+        await turn.socket.close()
+        # A sink that fails is the caller's problem, not Fish's: its own error goes up,
+        # as a sink that fails to open does. Torn down by a cancel, it is only noise.
+        if run.cancel.is_set():
+            return None
+        raise exc.error from None
     except (Exception, BaseExceptionGroup) as exc:  # noqa: BLE001 - turn boundary: classified by turn_failure and reported in the result
         fate = turn_failure(
             exc,
@@ -162,12 +167,12 @@ async def _one_attempt(turn: _Turn, attempt: int) -> bool:
             cancel=run.cancel,
         )
         await turn.socket.close()
-        if not fate.retry:
-            run.error_status = fate.error_status
-            run.error_message = fate.error_message
-            return True
-        return await _retry_pause(run.cancel, attempt)
-    return True
+        if fate.retry:
+            # The SDK's APIError carries no headers, so a 429's Retry-After cannot be read.
+            return Retry()
+        run.error_status = fate.error_status
+        run.error_message = fate.error_message
+    return None
 
 
 def _turn_headers(spec: TurnSpec, sent_text: str) -> dict[str, str]:
@@ -241,9 +246,7 @@ async def run_turn(
         # start() can open the DAC and then raise. finish() still has to
         # close that stream, or the device stays busy for the next turn.
         sink.start()
-        for attempt in range(FISH_RETRY_ATTEMPTS):
-            if await _one_attempt(turn, attempt):
-                break
+        await fish_retries(lambda attempt: _one_attempt(turn, attempt), cancel.is_set)
     finally:
         try:
             sink.finish(kill=cancel.is_set())
@@ -295,3 +298,87 @@ def run_isolated(coro: Coroutine[Any, Any, TtsResult]) -> TtsResult:
             if not loop.is_closed():
                 loop.close()
             asyncio.set_event_loop(None)
+
+
+@dataclass(frozen=True, slots=True)
+class TtsFailure:
+    """How one failed Fish attempt should be handled.
+
+    Attributes
+    ----------
+    retry : bool
+        Whether the turn should be tried again.
+    error_status : int or None
+        Fish HTTP status, when the failure had one.
+    error_message : str or None
+        Text to report. None when the failure was a barge-in.
+    """
+
+    retry: bool
+    error_status: int | None = None
+    error_message: str | None = None
+
+
+def turn_failure(
+    exc: BaseException,
+    *,
+    attempt: int,
+    sent_text: str,
+    got_audio: bool,
+    cancel: threading.Event,
+) -> TtsFailure:
+    """Decide whether a Fish exception can be retried.
+
+    Parameters
+    ----------
+    exc : BaseException
+        Error from one attempt. Exception groups are unwrapped to the first real error.
+    attempt : int
+        Zero-based attempt. ``FISH_RETRY_ATTEMPTS - 1`` is the last.
+    sent_text : str
+        Text available to replay. Empty blocks a retry.
+    got_audio : bool
+        True after the first audio byte. Retries stop there so the listener
+        does not hear the sentence twice.
+    cancel : threading.Event
+        When set, the failure is a barge-in, not a retry.
+
+    Returns
+    -------
+    TtsFailure
+        ``retry`` is True only for a 429, a 5xx, a websocket error or a failed
+        connection, before audio, with text to replay and attempts left.
+    """
+    root = first_real_error(exc)
+    retry, status, message = _classify_fish_exc(root)
+    if cancel.is_set() or (is_cancel_noise(root) and not got_audio):
+        return TtsFailure(retry=False)
+    # The socket died after audio started, and the turn was not cancelled.
+    # Recording the unplayed tail makes the next turn assume it was heard.
+    if is_cancel_noise(root):
+        error_message = str(root)
+        warn(f"[tts] {error_message}")
+        return TtsFailure(retry=False, error_message=error_message)
+    last = fish_attempt_exhausted(attempt)
+    can_replay = bool(sent_text) and not got_audio
+    if retry and not last and can_replay:
+        warn(f"[tts] retry status={status} attempt={attempt + 1}/{FISH_RETRY_ATTEMPTS}")
+        return TtsFailure(retry=True)
+    error_message = message or str(root)
+    warn(f"[tts] {status} {error_message}" if status is not None else f"[tts] {error_message}")
+    return TtsFailure(retry=False, error_status=status, error_message=error_message)
+
+
+def _classify_fish_exc(exc: BaseException) -> tuple[bool, int | None, str]:
+    if is_cancel_noise(exc):
+        return False, None, ""
+    if isinstance(exc, APIError):
+        return should_retry_fish_status(exc.status), exc.status, exc.message
+    if isinstance(exc, ValidationError):
+        return False, 400, str(exc)
+    if isinstance(exc, WebSocketError):
+        return True, None, str(exc)
+    if isinstance(exc, httpx.RequestError):
+        status, message = describe_request_error(exc, httpx.TimeoutException)
+        return True, status, with_detail(message, exc)
+    return False, None, str(exc)

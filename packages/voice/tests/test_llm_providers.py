@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+from typing import Any, get_args
 
 import httpx
 import pytest
@@ -14,7 +14,9 @@ from fish_audio_suite_voice.debug import configure_voice_logging
 from fish_audio_suite_voice.llm import open_chat_backend
 from fish_audio_suite_voice.llm_tune import (
     EXPERIENTIAL_API_BASE,
+    LLM_PROVIDERS,
     OPENROUTER_API_BASE,
+    KnownLlmProvider,
     LlmTune,
     provider_for_base,
 )
@@ -336,3 +338,7 @@ def test_the_startup_blockers_name_the_selected_providers_variables(
     env.setenv("FISH_LLM_PROVIDER", "custom")
     env.setenv("FISH_LLM_BASE", "http://127.0.0.1:11434/v1")
     assert llm_setting_names(LlmTune.from_env()) == ("OPENAI_API_KEY", "FISH_LLM_MODEL")
+
+
+def test_the_provider_table_names_exactly_the_known_providers() -> None:
+    assert tuple(provider.name for provider in LLM_PROVIDERS) == get_args(KnownLlmProvider)

@@ -22,6 +22,7 @@ from fish_audio_suite_kit import (
 )
 from fish_audio_suite_voice.speaker import FishSpeaker
 from fish_audio_suite_voice.tts_text import WholeText, text_events
+from fish_audio_suite_voice.tts_tune import TtsTune
 from fish_audio_suite_voice.tts_turn import SdkSocket, run_turn
 from fish_audio_suite_voice.wire import TurnSpec
 
@@ -108,7 +109,7 @@ def test_client_close_after_audio_does_not_forget_the_line(
 
     monkeypatch.setattr("fish_audio_suite_voice.tts_turn.SdkSocket", _OneSecond)
     monkeypatch.setattr("fish_audio_suite_voice.tts_turn.AsyncFishAudio.close", boom_close)
-    tts = FishSpeaker(api_key="k", voice_id="v", sample_rate=16_000, audio_format="pcm")
+    tts = FishSpeaker(api_key="k", voice_id="v", tune=TtsTune(sample_rate=16_000))
 
     class Sink:
         output_latency_s = 0.0
@@ -272,3 +273,82 @@ def test_run_isolated_does_not_swallow_a_keyboard_interrupt_but_still_closes_the
         run_isolated(work())
     assert seen
     assert seen[0].is_closed()
+
+
+class _AudioSocket(SdkSocket):
+    """The SDK socket with two chunks of audio in place of its websocket, and no client."""
+
+    def stream(self, events: AsyncIterator[Any], spec: TurnSpec) -> AsyncIterator[bytes]:
+        del spec
+
+        async def audio() -> AsyncIterator[bytes]:
+            async for _event in events:
+                pass
+            yield b"\x00\x00" * 800
+            yield b"\x00\x00" * 800
+
+        return audio()
+
+
+class _FailingSink(RecordingSink):
+    """Raises ``error`` from ``stage`` (start, write or finish), after ``cancel`` is set if given."""
+
+    def __init__(self, stage: str, error: Exception, cancel: threading.Event | None = None) -> None:
+        super().__init__()
+        self.stage = stage
+        self.error = error
+        self.cancel = cancel
+        self.finished = False
+
+    def _maybe_fail(self, stage: str) -> None:
+        if stage == self.stage:
+            if self.cancel is not None:
+                self.cancel.set()
+            raise self.error
+
+    def start(self) -> None:
+        self._maybe_fail("start")
+
+    def write(self, chunk: bytes) -> None:
+        self._maybe_fail("write")
+        super().write(chunk)
+
+    def finish(self, *, kill: bool = False) -> None:
+        self.finished = True
+        self._maybe_fail("finish")
+
+
+@pytest.mark.parametrize("stage", ["start", "write", "finish"])
+@pytest.mark.parametrize("error", [RuntimeError("device gone"), OSError("disk full")])
+@pytest.mark.parametrize("streamed", [False, True])
+def test_an_error_the_sink_raises_reaches_the_caller(
+    monkeypatch: pytest.MonkeyPatch, stage: str, error: Exception, streamed: bool
+) -> None:
+    # A RuntimeError from the sink used to come back as a silent turn, and a failed write
+    # as a Fish error in the result. Both now raise, as the speak docstring says.
+    monkeypatch.setattr("fish_audio_suite_voice.tts_turn.SdkSocket", _AudioSocket)
+    tts = FishSpeaker(api_key="k", voice_id="v")
+    sink = _FailingSink(stage, error)
+
+    def speak() -> object:
+        if streamed:
+            return tts.speak_stream(["Hello there ", "friend."], sink)
+        return tts.speak("Hello there friend.", sink)
+
+    with pytest.raises(type(error), match=str(error)):
+        speak()
+    assert sink.finished is True
+
+
+def test_a_sink_error_while_the_turn_is_cancelled_ends_it_quietly(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr("fish_audio_suite_voice.tts_turn.SdkSocket", _AudioSocket)
+    tts = FishSpeaker(api_key="k", voice_id="v")
+    cancel = threading.Event()
+    sink = _FailingSink("write", RuntimeError("stream closed"), cancel=cancel)
+    result = tts.speak("Hello there friend.", sink, cancel=cancel)
+    assert result.cancelled is True
+    assert result.error is None
+    assert result.error_message is None
+    assert "stream closed" not in capsys.readouterr().err

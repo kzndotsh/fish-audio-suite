@@ -367,6 +367,7 @@ def test_cancelled_speak_keeps_the_audio_that_tripped_barge(
         sink: FakeSink,
         cancel: threading.Event | None = None,
         on_first_audio: object = None,
+        trace_headers: object = None,
     ) -> TtsResult:
         assert text == "[calm] Hello there friend"
         return make_result(
@@ -503,6 +504,7 @@ def test_stream_turn_feeds_tokens_to_tts_and_arms_barge_at_first_audio(
         sink: FakeSink,
         cancel: threading.Event,
         on_first_audio: Callable[[], None] | None = None,
+        trace_headers: object = None,
     ) -> TtsResult:
         async def drain() -> None:
             heard_tokens.extend([token async for token in deltas])
@@ -549,6 +551,7 @@ def test_stream_turn_speaks_the_finished_reply_when_fish_fails_before_audio(
         sink: FakeSink,
         cancel: threading.Event,
         on_first_audio: Callable[[], None] | None = None,
+        trace_headers: object = None,
     ) -> TtsResult:
         async def drain() -> None:
             async for _token in deltas:
@@ -562,6 +565,7 @@ def test_stream_turn_speaks_the_finished_reply_when_fish_fails_before_audio(
         sink: FakeSink,
         cancel: threading.Event | None = None,
         on_first_audio: Callable[[], None] | None = None,
+        trace_headers: object = None,
     ) -> TtsResult:
         spoken.append(text)
         return make_result(
@@ -654,6 +658,7 @@ def test_stream_turn_with_an_empty_reply_speaks_nothing_and_reports_nothing(
         sink: FakeSink,
         cancel: threading.Event,
         on_first_audio: Callable[[], None] | None = None,
+        trace_headers: object = None,
     ) -> TtsResult:
         async def drain() -> None:
             async for _token in deltas:
@@ -693,6 +698,7 @@ def test_quit_during_the_stream_fallback_rebind_does_not_speak(
         sink: FakeSink,
         cancel: threading.Event,
         on_first_audio: Callable[[], None] | None = None,
+        trace_headers: object = None,
     ) -> TtsResult:
         async def drain() -> None:
             async for _token in deltas:
@@ -791,6 +797,7 @@ def _cut_off_ctx(monkeypatch: pytest.MonkeyPatch, spoken: str) -> tuple[DuplexCo
         sink: FakeSink,
         cancel: threading.Event | None = None,
         on_first_audio: object = None,
+        trace_headers: object = None,
     ) -> TtsResult:
         said.append(text)
         return make_result(

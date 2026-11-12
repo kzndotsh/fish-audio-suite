@@ -9,24 +9,13 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any, Final, Protocol
 
-import httpx
 from fishaudio import FlushEvent, TextEvent
-from fishaudio.exceptions import APIError, ValidationError, WebSocketError
 from fishaudio.types import LatencyMode, TTSConfig
 
-from fish_audio_suite_kit import (
-    FISH_RETRY_ATTEMPTS,
-    AudioFormat,
-    FishHttpError,
-    describe_request_error,
-    elapsed_ms,
-    fish_attempt_exhausted,
-    should_retry_fish_status,
-)
-from fish_audio_suite_voice.cancel import is_cancel_noise, reap
-from fish_audio_suite_voice.debug import debug, warn, with_detail
-from fish_audio_suite_voice.declick import EdgeFade
-from fish_audio_suite_voice.loudness import LoudnessMatch
+from fish_audio_suite_kit import AudioFormat, FishHttpError, SuiteDefaults, elapsed_ms
+from fish_audio_suite_voice.audio_chain import AudioChain
+from fish_audio_suite_voice.cancel import reap
+from fish_audio_suite_voice.debug import debug, warn
 from fish_audio_suite_voice.playback import PlaybackSink
 from fish_audio_suite_voice.spoken import spoken_prefix
 
@@ -34,13 +23,12 @@ __all__ = [
     "AudioArrival",
     "FishSocket",
     "SentText",
-    "TtsFailure",
+    "SinkError",
     "TtsResult",
     "TurnRun",
     "TurnSpec",
     "send_turn",
     "tts_result",
-    "turn_failure",
 ]
 
 # How often the cancel watcher checks that its turn is still running. Cancel
@@ -96,28 +84,64 @@ class TtsResult:
             object.__setattr__(self, "error", error)
 
 
+_STOCK_RATE: Final = SuiteDefaults().sample_rate
+
+
 @dataclass(frozen=True, slots=True)
 class TurnSpec:
     """Inputs for one Fish websocket. Built by ``FishSpeaker``, not by apps.
 
-    Notes
-    -----
-    ``trace_headers`` are copied onto the httpx client that upgrades the
-    socket.
+    Attributes
+    ----------
+    api_key : str
+        Fish key the socket opens with.
+    base_url : str
+        Fish origin.
+    voice_id : str
+        Fish voice, sent in the start event.
+    model : str
+        Fish TTS model, sent as a header.
+    trace_headers : Mapping of str to str
+        Copied onto the httpx client that upgrades the socket.
+    config : TTSConfig
+        Everything Fish is sent about the audio. The format, rate, latency and speed are
+        read from here, so the socket and the result agree with what Fish was asked for.
+    fade_ms : float
+        Edge fade applied before the sink. PCM only.
+    loudness_db : float or None
+        Level the reply is brought to before the sink, or None. PCM only.
     """
 
     api_key: str = field(repr=False)
     base_url: str
     voice_id: str
     model: str
-    audio_format: AudioFormat
-    latency: LatencyMode
-    speed: float
-    sample_rate: int
     trace_headers: Mapping[str, str]
     config: TTSConfig
     fade_ms: float = 0.0
     loudness_db: float | None = None
+
+    @property
+    def audio_format(self) -> AudioFormat:
+        """The format Fish sends."""
+        return self.config.format
+
+    @property
+    def latency(self) -> LatencyMode:
+        """The latency mode Fish is asked for."""
+        return self.config.latency
+
+    @property
+    def sample_rate(self) -> int:
+        """The PCM rate Fish sends. The SDK's default when the config leaves it unset."""
+        rate = self.config.sample_rate
+        return _STOCK_RATE if rate is None else rate
+
+    @property
+    def speed(self) -> float:
+        """The speaking rate Fish is asked for, 1.0 when the config sets no prosody."""
+        prosody = self.config.prosody
+        return 1.0 if prosody is None else prosody.speed
 
 
 @dataclass(slots=True)
@@ -150,6 +174,23 @@ class TurnRun:
     error_status: int | None = None
     error_message: str | None = None
     on_first_audio: Callable[[], None] | None = None
+
+
+class SinkError(Exception):
+    """The sink raised while a chunk was being written.
+
+    Raised out of ``send_turn`` so the turn loop can tell a sink that failed from a Fish
+    failure, and re-raise the sink's own error instead of reporting it as Fish's.
+
+    Parameters
+    ----------
+    error : Exception
+        What the sink raised.
+    """
+
+    def __init__(self, error: Exception) -> None:
+        super().__init__(str(error))
+        self.error = error
 
 
 class FishSocket(Protocol):
@@ -244,31 +285,6 @@ async def _read_stream(stream: AsyncIterator[Any], queue: asyncio.Queue[Any]) ->
         await queue.put(_STREAM_END)
 
 
-class _Shaper:
-    """Fade the edges of each sentence, then bring the speech to the target level.
-
-    Fish can start or stop a sentence on a loud sample next to silence, which clicks. The
-    level goes last and before the sink, so the far-end tap sees what the speaker plays.
-    """
-
-    def __init__(self, spec: TurnSpec) -> None:
-        pcm = spec.audio_format == "pcm"
-        self._fade = EdgeFade(spec.sample_rate, spec.fade_ms) if pcm and spec.fade_ms > 0 else None
-        self._level = (
-            LoudnessMatch(spec.sample_rate, spec.loudness_db)
-            if pcm and spec.loudness_db is not None
-            else None
-        )
-
-    def process(self, chunk: bytes) -> bytes:
-        shaped = chunk if self._fade is None else self._fade.process(chunk)
-        return shaped if self._level is None or not shaped else self._level.process(shaped)
-
-    def finish(self) -> bytes:
-        tail = b"" if self._fade is None else self._fade.finish()
-        return tail if self._level is None or not tail else self._level.process(tail)
-
-
 async def _pump_ws_audio(
     stream: AsyncIterator[Any],
     run: TurnRun,
@@ -278,7 +294,13 @@ async def _pump_ws_audio(
     # rest of a long reply in memory.
     queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=1)
     reader = asyncio.create_task(_read_stream(aiter(stream), queue))
-    shaper = _Shaper(run.spec)
+    spec = run.spec
+    chain = AudioChain(
+        pcm=spec.audio_format == "pcm",
+        sample_rate=spec.sample_rate,
+        fade_ms=spec.fade_ms,
+        loudness_db=spec.loudness_db,
+    )
     cancelled, stop_watching = _watch_cancel(run.cancel)
     cancel_wait = asyncio.ensure_future(cancelled.wait())
     get: asyncio.Future[Any] | None = None
@@ -304,7 +326,7 @@ async def _pump_ws_audio(
             item = get.result()
             get = None
             if item is _STREAM_END:
-                tail = shaper.finish()
+                tail = chain.finish()
                 if tail:
                     await _play(run.sink, tail)
                 return
@@ -316,7 +338,7 @@ async def _pump_ws_audio(
             if run.cancel.is_set():
                 await close_client()
                 return
-            chunk = shaper.process(item)
+            chunk = chain.process(item)
             if chunk:
                 await _play(run.sink, chunk)
     finally:
@@ -364,6 +386,8 @@ async def _play(sink: PlaybackSink, chunk: bytes) -> None:
         # Let the slice in flight finish before the caller closes the sink.
         await reap(write, wait_s=_REAP_TIMEOUT_S)
         raise
+    except Exception as exc:
+        raise SinkError(exc) from exc
 
 
 def _remember_event(ev: Any, acc: SentText, t0: float) -> None:
@@ -431,105 +455,4 @@ def tts_result(run: TurnRun) -> TtsResult:
         tts_first_text_ms=run.acc.tts_first_text_ms,
         error_status=run.error_status,
         error_message=run.error_message,
-        error=(
-            None
-            if run.error_status is None
-            else FishHttpError(run.error_status, run.error_message or "")
-        ),
     )
-
-
-def _root_exc(exc: BaseException) -> BaseException:
-    # The first entry is often the cancel from a sibling task. Stopping there
-    # would hide a 503, and a turn with no audio would not be retried.
-    if isinstance(exc, BaseExceptionGroup) and exc.exceptions:
-        for item in exc.exceptions:
-            found = _root_exc(item)
-            if not is_cancel_noise(found):
-                return found
-        return _root_exc(exc.exceptions[0])
-    return exc
-
-
-@dataclass(frozen=True, slots=True)
-class TtsFailure:
-    """How one failed Fish attempt should be handled.
-
-    Attributes
-    ----------
-    retry : bool
-        Whether the turn should be tried again.
-    error_status : int or None
-        Fish HTTP status, when the failure had one.
-    error_message : str or None
-        Text to report. None when the failure was a barge-in.
-    """
-
-    retry: bool
-    error_status: int | None = None
-    error_message: str | None = None
-
-
-def turn_failure(
-    exc: BaseException,
-    *,
-    attempt: int,
-    sent_text: str,
-    got_audio: bool,
-    cancel: threading.Event,
-) -> TtsFailure:
-    """Decide whether a Fish exception can be retried.
-
-    Parameters
-    ----------
-    exc : BaseException
-        Error from one attempt. Exception groups are unwrapped to the root.
-    attempt : int
-        Zero-based attempt. ``FISH_RETRY_ATTEMPTS - 1`` is the last.
-    sent_text : str
-        Text available to replay. Empty blocks a retry.
-    got_audio : bool
-        True after the first audio byte. Retries stop there so the listener
-        does not hear the sentence twice.
-    cancel : threading.Event
-        When set, the failure is a barge-in, not a retry.
-
-    Returns
-    -------
-    TtsFailure
-        ``retry`` is True only for a 429, a 5xx, a websocket error or a failed
-        connection, before audio, with text to replay and attempts left.
-    """
-    root = _root_exc(exc)
-    retry, status, message = _classify_fish_exc(root)
-    if cancel.is_set() or (is_cancel_noise(root) and not got_audio):
-        return TtsFailure(retry=False)
-    # The socket died after audio started, and the turn was not cancelled.
-    # Recording the unplayed tail makes the next turn assume it was heard.
-    if is_cancel_noise(root):
-        error_message = str(root)
-        warn(f"[tts] {error_message}")
-        return TtsFailure(retry=False, error_message=error_message)
-    last = fish_attempt_exhausted(attempt)
-    can_replay = bool(sent_text) and not got_audio
-    if retry and not last and can_replay:
-        warn(f"[tts] retry status={status} attempt={attempt + 1}/{FISH_RETRY_ATTEMPTS}")
-        return TtsFailure(retry=True)
-    error_message = message or str(root)
-    warn(f"[tts] {status} {error_message}" if status is not None else f"[tts] {error_message}")
-    return TtsFailure(retry=False, error_status=status, error_message=error_message)
-
-
-def _classify_fish_exc(exc: BaseException) -> tuple[bool, int | None, str]:
-    if is_cancel_noise(exc):
-        return False, None, ""
-    if isinstance(exc, APIError):
-        return should_retry_fish_status(exc.status), exc.status, exc.message
-    if isinstance(exc, ValidationError):
-        return False, 400, str(exc)
-    if isinstance(exc, WebSocketError):
-        return True, None, str(exc)
-    if isinstance(exc, httpx.RequestError):
-        status, message = describe_request_error(exc, httpx.TimeoutException)
-        return True, status, with_detail(message, exc)
-    return False, None, str(exc)

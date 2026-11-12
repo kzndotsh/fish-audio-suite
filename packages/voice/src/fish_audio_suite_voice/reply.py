@@ -30,12 +30,12 @@ from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexContext
 from fish_audio_suite_voice.events import EVENTS, ReplyEnd, ReplyToken, Speaking, notice
 from fish_audio_suite_voice.heard import HeardLine
 from fish_audio_suite_voice.history import remember_user, with_tone_hint
-from fish_audio_suite_voice.llm import ChatUnusableError
-from fish_audio_suite_voice.playback import make_sink
+from fish_audio_suite_voice.playback import PlaybackSink, make_sink
 from fish_audio_suite_voice.portaudio import PortAudioMissingError
 from fish_audio_suite_voice.recognised import BargeIn
 from fish_audio_suite_voice.speculate import Speculation
 from fish_audio_suite_voice.spoken import unspoken_text
+from fish_audio_suite_voice.transports import ChatUnusableError
 from fish_audio_suite_voice.wire import TtsResult
 
 __all__ = [
@@ -277,6 +277,25 @@ def after_speech(
     )
 
 
+def _reply_sink(ctx: DuplexContext, cancel: threading.Event) -> PlaybackSink:
+    """Open the session's playback sink for one reply. It says which format Fish sends."""
+    c = ctx.config
+    return make_sink(
+        c.playback,
+        path=None,
+        sample_rate=c.tts.sample_rate,
+        device=ctx.device,
+        cancel=cancel,
+        aec=ctx.session.aec,
+        latency=c.sink_latency,
+    )
+
+
+def _trace(trace_id: str | None) -> dict[str, str]:
+    """Return the trace header a reply's Fish turn shares with the turn it answers."""
+    return {"traceparent": make_traceparent(trace_id=trace_id)}
+
+
 def _prepared(reply: str, c: VoiceCliConfig) -> str:
     """Shape a whole reply the way the session's TTS model takes it, led by a cue."""
     return ensure_lead_cue(c.cue_style.shape(reply), default="calm")
@@ -314,16 +333,7 @@ async def speak_reply(
         return snapshot, None
     barge = BargeGate(mic=ctx.mic, tune=c.barge, listen=c.listen, muted=ctx.muted)
     thread = barge.start_after_bleed(cancel)
-    sink = make_sink(
-        c.playback,
-        path=None,
-        sample_rate=c.sample_rate,
-        device=ctx.device,
-        cancel=cancel,
-        aec=ctx.session.aec,
-        latency=c.sink_latency,
-    )
-    ctx.tts.trace_headers = {"traceparent": make_traceparent(trace_id=trace_id)}
+    sink = _reply_sink(ctx, cancel)
     try:
         try:
             first_audio: list[float] = []
@@ -333,6 +343,7 @@ async def speak_reply(
                 sink,
                 cancel=cancel,
                 on_first_audio=lambda: _first_audio(first_audio),
+                trace_headers=_trace(trace_id),
             )
         except PortAudioMissingError as exc:
             warn(str(exc))
@@ -408,19 +419,13 @@ async def stream_turn(
         _first_audio(first_audio)
         barge_threads.append(barge.start_after_bleed(cancel))
 
-    sink = make_sink(
-        c.playback,
-        path=None,
-        sample_rate=c.sample_rate,
-        device=ctx.device,
-        cancel=cancel,
-        aec=ctx.session.aec,
-        latency=c.sink_latency,
-    )
-    ctx.tts.trace_headers = {"traceparent": make_traceparent(trace_id=heard.trace_id)}
+    sink = _reply_sink(ctx, cancel)
     snapshot = LatencySnapshot(
         asr_ms=heard.asr_ms, trace_id=heard.trace_id, end_wait_ms=heard.end_wait_ms
     )
+    # The streamed reply goes to Fish as the model writes it, so unlike ``speak_reply`` it
+    # gets no default [calm] lead cue and no junk check: neither can be decided before the
+    # whole reply is known. A cue the model writes still leads it.
     tts_task = asyncio.create_task(
         asyncio.to_thread(
             ctx.tts.speak_stream,
@@ -428,6 +433,7 @@ async def stream_turn(
             sink,
             cancel=cancel,
             on_first_audio=on_first_audio,
+            trace_headers=_trace(heard.trace_id),
         )
     )
     tts_task.add_done_callback(lambda task: _end_llm_when_tts_stops(task, llm_cancel))

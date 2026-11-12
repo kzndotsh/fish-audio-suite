@@ -20,11 +20,12 @@ from fish_audio_suite_voice.hearing import hear_line
 from fish_audio_suite_voice.history import opening_history, remember_user
 from fish_audio_suite_voice.inputs import TurnSource
 from fish_audio_suite_voice.listen import cooldown_report
-from fish_audio_suite_voice.llm import ChatBackend, ChatUnusableError
+from fish_audio_suite_voice.llm import ChatBackend
 from fish_audio_suite_voice.mic import SessionMic
 from fish_audio_suite_voice.reply import collect_reply, speak_reply, stream_turn
 from fish_audio_suite_voice.signals import DuplexSession
 from fish_audio_suite_voice.speaker import FishSpeaker
+from fish_audio_suite_voice.transports import ChatUnusableError
 from fish_audio_suite_voice.vad import open_vad
 
 __all__ = [

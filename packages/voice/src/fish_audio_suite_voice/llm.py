@@ -3,7 +3,8 @@
 Two backends ship: an OpenAI-compatible httpx client for any chat-completions
 server, and the OpenRouter SDK as an opt-in adapter. ``LlmTune.backend`` picks
 one. Both share the event consumer, the 429 retry, and the cut-off continuation.
-The wire formats live in ``transports``.
+Everything that belongs to one provider, the wire formats and OpenRouter's routing,
+model check and usage report, lives in ``transports``.
 
 A refusal that every later turn would get too (401, 402, 404, or a model that no
 provider serves) raises ``ChatUnusableError``, which ends the session.
@@ -18,29 +19,39 @@ import re
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Any, Final, Protocol, cast
+from typing import Any, Final, Protocol
 
 import httpx
 
-from fish_audio_suite_kit import MS_PER_S, ChatMessage, ends_sentence, utf8_text
-from fish_audio_suite_voice.cancel import is_cancel_noise, is_own_cancel, reap
-from fish_audio_suite_voice.debug import debug, short_model, trace, warn
+from fish_audio_suite_kit import ChatMessage, cue_pattern, ends_sentence, utf8_text
+from fish_audio_suite_voice.cancel import (
+    all_cancel_noise,
+    is_cancel_noise,
+    is_own_cancel,
+    never,
+    reap,
+)
+from fish_audio_suite_voice.debug import debug, short_model, warn
 from fish_audio_suite_voice.events import notice
-from fish_audio_suite_voice.llm_tune import LlmTune, is_openrouter_host
+from fish_audio_suite_voice.llm_tune import LlmTune
 from fish_audio_suite_voice.pause import sleep_unless
 from fish_audio_suite_voice.transports import (
     ChatCall,
     ChatChunk,
     ChatHttpError,
     chat_events,
+    check_openrouter_model,
     http_client,
     openrouter_client,
+    provider_brief,
+    routed_model,
+    unusable,
+    unusable_reason,
+    usage_brief,
 )
 
 __all__ = [
     "ChatBackend",
-    "ChatUnusableError",
-    "check_openrouter_model",
     "llm_token_stream",
     "open_chat_backend",
 ]
@@ -51,133 +62,11 @@ _LLM_429_CAP_S: Final = 15.0
 # provider pool (one host behind an OpenRouter model) often clears in a second.
 _LLM_429_DEFAULT_S: Final = 1.0
 # A cue after a finished sentence is not a cut-off. "Hello. [break]" is done.
-_TRAIL_CUE_RE: Final = re.compile(r"(?:\s*\[[^\[\]]{0,80}\])+\s*$")
+_TRAIL_CUE_RE: Final = re.compile(rf"(?:\s*{cue_pattern(80, min_chars=0, flat=True)})+\s*$")
 # A follow-up with no sentence end in its first 240 characters is a runaway,
 # not the missing words. One of at most 80 with no sentence end is kept whole.
 _CONT_SCAN: Final = 240
 _CONT_BARE: Final = 80
-_MODEL_LOOKUP_S: Final = 15
-_MODEL_LOOKUP_MS: Final = _MODEL_LOOKUP_S * MS_PER_S
-_LOOKUP_BODY_CHARS: Final = 200
-
-
-class ChatUnusableError(Exception):
-    """The chat model cannot answer any turn until a setting changes.
-
-    The message says what to fix. It has already been reported with ``warn``.
-    """
-
-
-def _unusable(reason: str) -> ChatUnusableError:
-    warn(f"[llm] stopping: {reason}")
-    return ChatUnusableError(reason)
-
-
-# A refusal that every later turn would get too. Each says what to change.
-_UNUSABLE_STATUS: Final = {
-    401: "the key was refused: check FISH_LLM_API_KEY",
-    402: "the account is out of credits",
-    404: "no provider serves model {model}: choose another FISH_LLM_MODEL",
-}
-
-
-def _route_suffix(model: str) -> str:
-    return model.rsplit("/", maxsplit=1)[-1]
-
-
-def _want_nitro(model: str, tune: LlmTune) -> bool:
-    if not tune.uses_openrouter_sdk or not tune.nitro:
-        return False
-    return ":" not in _route_suffix(model)
-
-
-def _nitro_route(model: str, *, nitro: bool) -> str:
-    if nitro:
-        return f"{model}:nitro"
-    return model
-
-
-def _model_author_slug(model: str) -> tuple[str, str] | None:
-    if "/" not in model:
-        return None
-    author, slug = model.split("/", maxsplit=1)
-    if not author or not slug:
-        return None
-    return author, slug
-
-
-def _lookup_field(found: object, name: str) -> Any:
-    value = getattr(found, name, None)
-    if value is None and isinstance(found, dict):
-        return cast(dict[str, Any], found).get(name)
-    return value
-
-
-async def check_openrouter_model(client: Any, tune: LlmTune) -> None:
-    """Check that the configured model exists and that a provider serves it.
-
-    Parameters
-    ----------
-    client : Any
-        An open OpenRouter SDK client.
-    tune : LlmTune
-        Supplies the model id and whether ``:nitro`` is added.
-
-    Raises
-    ------
-    ChatUnusableError
-        OpenRouter does not know the model, or no provider serves it, so every
-        turn would fail. A lookup that fails for any other reason only warns.
-    """
-    route = _nitro_route(tune.model, nitro=_want_nitro(tune.model, tune))
-    parts = _model_author_slug(route)
-    if parts is None:
-        return
-    from openrouter.errors import OpenRouterError
-
-    author, slug = parts
-    try:
-        res = await client.models.get_async(author=author, slug=slug, timeout_ms=_MODEL_LOOKUP_MS)
-    except OpenRouterError as e:
-        if e.status_code == 404:
-            raise _unusable(f"unknown model {route}: choose another FISH_LLM_MODEL") from e
-        warn(f"[llm] models.get HTTP {e.status_code}: {e.body[:_LOOKUP_BODY_CHARS]}")
-        return
-    except Exception as e:  # noqa: BLE001 - best-effort lookup must never stop the session
-        warn(f"[llm] models.get {e}")
-        return
-    data = _lookup_field(res, "data")
-    if data is None:
-        data = res
-    mid = _lookup_field(data, "id")
-    name = _lookup_field(data, "name")
-    ctx = _lookup_field(data, "context_length")
-    routed = f", routed from {route}" if isinstance(mid, str) and mid and mid != route else ""
-    # The ready line already names the model. A remap is announced below.
-    trace("llm.model {} ({} token context){}", name or short_model(mid or route), ctx, routed)
-    if isinstance(mid, str) and mid and mid != route:
-        notice(f"  [llm model {route} → {mid}]")
-    await _check_providers(client, tune.model)
-
-
-async def _check_providers(client: Any, model: str) -> None:
-    # A retired model keeps its page, so models.get still answers. Only the
-    # endpoints list shows that nothing serves it. :nitro is a way of routing,
-    # not a model, so the model is asked about as it was configured.
-    parts = _model_author_slug(model)
-    if parts is None:
-        return
-    author, slug = parts
-    try:
-        res = await client.endpoints.list_async(
-            author=author, slug=slug, timeout_ms=_MODEL_LOOKUP_MS
-        )
-    except Exception as e:  # noqa: BLE001 - best-effort lookup must never stop the session
-        debug("llm.endpoints lookup failed: {}", e)
-        return
-    endpoints = _lookup_field(_lookup_field(res, "data"), "endpoints")
-    if isinstance(endpoints, list) and not endpoints:
-        raise _unusable(_UNUSABLE_STATUS[404].format(model=model))
 
 
 def _delta_content(chunk: ChatChunk, *, already: bool) -> str:
@@ -196,10 +85,8 @@ class _ChatStats:
     yielded: int = 0
     last_finish: str | None = None
     last_usage: dict[str, Any] | None = None
-    last_id: str = ""
     last_model: str = ""
     last_provider: str = ""
-    last_native: str = ""
     last_tier: str = ""
     aborted: bool = False
     refused: ChatHttpError | None = None
@@ -218,12 +105,10 @@ def _note_chat_event(chunk: ChatChunk, stats: _ChatStats) -> str:
         return ""
     if chunk.usage is not None:
         stats.last_usage = chunk.usage
-    stats.last_id = chunk.id or stats.last_id
     stats.last_model = chunk.model or stats.last_model
     stats.last_provider = chunk.provider or stats.last_provider or chunk.provider_summary
     if chunk.finish is not None:
         stats.last_finish = chunk.finish
-    stats.last_native = chunk.native_finish or stats.last_native
     stats.last_tier = chunk.service_tier or stats.last_tier
     piece = _delta_content(chunk, already=stats.yielded > 0)
     if piece:
@@ -288,58 +173,20 @@ async def _event_or_cancel(pending: asyncio.Task[ChatChunk], cancel: asyncio.Eve
     return pending in done
 
 
-_SELECTED_PROVIDER: Final = re.compile(r"selected=([^,]+)")
-
-
-def _provider_brief(provider: object) -> str:
-    """Return the provider that served the reply from OpenRouter's routing text."""
-    text = str(provider or "")
-    found = _SELECTED_PROVIDER.search(text)
-    return found.group(1).strip() if found else text
-
-
-def _usage_brief(usage: object) -> str:
-    """Render token counts and cost from an OpenRouter usage dict, or ``usage=?``."""
-    if not isinstance(usage, dict):
-        return "usage=?"
-    fields = cast(dict[str, Any], usage)
-    parts = [f"in={fields.get('prompt_tokens')}"]
-    details = fields.get("prompt_tokens_details")
-    if isinstance(details, dict):
-        cached = cast(dict[str, Any], details).get("cached_tokens")
-        if isinstance(cached, int):
-            parts.append(f"cached={cached}")
-    parts.append(f"out={fields.get('completion_tokens')}")
-    cost = fields.get("cost")
-    if isinstance(cost, (int, float)):
-        parts.append(f"cost=${cost:.5f}")
-    return " ".join(parts)
-
-
 def _finish_llm(stats: _ChatStats, route_model: str) -> None:
     if stats.aborted:
         return
     debug(
         "llm.stream_end finish={} {} chunks={} provider={} model={}{}",
         stats.last_finish,
-        _usage_brief(stats.last_usage),
+        usage_brief(stats.last_usage),
         stats.yielded,
-        _provider_brief(stats.last_provider),
+        provider_brief(stats.last_provider),
         short_model(stats.last_model or route_model),
         f" tier={stats.last_tier}" if stats.last_tier else "",
     )
     if stats.yielded == 0:
         warn(f"[llm] empty reply (model={route_model} finish={stats.last_finish!r})")
-
-
-def _cancel_group(exc: BaseException, *, cancelled: bool = False) -> bool:
-    # A task group on barge-in is only cancel noise. A group that holds a
-    # provider error is not, and must be logged, or the reply stops unexplained.
-    if isinstance(exc, BaseExceptionGroup):
-        return bool(exc.exceptions) and all(
-            _cancel_group(item, cancelled=cancelled) for item in exc.exceptions
-        )
-    return is_cancel_noise(exc, cancelled=cancelled)
 
 
 def _group_text(exc: BaseException) -> str:
@@ -475,10 +322,7 @@ async def open_chat_backend(
 async def llm_token_stream(
     messages: list[ChatMessage],
     *,
-    tune: LlmTune | None = None,
-    base: str = "",
-    key: str = "",
-    model: str = "",
+    tune: LlmTune,
     cancel: asyncio.Event | None = None,
     client: Any | None = None,
     http: httpx.AsyncClient | None = None,
@@ -491,12 +335,8 @@ async def llm_token_stream(
     ----------
     messages : list of dict
         OpenAI-style chat messages, including the system prompt.
-    tune : LlmTune or None, optional
-        Backend and request settings. When omitted one is built from ``base``,
-        ``key`` and ``model``, choosing OpenRouter only for an ``openrouter.ai``
-        host.
-    base, key, model : str, optional
-        Used only to build ``tune`` when it is omitted.
+    tune : LlmTune
+        Backend, base URL, key, model and request settings.
     cancel : asyncio.Event or None, optional
         Stops the stream. Cancel is not a fatal duplex error.
     client : Any or None, optional
@@ -528,13 +368,7 @@ async def llm_token_stream(
     continues the sentence is yielded. A ``reasoning`` field on a stream event
     is not spoken.
     """
-    tune = tune or LlmTune(
-        backend="openrouter" if is_openrouter_host(base) else "openai",
-        base=base,
-        api_key=key,
-        model=model,
-    )
-    route_model = _nitro_route(tune.model, nitro=_want_nitro(tune.model, tune))
+    routed = routed_model(tune)
     batch: list[ChatMessage] = messages
     spoken: list[str] = []
     generations = (1, 2) if tune.continuation else (1,)
@@ -546,7 +380,7 @@ async def llm_token_stream(
         async for piece in _stream_generation(
             batch,
             tune=tune,
-            route_model=route_model,
+            route_model=routed,
             cancel=cancel,
             client=client,
             http=http,
@@ -642,9 +476,9 @@ async def _stream_generation(
         except ChatHttpError as refused:
             stats.aborted = True
             stats.refused = refused
-            reason = _UNUSABLE_STATUS.get(refused.status or 0)
+            reason = unusable_reason(refused.status, route_model)
             if reason is not None:
-                raise _unusable(reason.format(model=route_model)) from refused
+                raise unusable(reason) from refused
         except asyncio.CancelledError:
             held.stopped = "cancel"
             # Only our own cancel flag may end the stream quietly. An outer
@@ -656,7 +490,7 @@ async def _stream_generation(
             held.stopped = "cancel"
             return
         except BaseExceptionGroup as exc:
-            if _cancel_group(exc, cancelled=cancel is not None and cancel.is_set()):
+            if all_cancel_noise(exc, cancelled=cancel is not None and cancel.is_set()):
                 held.stopped = "cancel"
                 return
             warn(f"[llm] {_group_text(exc)}")
@@ -692,15 +526,9 @@ def _wait_label(seconds: float) -> str:
     return f"{seconds:.1f}"
 
 
-async def _pause_for_retry(cancel: asyncio.Event | None, seconds: float) -> bool:
-    """Wait out a 429. True means cancel landed first."""
-    stopped = cancel.is_set if cancel is not None else (lambda: False)
-    return await sleep_unless(seconds, stopped)
-
-
 async def _maybe_retry_429(stats: _ChatStats, cancel: asyncio.Event | None) -> bool:
     wait = _retry_wait(stats, cancel)
     if wait is None:
         return False
     notice(f"  [llm 429, retrying in {_wait_label(wait)}s]")
-    return not await _pause_for_retry(cancel, wait)
+    return not await sleep_unless(wait, cancel.is_set if cancel is not None else never)

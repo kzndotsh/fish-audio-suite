@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import gc
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from types import SimpleNamespace
 from typing import Any, ClassVar
 
@@ -14,12 +14,8 @@ from openrouter.errors import OpenRouterError
 
 from fish_audio_suite_voice.events import EVENTS, Event, Notice
 from fish_audio_suite_voice.llm import (
-    ChatUnusableError,
     _ChatStats,
     _consume_chat_events,
-    _model_author_slug,
-    _want_nitro,
-    check_openrouter_model,
     llm_token_stream,
 )
 from fish_audio_suite_voice.llm_tune import LlmTune, is_openrouter_host
@@ -27,9 +23,13 @@ from fish_audio_suite_voice.transports import (
     ChatCall,
     ChatChunk,
     ChatHttpError,
+    ChatUnusableError,
     _abort_http,
     _chat_body,
     _feed_sse,
+    _model_author_slug,
+    _want_nitro,
+    check_openrouter_model,
     describe_http_error,
     openrouter_client,
 )
@@ -131,9 +131,12 @@ def test_a_provider_error_group_is_reported(monkeypatch: pytest.MonkeyPatch) -> 
             tok
             async for tok in llm_token_stream(
                 [{"role": "user", "content": "hi"}],
-                base="https://api.example.com/v1",
-                key="sk-test",
-                model="org/model",
+                tune=LlmTune(
+                    backend="openai",
+                    base="https://api.example.com/v1",
+                    api_key="sk-test",
+                    model="org/model",
+                ),
             )
         ]
 
@@ -158,9 +161,12 @@ def test_a_cancel_group_does_not_warn(monkeypatch: pytest.MonkeyPatch) -> None:
             tok
             async for tok in llm_token_stream(
                 [{"role": "user", "content": "hi"}],
-                base="https://api.example.com/v1",
-                key="sk-test",
-                model="org/model",
+                tune=LlmTune(
+                    backend="openai",
+                    base="https://api.example.com/v1",
+                    api_key="sk-test",
+                    model="org/model",
+                ),
             )
         ]
 
@@ -854,12 +860,12 @@ def test_429_within_cap_retries_once(monkeypatch: pytest.MonkeyPatch) -> None:
     calls, events = _events_once_429(4.0, ["back"])
     waits: list[float] = []
 
-    async def pause(_cancel: asyncio.Event | None, seconds: float) -> bool:
+    async def pause(seconds: float, _stopped: Callable[[], bool]) -> bool:
         waits.append(seconds)
         return False
 
     monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", events)
-    monkeypatch.setattr("fish_audio_suite_voice.llm._pause_for_retry", pause)
+    monkeypatch.setattr("fish_audio_suite_voice.llm.sleep_unless", pause)
 
     seen: list[Event] = []
     unsubscribe = EVENTS.subscribe(seen.append)
@@ -869,9 +875,12 @@ def test_429_within_cap_retries_once(monkeypatch: pytest.MonkeyPatch) -> None:
             tok
             async for tok in llm_token_stream(
                 [{"role": "user", "content": "hi"}],
-                base="https://api.example.com/v1",
-                key="sk-test",
-                model="org/model",
+                tune=LlmTune(
+                    backend="openai",
+                    base="https://api.example.com/v1",
+                    api_key="sk-test",
+                    model="org/model",
+                ),
             )
         ]
 
@@ -893,9 +902,12 @@ def test_429_over_cap_returns_to_listening(monkeypatch: pytest.MonkeyPatch) -> N
             tok
             async for tok in llm_token_stream(
                 [{"role": "user", "content": "hi"}],
-                base="https://api.example.com/v1",
-                key="sk-test",
-                model="org/model",
+                tune=LlmTune(
+                    backend="openai",
+                    base="https://api.example.com/v1",
+                    api_key="sk-test",
+                    model="org/model",
+                ),
             )
         ]
 
@@ -911,20 +923,23 @@ def test_429_without_retry_after_retries_once_after_a_short_pause(
     monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", events)
     waits: list[float] = []
 
-    async def no_sleep(_cancel: object, seconds: float) -> bool:
+    async def no_sleep(seconds: float, _stopped: Callable[[], bool]) -> bool:
         waits.append(seconds)
         return False
 
-    monkeypatch.setattr("fish_audio_suite_voice.llm._pause_for_retry", no_sleep)
+    monkeypatch.setattr("fish_audio_suite_voice.llm.sleep_unless", no_sleep)
 
     async def collect() -> list[str]:
         return [
             tok
             async for tok in llm_token_stream(
                 [{"role": "user", "content": "hi"}],
-                base="https://api.example.com/v1",
-                key="sk-test",
-                model="org/model",
+                tune=LlmTune(
+                    backend="openai",
+                    base="https://api.example.com/v1",
+                    api_key="sk-test",
+                    model="org/model",
+                ),
             )
         ]
 
@@ -952,9 +967,12 @@ def test_a_quota_429_is_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
             tok
             async for tok in llm_token_stream(
                 [{"role": "user", "content": "hi"}],
-                base="https://api.example.com/v1",
-                key="sk-test",
-                model="org/model",
+                tune=LlmTune(
+                    backend="openai",
+                    base="https://api.example.com/v1",
+                    api_key="sk-test",
+                    model="org/model",
+                ),
             )
         ]
 
@@ -965,22 +983,24 @@ def test_a_quota_429_is_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_cancel_during_429_wait_does_not_retry(monkeypatch: pytest.MonkeyPatch) -> None:
     calls, events = _events_once_429(4.0, ["back"])
 
-    async def pause(cancel: asyncio.Event | None, _seconds: float) -> bool:
-        if cancel is not None:
-            cancel.set()
+    async def pause(_seconds: float, _stopped: Callable[[], bool]) -> bool:
+        # Cancel lands during the wait.
         return True
 
     monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", events)
-    monkeypatch.setattr("fish_audio_suite_voice.llm._pause_for_retry", pause)
+    monkeypatch.setattr("fish_audio_suite_voice.llm.sleep_unless", pause)
 
     async def collect() -> list[str]:
         return [
             tok
             async for tok in llm_token_stream(
                 [{"role": "user", "content": "hi"}],
-                base="https://api.example.com/v1",
-                key="sk-test",
-                model="org/model",
+                tune=LlmTune(
+                    backend="openai",
+                    base="https://api.example.com/v1",
+                    api_key="sk-test",
+                    model="org/model",
+                ),
                 cancel=asyncio.Event(),
             )
         ]
@@ -1007,9 +1027,12 @@ def test_429_after_a_token_does_not_retry(monkeypatch: pytest.MonkeyPatch) -> No
             tok
             async for tok in llm_token_stream(
                 [{"role": "user", "content": "hi"}],
-                base="https://api.example.com/v1",
-                key="sk-test",
-                model="org/model",
+                tune=LlmTune(
+                    backend="openai",
+                    base="https://api.example.com/v1",
+                    api_key="sk-test",
+                    model="org/model",
+                ),
             )
         ]
 
@@ -1057,12 +1080,12 @@ def test_openrouter_429_header_retries_once(monkeypatch: pytest.MonkeyPatch) -> 
         async def __aexit__(self, *_args: object) -> None:
             return None
 
-    async def pause(_cancel: asyncio.Event | None, seconds: float) -> bool:
+    async def pause(seconds: float, _stopped: Callable[[], bool]) -> bool:
         assert seconds == 3.0
         return False
 
     monkeypatch.setattr(openrouter, "OpenRouter", _Client)
-    monkeypatch.setattr("fish_audio_suite_voice.llm._pause_for_retry", pause)
+    monkeypatch.setattr("fish_audio_suite_voice.llm.sleep_unless", pause)
 
     async def collect() -> list[str]:
         return [tok async for tok in _tokens()]
@@ -1078,20 +1101,20 @@ def test_abort_http_ignores_retry_after_on_other_status() -> None:
 
 
 def test_log_briefs_show_the_provider_and_the_token_counts() -> None:
-    from fish_audio_suite_voice.llm import _provider_brief, _usage_brief
+    from fish_audio_suite_voice.transports import provider_brief, usage_brief
 
-    assert _provider_brief("available=1, selected=Venice") == "Venice"
-    assert _provider_brief("Venice") == "Venice"
-    assert _provider_brief(None) == ""
+    assert provider_brief("available=1, selected=Venice") == "Venice"
+    assert provider_brief("Venice") == "Venice"
+    assert provider_brief(None) == ""
     usage = {"prompt_tokens": 203, "completion_tokens": 20, "cost": 5.86e-05}
-    assert _usage_brief(usage) == "in=203 out=20 cost=$0.00006"
-    assert _usage_brief(None) == "usage=?"
+    assert usage_brief(usage) == "in=203 out=20 cost=$0.00006"
+    assert usage_brief(None) == "usage=?"
     # A cache hit shows how much of the prompt the provider read back, so a change
     # that breaks the cache can be seen.
     cached = {**usage, "prompt_tokens_details": {"cached_tokens": 180}}
-    assert _usage_brief(cached) == "in=203 cached=180 out=20 cost=$0.00006"
+    assert usage_brief(cached) == "in=203 cached=180 out=20 cost=$0.00006"
     no_hit = {**usage, "prompt_tokens_details": {"cached_tokens": 0}}
-    assert _usage_brief(no_hit) == "in=203 cached=0 out=20 cost=$0.00006"
+    assert usage_brief(no_hit) == "in=203 cached=0 out=20 cost=$0.00006"
 
 
 def test_a_retry_wait_in_the_error_body_is_read_the_way_a_header_is() -> None:
@@ -1245,9 +1268,9 @@ async def _drain(stream: AsyncIterator[str]) -> list[str]:
 def _hi() -> AsyncIterator[str]:
     return llm_token_stream(
         [{"role": "user", "content": "hi"}],
-        base="https://api.example.com/v1",
-        key="sk-test",
-        model="org/gone",
+        tune=LlmTune(
+            backend="openai", base="https://api.example.com/v1", api_key="sk-test", model="org/gone"
+        ),
     )
 
 

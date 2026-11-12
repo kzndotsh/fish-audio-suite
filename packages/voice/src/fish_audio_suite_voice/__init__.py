@@ -16,6 +16,7 @@ from fish_audio_suite_voice.playback_kind import PlaybackKind
 from fish_audio_suite_voice.portaudio import PortAudioMissingError
 from fish_audio_suite_voice.signals import DuplexSession
 from fish_audio_suite_voice.speaker import FishSpeaker
+from fish_audio_suite_voice.tts_tune import TtsTune
 from fish_audio_suite_voice.tune import AecTune, BargeTune, ListenTune
 from fish_audio_suite_voice.wire import TtsResult
 
@@ -37,5 +38,6 @@ __all__ = [
     "SounddeviceSink",
     "StdoutSink",
     "TtsResult",
+    "TtsTune",
     "make_sink",
 ]

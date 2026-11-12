@@ -28,7 +28,7 @@ _CASES: list[EnvCase] = [
     EnvCase("FISH_VOICE_SYSTEM_PROMPT", "a prompt", "a prompt", attrgetter("system_prompt")),
     EnvCase("FISH_VOICE_STREAM_TTS", "1", True, attrgetter("stream_tts")),
     EnvCase("FISH_VOICE_REPEAT_WINDOW", "2.5", 2.5, attrgetter("repeat_window_s")),
-    EnvCase("FISH_VOICE_FADE_MS", "6", 6.0, attrgetter("fade_ms")),
+    EnvCase("FISH_VOICE_FADE_MS", "6", 6.0, attrgetter("tts.fade_ms")),
     EnvCase("FISH_VOICE_PRE_PAD_FRAMES", "40", 40, attrgetter("listen.pre_pad_frames")),
     EnvCase("FISH_VOICE_MIN_VOICED_FRAMES", "9", 9, attrgetter("listen.min_voiced_frames")),
     EnvCase("FISH_VOICE_BARGE_PLAYING_GAIN", "3.5", 3.5, attrgetter("barge.playing_gain")),
@@ -37,8 +37,8 @@ _CASES: list[EnvCase] = [
     EnvCase("FISH_TTS_DROP_NARRATION", "1", True, attrgetter("drop_narration")),
     EnvCase("FISH_LLM_API_KEY", "sk-new", "sk-new", attrgetter("llm.api_key")),
     EnvCase("FISH_TTS_MODEL", "s1", "s1", attrgetter("tts_model")),
-    EnvCase("FISH_SPEED", "1.2", 1.2, attrgetter("speed")),
-    EnvCase("FISH_VOICE_NORMALIZE_LOUDNESS", "1", -18.0, attrgetter("loudness_db")),
+    EnvCase("FISH_SPEED", "1.2", 1.2, attrgetter("tts.speed")),
+    EnvCase("FISH_VOICE_NORMALIZE_LOUDNESS", "1", -18.0, attrgetter("tts.loudness_db")),
     EnvCase("FISH_VOICE_HEAR_TONE", "1", True, attrgetter("hear_tone")),
     EnvCase("FISH_VOICE_TURN_CHECK", "1", True, attrgetter("turn.enabled")),
     EnvCase("FISH_VOICE_TURN_SILENCE_FRAMES", "9", 9, attrgetter("turn.silence_frames")),
@@ -95,7 +95,7 @@ def test_cues_are_official_by_default_and_an_unknown_choice_is_ignored(
 
 def test_the_three_human_touches_are_off_by_default() -> None:
     c = load_config()
-    assert c.loudness_db is None
+    assert c.tts.loudness_db is None
     assert c.hear_tone is False
     assert c.turn.enabled is False
 
@@ -104,11 +104,11 @@ def test_the_loudness_target_is_read_only_when_normalising_is_on(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setenv("FISH_VOICE_LOUDNESS_TARGET_DB", "-14")
-    assert load_config().loudness_db is None
+    assert load_config().tts.loudness_db is None
     monkeypatch.setenv("FISH_VOICE_NORMALIZE_LOUDNESS", "1")
-    assert load_config().loudness_db == -14.0
+    assert load_config().tts.loudness_db == -14.0
     monkeypatch.setenv("FISH_VOICE_LOUDNESS_TARGET_DB", "3")
-    assert load_config().loudness_db == -18.0
+    assert load_config().tts.loudness_db == -18.0
     assert "FISH_VOICE_LOUDNESS_TARGET_DB" in capsys.readouterr().err
 
 

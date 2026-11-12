@@ -303,9 +303,9 @@ Install it with the kit, from the repository ([INSTALL.md](INSTALL.md#as-a-libra
 
 ```python
 from pathlib import Path
-from fish_audio_suite_voice import FishSpeaker, FileSink, make_sink
+from fish_audio_suite_voice import FishSpeaker, FileSink, TtsTune, make_sink
 
-tts = FishSpeaker(api_key=fish_key, voice_id=voice_id, latency="balanced")
+tts = FishSpeaker(api_key=fish_key, voice_id=voice_id, tune=TtsTune(latency="balanced"))
 
 tts.speak("[happy] Hello there!", FileSink(Path("hello.wav")))   # to a file
 tts.speak("Hello again.", make_sink("sounddevice"))               # to the speakers
@@ -336,6 +336,8 @@ result = await asyncio.to_thread(tts.speak_stream, token_list, sink)
 - **`speak` and `speak_stream` block until the turn ends**, and run Fish's websocket on their own thread and event loop. They are safe under `asyncio.run` or `asyncio.to_thread`.
 - **Stopping early:** pass `cancel=threading.Event()` and set it from anywhere, for example when your user starts talking.
 - **Knowing when sound starts:** `on_first_audio=callback` runs once, at the first audio chunk, on the speaker's own thread.
+- **Tracing:** `trace_headers={"traceparent": ...}` is sent on that turn's websocket upgrade. Without one, a `traceparent` is minted.
+- **A sink that fails raises:** an error your sink raises when it opens, writes or closes comes out of `speak`. A Fish failure comes back in the result instead.
 - **The result is a `TtsResult`:**
   - `spoken_so_far` is the text the listener heard, cut to what was played. Store that in your chat history, not the full reply.
   - `error` is a kit error class you can test with `isinstance`, such as `FishAuthError` or `FishRateLimitError`.
@@ -348,6 +350,7 @@ Pass any object with these methods as the sink. `FileSink`, `StdoutSink`, `Sound
 
 ```python
 class MySink:
+    audio_format = "pcm"            # optional: what Fish sends, pcm (the default), wav, mp3 or opus
     output_latency_s = 0.0          # seconds of device buffer, for the spoken-prefix estimate
     def start(self) -> None: ...     # called once per turn
     def write(self, chunk: bytes) -> None: ...   # PCM (or encoded audio, per audio_format)
@@ -355,7 +358,7 @@ class MySink:
     def bytes_played(self) -> int: ...
 ```
 
-The audio format follows `FishSpeaker(audio_format=..., sample_rate=...)`. The default is 16-bit mono PCM at 44.1 kHz.
+Fish sends the format the sink declares in `audio_format`, and 16-bit mono PCM when it declares none. The sample rate follows `FishSpeaker(tune=TtsTune(sample_rate=...))`, 44.1 kHz by default.
 
 ### Other building blocks
 

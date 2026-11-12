@@ -16,8 +16,8 @@ from fish_audio_suite_voice.cli import EXIT_FATAL, _can_draw_a_screen, load_conf
 from fish_audio_suite_voice.config import VoiceCliConfig
 from fish_audio_suite_voice.debug import DebugLevel
 from fish_audio_suite_voice.inputs import LiveInput
-from fish_audio_suite_voice.llm import ChatUnusableError
 from fish_audio_suite_voice.signals import DuplexSession
+from fish_audio_suite_voice.transports import ChatUnusableError
 
 
 def _configured(monkeypatch: pytest.MonkeyPatch) -> VoiceCliConfig:

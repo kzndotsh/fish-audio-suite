@@ -206,8 +206,8 @@ def test_temperature_and_top_p_stay_in_unit_interval(monkeypatch: pytest.MonkeyP
     monkeypatch.setenv("FISH_TEMPERATURE", "5")
     monkeypatch.setenv("FISH_TOP_P", "-1")
     settings = load_config()
-    assert settings.temperature == 1.0
-    assert settings.top_p == 0.0
+    assert settings.tts.temperature == 1.0
+    assert settings.tts.top_p == 0.0
 
 
 def test_speed_and_chunk_stay_in_range(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -215,25 +215,27 @@ def test_speed_and_chunk_stay_in_range(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FISH_CHUNK_LENGTH", "900")
     monkeypatch.setenv("FISH_MIN_CHUNK_LENGTH", "250")
     settings = load_config()
-    assert settings.speed == 2.0
-    assert settings.chunk_length == 300
-    assert settings.min_chunk_length == 100
+    assert settings.tts.speed == 2.0
+    assert settings.tts.chunk_length == 300
+    assert settings.tts.min_chunk_length == 100
+    # A self-hosted HTTP API takes up to 1000, but this websocket goes through the SDK,
+    # which refuses more than 300 for any base, so 300 is what is sent.
     monkeypatch.setenv("FISH_BASE", "http://127.0.0.1:8080")
     monkeypatch.setenv("FISH_CHUNK_LENGTH", "800")
-    assert load_config().chunk_length == 800
+    assert load_config().tts.chunk_length == 300
 
 
 def test_sample_rate_must_be_positive(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FISH_SAMPLE_RATE", "0")
-    assert load_config().sample_rate == 44100
+    assert load_config().tts.sample_rate == 44100
     monkeypatch.setenv("FISH_SAMPLE_RATE", "-1")
-    assert load_config().sample_rate == 44100
+    assert load_config().tts.sample_rate == 44100
     monkeypatch.setenv("FISH_SAMPLE_RATE", "16000")
-    assert load_config().sample_rate == 16000
+    assert load_config().tts.sample_rate == 16000
     monkeypatch.setenv("FISH_SAMPLE_RATE", "16000.0")
-    assert load_config().sample_rate == 16000
+    assert load_config().tts.sample_rate == 16000
     monkeypatch.setenv("FISH_SAMPLE_RATE", "16,000")
-    assert load_config().sample_rate == 44100
+    assert load_config().tts.sample_rate == 44100
 
 
 def test_run_loop_rejects_bad_playback(
@@ -258,12 +260,12 @@ def test_catalog_model_and_latency_are_canonical(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setenv("FISH_LATENCY", " Normal ")
     settings = load_config()
     assert settings.tts_model == "s2.1-pro"
-    assert settings.latency == "normal"
+    assert settings.tts.latency == "normal"
     monkeypatch.setenv("FISH_LATENCY", "turbo")
     monkeypatch.setenv("FISH_TTS_MODEL", "MyModel")
     settings = load_config()
     assert settings.tts_model == "MyModel"
-    assert settings.latency == "normal"
+    assert settings.tts.latency == "normal"
 
 
 def test_parse_device_strips_index_and_blank() -> None:

@@ -21,10 +21,10 @@ from voice_fakes import FakeGate, ScriptedMic, install_audio, install_vad, set_t
 from fish_audio_suite_voice import reply
 from fish_audio_suite_voice.duplex_state import DuplexContext
 from fish_audio_suite_voice.hearing import HeardLine
-from fish_audio_suite_voice.llm import ChatUnusableError
 from fish_audio_suite_voice.portaudio import PortAudioMissingError
 from fish_audio_suite_voice.signals import DuplexSession
 from fish_audio_suite_voice.speaker import FishSpeaker
+from fish_audio_suite_voice.transports import ChatUnusableError
 from fish_audio_suite_voice.tune import ListenTune
 from fish_audio_suite_voice.wire import TtsResult
 

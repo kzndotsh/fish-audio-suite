@@ -350,7 +350,13 @@ def test_the_first_audio_of_a_reply_is_reported_as_speaking(
     tts = FishSpeaker(api_key="k", voice_id="voice")
     install_audio(monkeypatch)
 
-    def speak(text: str, sink: object, cancel: object = None, on_first_audio: Any = None) -> Any:
+    def speak(
+        text: str,
+        sink: object,
+        cancel: object = None,
+        on_first_audio: Any = None,
+        trace_headers: object = None,
+    ) -> Any:
         on_first_audio()
         return make_result(text, bytes_played=4, got_audio=True, tts_first_audio_ms=3.0)
 

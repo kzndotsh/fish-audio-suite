@@ -36,6 +36,9 @@ _SLEW_DB_PER_S: Final = 6.0
 # The limiter leaves everything below the knee alone and bends the rest toward the ceiling.
 _KNEE: Final = 0.8
 _CEILING: Final = 0.98
+# The most the gain may make the audio louder or quieter, in dB.
+_MAX_BOOST_DB: Final = 12.0
+_MAX_CUT_DB: Final = 12.0
 
 
 def _soft_limit(samples: NDArray[np.float64]) -> NDArray[np.float64]:
@@ -54,11 +57,8 @@ class LoudnessMatch:
     sample_rate : int
         Samples per second of the audio.
     target_db : float
-        The level to bring speech to, in dB below full scale (RMS), such as ``-18``.
-    max_boost_db : float, optional
-        The most the audio may be made louder, in dB.
-    max_cut_db : float, optional
-        The most the audio may be made quieter, in dB.
+        The level to bring speech to, in dB below full scale (RMS), such as ``-18``. The
+        gain stays within 12 dB either way.
 
     Notes
     -----
@@ -72,14 +72,9 @@ class LoudnessMatch:
         self,
         sample_rate: int,
         target_db: float,
-        *,
-        max_boost_db: float = 12.0,
-        max_cut_db: float = 12.0,
     ) -> None:
         self._block = max(1, sample_rate * _BLOCK_MS // MS_PER_S)
         self._target_db = target_db
-        self._max_boost_db = max_boost_db
-        self._max_cut_db = max_cut_db
         self._step_db = _SLEW_DB_PER_S * _BLOCK_MS / MS_PER_S
         self._min_speech = int(sample_rate * _MIN_SPEECH_S)
         self._energy = 0.0
@@ -156,7 +151,7 @@ class LoudnessMatch:
         if self._speech < self._min_speech:
             return None
         level_db = 10.0 * math.log10(self._energy / self._speech)
-        return min(self._max_boost_db, max(-self._max_cut_db, self._target_db - level_db))
+        return min(_MAX_BOOST_DB, max(-_MAX_CUT_DB, self._target_db - level_db))
 
     def _slew_toward(self, wanted: float) -> None:
         delta = wanted - self._gain_db

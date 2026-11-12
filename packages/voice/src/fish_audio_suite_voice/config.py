@@ -10,34 +10,20 @@ from typing import Final
 from urllib.parse import urlsplit
 
 from fish_audio_suite_kit import (
-    CHUNK_LENGTH_LO,
     DEFAULT_SYSTEM_PROMPT,
-    MIN_CHUNK_LENGTH_HI,
-    MIN_CHUNK_LENGTH_LO,
-    TTS_SPEED_HI,
-    TTS_SPEED_LO,
-    UNIT_INTERVAL_HI,
-    UNIT_INTERVAL_LO,
     CueStyle,
-    FishLatency,
     SuiteDefaults,
-    chunk_length_hi,
-    clamp_number,
     env_base,
-    env_float,
-    env_int,
     env_text,
     env_token,
     is_insecure_fish_base,
-    known_latency,
     normalize_tts_model,
 )
 from fish_audio_suite_voice.debug import warn
 from fish_audio_suite_voice.llm_tune import DEFAULT_HISTORY_TURNS, OPENROUTER_API_BASE, LlmTune
 from fish_audio_suite_voice.playback_kind import DEFAULT_PLAYBACK, playback_key
+from fish_audio_suite_voice.tts_tune import TtsTune
 from fish_audio_suite_voice.tune import (
-    DEFAULT_FADE_MS,
-    DEFAULT_LOUDNESS_TARGET_DB,
     AecTune,
     BargeTune,
     ListenTune,
@@ -73,6 +59,8 @@ class VoiceCliConfig:
 
     Attributes
     ----------
+    tts : TtsTune
+        What Fish is asked to speak with, and the fade and level applied before the sink.
     llm : LlmTune
         Chat backend and request settings.
     listen : ListenTune
@@ -100,12 +88,6 @@ class VoiceCliConfig:
         out ``[smiling]`` as a hum). ``"free"`` sends every cue the model writes as written.
     stream_tts : bool
         Speak the reply while the model is still writing it. Off by default.
-    fade_ms : float
-        Fade at each edge between a sound and silence, so a sentence does not click
-        when it starts or stops. 0 turns it off.
-    loudness_db : float or None
-        The level, in dB below full scale, each reply is brought to while it plays, or None
-        (the default) to play it as Fish sends it.
     drop_narration : bool
         Drop stage-direction lines such as ``She smiles.`` before TTS.
     output_latency : str
@@ -125,21 +107,13 @@ class VoiceCliConfig:
     fish_voice_id: str
     fish_asr_language: str
     tts_model: str
-    latency: FishLatency
-    speed: float
-    temperature: float
-    top_p: float
-    repetition_penalty: float
-    chunk_length: int
-    min_chunk_length: int
-    volume: float
-    sample_rate: int
     playback: str
     system_prompt: str
     device: str | None
     output_latency: str = "auto"
     asr_model: str = "transcribe-1-pro"
     pin_seed: bool = True
+    tts: TtsTune = field(default_factory=TtsTune)
     llm: LlmTune = field(default_factory=LlmTune)
     listen: ListenTune = field(default_factory=ListenTune)
     barge: BargeTune = field(default_factory=BargeTune)
@@ -153,8 +127,6 @@ class VoiceCliConfig:
     tts_cues: str = "official"
     drop_narration: bool = False
     stream_tts: bool = False
-    fade_ms: float = DEFAULT_FADE_MS
-    loudness_db: float | None = None
 
     @property
     def cue_style(self) -> CueStyle:
@@ -231,18 +203,6 @@ def _tts_cues() -> str:
     return value
 
 
-def _loudness_db() -> float | None:
-    """Read ``FISH_VOICE_NORMALIZE_LOUDNESS`` and, when it is on, ``FISH_VOICE_LOUDNESS_TARGET_DB``."""
-    if not read_flag("FISH_VOICE_NORMALIZE_LOUDNESS", default=False):
-        return None
-    return read_float(
-        "FISH_VOICE_LOUDNESS_TARGET_DB",
-        DEFAULT_LOUDNESS_TARGET_DB,
-        lo=_LOUDNESS_TARGET_LO_DB,
-        hi=_LOUDNESS_TARGET_HI_DB,
-    )
-
-
 def _output_latency() -> str:
     """Read ``FISH_VOICE_OUTPUT_LATENCY``: ``auto``, ``low`` or ``high``."""
     value = read_text("FISH_VOICE_OUTPUT_LATENCY", "auto").lower() or "auto"
@@ -267,50 +227,14 @@ def load_config() -> VoiceCliConfig:
     of falling back to a default key. There is no default voice id.
     """
     d = SuiteDefaults()
-    fish_base = env_base("FISH_BASE", d.fish_base)
-    sample_rate = env_int("FISH_SAMPLE_RATE", d.sample_rate)
     prompt = _system_prompt(DEFAULT_SYSTEM_PROMPT)
     return VoiceCliConfig(
         fish_api_key=env_text("FISH_API_KEY"),
-        fish_base=fish_base,
+        fish_base=env_base("FISH_BASE", d.fish_base),
         fish_voice_id=env_text("FISH_VOICE_ID"),
         fish_asr_language=env_text("FISH_ASR_LANGUAGE", d.asr_language),
         tts_model=normalize_tts_model(env_token("FISH_TTS_MODEL", d.tts_model)),
-        latency=known_latency(env_token("FISH_LATENCY", d.latency), d.latency),
-        speed=clamp_number(
-            env_float("FISH_SPEED", d.speed),
-            TTS_SPEED_LO,
-            TTS_SPEED_HI,
-            d.speed,
-            float,
-        ),
-        temperature=clamp_number(
-            env_float("FISH_TEMPERATURE", d.temperature),
-            UNIT_INTERVAL_LO,
-            UNIT_INTERVAL_HI,
-            d.temperature,
-            float,
-        ),
-        top_p=clamp_number(
-            env_float("FISH_TOP_P", d.top_p), UNIT_INTERVAL_LO, UNIT_INTERVAL_HI, d.top_p, float
-        ),
-        repetition_penalty=env_float("FISH_REPETITION_PENALTY", d.repetition_penalty),
-        chunk_length=clamp_number(
-            env_int("FISH_CHUNK_LENGTH", d.chunk_length),
-            CHUNK_LENGTH_LO,
-            chunk_length_hi(fish_base),
-            d.chunk_length,
-            int,
-        ),
-        min_chunk_length=clamp_number(
-            env_int("FISH_MIN_CHUNK_LENGTH", d.min_chunk_length),
-            MIN_CHUNK_LENGTH_LO,
-            MIN_CHUNK_LENGTH_HI,
-            d.min_chunk_length,
-            int,
-        ),
-        volume=env_float("FISH_VOLUME", d.volume),
-        sample_rate=sample_rate if sample_rate > 0 else d.sample_rate,
+        tts=TtsTune.from_env(),
         playback=playback_key(
             env_token(
                 "FISH_VOICE_PLAYBACK",
@@ -339,8 +263,6 @@ def load_config() -> VoiceCliConfig:
             DEFAULT_REPEAT_WINDOW_S,
             lo=0.0,
         ),
-        fade_ms=read_float("FISH_VOICE_FADE_MS", DEFAULT_FADE_MS, lo=0.0, hi=_FADE_MAX_MS),
-        loudness_db=_loudness_db(),
         mood_lead=read_flag("FISH_TTS_MOOD_LEAD", default=False),
         tts_cues=_tts_cues(),
         drop_narration=read_flag(
@@ -366,11 +288,6 @@ class _Prompt:
 # A character card is a few KB. This stops a wrong path (a log, a binary) from
 # becoming the system prompt.
 _PROMPT_FILE_MAX_BYTES: Final = 64 * 1024
-# A fade longer than this would blur the start and end of every word.
-_FADE_MAX_MS: Final = 50.0
-# Quieter than this leaves nothing to hear, and louder leaves no room for a peak.
-_LOUDNESS_TARGET_LO_DB: Final = -40.0
-_LOUDNESS_TARGET_HI_DB: Final = -6.0
 # Where a character file asks for the default voice rules. ``{{default_prompt}}``, with
 # optional spaces inside the braces.
 _DEFAULT_SLOT: Final = re.compile(r"\{\{\s*default_prompt\s*\}\}")

@@ -20,10 +20,12 @@ __all__ = [
     "DEFAULT_LLM_PROVIDER_SORT",
     "EXPERIENTIAL_API_BASE",
     "LLM_PROVIDERS",
+    "OPENAI_KEY_ENV",
     "OPENROUTER_API_BASE",
     "PROVIDER_SORTS",
     "REASONING_EFFORTS",
     "SERVICE_TIERS",
+    "KnownLlmProvider",
     "LlmBackendName",
     "LlmProvider",
     "LlmProviderName",
@@ -79,7 +81,15 @@ _LLM_TEMPERATURE_HI: Final = 2.0
 LlmBackendName = Literal["openrouter", "openai"]
 
 
-LlmProviderName = Literal["openrouter", "experiential", "custom"]
+# The providers this project knows by name. ``LLM_PROVIDERS`` holds one entry for each.
+KnownLlmProvider = Literal["openrouter", "experiential"]
+
+
+LlmProviderName = KnownLlmProvider | Literal["custom"]
+
+
+# The key a server this project does not know by name may take, besides FISH_LLM_API_KEY.
+OPENAI_KEY_ENV: Final = "OPENAI_API_KEY"
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,7 +98,7 @@ class LlmProvider:
 
     Attributes
     ----------
-    name : {"openrouter", "experiential"}
+    name : KnownLlmProvider
         Value of ``FISH_LLM_PROVIDER``.
     base : str
         Default API base, used when ``FISH_LLM_BASE`` is not set.
@@ -102,7 +112,7 @@ class LlmProvider:
         Optional model for this provider, so two providers can share one ``.env``.
     """
 
-    name: Literal["openrouter", "experiential"]
+    name: KnownLlmProvider
     base: str
     host: str
     key_env: str
@@ -169,14 +179,11 @@ def is_openrouter_host(base: str) -> bool:
     Returns
     -------
     bool
-        True for ``openrouter.ai`` and its subdomains. A look-alike path or
-        query does not count.
+        True when ``provider_for_base`` finds the ``openrouter`` provider: its host
+        and its subdomains. A look-alike path or query does not count.
     """
-    try:
-        host = (urlsplit(base.strip()).hostname or "").lower()
-    except ValueError:
-        return False
-    return host == "openrouter.ai" or host.endswith(".openrouter.ai")
+    found = provider_for_base(base)
+    return found is not None and found.name == "openrouter"
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,7 +278,7 @@ class LlmTune:
         provider = provider_for_base(base)
         backend = _backend(base)
         # An OpenRouter host is always a known provider, so an unknown host is OpenAI-compatible.
-        key_env = provider.key_env if provider is not None else "OPENAI_API_KEY"
+        key_env = provider.key_env if provider is not None else OPENAI_KEY_ENV
         key_names = ["FISH_LLM_API_KEY"]
         if provider is None or _is_https(base):
             key_names.append(key_env)
