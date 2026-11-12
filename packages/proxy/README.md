@@ -132,7 +132,7 @@ Read once at startup. `GET /health` shows the values in effect under `defaults`,
 | `FISH_BASE` | `https://api.fish.audio` | Cloud or self-hosted |
 | `FISH_TTS_MODEL` | `s2.1-pro` | |
 | `FISH_PROXY_TTS_ALIASES` | none | `alias=model,alias=model` on top of the OpenAI names |
-| `FISH_ASR_MODEL` | `transcribe-1-pro` | Or `transcribe-1`. Both cost the same; pro adds speaker turns, emotion and event cues, and takes recordings up to 60 minutes |
+| `FISH_ASR_MODEL` | `transcribe-1-pro` | Speaker turns, emotion and event cues, and recordings up to 60 minutes. Fish retires `transcribe-1` on December 31, 2026 and serves it as `transcribe-1-pro` from then on |
 | `FISH_ASR_LANGUAGE` | omitted | |
 | `FISH_LATENCY` | `normal` | `low`, `balanced`, `normal` |
 | `FISH_SPEED` | `1` | Multiplies a request's `speed`. 0.5–2.0 |
