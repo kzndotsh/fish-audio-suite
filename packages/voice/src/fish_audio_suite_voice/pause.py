@@ -101,7 +101,7 @@ async def fish_retries[T](
     -------
     T or None
         What the attempt returned, or what ``Retry.give_up`` returned for the last attempt.
-        None when ``stop`` turned true first.
+        None when ``stop`` turned true first, including during the last attempt.
 
     Notes
     -----
@@ -116,7 +116,8 @@ async def fish_retries[T](
         if not isinstance(outcome, Retry):
             return outcome
         if fish_attempt_exhausted(number):
-            return outcome.give_up()
+            # A quit during the last attempt is a stop, not a failure to report.
+            return None if stop() else outcome.give_up()
         if outcome.on_retry is not None:
             outcome.on_retry()
         # A plain sleep would ignore barge-in or quit, and the next try would run anyway.

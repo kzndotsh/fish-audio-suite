@@ -1,4 +1,8 @@
-"""Small text helpers for what the terminal shows: an error's detail, and a short model id."""
+"""Small text helpers for what the terminal shows.
+
+A transport failure as the Fish error it comes to (``transport_failure``), an error's
+detail (``with_detail``), and a short model id (``short_model``).
+"""
 
 from __future__ import annotations
 

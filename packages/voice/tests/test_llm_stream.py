@@ -1438,6 +1438,9 @@ def test_the_tier_that_served_the_reply_is_logged(
         async for _tok in _tokens(tune=_tune(service_tier="ultrafast")):
             pass
 
-    asyncio.run(run())
-    lines = capsys.readouterr().err.splitlines()
+    try:
+        asyncio.run(run())
+        lines = capsys.readouterr().err.splitlines()
+    finally:
+        configure_voice_logging(debug=False)
     assert any("stream_end" in line and "tier=priority" in line for line in lines)

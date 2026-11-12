@@ -147,14 +147,15 @@ HEADING_MARK = r"#{1,6}"
 LIST_MARK = r"[-*_~+]+"
 # A task checkbox after the bullet. [x] would be read as a Fish cue.
 TASK_BOX = r"\[[ \t]*(?:[xX][ \t]*)?\]"
+# A blockquote mark. "> text" is a quote. "2 > 1" stays, because the mark sits at the line start.
+QUOTE_MARK = r">+"
 _MD_HEADING_RE = re.compile(rf"(?m)^{LINE_INDENT}{HEADING_MARK}\s+")
 # A list marker needs a space after it and sits at the line start: "-5" and
 # "2 - 3" are not bullets.
 _MD_LIST_RE = re.compile(rf"(?m)^{LINE_INDENT}{LIST_MARK}[ \t]+")
 # A line of only ---, ***, or ___ is a rule, not speech.
 _MD_RULE_RE = re.compile(r"(?m)^[ \t]{0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$")
-# "> text" is a quote mark. "2 > 1" stays.
-_MD_QUOTE_RE = re.compile(r"(?m)^[ \t]{0,3}>+[ \t]?")
+_MD_QUOTE_RE = re.compile(rf"(?m)^{LINE_INDENT}{QUOTE_MARK}[ \t]?")
 _MD_TASK_RE = re.compile(rf"(?m)^{LINE_INDENT}{TASK_BOX}[ \t]+")
 # ~~retracted~~ is a deletion. Dropping only the marks would speak the word.
 _MD_STRIKE_RE = re.compile(r"~~[^~\n]+~~")

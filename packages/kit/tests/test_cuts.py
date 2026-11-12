@@ -190,3 +190,13 @@ def test_sentence_cuts_split_only_at_real_sentence_ends() -> None:
     assert list(sentence_cuts("")) == []
     assert list(sentence_cuts("no end")) == []
     assert list(sentence_cuts("你好。再见。")) == [3, 6]
+
+
+def test_a_stop_inside_a_cue_or_an_aside_ends_no_sentence() -> None:
+    assert list(sentence_cuts("(he pauses. then) Hi. Ok.")) == [22, 25]
+    assert list(sentence_cuts("Well [laugh!] Excited, I said.")) == [30]
+    assert list(sentence_cuts("Some long opening words [laugh!] More.")) == [38]
+    # The aside's own closer ends it, so a whole parenthetical sentence still cuts.
+    assert list(sentence_cuts("He left. (He came back.) Then ok.")) == [9, 25, 33]
+    # An unclosed "(" holds stops only until the line ends.
+    assert list(sentence_cuts("Sad :( really. Next\nNew. Ok.")) == [25, 28]

@@ -59,3 +59,15 @@ def test_a_marker_with_no_words_after_it_yet_is_held_with_its_space(text: str) -
 
 def test_a_mid_line_star_and_space_is_not_held() -> None:
     assert tts_hold_at("2 * ", line_start=False, sentence_start=True) == len("2 * ")
+
+
+@pytest.mark.parametrize(
+    ("text", "held_at"),
+    [("> Excited", 2), (">> Exc", 3), ("  > Excited", 4), ("> ### Excited", 6), ("> Hello", 7)],
+)
+def test_a_mood_word_after_a_blockquote_mark_is_held_like_one_after_a_heading(
+    text: str, held_at: int
+) -> None:
+    # The whole reply drops the "> " and reads "Excited," as a lead cue. Released
+    # early, the word would be spoken before its comma arrives.
+    assert tts_hold_at(text, lead=True, line_start=True, sentence_start=True) == held_at

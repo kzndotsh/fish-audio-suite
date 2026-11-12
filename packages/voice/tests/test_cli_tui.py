@@ -9,12 +9,16 @@ from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from typing import Any
 
+import httpx
 import pytest
+from session_fakes import FakeBackend
+from voice_fakes import ScriptedMic
 
 from fish_audio_suite_voice import cli
 from fish_audio_suite_voice.cli import main, run_loop, run_tui
-from fish_audio_suite_voice.config import VoiceCliConfig, load_config, sink_latency
+from fish_audio_suite_voice.config import VoiceCliConfig, load_config
 from fish_audio_suite_voice.debug import DebugLevel
+from fish_audio_suite_voice.duplex_state import session_context, session_speaker
 from fish_audio_suite_voice.events import EVENTS, ExitCode, Listening
 from fish_audio_suite_voice.inputs import LiveInput
 from fish_audio_suite_voice.signals import DuplexSession
@@ -180,9 +184,6 @@ def test_run_tui_gives_the_session_to_the_app_with_the_console_off(
     args, kwargs = calls["duplex"]
     assert args[0] == c
     assert kwargs["full_screen"] is True
-    # The screen asks for a bigger buffer.
-    assert sink_latency(c.output_latency, full_screen=kwargs["full_screen"]) == "high"
-    assert sink_latency(c.output_latency, full_screen=False) == "low"
     assert args[4] is app.session
     assert kwargs["source"] is app.live
     # The plain display is not printing: the screen shows the session.
@@ -190,6 +191,28 @@ def test_run_tui_gives_the_session_to_the_app_with_the_console_off(
     # Logging moves off stderr, which the screen owns, and the forwarding is undone.
     assert calls["logging"] == {"debug": DebugLevel.EVENTS, "to_stderr": False}
     assert calls["stopped"] is True
+
+
+def test_the_full_screen_session_asks_its_speaker_for_the_bigger_buffer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    c = replace(_configured(monkeypatch), output_latency="auto")
+
+    async def latency(*, full_screen: bool) -> str:
+        async with httpx.AsyncClient() as asr_http:
+            ctx = session_context(
+                c,
+                session=DuplexSession(),
+                open_mic=lambda aec: ScriptedMic(aec=aec),
+                backend=FakeBackend(),
+                tts=session_speaker(c),
+                asr_http=asr_http,
+                full_screen=full_screen,
+            )
+        return ctx.sink_latency
+
+    assert asyncio.run(latency(full_screen=True)) == "high"
+    assert asyncio.run(latency(full_screen=False)) == "low"
 
 
 def test_the_screen_hands_the_gil_over_sooner_while_it_runs_and_puts_it_back(

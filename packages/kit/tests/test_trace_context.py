@@ -33,7 +33,7 @@ def test_an_invalid_traceparent_is_replaced_with_a_fresh_one(bad: str) -> None:
     minted = ensure_trace_headers({"traceparent": bad, "tracestate": "congo=ok"})
     assert set(minted) == {"traceparent"}
     assert minted["traceparent"] != bad
-    assert trace_id_of(minted["traceparent"]) is not None
+    assert trace_id_of(minted["traceparent"]) not in {None, _SAMPLE_TRACE}
 
 
 def test_w3c_trace_headers_and_mint() -> None:

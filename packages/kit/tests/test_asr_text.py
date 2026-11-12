@@ -9,6 +9,7 @@ from fish_audio_suite_kit import (
     DEFAULT_BACKCHANNELS,
     DEFAULT_QUIT_PHRASES,
     AsrBody,
+    AsrSegment,
     CleanTranscript,
     asr_language_hint,
     asr_tone,
@@ -125,12 +126,14 @@ def test_scrub_asr_keeps_speakers_when_asked() -> None:
     assert "hello there" in out
 
 
-@pytest.mark.parametrize("text", ["um", "Um.", "hmm...", "HUH?", "ah", "えっと", "음"])
+@pytest.mark.parametrize("text", ["um", "Um.", "hmm...", "ah", "えっと", "음"])
 def test_a_hesitation_sound_is_a_filler(text: str) -> None:
     assert is_filler(text)
 
 
-@pytest.mark.parametrize("text", ["yeah", "uh-huh", "嗯", "mm-hmm", "okay", "", "um, can you help"])
+@pytest.mark.parametrize(
+    "text", ["yeah", "uh-huh", "嗯", "mm-hmm", "okay", "", "um, can you help", "Huh?", "HUH?"]
+)
 def test_a_word_that_can_answer_is_not_a_filler(text: str) -> None:
     # A backchannel such as "yeah" answers a question, so only hesitation sounds count.
     assert not is_filler(text)
@@ -141,6 +144,9 @@ def test_backchannel() -> None:
     assert not is_backchannel("okay")
     assert not is_backchannel("Okay.")
     assert is_backchannel("uh huh")
+    # "Huh?" alone is a turn (not a filler), but over a reply it is still a listener noise.
+    assert is_backchannel("huh")
+    assert is_backchannel("Huh?")
     assert is_backchannel("mm hmm")
     assert is_backchannel("嗯。")
     assert is_backchannel("嗯嗯")
@@ -422,3 +428,27 @@ def test_what_is_left_of_a_hallucination_is_never_answered() -> None:
     segments: list[object] = [{"text": "Subscribe."}]
     clean = _clean("Like and subscribe.", segments)
     assert clean == CleanTranscript("Like and subscribe.", "Like and subscribe.", "hallucination")
+
+
+def test_a_labelled_watermark_segment_is_dropped_when_labels_are_kept() -> None:
+    segments: list[AsrSegment] = [
+        {"text": "Speaker 1: Hello there friend."},
+        {"text": "Speaker 2: Thanks for watching!"},
+    ]
+    text = "Speaker 1: Hello there friend. Speaker 2: Thanks for watching!"
+    body = cast(AsrBody, {"segments": segments})
+    kept = "Speaker 1: Hello there friend."
+    assert without_watermark_segments(text, segments, strip_speakers=False) == kept
+    assert clean_transcript(text, body, strip_speakers=False, strip_cues=False) == CleanTranscript(
+        kept, text, "trimmed"
+    )
+    assert clean_transcript("", body, strip_speakers=False, strip_cues=False) == CleanTranscript(
+        kept, "", "segments"
+    )
+    alone = "Speaker 2: Thanks for watching!"
+    assert (
+        clean_transcript(
+            alone, cast(AsrBody, {"segments": segments[1:]}), strip_speakers=False, strip_cues=False
+        ).source
+        == "hallucination"
+    )

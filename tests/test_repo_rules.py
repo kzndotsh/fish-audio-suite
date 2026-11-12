@@ -26,9 +26,16 @@ def _modules(base: Path) -> list[Path]:
     return sorted(p for p in base.rglob("*.py") if "__pycache__" not in p.parts)
 
 
+# The packages whose ``from pkg import name`` is expanded to ``pkg.name`` by ``_imports``.
+_EXPANDED_ROOTS: dict[str, Path] = {
+    "fish_audio_suite_kit": KIT_PACKAGE,
+    "fish_audio_suite_voice": VOICE_SRC,
+}
+
+
 @cache
-def _kit_root_exports() -> frozenset[str]:
-    tree = ast.parse((KIT_PACKAGE / "__init__.py").read_text(encoding="utf-8"))
+def _root_exports(package: Path) -> frozenset[str]:
+    tree = ast.parse((package / "__init__.py").read_text(encoding="utf-8"))
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(
             isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets
@@ -40,10 +47,10 @@ def _kit_root_exports() -> frozenset[str]:
 def _imports(path: Path) -> list[tuple[str, int]]:
     """Return ``(module, line)`` for every import in a file, absolute imports only.
 
-    ``from pkg import name`` also reports ``pkg.name`` when that is a module on
-    disk and the root does not export something of that name, because it then
-    loads the submodule just as ``import pkg.name`` does. ``scrub_tts`` is both a
-    module and a root function, and the root function wins.
+    For kit and voice, ``from pkg import name`` also reports ``pkg.name`` when that
+    is a module on disk and the root does not export something of that name, because
+    it then loads the submodule just as ``import pkg.name`` does. ``scrub_tts`` is
+    both a module and a root function, and the root function wins.
     """
     found: list[tuple[str, int]] = []
     for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
@@ -51,12 +58,13 @@ def _imports(path: Path) -> list[tuple[str, int]]:
             found.extend((alias.name, node.lineno) for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             found.append((node.module, node.lineno))
-            if node.module == "fish_audio_suite_kit":
+            package = _EXPANDED_ROOTS.get(node.module)
+            if package is not None:
                 found.extend(
-                    (f"fish_audio_suite_kit.{alias.name}", node.lineno)
+                    (f"{node.module}.{alias.name}", node.lineno)
                     for alias in node.names
-                    if (KIT_PACKAGE / f"{alias.name}.py").exists()
-                    and alias.name not in _kit_root_exports()
+                    if (package / f"{alias.name}.py").exists()
+                    and alias.name not in _root_exports(package)
                 )
     return found
 
@@ -222,6 +230,17 @@ def test_voice_reads_the_environment_only_in_its_settings_layer() -> None:
         if module == "fish_audio_suite_voice.env_read"
     ]
     assert not callers, "only config and the *_tune modules read settings:\n" + "\n".join(callers)
+
+
+def test_imports_reports_a_voice_module_loaded_from_the_root(tmp_path: Path) -> None:
+    """``from fish_audio_suite_voice import env_read`` counts as importing ``env_read``."""
+    source = tmp_path / "caller.py"
+    source.write_text(
+        "from fish_audio_suite_voice import FishSpeaker, env_read\n", encoding="utf-8"
+    )
+    modules = [module for module, _ in _imports(source)]
+    assert "fish_audio_suite_voice.env_read" in modules
+    assert "fish_audio_suite_voice.FishSpeaker" not in modules
 
 
 def _is_terminal_write(node: ast.Call | ast.Attribute) -> bool:

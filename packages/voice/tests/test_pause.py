@@ -50,11 +50,38 @@ def test_fish_retries_gives_up_with_what_the_last_attempt_reports(
 def test_fish_retries_stops_without_giving_up_when_cancelled_mid_wait(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(pause, "fish_backoff_s", lambda number, retry_after=None: 30.0)
+    backoff_s = 30.0
+    monkeypatch.setattr(pause, "fish_backoff_s", lambda number, retry_after=None: backoff_s)
+    stopped = [False]
+    tried: list[int] = []
+
+    async def attempt(number: int) -> str | Retry[str]:
+        tried.append(number)
+        return Retry(lambda: "gave up")
+
+    async def run() -> str | None:
+        # The quit arrives once the backoff has begun, not before it.
+        asyncio.get_running_loop().call_later(0.05, lambda: stopped.__setitem__(0, True))
+        return await fish_retries(attempt, lambda: stopped[0])
+
+    started = time.perf_counter()
+    assert asyncio.run(run()) is None
+    assert time.perf_counter() - started < backoff_s / 10
+    assert tried == [0]
+
+
+def test_fish_retries_stops_without_giving_up_when_cancelled_during_the_last_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(pause, "fish_backoff_s", lambda number, retry_after=None: 0.0)
     stopped = [False]
 
-    async def attempt(_number: int) -> str | Retry[str]:
-        stopped[0] = True  # quit arrives while the backoff waits
-        return Retry(lambda: "gave up")
+    def give_up() -> str:
+        raise RuntimeError("reported a failure after a quit")
+
+    async def attempt(number: int) -> str | Retry[str]:
+        if number == FISH_RETRY_ATTEMPTS - 1:
+            stopped[0] = True  # quit arrives while the last attempt runs
+        return Retry(give_up)
 
     assert asyncio.run(fish_retries(attempt, lambda: stopped[0])) is None

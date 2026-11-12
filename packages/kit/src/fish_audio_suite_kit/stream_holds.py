@@ -37,6 +37,7 @@ from fish_audio_suite_kit.scrub_tts import (
     HTML_ENTITY_RE,
     LINE_INDENT,
     LIST_MARK,
+    QUOTE_MARK,
     TASK_BOX,
     html_char,
     unclosed_span_start,
@@ -68,11 +69,12 @@ _TAG_WORDS = (*THOUGHT_WORDS, WHISPER_TAG)
 _TRAIL_MARKS = frozenset(TRAILING_EMPHASIS_MARKS)
 # Still no ">" this far after a "<" means prose after a "<", not a tag.
 _TAG_SCAN_CHARS: Final = 80
-# A heading, list marker, task box, or emphasis mark before a mood lead.
-# "### Excited," and "*Sad," are cues. Releasing the word after the mark
-# speaks the mood instead.
+# A blockquote, heading, list marker, task box, or emphasis mark before a mood
+# lead. "> Excited," "### Excited," and "*Sad," are cues. Releasing the word
+# after the mark speaks the mood instead.
 _LEAD_MARK_RE = re.compile(
-    rf"^(?:{LINE_INDENT}{HEADING_MARK}[ \t]+)?"
+    rf"^(?:{LINE_INDENT}{QUOTE_MARK}[ \t]*)?"
+    rf"(?:{LINE_INDENT}{HEADING_MARK}[ \t]+)?"
     rf"(?:{LINE_INDENT}{LIST_MARK}[ \t]+)?"
     rf"(?:{TASK_BOX}[ \t]+)?"
     rf"(?:[{re.escape(EMPHASIS_MARKS)}]+(?=[A-Za-z]))?"

@@ -293,6 +293,14 @@ def test_speech_bad_json_is_400() -> None:
         )
         assert deep.status_code == 400
         assert deep.json()["error"]["message"] == "invalid JSON body"
+        # Past Python's 4300-digit limit, int() raises a plain ValueError.
+        huge = client.post(
+            "/v1/audio/speech",
+            content=b'{"input": "hi", "speed": ' + b"1" * 5000 + b"}",
+            headers={"content-type": "application/json"},
+        )
+        assert huge.status_code == 400
+        assert huge.json()["error"]["message"] == "invalid JSON body"
         array = client.post("/v1/audio/speech", json=["nope"])
         assert array.status_code == 400
         assert array.json()["error"]["type"] == "invalid_request_error"

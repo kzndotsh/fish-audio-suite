@@ -8,6 +8,7 @@ import os
 import sys
 import threading
 import time
+import traceback
 from pathlib import Path
 from typing import Any, Final, TextIO
 
@@ -43,8 +44,16 @@ class _FileLog:
         path = Path(folder).expanduser() / f"fish-voice-{stamp}.log"
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            # Private: it holds what was said and what the model answered.
-            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            # Private: it holds what was said and what the model answered. A name
+            # already taken (a file opened within the same second) gets a number.
+            suffix = 0
+            while True:
+                try:
+                    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_APPEND, 0o600)
+                    break
+                except FileExistsError:
+                    suffix += 1
+                    path = path.with_name(f"fish-voice-{stamp}-{suffix}.log")
             self._handle = os.fdopen(fd, "a", encoding="utf-8", buffering=1)
         except OSError as exc:
             sys.stderr.write(f"fish-voice: cannot write the log file {path}: {exc}\n")
@@ -53,13 +62,13 @@ class _FileLog:
         atexit.register(self.close)
         return path
 
-    def write(self, tag: str, body: str, stamp: str | None = None) -> None:
+    def write(self, tag: str, body: str, stamp: str | None = None, after: str = "") -> None:
         stamp = stamp or clock_stamp()
         with self._lock, contextlib.suppress(OSError, ValueError):
             if self._handle is not None:
                 # Laid out like a terminal line; a file is not a terminal, so it is plain.
                 line = compose(stamp, tag, tag, body, self._handle).rstrip()
-                self._handle.write(line + "\n")
+                self._handle.write(line + "\n" + after)
 
     def close(self) -> None:
         with self._lock:
@@ -85,7 +94,8 @@ def open_log_file(folder: str) -> Path | None:
     -------
     Path or None
         The file, which is readable only by its owner. The same file on a second call.
-        None, after a line on stderr, when it cannot be written.
+        None, after a line on stderr, when it cannot be written. A new file never reuses
+        an existing one: a name already taken gets a numeric suffix.
     """
     return _FILE.start(folder)
 
@@ -148,8 +158,15 @@ def log_file_sink(message: Any) -> None:
     Parameters
     ----------
     message : loguru.Message
-        What loguru hands a sink.
+        What loguru hands a sink. A record that carries an exception is followed by
+        its traceback, as on stderr.
     """
     record = message.record
     tag, body = log_tag(str(record["message"]), record["level"].name)
-    _FILE.write(tag, body, clock_stamp(record["time"]))
+    exception = record["exception"]
+    after = ""
+    if exception is not None and exception.type is not None:
+        after = "".join(
+            traceback.format_exception(exception.type, exception.value, exception.traceback)
+        )
+    _FILE.write(tag, body, clock_stamp(record["time"]), after)

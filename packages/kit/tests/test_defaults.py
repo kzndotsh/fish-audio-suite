@@ -52,6 +52,15 @@ def test_clamp_number_keeps_fish_ranges() -> None:
     assert parse_number(False, 3, int) == 3
 
 
+def test_int_rejects_a_fractional_float_like_a_fractional_string() -> None:
+    assert parse_number("42.5", 7, int) == 7
+    assert parse_number(42.5, 7, int) == 7
+    assert parse_number(42.0, 7, int) == 42
+    assert parse_number(float("inf"), 7, int) == 7
+    assert parse_number(float("nan"), 7, int) == 7
+    assert clamp_number(150.5, 100, 300, 200, int) == 200
+
+
 def test_known_model_and_latency() -> None:
     assert normalize_tts_model(" S2.1-PRO ") == "s2.1-pro"
     assert normalize_tts_model("MyModel") == "MyModel"

@@ -113,10 +113,10 @@ DEFAULT_BACKCHANNELS: Final = frozenset(
     }
 )
 # Hesitation sounds, never an answer, already folded. "yeah", "yep", "uh-huh" and "嗯" are
-# backchannels too, but after a question they answer it, so they are not here.
-_FILLERS: Final = frozenset(
-    {"ah", "hmm", "huh", "mm", "uh", "um", "えっと", "呃", "唔", "啊", "어", "음"}
-)
+# backchannels too, but after a question they answer it, so they are not here. Nor is
+# "huh": said alone it asks the speaker to repeat, so it is a turn. Said over a reply it
+# is still a backchannel.
+_FILLERS: Final = frozenset({"ah", "hmm", "mm", "uh", "um", "えっと", "呃", "唔", "啊", "어", "음"})
 
 # Whole utterance, after folding. These end the session, so they are explicit
 # goodbyes. "stop" is not here: people say it to interrupt speech. A caller can
@@ -331,6 +331,12 @@ def asr_tone(text: str) -> tuple[str, ...]:
     return tuple(found)
 
 
+def _unlabelled(scrubbed: str) -> str:
+    # A speaker label is not speech: "Speaker 2: Thanks for watching!" is still a
+    # caption. The checks read the text without labels; the output keeps them.
+    return scrub_asr(scrubbed, strip_speakers=True)
+
+
 def _known_hallucination(s: str) -> bool:
     if _known_phrase(s, _EN_HALLUCINATION_PHRASES):
         return True
@@ -446,20 +452,27 @@ def without_watermark_segments(
         if not isinstance(raw_text, str):
             continue
         body = scrub_asr(raw_text, strip_speakers=strip_speakers, strip_cues=strip_cues)
-        if not body or not is_caption_watermark(body):
+        plain = _unlabelled(body)
+        if not plain or not is_caption_watermark(plain):
             continue
         dropped = True
         # The segment ("Thanks for watching.") rarely matches the transcript's
-        # spelling exactly, so match the folded phrase first. A literal replace
-        # runs only when the pattern finds no copy at all.
-        updated = _drop_watermark_clause(cleaned, body)
+        # spelling exactly, so match the folded phrase first, with its label when
+        # it kept one so the label goes too. A literal replace runs only when no
+        # pattern finds a copy at all.
+        phrases = (body, plain) if body != plain else (body,)
+        updated = cleaned
+        for phrase in phrases:
+            updated = _drop_watermark_clause(cleaned, phrase)
+            if updated != cleaned:
+                break
         if updated != cleaned:
             cleaned = updated
             continue
-        pattern = _watermark_pattern(body)
-        if pattern is not None and pattern.search(cleaned):
+        patterns = (_watermark_pattern(phrase) for phrase in phrases)
+        if any(pattern is not None and pattern.search(cleaned) for pattern in patterns):
             continue
-        for needle in {raw_text.strip(), body}:
+        for needle in {raw_text.strip(), body, plain}:
             if needle:
                 cleaned = cleaned.replace(needle, " ")
     if not dropped:
@@ -550,7 +563,7 @@ def _segment_text(segments: object, *, strip_speakers: bool, strip_cues: bool) -
             continue
         piece = scrub_asr(raw.strip(), strip_speakers=strip_speakers, strip_cues=strip_cues)
         # A watermark segment beside real speech would be spoken with it.
-        if piece and not is_caption_watermark(piece):
+        if piece and not is_caption_watermark(_unlabelled(piece)):
             parts.append(piece)
     return " ".join(parts)
 
@@ -600,12 +613,12 @@ def clean_transcript(
     """
     segments = body.get("segments")
     scrubbed = scrub_asr(transcript, strip_speakers=strip_speakers, strip_cues=strip_cues)
-    if is_asr_hallucination(scrubbed):
+    if is_asr_hallucination(_unlabelled(scrubbed)):
         if segment_text is None:
             alt = _segment_text(segments, strip_speakers=strip_speakers, strip_cues=strip_cues)
         else:
             alt = segment_text()
-        if alt and not is_asr_hallucination(alt):
+        if alt and not is_asr_hallucination(_unlabelled(alt)):
             return CleanTranscript(alt, scrubbed, "segments")
         # What is left of a hallucination once its watermark segments are cut out is
         # part of it ("Like and" from "Like and subscribe."), so it is never trimmed.
@@ -613,7 +626,7 @@ def clean_transcript(
     trimmed = without_watermark_segments(
         scrubbed, segments, strip_speakers=strip_speakers, strip_cues=strip_cues
     )
-    if trimmed != scrubbed and trimmed and not is_asr_hallucination(trimmed):
+    if trimmed != scrubbed and trimmed and not is_asr_hallucination(_unlabelled(trimmed)):
         return CleanTranscript(trimmed, scrubbed, "trimmed")
     return CleanTranscript(scrubbed, scrubbed, "text")
 

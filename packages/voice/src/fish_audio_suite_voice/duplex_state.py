@@ -124,7 +124,7 @@ class DuplexContext:
     config : VoiceCliConfig
         The session's settings.
     device : str or int or None
-        The PortAudio device for the mic and the speaker.
+        The PortAudio device for the speaker. The mic is the one ``open_mic`` opened.
     turn_input : TurnInput
         The mic side: quit, the mic, the carried clip and the mute switch.
     chat : Chat
@@ -200,7 +200,8 @@ def session_context(
     asr_http : httpx.AsyncClient
         The client Fish ASR requests share.
     device : str or int or None, optional
-        The PortAudio device for the mic and the speaker. The host default when None.
+        The PortAudio device for the speaker. The host default when None. The mic is
+        chosen by ``open_mic``.
     muted : Callable, optional
         The mute switch of the session's turn source. Never muted when omitted.
     full_screen : bool, optional

@@ -53,9 +53,10 @@ MIC_LEVEL_EVERY_FRAMES: Final = 3
 _MONO: Final = 1
 _RMS_FLOOR: Final = 1e-9
 _DEFAULT_RATE: Final = SuiteDefaults().sample_rate
-# wave stores the rate as an unsigned 32-bit field. Larger values raise while
-# the samples are already in memory, so the file is never written.
-_WAV_RATE_HI: Final = 2**32 - 1
+# wave stores the rate and the byte rate (rate times bytes per frame) as unsigned
+# 32-bit fields, so the byte rate sets the bound. Larger values raise while the
+# samples are already in memory, so the file is never written.
+_WAV_RATE_HI: Final = (2**32 - 1) // SAMPLE_BYTES
 
 
 def even_pcm(pcm: bytes) -> bytes:
@@ -136,7 +137,8 @@ def wav_rate(sample_rate: int) -> int:
     Returns
     -------
     int
-        The rate unchanged from 1 to 2**32 - 1. Anything else, which the WAV writer would
+        The rate unchanged from 1 to (2**32 - 1) // 2, the largest rate whose byte rate
+        a mono 16-bit header can store. Anything else, which the WAV writer would
         reject after the audio was collected, is the default Fish output rate.
     """
     # 0 and negative rates raise "sampling rate not specified".

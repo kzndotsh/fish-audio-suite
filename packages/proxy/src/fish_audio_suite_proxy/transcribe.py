@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -590,7 +589,8 @@ def transcription_reply(
     """
     try:
         raw = upstream.json()
-    except (json.JSONDecodeError, UnicodeDecodeError, RecursionError) as exc:
+    # ValueError covers bad JSON, bad UTF-8, and an integer past Python's digit limit.
+    except (ValueError, RecursionError) as exc:
         err = FishHttpError.for_non_json()
         raise ProxyError(err.status, err.message) from exc
     try:

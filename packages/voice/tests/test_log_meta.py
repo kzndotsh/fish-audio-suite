@@ -20,6 +20,7 @@ def test_public_meta_drops_text_and_secrets() -> None:
             "segments": [{}, {}],
         }
     )
+    assert "text" not in meta
     assert meta["text_chars"] == 18
     assert meta["duration"] == 1.2
     assert meta["language"] == "en"

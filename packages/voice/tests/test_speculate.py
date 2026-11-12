@@ -10,7 +10,7 @@ from session_fakes import FakeBackend, make_ctx
 
 from fish_audio_suite_kit import ChatMessage
 from fish_audio_suite_voice.duplex_state import DuplexContext
-from fish_audio_suite_voice.reply import collect_reply
+from fish_audio_suite_voice.reply import collect_reply, start_speculation
 from fish_audio_suite_voice.speculate import Speculation
 
 ASKED: list[ChatMessage] = [{"role": "user", "content": "hello there"}]
@@ -151,3 +151,20 @@ def test_when_the_words_changed_the_reply_is_asked_for_again() -> None:
     reply, calls = asyncio.run(run())
     assert reply == "Fresh reply."
     assert calls == ["model asked", "model asked"]  # the guess, then the real one
+
+
+def test_a_reply_written_after_an_unanswered_line_is_still_used() -> None:
+    async def run() -> tuple[str, list[str]]:
+        ctx, calls = _ctx_with("Nine in the evening.", "What time is it")
+        start_speculation(ctx.chat, "in Tokyo")
+        await asyncio.sleep(0.01)
+        ctx.chat.history.remember_user("in Tokyo.")  # the turn is confirmed and joins the line
+        assert ctx.chat.history.last_user() == "What time is it\nin Tokyo."
+        reply, _ = await collect_reply(
+            ctx.chat, llm_cancel=asyncio.Event(), trace_id=None, started=0.0
+        )
+        return reply, calls
+
+    reply, calls = asyncio.run(run())
+    assert reply == "Nine in the evening."
+    assert calls == ["model asked"]  # once: the one written ahead of time

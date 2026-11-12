@@ -128,13 +128,16 @@ class LiveInput:
             True when the mic is now muted.
         """
         with self._lock:
-            muted = not self._muted
-        self._set_muted(muted)
+            muted = self._muted = not self._muted
+        self._after_mute(muted)
         return muted
 
     def _set_muted(self, muted: bool) -> None:
         with self._lock:
             self._muted = muted
+        self._after_mute(muted)
+
+    def _after_mute(self, muted: bool) -> None:
         if muted:
             self._interrupt.set()
             # The session's input stays open between readers, so muting closes it

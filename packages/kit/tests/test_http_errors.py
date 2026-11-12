@@ -203,3 +203,17 @@ def test_a_fish_error_carries_its_code_and_request_id() -> None:
     plain = parse_fish_error(502, b"bad gateway", {"x-request-id": " rid\nX: 1"})
     assert (plain.code, plain.request_id) == ("", "rid")
     assert parse_fish_error(400, {"code": True, "request_id": ["x"]}).code == ""
+
+
+@pytest.mark.parametrize("depth", [1_000, 2_000])
+def test_a_message_nested_too_deep_to_read_is_a_plain_error(depth: int) -> None:
+    # The body parses, but reading "message" to the bottom raised RecursionError.
+    body = '{"message":' * depth + '"x"' + "}" * depth
+    found = parse_fish_error(502, body)
+    assert (found.status, found.message) == (502, "error")
+
+
+def test_an_error_body_with_a_number_too_long_to_parse_is_kept_as_text() -> None:
+    body = b'{"status": ' + b"1" * 5000 + b"}"
+    found = parse_fish_error(502, body)
+    assert (found.status, found.message) == (502, body.decode())

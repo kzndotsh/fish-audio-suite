@@ -15,7 +15,13 @@ from typing import Any, Final, override
 
 from loguru import logger
 
-from fish_audio_suite_voice.debug import DebugLevel, debug_enabled, debug_level, fix_debug_level
+from fish_audio_suite_voice.debug import (
+    DebugLevel,
+    close_terminal_line,
+    debug_enabled,
+    debug_level,
+    fix_debug_level,
+)
 from fish_audio_suite_voice.events import EVENTS, EventBus, Heard, LogLine, ReplyEnd
 from fish_audio_suite_voice.log_file import (
     log_file_on,
@@ -49,7 +55,11 @@ def _displayed(record: Any) -> bool:
 
 
 def _write_stderr(message: str) -> None:
-    """Write at emit time so a wrapped stderr (pytest, a later redirect) is the one used."""
+    """Write at emit time so a wrapped stderr (pytest, a later redirect) is the one used.
+
+    An open reply line is closed first, whichever path the record took to get here.
+    """
+    close_terminal_line()
     sys.stderr.write(message)
 
 

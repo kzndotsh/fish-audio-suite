@@ -409,9 +409,16 @@ def _nested_message(value: Any) -> Any:
     return data.get("message")
 
 
-def _read_message(value: Any) -> tuple[str | None, bool]:
+# Fish nests "message" one or two levels. A body nested deeper is junk, and reading
+# it to the bottom would raise RecursionError.
+_MESSAGE_DEPTH: Final = 16
+
+
+def _read_message(value: Any, depth: int = 0) -> tuple[str | None, bool]:
     # A blank string or an object with no text carries no detail. Keep looking
     # in the other fields before falling back to "error" or "HTTP <status>".
+    if depth > _MESSAGE_DEPTH:
+        return None, True
     if value is None or (isinstance(value, str) and not value.strip()):
         return None, False
     if isinstance(value, str):
@@ -420,7 +427,7 @@ def _read_message(value: Any) -> tuple[str | None, bool]:
         inner = _nested_message(value)
         # A nested list is a 422 payload: report its messages, joined, not the dict.
         if inner is not None and inner is not value:
-            found, _saw = _read_message(inner)
+            found, _saw = _read_message(inner, depth + 1)
             if found:
                 return found, True
         # One validation object is a one-item list. Never str() a dict: the
@@ -608,8 +615,9 @@ def _error_detail(status: int, raw: Any) -> tuple[FishErrorBody, dict[str, Any] 
     if stripped:
         try:
             loaded = json.loads(stripped)
-        # Deep nesting such as 20k "[" raises RecursionError, not a decode error.
-        except (json.JSONDecodeError, RecursionError):
+        # Deep nesting such as 20k "[" raises RecursionError. ValueError covers a
+        # decode error and an integer past Python's 4300-digit limit.
+        except (ValueError, RecursionError):
             return FishErrorBody.of(status, stripped), None
         if isinstance(loaded, list):
             summary = _validation_msgs(cast(list[Any], loaded))

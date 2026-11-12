@@ -80,6 +80,18 @@ def test_a_warning_mid_reply_closes_the_line_and_the_reply_goes_on_under_it(
     assert capsys.readouterr().out == "llm ▸ Hello \nthere.\n"
 
 
+def test_a_status_line_mid_reply_starts_on_its_own_line(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    bus = EventBus()
+    with ConsoleSink(bus):
+        _emit(bus, ReplyToken("Hello there"), Notice("[llm cut off, continuing]"))
+        _emit(bus, ReplyToken("!"), Listening())
+        _emit(bus, ReplyToken("?"), TurnEnded(LatencySnapshot()))
+    out = capsys.readouterr().out
+    assert out.startswith("llm ▸ Hello there\n  [llm cut off, continuing]\n!\nlistening…\n?\n")
+
+
 def test_an_empty_reply_prints_nothing(capsys: pytest.CaptureFixture[str]) -> None:
     bus = EventBus()
     ConsoleSink(bus)

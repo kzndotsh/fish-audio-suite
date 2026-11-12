@@ -399,8 +399,12 @@ async def delta_events(
     Yields
     ------
     Any
-        ``TextEvent`` pieces with one ``FlushEvent`` after the first sentence, and
-        a closing ``FlushEvent`` only if text followed that one.
+        ``TextEvent`` pieces and at most two ``FlushEvent`` values. The early flush comes
+        once, right after the piece that ends the first sentence, or after two send
+        windows of text with no sentence end. A short reply that has neither gets none.
+        The closing flush comes at the end whenever a ``TextEvent`` was sent since the
+        last flush (or at all, when there was no early one). Neither is sent once
+        ``cancel`` is set.
 
     Notes
     -----

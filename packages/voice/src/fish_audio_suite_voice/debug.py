@@ -24,6 +24,7 @@ from fish_audio_suite_voice.log_format import dim, start_turn_clock, stop_turn_c
 __all__ = [
     "DebugLevel",
     "clear_turn",
+    "close_terminal_line",
     "debug",
     "debug_enabled",
     "debug_level",
@@ -170,6 +171,15 @@ def on_terminal_line(before: Callable[[], None]) -> Callable[[], None]:
             _TERMINAL.before_line = _nothing
 
     return stop
+
+
+def close_terminal_line() -> None:
+    """Run the ``on_terminal_line`` callback: a line is about to be written to the terminal.
+
+    The stderr log sink calls it for every line it writes, including those a library logs
+    through the standard ``logging`` module.
+    """
+    _TERMINAL.before_line()
 
 
 def debug(message: str, *args: Any, **fields: Any) -> None:

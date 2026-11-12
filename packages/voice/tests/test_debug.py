@@ -233,3 +233,18 @@ def test_debug_level_reads_the_environment_until_logging_is_configured(
     assert debug_level() == 1
     monkeypatch.setenv("FISH_VOICE_DEBUG", "2")
     assert debug_level() == 2
+
+
+def test_a_library_warning_closes_the_open_reply_line_first(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    configure_voice_logging(debug=False)
+    try:
+        bus = EventBus()
+        with ConsoleSink(bus):
+            bus.emit(ReplyToken("Hello there"))
+            logging.getLogger("httpx").warning("connection reset")
+            out = capsys.readouterr().out
+        assert out == "llm ▸ Hello there\n"  # closed before the warning reached stderr
+    finally:
+        configure_voice_logging(debug=False)

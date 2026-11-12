@@ -45,6 +45,22 @@ def test_zero_sample_rate_still_writes_a_wav(tmp_path: Path) -> None:
             assert wf.readframes(wf.getnframes()) == pcm
 
 
+def test_a_rate_whose_byte_rate_overflows_the_header_still_writes_a_wav() -> None:
+    pcm = b"\x00\x01\x02\x03"
+    for rate in (2**31, 2**32 - 1):
+        buf = io.BytesIO()
+        write_mono_wav(buf, pcm, rate)
+        buf.seek(0)
+        with wave.open(buf) as wf:
+            assert wf.getframerate() == SuiteDefaults().sample_rate
+    top = (2**32 - 1) // 2
+    buf = io.BytesIO()
+    write_mono_wav(buf, pcm, top)
+    buf.seek(0)
+    with wave.open(buf) as wf:
+        assert wf.getframerate() == top
+
+
 def test_file_sink_writes_wav(tmp_path: Path) -> None:
     path = tmp_path / "out.wav"
     sink = FileSink(path, sample_rate=44100, wav=True)

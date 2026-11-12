@@ -32,7 +32,7 @@ uv run pytest
 under the floors in `.github/verifytypes-floors.json` (`just types-public`).
 `lint-imports` checks the import contracts in `pyproject.toml` (`just layers`): the proxy
 and voice never import each other, kit imports neither, and voice modules import only
-the layers below their own. A new voice module goes in the lowest layer it fits.
+their own layer and the layers below it. A new voice module goes in the lowest layer it fits.
 `pytest` also runs the `>>>` examples in kit and voice docstrings as doctests. `just check` runs
 the tests through `just cov`, which adds branch coverage and the CI floors.
 

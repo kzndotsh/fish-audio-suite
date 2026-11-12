@@ -372,20 +372,48 @@ def sentence_cuts(text: str) -> Iterator[int]:
 
     Notes
     -----
-    This is ``next_tts_cut`` with no window: only a real sentence end cuts, never a
-    long clause or a word, so ``Dr. Happy`` is one sentence.
+    Only a real sentence end cuts, never a long clause or a word, so ``Dr. Happy`` is
+    one sentence. A stop inside an open ``[cue]`` or ``(aside)`` on the same line does
+    not cut either, so ``Well [laugh!] Excited`` is one sentence.
 
     Examples
     --------
     >>> list(sentence_cuts("Hi there. Dr. Who is here! And"))
     [10, 27]
+    >>> list(sentence_cuts("(he pauses. then) Hi. Ok."))
+    [22, 25]
     """
     at = 0
     while at < len(text):
-        rest = text[at:]
-        # A window longer than the text disables the partial cut.
-        cut = next_tts_cut(rest, partial_chars=len(rest) + 1)
+        cut = _sentence_cut_outside_spans(text[at:])
         if cut < 1:
             return
         at += cut
         yield at
+
+
+def _sentence_cut_outside_spans(buf: str) -> int:
+    # A stop inside "[laugh!]" or "(he pauses. then)" ends no sentence. The span is
+    # read up to the end of the stop's closers, so "(He came back.) Then" still cuts
+    # after the ")". A span never runs past a line break, so a stray "(" cannot hold
+    # every later stop on the reply.
+    depth = {"[": 0, "(": 0}
+    closes = {"]": "[", ")": "("}
+    scanned = 0
+    search_from = 0
+    while True:
+        m = _SENT_END.search(buf, search_from)
+        if not m:
+            return -1
+        search_from = m.end()
+        for ch in buf[scanned : m.end()]:
+            if ch in depth:
+                depth[ch] += 1
+            elif ch in closes and depth[closes[ch]]:
+                depth[closes[ch]] -= 1
+            elif ch == "\n":
+                depth = dict.fromkeys(depth, 0)
+        scanned = m.end()
+        if any(depth.values()) or _skip_abbreviation(buf, m.start()):
+            continue
+        return m.end()

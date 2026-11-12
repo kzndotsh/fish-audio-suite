@@ -11,11 +11,9 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 
 from fish_audio_suite_kit._charsets import (
-    ASCII_STOPS,
-    CLAUSE_MARKS,
     EMPHASIS_MARKS,
-    IDEOGRAPHIC_STOPS,
     PUNCT_BEFORE_CLOSER,
+    SENTENCE_AND_CLAUSE_MARKS,
 )
 
 __all__ = [
@@ -27,7 +25,6 @@ __all__ = [
 ]
 
 _SPACES = frozenset(" \t")
-_STOPS = frozenset(ASCII_STOPS + IDEOGRAPHIC_STOPS + CLAUSE_MARKS)
 _MARKS = frozenset(EMPHASIS_MARKS)
 _SEPARATOR_CHARS = frozenset(" \t|:-")
 
@@ -73,7 +70,7 @@ def collapse_space_before_stop(text: str) -> str:
     str
         ``text`` with each such run removed and the stop kept.
     """
-    return _drop_space_runs_before(text, _STOPS)
+    return _drop_space_runs_before(text, SENTENCE_AND_CLAUSE_MARKS)
 
 
 def strip_space_before_newline(text: str) -> str:

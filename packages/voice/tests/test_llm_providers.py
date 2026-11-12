@@ -362,5 +362,13 @@ def test_the_startup_blockers_name_the_selected_providers_variables(
     assert llm_problem(replace(LlmTune.from_env(), api_key="k", model="m")) is None
 
 
+def test_the_startup_blocker_does_not_name_a_key_a_plain_http_base_ignores(
+    env: pytest.MonkeyPatch,
+) -> None:
+    env.setenv("FISH_LLM_BASE", "http://openrouter.ai/api/v1")
+    env.setenv("OPENROUTER_API_KEY", "x")
+    assert llm_problem(LlmTune.from_env()) == "FISH_LLM_API_KEY missing"
+
+
 def test_the_provider_table_names_exactly_the_known_providers() -> None:
     assert tuple(provider.name for provider in LLM_PROVIDERS) == get_args(KnownLlmProvider)

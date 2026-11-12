@@ -339,10 +339,8 @@ class LlmTune:
         )
         provider = provider_for_base(base)
         key_env = _key_env(provider)
-        key_names = [_LLM_KEY_ENV]
-        if provider is None or _is_https(base):
-            key_names.append(key_env)
-        elif read_raw(key_env) is not None:
+        key_names = _key_names(base, provider)
+        if key_env not in key_names and read_raw(key_env) is not None:
             warn(
                 f"fish-voice: {key_env} is not used because the base is not https, which would "
                 f"send it unencrypted. Use an https base, or set {_LLM_KEY_ENV} to send a key anyway."
@@ -372,6 +370,17 @@ def _key_env(provider: LlmProvider | None) -> str:
     return provider.key_env if provider is not None else OPENAI_KEY_ENV
 
 
+def _key_names(base: str, provider: LlmProvider | None) -> list[str]:
+    """Return the variables the key is read from, first match wins.
+
+    A known provider's own key is left out for a base that is not https, so it is never
+    sent unencrypted.
+    """
+    if provider is None or _is_https(base):
+        return [_LLM_KEY_ENV, _key_env(provider)]
+    return [_LLM_KEY_ENV]
+
+
 def _model_names(provider: LlmProvider | None) -> list[str]:
     """Return the variables the model is read from, first match wins."""
     return [*([provider.model_env] if provider is not None else []), _LLM_MODEL_ENV]
@@ -388,12 +397,14 @@ def llm_problem(tune: LlmTune) -> str | None:
     Returns
     -------
     str or None
-        ``FISH_LLM_API_KEY / <the provider's key variable> missing`` or
-        ``FISH_LLM_MODEL / <the model variables> missing``, or None when both are set.
+        ``FISH_LLM_API_KEY / <the provider's key variable> missing`` (only
+        ``FISH_LLM_API_KEY missing`` when the provider's key is not used because the base
+        is not https) or ``FISH_LLM_MODEL / <the model variables> missing``, or None when
+        both are set.
     """
     provider = provider_for_base(tune.base)
     if not tune.api_key:
-        return f"{_LLM_KEY_ENV} / {_key_env(provider)} missing"
+        return f"{' / '.join(_key_names(tune.base, provider))} missing"
     if not tune.model:
         return f"{_LLM_MODEL_ENV} / {' / '.join(_model_names(provider))} missing"
     return None

@@ -279,6 +279,17 @@ def test_transcription_non_json_upstream_is_502(monkeypatch: pytest.MonkeyPatch)
     assert response.status_code == 502
     assert "non-JSON" in response.json()["error"]["message"]
 
+    class _HugeNumber(AsrJson):
+        def json(self) -> dict[str, Any]:
+            # Past Python's 4300-digit limit, int() raises a plain ValueError.
+            return json.loads('{"text": "hi", "duration": ' + "1" * 5000 + "}")
+
+    capture_upstream(monkeypatch, _HugeNumber())
+    with TestClient(app) as client:
+        response = client.post("/v1/audio/transcriptions", files=WAV_UPLOAD)
+    assert response.status_code == 502
+    assert "non-JSON" in response.json()["error"]["message"]
+
 
 def test_upstream_errors_use_openai_envelope(monkeypatch: pytest.MonkeyPatch) -> None:
     resp, _client, _sleeps = run_fish_send(

@@ -133,6 +133,11 @@ class ConsoleSink:
         body = paint(f"1;{_ROLE_COLORS.get(role, '97')}", text, sys.stdout)
         console_print(compose(clock_stamp(), role, label, body, sys.stdout), flush=True)
 
+    def _status(self, line: str) -> None:
+        # A status line goes below an open reply line, never onto its end.
+        self.end_reply_line()
+        console_print(line, flush=True)
+
     def _print_session(self) -> None:
         summary = session_summary(self._turns)
         if not summary:
@@ -146,7 +151,7 @@ class ConsoleSink:
         match event:
             case Listening():
                 if not debug_enabled():
-                    console_print("listening…")
+                    self._status("listening…")
             case Heard(text=text):
                 self._conversation("you", text)
             case ReplyToken(text=text):
@@ -161,7 +166,7 @@ class ConsoleSink:
                 if text and debug_enabled():
                     self._conversation("llm", text)
             case Notice(text=text):
-                console_print(f"  {text}", flush=True)
+                self._status(f"  {text}")
             case TurnEnded(snapshot=snapshot):
                 self._turns.append(snapshot)
                 summary = turn_summary(snapshot)
@@ -169,7 +174,7 @@ class ConsoleSink:
                     debug("turn.summary {}", summary)
                     trace("turn.timing {}", snapshot.log_line())
                 else:
-                    console_print(f"  ↳ {summary}" if summary else "", flush=True)
+                    self._status(f"  ↳ {summary}" if summary else "")
             case Bye(code=code):
                 # A session that stopped mid-reply never ended the reply.
                 self.end_reply_line()

@@ -124,12 +124,14 @@ def start_speculation(chat: Chat, text: str) -> None:
     -----
     The request is built the way the reply's own is, from a copy of the history with the
     line added. A streaming recogniser hears no tone, so there is no tone hint, and the
-    turn's trace id does not exist yet.
+    turn's trace id does not exist yet. The reply is tagged with the user's whole last
+    message, which joins ``text`` to an earlier line that got no reply, because that is
+    what the confirmed turn is checked against.
     """
     drop_speculation(chat)
     asked = chat.history.copy()
     asked.remember_user(text)
-    chat.speculation = Speculation(chat.backend, _request(asked, ()), text)
+    chat.speculation = Speculation(chat.backend, _request(asked, ()), asked.last_user())
 
 
 def drop_speculation(chat: Chat) -> None:

@@ -26,7 +26,7 @@ Terms used across the fish-audio-suite docs and code.
 | **Flux** | Deepgram's streaming speech recognition model with turn detection built in (`flux-general-en`, `flux-general-multi`) |
 | **Flush** | Tells Fish to synthesize the text it holds. Fish waits for a flush (or a full chunk) before speaking |
 | **Held span** | Streamed text kept back because it is unfinished: an open `**`, `<think>`, `(` or URL that a scrub rule would remove once closed |
-| **Import contracts** | The rules in `pyproject.toml` (`[tool.importlinter]`) for which package and module may import which: the proxy and voice never import each other, kit imports neither, kit's and voice's modules import only the layers below their own (`kit-layers`, `voice-direction`), and the proxy's settings never import its HTTP layer (`proxy-settings-are-plain`). `just layers` checks them |
+| **Import contracts** | The rules in `pyproject.toml` (`[tool.importlinter]`) for which package and module may import which: the proxy and voice never import each other, kit imports neither, kit's and voice's modules import only their own layer and the layers below it (`kit-layers`, `voice-direction`), and the proxy's settings never import its HTTP layer (`proxy-settings-are-plain`). `just layers` checks them |
 | **Interim words** | The words Flux has so far in a turn, sent about four times a second. The TUI shows them as you speak |
 | **Kit** | `fish-audio-suite-kit`, the shared library |
 | **Latency mode** | Fish's `latency` setting: `normal` (the most stable and best-sounding output, with slightly higher latency) or `balanced` (about 300 ms to first audio, Fish's API default and the one recommended for conversation). The SDK has no `low` |

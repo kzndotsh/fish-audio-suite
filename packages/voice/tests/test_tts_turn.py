@@ -260,6 +260,7 @@ def test_run_isolated_does_not_swallow_a_keyboard_interrupt_but_still_closes_the
     from fish_audio_suite_voice.tts_turn import run_isolated
 
     loops: list[asyncio.AbstractEventLoop] = []
+    tasks: list[asyncio.Task[None]] = []
 
     async def stubborn() -> None:
         try:
@@ -269,7 +270,7 @@ def test_run_isolated_does_not_swallow_a_keyboard_interrupt_but_still_closes_the
 
     async def work() -> Any:
         loops.append(asyncio.get_running_loop())
-        asyncio.get_running_loop().create_task(stubborn())
+        tasks.append(asyncio.get_running_loop().create_task(stubborn()))
         await asyncio.sleep(0)
         return None
 
@@ -277,6 +278,9 @@ def test_run_isolated_does_not_swallow_a_keyboard_interrupt_but_still_closes_the
         run_isolated(work())
     assert loops
     assert loops[0].is_closed()
+    (task,) = tasks
+    assert task.done()
+    assert isinstance(task.exception(), KeyboardInterrupt)  # retrieved, so never reported
 
 
 def _fail_every_attempt(

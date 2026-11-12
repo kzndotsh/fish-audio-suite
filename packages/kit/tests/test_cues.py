@@ -489,3 +489,11 @@ def test_only_drama_3_takes_directions() -> None:
     assert takes_directions(" Drama-3 ")
     for model in ("s2.1-pro", "s2.1-pro-free", "s2-pro", "s1", "drama-3-preview", ""):
         assert not takes_directions(model)
+
+
+def test_a_mood_word_after_a_stop_inside_a_cue_is_not_a_lead() -> None:
+    text = "Well [laugh!] Excited, I said."
+    assert normalize_cues(text, lead=True) == text
+    assert normalize_cues("(he pauses. then) Excited, hi.", lead=True) == (
+        "(he pauses. then) Excited, hi."
+    )

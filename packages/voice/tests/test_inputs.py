@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import threading
 import time
 from collections.abc import Callable
@@ -216,6 +217,41 @@ def test_toggling_mute_flips_the_switch_and_reports_the_new_state() -> None:
     assert source.muted
     assert source.toggle_mute() is False
     assert not source.muted
+
+
+class _LockThatPausesEachThreadOnce:
+    """A lock that, the first time each thread lets go of it, waits for one other thread.
+
+    Two threads that each toggle once then interleave as tightly as the lock allows: a
+    toggle that let go of the lock between reading and writing the switch loses one.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._meet = threading.Barrier(2, timeout=2)
+        self._seen: set[int] = set()
+
+    def __enter__(self) -> None:
+        self._lock.acquire()
+
+    def __exit__(self, *_exc: object) -> None:
+        self._lock.release()
+        me = threading.get_ident()
+        if me not in self._seen:
+            self._seen.add(me)
+            with contextlib.suppress(threading.BrokenBarrierError):
+                self._meet.wait()
+
+
+def test_two_toggles_at_once_are_both_counted(monkeypatch: pytest.MonkeyPatch) -> None:
+    source = LiveInput()
+    monkeypatch.setattr(source, "_lock", _LockThatPausesEachThreadOnce())
+    threads = [threading.Thread(target=source.toggle_mute) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(5)
+    assert not source.muted  # muted, then unmuted
 
 
 def test_stopping_the_reply_cancels_the_turn_and_does_nothing_before_a_session() -> None:

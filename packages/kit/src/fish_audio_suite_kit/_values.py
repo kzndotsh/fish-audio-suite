@@ -19,7 +19,7 @@ def _whole_int(value: Any) -> int:
     if isinstance(value, int):
         return value
     if isinstance(value, float):
-        if not math.isfinite(value):
+        if not math.isfinite(value) or not value.is_integer():
             raise ValueError
         return int(value)
     if isinstance(value, str):

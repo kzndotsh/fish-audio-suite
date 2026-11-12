@@ -337,7 +337,7 @@ result = await asyncio.to_thread(tts.speak_stream, token_list, sink)
 - **Stopping early:** pass `cancel=threading.Event()` and set it from anywhere, for example when your user starts talking.
 - **Knowing when sound starts:** `on_first_audio=callback` runs once, at the first audio chunk, on the speaker's own thread.
 - **Tracing:** `trace_headers={"traceparent": ...}` is sent on that turn's websocket upgrade. Without one, a `traceparent` is minted.
-- **A sink that fails raises:** an error your sink raises when it opens, writes or closes comes out of `speak`. A Fish failure comes back in the result instead.
+- **A sink that fails raises:** an error your sink raises when it opens, writes or closes comes out of `speak`, except a write error after `cancel` is set, which is dropped. A Fish failure comes back in the result instead.
 - **The result is a `TtsResult`:**
   - `spoken_so_far` is the text the listener heard, cut to what was played. Store that in your chat history, not the full reply.
   - `error` is a kit error class you can test with `isinstance`, such as `FishAuthError` or `FishRateLimitError`.

@@ -165,8 +165,8 @@ class BargeGate:
         Returns
         -------
         BargeIn or None
-            The kept frames, the mic position after them and the level this gate admitted
-            them at (``BargeTune.min_rms``). None when the gate did not trip.
+            The kept frames, the mic position after them and the loudness floor this gate
+            started from (``BargeTune.min_rms``). None when the gate did not trip.
         """
         if not self.captured:
             return None
