@@ -12,15 +12,16 @@ Use this skill to generate correct, runnable code with the **official Fish Audio
 
 If the user wants raw `curl` / HTTP / WebSocket without installing an SDK, use the **`fish-audio-api`** skill instead.
 
-> Vendored from `https://docs.fish.audio` (see `skills-lock.json`). The task-specific `references/` pages the upstream skill links to are not vendored here; use the SDK docs at `https://docs.fish.audio` for full examples. The upstream licence is unstated.
+> This file is the index. Deeper, task-specific rules and full examples live in [`references/`](references/). Read the reference for the task you're doing before writing code.
 
 ## Global facts
 
 - **Auth:** both SDKs read the API key from the `FISH_API_KEY` environment variable automatically. Get keys at `https://fish.audio/app/api-keys`. Never hardcode a key.
 - **Base URL:** `https://api.fish.audio` (override with `base_url=` in Python / `baseUrl:` in JS).
-- **Models:** the API supports `s1`, `s2-pro`, `s2.1-pro` (recommended for production), and `s2.1-pro-free` (free tier), but the SDK type definitions currently list only `s1` and `s2-pro` (`s2-pro` = SDK default). Both SDKs forward the model value without runtime validation, so `"s2.1-pro"` works over the wire. Static type checkers will flag it, so add `# type: ignore` (Python) / an `as` cast (TS), or use the `fish-audio-api` skill for raw calls. `speech-1.5` / `speech-1.6` are **deprecated**. In Python pass `model="s2-pro"` (keyword); in JS pass the **positional** `backend` argument.
+- **TTS models:** the API supports `s1` (deprecated), `s2-pro`, `s2.1-pro` (recommended for production), and `s2.1-pro-free` (free tier). Do not choose `s1` for new code: S1 is deprecated and will be retired on December 31, 2026. After that date, requests that specify `s1` are served by `s2.1-pro` (migration: `https://docs.fish.audio/developer-guide/models-pricing/migrate-from-s1`). However, the Python SDK types `model` as only `s1` and `s2-pro` (plus the deprecated `speech-1.x`), default `s2-pro`. The JS package on npm (`fish-audio` 0.1.0) types `backend` without `s2-pro` or `s2.1-pro` and defaults it to `"s1"` at runtime (its README says `"s2-pro"`), so in JS always pass `backend` explicitly. Both SDKs forward the model value without runtime validation, so `"s2.1-pro"` works over the wire. Static type checkers will flag it, so add `# type: ignore` (Python) / an `as` cast (TS), or use the `fish-audio-api` skill for raw calls. `speech-1.5` / `speech-1.6` are **deprecated**. In Python pass `model="s2-pro"` (keyword); in JS pass the **positional** `backend` argument.
+- **ASR models:** use `transcribe-1-pro` (recommended: speaker turns, long recordings, emotion cues). Neither SDK has an ASR `model` argument: send the `model: transcribe-1-pro` HTTP header on every request (Python `RequestOptions(additional_headers=...)`, JS `requestOptions.headers`). A request without it is served and billed as `transcribe-1`, the model for short recordings. See [references/speech-to-text.md](references/speech-to-text.md).
 - **Audio formats:** `mp3` (default), `wav`, `pcm`, `opus`.
-- **Playback in examples:** `play()` shells out to a system audio tool: Python uses **ffmpeg/ffplay** (or `mpv`), JS uses **ffplay**. It is for local/desktop use; in a server, `save()` to a file or stream the bytes instead.
+- **Playback in examples:** `play()` shells out to a system audio tool: Python uses **ffmpeg/ffplay** (or `mpv`), JS uses **ffplay**. It is for local/desktop use; in a server, `save()` to a file or stream the bytes instead. See [references/installation.md](references/installation.md).
 
 ## Quick start: Python
 
@@ -62,19 +63,32 @@ const client = new FishAudioClient({ apiKey: process.env.FISH_API_KEY });
 // convert() returns audio you can play or pipe to a file
 const audio = await client.textToSpeech.convert({
   text: "Hello from Fish Audio!",
-}); // defaults to model "s2-pro"
+}); // npm 0.1.0 defaults to the deprecated "s1"; pass a model as shown below
 await play(audio); // local playback (needs ffplay)
 ```
 
 To pick a model in JS, pass `backend` as the **positional** argument (not a named option):
 
 ```ts
-const audio = await client.textToSpeech.convert({ text: "Hi" }, "s1");
+import type { Backends } from "fish-audio";
+
+// The cast is needed because the npm 0.1.0 `Backends` type omits "s2.1-pro".
+const audio = await client.textToSpeech.convert(
+  { text: "Hi" },
+  "s2.1-pro" as Backends
+);
 ```
 
-## Capabilities
+## Capabilities → references
 
-Install, auth, playback deps, verify a key. Text-to-Speech (convert, stream, formats, prosody, model select). Voice cloning (instant references and persistent voice models). Speech-to-Text (transcribe, segments, timestamps). Realtime WebSocket TTS (stream text to audio). Errors, retries, and timeouts. Details for each are in the SDK docs.
+| Task                                                             | Reference                                                    |
+| ---------------------------------------------------------------- | ------------------------------------------------------------ |
+| Install, auth, playback deps, verify a key                       | [references/installation.md](references/installation.md)     |
+| Text-to-Speech (convert, stream, formats, prosody, model select) | [references/text-to-speech.md](references/text-to-speech.md) |
+| Voice cloning (instant references + persistent voice models)     | [references/voice-cloning.md](references/voice-cloning.md)   |
+| Speech-to-Text (models, timestamps, fields the SDK drops)        | [references/speech-to-text.md](references/speech-to-text.md) |
+| Realtime WebSocket TTS (stream text → audio)                     | [references/websocket.md](references/websocket.md)           |
+| Errors, retries, and timeouts (the **real** exception types)     | [references/errors.md](references/errors.md)                 |
 
 ## Python ↔ JavaScript name map
 
@@ -94,19 +108,20 @@ The two SDKs do **not** use the same names. Use this map when porting code betwe
 | Credit balance        | `client.account.get_credits()`                    | `client.user.get_api_credit()`                             |
 | Subscription package  | `client.account.get_package()`                    | `client.user.get_package()`                                |
 | Choose model          | `model="s2-pro"` keyword arg                      | positional `backend` arg, e.g. `convert(req, "s2-pro")`    |
+| ASR model (header)    | `RequestOptions(additional_headers=...)`          | `convert(req, { headers: { model: "transcribe-1-pro" } })` |
 
 ## Decision shortcuts
 
 - **Audio from text** → `tts.convert` (Python) / `textToSpeech.convert` (JS).
 - **Reuse a saved voice** → pass `reference_id` (the voice model `id`).
-- **Clone a voice instantly from a clip** → pass `references=[ReferenceAudio(audio=..., text=...)]` (Python) / `references: [{ audio, text }]` (JS).
+- **Clone a voice instantly from a clip** → pass `references=[ReferenceAudio(audio=..., text=...)]` (Python) / `references: [{ audio, text }]` (JS). See [voice-cloning](references/voice-cloning.md).
 - **Persistent custom voice to reuse** → create a voice model, then use its `id` as `reference_id`.
-- **Stream tokens from an LLM and play speech as it arrives** → `tts.stream_websocket` (Python) / `textToSpeech.convertRealtime` (JS).
-- **Transcribe audio** → `asr.transcribe` (Python) / `speechToText.convert` (JS).
+- **Stream tokens from an LLM and play speech as it arrives** → `tts.stream_websocket` (Python) / `textToSpeech.convertRealtime` (JS). See [websocket](references/websocket.md).
+- **Transcribe audio** → `asr.transcribe` (Python) / `speechToText.convert` (JS) with the `model: transcribe-1-pro` header (recommended; without it, the request runs on `transcribe-1`). Pro request fields, `speaker_turns`, `request_id`, and the language fields need raw HTTP in Python (`fish-audio-sdk` 1.3.0). See [speech-to-text](references/speech-to-text.md).
 
 ## Gotchas (verified against the SDK source)
 
 - Python `latency` accepts only **`"normal"` or `"balanced"`** (default `"balanced"`); there is no `"low"`.
-- The Python client has **no `max_retries`** and does **not** auto-retry; the JS client **does** auto-retry (configurable via per-call `requestOptions.maxRetries`).
+- The Python client has **no `max_retries`** and does **not** auto-retry; the JS client **does** auto-retry (configurable via per-call `requestOptions.maxRetries`). See [errors](references/errors.md).
 - Python defines a `ValidationError` class but **never raises it**, so don't catch it expecting validation failures; a 422 surfaces as `APIError`. The JS SDK throws `UnprocessableEntityError` on 422.
-- ASR segment `start` / `end` are in **seconds**, but `duration` is in **milliseconds**.
+- ASR segment `start` / `end` and `duration` are all in **seconds**. The Python SDK's `ASRResponse` docstring says milliseconds; that is wrong. See [speech-to-text](references/speech-to-text.md).
