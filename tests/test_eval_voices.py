@@ -46,6 +46,7 @@ class _FakeSpeaker:
 
 @pytest.fixture
 def fake_speaker(monkeypatch: pytest.MonkeyPatch) -> None:
+    _FakeSpeaker.built.clear()  # each test sees only the speakers it built
     monkeypatch.setattr(eval_voices, "FishSpeaker", _FakeSpeaker)
 
 
@@ -84,6 +85,7 @@ def test_every_voice_and_model_is_saved_and_a_failure_does_not_stop_the_run(
     table = capsys.readouterr().out
     assert "FAILED: voice not found" in table
     # The app's default: only Fish's own cues.
+    assert len(_FakeSpeaker.built) == 6  # three voices x two models
     assert all(kwargs["cue_style"].mode == "official" for kwargs in _FakeSpeaker.built)
     assert "voice1" in table
     assert "1.0" in table  # seconds

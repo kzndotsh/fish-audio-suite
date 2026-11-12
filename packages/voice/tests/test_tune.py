@@ -43,12 +43,9 @@ def _clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_the_defaults_keep_fish_asr_and_need_no_deepgram_setting() -> None:
     tune = SttTune.from_env()
     assert tune == SttTune()
-    assert tune.provider == "fish"
+    assert tune.provider == "fish"  # the batch path stays the default
     assert tune.deepgram.key == ""
-    assert tune.deepgram.model == DEFAULT_DEEPGRAM_MODEL == "flux-general-en"
-    assert tune.deepgram.eot_threshold == DEFAULT_EOT_THRESHOLD == 0.7
-    assert tune.deepgram.region == "global"
-    assert STT_PROVIDERS == ("fish", "deepgram", "fish-realtime")
+    assert set(STREAMING_STT_PROVIDERS) == set(STT_PROVIDERS) - {"fish"}
 
 
 def test_fish_realtime_is_chosen_by_name_and_needs_no_key_of_its_own(

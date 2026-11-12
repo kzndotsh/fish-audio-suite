@@ -2,19 +2,18 @@ from __future__ import annotations
 
 import asyncio
 import math
-from collections.abc import AsyncIterator
 from dataclasses import replace
+from pathlib import Path
 
 import numpy as np
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
-from wire_helpers import make_run
+from wire_helpers import RecordingSink, install_fish_audio
 
 from fish_audio_suite_voice.loudness import LoudnessMatch
-from fish_audio_suite_voice.playback import StdoutSink
+from fish_audio_suite_voice.speaker import FishSpeaker
 from fish_audio_suite_voice.tts_tune import TtsTune
-from fish_audio_suite_voice.wire import _pump_ws_audio
 
 RATE = 44100
 CEILING = 0.98 * 32768 + 1  # rounding to a whole sample
@@ -140,51 +139,44 @@ def test_any_audio_keeps_its_length_stays_under_the_ceiling_and_the_gain_in_boun
     assert -12.0 <= match.gain_db <= 12.0
 
 
-def test_the_pump_levels_pcm_before_it_reaches_the_sink() -> None:
-    run, sink = make_run()
-    leveled = replace(run, spec=replace(run.spec, loudness_db=-18.0))
-
-    async def close_client() -> None:
-        return None
-
-    async def stream() -> AsyncIterator[bytes]:
-        for _ in range(5):
-            yield _pcm(_voice(0.2, -30.0))
-
-    asyncio.run(_pump_ws_audio(stream(), leveled, close_client))
-    assert _db(_samples(b"".join(sink.chunks))) == pytest.approx(-18.0, abs=1.5)
-    plain_run, plain_sink = make_run()
-    asyncio.run(_pump_ws_audio(stream(), plain_run, close_client))
-    assert _db(_samples(b"".join(plain_sink.chunks))) == pytest.approx(-30.0, abs=0.5)
+def _speak_levelled(
+    monkeypatch: pytest.MonkeyPatch, chunks: list[bytes], tune: TtsTune
+) -> np.ndarray:
+    install_fish_audio(monkeypatch, chunks)
+    sink = RecordingSink()
+    FishSpeaker(api_key="k", voice_id="v", tune=tune).speak("Hello there.", sink)
+    return _samples(b"".join(sink.chunks))
 
 
-def test_the_pump_levels_what_the_fade_lets_through() -> None:
-    run, sink = make_run()
-    both = replace(run, spec=replace(run.spec, loudness_db=-18.0, fade_ms=4.0))
+def test_the_pump_levels_pcm_before_it_reaches_the_sink(monkeypatch: pytest.MonkeyPatch) -> None:
+    chunks = [_pcm(_voice(0.2, -30.0)) for _ in range(5)]
+    levelled = _speak_levelled(
+        monkeypatch, chunks, TtsTune(sample_rate=RATE, fade_ms=0.0, loudness_db=-18.0)
+    )
+    assert _db(levelled) == pytest.approx(-18.0, abs=1.5)
+    # The speaker's default is no levelling: the audio plays at the level Fish sent it.
+    plain = _speak_levelled(monkeypatch, chunks, TtsTune(sample_rate=RATE, fade_ms=0.0))
+    assert _db(plain) == pytest.approx(-30.0, abs=0.5)
 
-    async def close_client() -> None:
-        return None
 
-    async def stream() -> AsyncIterator[bytes]:
-        yield _pcm(np.zeros(1000))
-        yield _pcm(_voice(0.5, -30.0))
-
-    asyncio.run(_pump_ws_audio(stream(), both, close_client))
-    played = _samples(b"".join(sink.chunks))
+def test_the_pump_levels_what_the_fade_lets_through(monkeypatch: pytest.MonkeyPatch) -> None:
+    chunks = [_pcm(np.zeros(1000)), _pcm(_voice(0.5, -30.0))]
+    played = _speak_levelled(
+        monkeypatch, chunks, TtsTune(sample_rate=RATE, fade_ms=4.0, loudness_db=-18.0)
+    )
     assert played.size == 1000 + int(RATE * 0.5)
     assert abs(played[1000]) < 200  # still faded in
     assert _db(played[1000:]) > -22.0  # and levelled up
 
 
-def test_the_speaker_hands_its_target_level_to_each_turn_and_defaults_to_none() -> None:
-    from fish_audio_suite_voice.cli import _fish_tts  # pyright: ignore[reportPrivateUsage]
-    from fish_audio_suite_voice.speaker import FishSpeaker
-
-    sink = StdoutSink()
-    assert FishSpeaker(api_key="k", voice_id="v")._spec(sink, None).loudness_db is None  # pyright: ignore[reportPrivateUsage]
-    on = FishSpeaker(api_key="k", voice_id="v", tune=TtsTune(loudness_db=-20.0))
-    assert on._spec(sink, None).loudness_db == -20.0  # pyright: ignore[reportPrivateUsage]
+def test_the_cli_hands_the_configured_level_to_each_turn(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     from session_fakes import make_config
 
+    from fish_audio_suite_voice.cli import smoke_test
+
+    opened = install_fish_audio(monkeypatch, [])
     config = replace(make_config(), tts=TtsTune(loudness_db=-16.0))
-    assert _fish_tts(config).tune.loudness_db == -16.0
+    asyncio.run(smoke_test(config, tmp_path / "smoke.wav"))
+    assert [spec.loudness_db for spec in opened] == [-16.0]

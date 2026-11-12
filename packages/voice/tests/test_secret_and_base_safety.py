@@ -1,14 +1,22 @@
 from __future__ import annotations
 
+import threading
+from dataclasses import replace
+from types import MappingProxyType
+
 import httpx
 import pytest
+from fishaudio.types import TTSConfig
 
+from fish_audio_suite_kit import FISH_RETRY_ATTEMPTS
 from fish_audio_suite_voice.config import VoiceCliConfig, warn_if_insecure_base
 from fish_audio_suite_voice.llm_tune import LlmTune
-from fish_audio_suite_voice.playback import StdoutSink
 from fish_audio_suite_voice.speaker import FishSpeaker
 from fish_audio_suite_voice.tts_tune import TtsTune
-from fish_audio_suite_voice.tts_turn import _classify_fish_exc
+from fish_audio_suite_voice.tts_turn import turn_failure
+from fish_audio_suite_voice.tune import DeepgramTune, SttTune
+from fish_audio_suite_voice.turn_stream import RecogniserSettings
+from fish_audio_suite_voice.wire import TurnSpec
 from fish_audio_suite_voice.wording import with_detail
 
 SECRET = "sk-very-secret-value"
@@ -36,11 +44,14 @@ def _config(
 
 
 def test_no_secret_appears_in_a_config_repr() -> None:
-    config = _config()
+    config = replace(_config(), stt=SttTune(deepgram=DeepgramTune(key=SECRET)))
     assert SECRET not in repr(config)
     assert SECRET not in str(config)
     assert SECRET not in repr(config.llm)
     assert "fish_voice_id" in repr(config)
+    assert "eot_threshold" in repr(config)
+    streaming = RecogniserSettings(config.stt, fish_key=SECRET, fish_base=config.fish_base)
+    assert SECRET not in repr(streaming)
 
 
 def test_no_secret_appears_in_the_tts_client_or_turn_spec_repr() -> None:
@@ -48,7 +59,16 @@ def test_no_secret_appears_in_the_tts_client_or_turn_spec_repr() -> None:
     assert SECRET not in repr(tts)
     assert SECRET not in str(tts)
     assert "voice_id" in repr(tts)
-    assert SECRET not in repr(tts._spec(StdoutSink(), None))
+    spec = TurnSpec(
+        api_key=SECRET,
+        base_url="https://api.fish.audio",
+        voice_id="voice",
+        model="s2.1-pro",
+        trace_headers=MappingProxyType({}),
+        config=TTSConfig(),
+    )
+    assert SECRET not in repr(spec)
+    assert "voice_id" in repr(spec)
 
 
 def test_with_detail_adds_the_errors_own_text() -> None:
@@ -60,58 +80,63 @@ def test_with_detail_adds_the_errors_own_text() -> None:
 
 
 def test_a_transport_error_keeps_its_detail_for_the_local_user() -> None:
-    retry, status, message = _classify_fish_exc(httpx.ConnectError("connect to 10.0.0.5 refused"))
-    assert retry is True
-    assert status == 502
-    assert message.startswith("Fish upstream unreachable")
-    assert "10.0.0.5" in message
+    refused = httpx.ConnectError("connect to 10.0.0.5 refused")
+    first = turn_failure(
+        refused, attempt=0, sent_text="Hi.", got_audio=False, cancel=threading.Event()
+    )
+    assert first.retry is True
+    last = turn_failure(
+        refused,
+        attempt=FISH_RETRY_ATTEMPTS - 1,
+        sent_text="Hi.",
+        got_audio=False,
+        cancel=threading.Event(),
+    )
+    assert last.retry is False
+    assert last.error_status == 502
+    assert last.error_message is not None
+    assert last.error_message.startswith("Fish upstream unreachable")
+    assert "10.0.0.5" in last.error_message
 
 
 def test_plain_http_to_a_remote_host_warns_for_both_keys(
-    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    notes: list[str] = []
-    monkeypatch.setattr("fish_audio_suite_voice.config.warn", notes.append)
     config = _config(
         fish_base="http://10.0.0.5:8080",
         llm=LlmTune(backend="openai", base="http://10.0.0.6/v1", api_key=SECRET, model="m"),
     )
     assert warn_if_insecure_base(config) is True
+    notes = capsys.readouterr().err.splitlines()
     assert len(notes) == 2
     assert all(SECRET not in note for note in notes)
     assert "10.0.0.5" in notes[0]
     assert "10.0.0.6" in notes[1]
 
 
-def test_https_and_loopback_do_not_warn(monkeypatch: pytest.MonkeyPatch) -> None:
-    notes: list[str] = []
-    monkeypatch.setattr("fish_audio_suite_voice.config.warn", notes.append)
+def test_https_and_loopback_do_not_warn(capsys: pytest.CaptureFixture[str]) -> None:
     assert warn_if_insecure_base(_config()) is False
     local = _config(
         fish_base="http://127.0.0.1:8080",
         llm=LlmTune(backend="openai", base="http://localhost:1234/v1", api_key=SECRET, model="m"),
     )
     assert warn_if_insecure_base(local) is False
-    assert notes == []
+    assert capsys.readouterr().err == ""
 
 
-def test_no_key_means_no_warning(monkeypatch: pytest.MonkeyPatch) -> None:
-    notes: list[str] = []
-    monkeypatch.setattr("fish_audio_suite_voice.config.warn", notes.append)
+def test_no_key_means_no_warning(capsys: pytest.CaptureFixture[str]) -> None:
     keyless = _config(
         fish_api_key="",
         fish_base="http://10.0.0.5:8080",
         llm=LlmTune(backend="openai", base="http://10.0.0.6/v1", api_key="", model="m"),
     )
     assert warn_if_insecure_base(keyless) is False
-    assert notes == []
+    assert capsys.readouterr().err == ""
 
 
 def test_the_warning_prints_only_the_host_never_credentials_in_the_url(
-    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    notes: list[str] = []
-    monkeypatch.setattr("fish_audio_suite_voice.config.warn", notes.append)
     config = _config(
         fish_base="http://alice:hunter2@10.0.0.5:8080/v1?token=abc123",
         llm=LlmTune(
@@ -122,7 +147,7 @@ def test_the_warning_prints_only_the_host_never_credentials_in_the_url(
         ),
     )
     assert warn_if_insecure_base(config) is True
-    text = " ".join(notes)
+    text = capsys.readouterr().err
     assert "10.0.0.5" in text
     assert "10.0.0.6" in text
     for leaked in ("alice", "hunter2", "abc123", "bob", "s3cret", "zzz"):

@@ -14,6 +14,7 @@ from typing import Any, Final, TextIO
 from fish_audio_suite_voice.log_format import TAG_WIDTH, clock_stamp, log_tag, turn_offset
 
 __all__ = [
+    "close_log_file",
     "log_file_on",
     "log_file_sink",
     "log_record",
@@ -61,6 +62,7 @@ class _FileLog:
     def close(self) -> None:
         with self._lock:
             handle, self._handle = self._handle, None
+            self.path = None
         if handle is not None:
             with contextlib.suppress(OSError):
                 handle.close()
@@ -84,6 +86,14 @@ def open_log_file(folder: str) -> Path | None:
         None, after a line on stderr, when it cannot be written.
     """
     return _FILE.start(folder)
+
+
+def close_log_file() -> None:
+    """Close the run's log file and forget it, so the next ``open_log_file`` starts a new one.
+
+    Nothing happens when no file is open. The file is also closed when the process exits.
+    """
+    _FILE.close()
 
 
 def log_file_on() -> bool:

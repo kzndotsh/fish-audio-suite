@@ -12,10 +12,12 @@ from typing import Any
 import httpx
 import pytest
 from session_fakes import barge_clip, make_ctx, recognize
+from voice_fakes import ScriptedMic, install_vad
 
 from fish_audio_suite_kit import FishHttpError
-from fish_audio_suite_voice import barge, mic, pcm
+from fish_audio_suite_voice import mic, pcm
 from fish_audio_suite_voice.asr import AsrResult
+from fish_audio_suite_voice.barge import BargeGate
 from fish_audio_suite_voice.console_sink import ConsoleSink, console_print
 from fish_audio_suite_voice.duplex_state import DuplexContext
 from fish_audio_suite_voice.events import EventBus, ExitCode, ReplyToken
@@ -274,19 +276,30 @@ def test_a_failure_in_the_mic_thread_reaches_the_reader(monkeypatch: pytest.Monk
 
 
 def test_the_barge_heartbeat_only_logs_at_trace_level(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    lines: list[str] = []
-    monkeypatch.setattr(barge, "trace", lambda message, **_kw: lines.append(message))
-    configure_voice_logging(debug=1)
+    class Quiet:
+        def __init__(self, mode: int) -> None:
+            del mode
+
+        def is_speech(self, frame: bytes, rate: int) -> bool:
+            del frame, rate
+            return False
+
+    install_vad(monkeypatch, Quiet)
+    quiet = b"\x01\x00" * (pcm.FRAME_BYTES // 2)
+
+    def heartbeats(level: int, frames: int) -> int:
+        configure_voice_logging(debug=level)
+        capsys.readouterr()
+        BargeGate(mic=ScriptedMic([quiet] * frames)).watch(threading.Event())
+        err = capsys.readouterr().err
+        return sum("far=" in line and "aec=" in line for line in err.splitlines())
+
     try:
-        barge._barge_heartbeat(idle_frames=20, rms=10.0, need=220.0, far=True, hit=0, aec_on=True)  # pyright: ignore[reportPrivateUsage]
-        assert lines == []
-        configure_voice_logging(debug=2)
-        barge._barge_heartbeat(idle_frames=7, rms=10.0, need=220.0, far=True, hit=0, aec_on=True)  # pyright: ignore[reportPrivateUsage]
-        assert lines == []
-        barge._barge_heartbeat(idle_frames=20, rms=10.0, need=220.0, far=True, hit=0, aec_on=True)  # pyright: ignore[reportPrivateUsage]
-        assert len(lines) == 1
+        assert heartbeats(1, pcm.LISTEN_HEARTBEAT_FRAMES) == 0  # events only: no heartbeat
+        assert heartbeats(2, pcm.LISTEN_HEARTBEAT_FRAMES - 1) == 0  # not due yet
+        assert heartbeats(2, pcm.LISTEN_HEARTBEAT_FRAMES) == 1
     finally:
         configure_voice_logging(debug=False)
 
@@ -302,14 +315,14 @@ class _BrokenPipe:
 def test_a_closed_stdout_never_raises_from_the_console_helpers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(sys, "stdout", _BrokenPipe())
-    console_print("status")
     bus = EventBus()
     with ConsoleSink(bus) as display:
-        bus.emit(ReplyToken("hello"))
-        display._line_open = True  # pyright: ignore[reportPrivateUsage]
+        bus.emit(ReplyToken("hello"))  # the reply line is open
+        monkeypatch.setattr(sys, "stdout", _BrokenPipe())  # and then the reader goes away
+        console_print("status")
+        bus.emit(ReplyToken(" there"))
         display.end_reply_line()
-        assert display._line_open is False  # pyright: ignore[reportPrivateUsage]
+        display.end_reply_line()
 
 
 def test_a_buffer_shorter_than_a_frame_waits_and_a_zero_frame_size_yields_nothing() -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import collections.abc
 import dataclasses
 import threading
@@ -29,7 +30,6 @@ from fish_audio_suite_voice import events as events_module
 from fish_audio_suite_voice.asr import AsrResult
 from fish_audio_suite_voice.barge import BargeGate
 from fish_audio_suite_voice.cancel import StopFlag
-from fish_audio_suite_voice.cli import _quit_line  # pyright: ignore[reportPrivateUsage]
 from fish_audio_suite_voice.console_sink import ConsoleSink
 from fish_audio_suite_voice.duplex import duplex_turns
 from fish_audio_suite_voice.events import (
@@ -42,6 +42,7 @@ from fish_audio_suite_voice.events import (
     EventQueue,
     ExitCode,
     Heard,
+    Interim,
     Listening,
     LogLine,
     MicLevel,
@@ -59,11 +60,11 @@ from fish_audio_suite_voice.events import (
 )
 from fish_audio_suite_voice.hearing import HeardLine, hear_line
 from fish_audio_suite_voice.latency import LatencySnapshot
-from fish_audio_suite_voice.listen import _Listen  # pyright: ignore[reportPrivateUsage]
+from fish_audio_suite_voice.listen import record_utterance
 from fish_audio_suite_voice.log_setup import configure_voice_logging, forward_logs
 from fish_audio_suite_voice.pcm import FRAME_BYTES, MIC_LEVEL_EVERY_FRAMES
 from fish_audio_suite_voice.speaker import FishSpeaker
-from fish_audio_suite_voice.tune import BargeTune, ListenTune
+from fish_audio_suite_voice.tune import BargeTune
 
 
 @pytest.fixture
@@ -300,10 +301,13 @@ def test_the_barge_gate_reports_the_mic_level_and_the_interruption(
     assert (level.source, level.rms > level.need) == ("barge", True)
 
 
-def test_listening_reports_the_mic_level_every_few_frames(seen: list[Event]) -> None:
-    heard = _Listen(ListenTune(), _SpeechVad())
-    for idle in range(1, MIC_LEVEL_EVERY_FRAMES * 2 + 1):
-        heard.take(_loud(100), idle)
+def test_listening_reports_the_mic_level_every_few_frames(
+    monkeypatch: pytest.MonkeyPatch, seen: list[Event]
+) -> None:
+    install_vad(monkeypatch, _SpeechVad)
+    room = ScriptedMic([bytes(FRAME_BYTES)] * (MIC_LEVEL_EVERY_FRAMES * 3))
+    clip = record_utterance(room, give_up_frames=MIC_LEVEL_EVERY_FRAMES * 2)
+    assert clip is None
     levels = [e for e in seen if isinstance(e, MicLevel)]
     assert len(levels) == 2
     assert all(e.source == "listen" for e in levels)
@@ -377,11 +381,6 @@ def test_bye_is_sent_when_the_session_crashes(
     assert [e for e in seen if isinstance(e, Bye)] == [Bye(ExitCode.CRASH)]
 
 
-def test_a_second_ctrl_c_still_prints_the_quit_line(capsys: pytest.CaptureFixture[str]) -> None:
-    assert _quit_line() == 0
-    assert capsys.readouterr().out == "\nbye\n"
-
-
 def _event_classes() -> tuple[type, ...]:
     return typing.get_args(Event.__value__)
 
@@ -401,12 +400,33 @@ def test_every_event_is_an_immutable_timestamped_record_that_is_exported() -> No
         assert name in events_module.__all__, f"export {name} from events"
 
 
-def test_the_events_that_may_be_dropped_are_real_event_names() -> None:
-    names = {c.__name__ for c in _event_classes()}
-    dropped = {c.__name__ for c in events_module._DROPPABLE}  # pyright: ignore[reportPrivateUsage]
-    assert dropped <= names, f"unknown event names in _DROPPABLE: {dropped - names}"
-    assert "ReplyToken" not in dropped
-    assert "Heard" not in dropped
+_ONE_OF_EACH: tuple[Event, ...] = (
+    Listening(),
+    Heard("hi", 1.0),
+    Interim("hi"),
+    ReplyToken("x"),
+    ReplyEnd("x"),
+    Speaking(),
+    BargedIn(),
+    MicLevel(1.0, 2.0, "listen"),
+    OutputLevel(1.0),
+    LogLine("DEBUG", "tts", "x"),
+    Notice("x"),
+    TurnEnded(LatencySnapshot()),
+    Bye(),
+)
+
+
+def test_a_queue_that_falls_behind_drops_only_levels_interim_words_and_log_lines() -> None:
+    assert {type(e) for e in _ONE_OF_EACH} == set(_event_classes()), "add the new event here"
+    bus = EventBus()
+    queue = EventQueue(bus, max_droppable=1)
+    for event in _ONE_OF_EACH:
+        for _ in range(3):
+            bus.emit(event)
+    kept = collections.Counter(type(e) for e in queue.drain())
+    dropped = {type(e) for e in _ONE_OF_EACH if kept[type(e)] < 3}
+    assert dropped == {MicLevel, OutputLevel, Interim, LogLine}
 
 
 def test_an_event_cannot_be_changed_after_it_is_sent() -> None:

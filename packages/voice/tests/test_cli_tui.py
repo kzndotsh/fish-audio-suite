@@ -12,8 +12,8 @@ from typing import Any
 import pytest
 
 from fish_audio_suite_voice import cli
-from fish_audio_suite_voice.cli import _can_draw_a_screen, load_config, main, run_tui
-from fish_audio_suite_voice.config import VoiceCliConfig, sink_latency
+from fish_audio_suite_voice.cli import main, run_loop, run_tui
+from fish_audio_suite_voice.config import VoiceCliConfig, load_config, sink_latency
 from fish_audio_suite_voice.debug import DebugLevel
 from fish_audio_suite_voice.events import EVENTS, ExitCode, Listening
 from fish_audio_suite_voice.inputs import LiveInput
@@ -27,6 +27,28 @@ def _configured(monkeypatch: pytest.MonkeyPatch) -> VoiceCliConfig:
     monkeypatch.setenv("FISH_LLM_API_KEY", "k")
     monkeypatch.setenv("FISH_LLM_MODEL", "org/model")
     return replace(load_config(), playback="stdout")
+
+
+class _Stream:
+    """Stands in for ``sys.stdin`` or ``sys.stdout``: a terminal or not, and passes writes on."""
+
+    def __init__(self, *, tty: bool, real: Any) -> None:
+        self._tty = tty
+        self._real = real
+
+    def isatty(self) -> bool:
+        return self._tty
+
+    def write(self, text: str) -> int:
+        return self._real.write(text)
+
+    def flush(self) -> None:
+        self._real.flush()
+
+
+def _terminal(monkeypatch: pytest.MonkeyPatch, *, stdin: bool, stdout: bool) -> None:
+    monkeypatch.setattr("sys.stdin", _Stream(tty=stdin, real=sys.stdin))
+    monkeypatch.setattr("sys.stdout", _Stream(tty=stdout, real=sys.stdout))
 
 
 def test_the_tui_flag_without_the_extra_says_how_to_install_it(
@@ -55,7 +77,7 @@ def test_the_tui_flag_runs_the_app_and_not_the_plain_loop(monkeypatch: pytest.Mo
     monkeypatch.setattr("fish_audio_suite_voice.cli.warn_if_insecure_base", lambda _c: False)
     monkeypatch.setattr("fish_audio_suite_voice.cli.run_tui", fake_tui)
     monkeypatch.setattr("fish_audio_suite_voice.cli.run_loop", fake_loop)
-    monkeypatch.setattr("fish_audio_suite_voice.cli._can_draw_a_screen", lambda: True)
+    _terminal(monkeypatch, stdin=True, stdout=True)
     assert main(["--tui", "--debug"]) == 7
     assert seen["tui"][1] >= DebugLevel.EVENTS
 
@@ -130,7 +152,6 @@ def _patch_session(monkeypatch: pytest.MonkeyPatch, calls: dict[str, Any]) -> No
     _FakeApp.instances = []
     monkeypatch.setattr("fish_audio_suite_voice.tui.VoiceApp", _FakeApp)
     monkeypatch.setattr(cli, "open_chat_backend", _Backend)
-    monkeypatch.setattr(cli, "_fish_tts", lambda *_a: object())
 
     async def fake_duplex(*args: Any, **kwargs: Any) -> int:
         calls["duplex"] = (args, kwargs)
@@ -221,74 +242,91 @@ def test_the_tui_flag_falls_back_to_the_plain_loop_without_a_terminal(
     monkeypatch.setattr("fish_audio_suite_voice.cli.warn_if_insecure_base", lambda _c: False)
     monkeypatch.setattr("fish_audio_suite_voice.cli.run_tui", fake_tui)
     monkeypatch.setattr("fish_audio_suite_voice.cli.run_loop", fake_loop)
-    monkeypatch.setattr("fish_audio_suite_voice.cli._can_draw_a_screen", lambda: False)
+    _terminal(monkeypatch, stdin=True, stdout=False)
     assert main(["--tui"]) == 3
     assert "needs a terminal" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(
-    ("stdin_tty", "stdout_tty", "expected"),
+    ("stdin_tty", "stdout_tty", "screen"),
     [(True, True, True), (False, True, False), (True, False, False), (False, False, False)],
 )
-def test_a_screen_needs_both_ends_on_a_tty(
-    monkeypatch: pytest.MonkeyPatch, *, stdin_tty: bool, stdout_tty: bool, expected: bool
+def test_the_app_starts_only_with_both_ends_on_a_tty(
+    monkeypatch: pytest.MonkeyPatch, *, stdin_tty: bool, stdout_tty: bool, screen: bool
 ) -> None:
-    class _Stream:
-        def __init__(self, tty: bool) -> None:
-            self._tty = tty
+    async def fake_tui(_c: object, *, debug: DebugLevel) -> int:
+        del debug
+        return 7
 
-        def isatty(self) -> bool:
-            return self._tty
+    async def fake_loop(_c: object) -> int:
+        return 3
 
-    monkeypatch.setattr("sys.stdin", _Stream(stdin_tty))
-    monkeypatch.setattr("sys.stdout", _Stream(stdout_tty))
-    assert _can_draw_a_screen() is expected
+    monkeypatch.setattr("fish_audio_suite_voice.cli.apply_cli_env_files", lambda *_a, **_k: [])
+    monkeypatch.setattr("fish_audio_suite_voice.cli.configure_voice_logging", lambda **_k: None)
+    monkeypatch.setattr("fish_audio_suite_voice.cli.load_config", object)
+    monkeypatch.setattr("fish_audio_suite_voice.cli.warn_if_insecure_base", lambda _c: False)
+    monkeypatch.setattr("fish_audio_suite_voice.cli.run_tui", fake_tui)
+    monkeypatch.setattr("fish_audio_suite_voice.cli.run_loop", fake_loop)
+    _terminal(monkeypatch, stdin=stdin_tty, stdout=stdout_tty)
+    assert main(["--tui"]) == (7 if screen else 3)
+
+
+def _starts(monkeypatch: pytest.MonkeyPatch, c: VoiceCliConfig) -> int:
+    """Run the plain loop with a session that ends at once, and return its exit code."""
+    _patch_session(monkeypatch, {})
+    return asyncio.run(run_loop(c))
 
 
 def test_choosing_deepgram_needs_its_key_and_its_extra(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from fish_audio_suite_voice.cli import _preflight
     from fish_audio_suite_voice.tune import DeepgramTune, SttTune
 
     base = _configured(monkeypatch)
     fish = replace(base, stt=SttTune(provider="fish"))
-    assert _preflight(fish) is None  # the default needs nothing from Deepgram
+    assert _starts(monkeypatch, fish) == ExitCode.OK  # the default needs nothing from Deepgram
+    assert "BLOCKER" not in capsys.readouterr().err
     keyless = replace(base, stt=SttTune(provider="deepgram"))
-    assert _preflight(keyless) == ExitCode.FATAL
-    assert "DEEPGRAM_API_KEY" in capsys.readouterr().err
+    assert _starts(monkeypatch, keyless) == ExitCode.FATAL
+    err = capsys.readouterr().err
+    assert "BLOCKER" in err
+    assert "DEEPGRAM_API_KEY" in err
     ready = replace(base, stt=SttTune(provider="deepgram", deepgram=DeepgramTune(key="k")))
-    assert _preflight(ready) is None  # websockets is installed in the test environment
+    # websockets is installed in the test environment
+    assert _starts(monkeypatch, ready) == ExitCode.OK
     monkeypatch.setattr("importlib.util.find_spec", lambda name, *_a: None)
-    assert _preflight(ready) == ExitCode.FATAL
+    assert _starts(monkeypatch, ready) == ExitCode.FATAL
     assert "deepgram extra" in capsys.readouterr().err
 
 
 def test_choosing_fish_realtime_needs_only_its_extra(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from fish_audio_suite_voice.cli import _preflight
     from fish_audio_suite_voice.tune import SttTune
 
     ready = replace(_configured(monkeypatch), stt=SttTune(provider="fish-realtime"))
-    assert _preflight(ready) is None  # the Fish key is already required, and it is the only one
+    # The Fish key is already required, and it is the only one.
+    assert _starts(monkeypatch, ready) == ExitCode.OK
     monkeypatch.setattr("importlib.util.find_spec", lambda name, *_a: None)
-    assert _preflight(ready) == ExitCode.FATAL
-    assert "fish-realtime extra" in capsys.readouterr().err
+    assert _starts(monkeypatch, ready) == ExitCode.FATAL
+    err = capsys.readouterr().err
+    assert "BLOCKER" in err
+    assert "fish-realtime extra" in err
 
 
 def test_a_voice_detector_that_cannot_load_stops_the_start(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from fish_audio_suite_voice.cli import _preflight
     from fish_audio_suite_voice.tune import ListenTune
 
     base = _configured(monkeypatch)
-    assert _preflight(replace(base, listen=ListenTune(vad_engine="silero"))) is None
+    silero = replace(base, listen=ListenTune(vad_engine="silero"))
+    assert _starts(monkeypatch, silero) == ExitCode.OK
     monkeypatch.setitem(sys.modules, "pysilero_vad", None)
-    assert _preflight(replace(base, listen=ListenTune(vad_engine="silero"))) == ExitCode.FATAL
+    assert _starts(monkeypatch, silero) == ExitCode.FATAL
     assert "fish-audio-suite-voice[silero]" in capsys.readouterr().err
-    assert _preflight(replace(base, listen=ListenTune(vad_engine="silro"))) == ExitCode.FATAL
+    misspelt = replace(base, listen=ListenTune(vad_engine="silro"))
+    assert _starts(monkeypatch, misspelt) == ExitCode.FATAL
     assert "unknown voice detector" in capsys.readouterr().err
 
 
@@ -326,6 +364,6 @@ def test_a_model_that_cannot_answer_stops_before_the_session_and_says_why(
         assert False not in logging
         assert "no provider serves model org/model" in capsys.readouterr().err
     else:
-        code = asyncio.run(cli.run_loop(c))
+        code = asyncio.run(run_loop(c))
     assert code == ExitCode.FATAL
     assert _FakeApp.instances == []

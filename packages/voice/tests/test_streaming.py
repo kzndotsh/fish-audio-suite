@@ -14,15 +14,15 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+import ormsgpack
 import pytest
 from voice_fakes import ScriptedMic
 
 from fish_audio_suite_voice import streaming
 from fish_audio_suite_voice.cancel import StopFlag
-from fish_audio_suite_voice.deepgram import FluxStream
 from fish_audio_suite_voice.events import EVENTS, Event, Interim
 from fish_audio_suite_voice.mic import Mic
-from fish_audio_suite_voice.pcm import FRAME_BYTES
+from fish_audio_suite_voice.pcm import BYTES_PER_S, FRAME_BYTES
 from fish_audio_suite_voice.portaudio import PortAudioMissingError
 from fish_audio_suite_voice.recognised import BargeIn, NoTurn, StreamFallback, Transcript
 from fish_audio_suite_voice.streaming import stream_turn
@@ -46,15 +46,15 @@ from fish_audio_suite_voice.turn_stream import (
     TurnUpdate,
 )
 
-CHUNK = streaming._SEND_BYTES  # 80 ms of audio: the size Deepgram recommends
+CHUNK = BYTES_PER_S * 80 // 1000  # 80 ms of audio: the size Deepgram recommends
 FRAME = b"\x01\x00" * (FRAME_BYTES // 2)
 STT = SttTune(provider="deepgram", deepgram=DeepgramTune(key="secret"))
 # Most tests are about the stream, so one voiced frame is enough to open it.
 ONE_VOICED = ListenTune(min_voiced_frames=1)
 
 
-class _FakeFlux(FluxStream):
-    """A Flux connection that records what it is sent and answers from a script."""
+class _FakeFlux:
+    """A ``TurnStream`` that records what it is sent and answers from a script."""
 
     def __init__(
         self,
@@ -64,7 +64,6 @@ class _FakeFlux(FluxStream):
         open_errors: list[SttStreamError] | None = None,
         drops_while_idle: bool = False,
     ) -> None:
-        super().__init__("wss://fake/v2/listen", "secret")
         self.sent: list[bytes] = []
         self.forced = 0
         self.closed = False
@@ -73,18 +72,12 @@ class _FakeFlux(FluxStream):
         self._on_force = on_force or []
         self._open_errors = open_errors or []
         self._drops = drops_while_idle
-        self._connected = False
         self._inbox: asyncio.Queue[TurnMessage | None] = asyncio.Queue()  # None closes it
-
-    @property
-    def connected(self) -> bool:
-        return self._connected
 
     async def open(self) -> None:
         self.opens += 1
         if self._open_errors:
             raise self._open_errors.pop(0)
-        self._connected = True
 
     async def send_audio(self, pcm: bytes) -> None:
         self.sent.append(pcm)
@@ -638,7 +631,39 @@ def test_a_turn_whose_words_arrive_in_time_is_not_given_up_on(
     assert result.text == "hello there"
 
 
-def test_fish_realtime_connects_to_the_fish_base_with_the_fish_key_and_the_eager_setting() -> None:
+class _RecordingSocket:
+    """A websocket that keeps what it is sent and never answers."""
+
+    def __init__(self) -> None:
+        self.sent: list[Any] = []
+
+    async def send(self, data: Any) -> None:
+        self.sent.append(data)
+
+    async def close(self) -> None:
+        return None
+
+
+def _first_message_sent(monkeypatch: pytest.MonkeyPatch, stream: Any) -> dict[str, Any]:
+    """Open ``stream`` on a fake websocket and decode the first message it sends."""
+    socket = _RecordingSocket()
+
+    async def connect(_url: str, **_kwargs: Any) -> _RecordingSocket:
+        return socket
+
+    monkeypatch.setattr("websockets.asyncio.client.connect", connect)
+
+    async def open_and_close() -> None:
+        await stream.open()
+        await stream.close()
+
+    asyncio.run(open_and_close())
+    return ormsgpack.unpackb(socket.sent[0])
+
+
+def test_fish_realtime_connects_to_the_fish_base_with_the_fish_key_and_the_eager_setting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from fish_audio_suite_voice.fish_realtime import FISH_REALTIME, FishRealtimeStream
 
     made: list[tuple[str, str]] = []
@@ -676,7 +701,11 @@ def test_fish_realtime_connects_to_the_fish_base_with_the_fish_key_and_the_eager
             FISH_REALTIME.url(settings), FISH_REALTIME.key(settings), settings
         )
         assert isinstance(stream, FishRealtimeStream)
-        assert stream._config["turn_detection"] == {"mode": "auto", "eager": eager}
+        # The settings go to Fish first, on the connection the stream opens.
+        assert _first_message_sent(monkeypatch, stream)["turn_detection"] == {
+            "mode": "auto",
+            "eager": eager,
+        }
 
 
 def test_a_turn_the_recogniser_drops_is_noise_even_after_words_arrived() -> None:

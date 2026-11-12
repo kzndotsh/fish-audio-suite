@@ -2,62 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import threading
-import time
 from collections.abc import AsyncIterator
 
 import pytest
-from fishaudio.types import Prosody, TTSConfig
+from wire_helpers import RecordingSink, play_stream
 
-from fish_audio_suite_voice.wire import AudioArrival, SentText, TurnRun, TurnSpec, _pump_ws_audio
-
-
-class _Sink:
-    output_latency_s = 0.0
-
-    def __init__(self) -> None:
-        self.chunks: list[bytes] = []
-
-    def start(self) -> None:
-        return None
-
-    def write(self, chunk: bytes) -> None:
-        self.chunks.append(chunk)
-
-    def finish(self, *, kill: bool = False) -> None:
-        del kill
-
-    def bytes_played(self) -> int:
-        return sum(len(c) for c in self.chunks)
+from fish_audio_suite_voice.wire import TtsResult
 
 
-def _turn() -> TurnRun:
-    spec = TurnSpec(
-        api_key="k",
-        base_url="https://api.fish.audio",
-        voice_id="v",
-        model="s2.1-pro",
-        trace_headers={},
-        config=TTSConfig(
-            format="pcm", latency="balanced", sample_rate=44100, prosody=Prosody(speed=1.0)
-        ),
-    )
-    return TurnRun(
-        spec=spec,
-        sink=_Sink(),
-        cancel=threading.Event(),
-        sent_text="",
-        acc=SentText(),
-        t0=time.perf_counter(),
-        audio=AudioArrival(),
-    )
-
-
-async def _no_close() -> None:
-    return None
-
-
-def _pump(stream: AsyncIterator[bytes]) -> None:
-    asyncio.run(_pump_ws_audio(stream, _turn(), _no_close))
+def _play(stream: AsyncIterator[bytes], sink: RecordingSink | None = None) -> TtsResult:
+    result, _socket = asyncio.run(play_stream(stream, sink or RecordingSink(), threading.Event()))
+    return result
 
 
 def test_a_keyboard_interrupt_in_the_stream_stops_the_process_instead_of_being_queued() -> None:
@@ -65,8 +20,11 @@ def test_a_keyboard_interrupt_in_the_stream_stops_the_process_instead_of_being_q
         yield b"\x01\x02"
         raise KeyboardInterrupt
 
+    sink = RecordingSink()
     with pytest.raises(KeyboardInterrupt):
-        _pump(stream())
+        _play(stream(), sink)
+    # Queued, it would wait behind the audio the reader had read ahead, and that would play.
+    assert sink.chunks == []
 
 
 def test_a_system_exit_in_the_stream_is_not_queued_either() -> None:
@@ -75,22 +33,24 @@ def test_a_system_exit_in_the_stream_is_not_queued_either() -> None:
         raise SystemExit(3)
 
     with pytest.raises(SystemExit):
-        _pump(stream())
+        _play(stream())
 
 
-def test_an_ordinary_error_in_the_stream_still_reaches_the_pump() -> None:
+def test_an_ordinary_error_in_the_stream_still_reaches_the_turn() -> None:
     async def stream() -> AsyncIterator[bytes]:
         yield b"\x01\x02"
         raise RuntimeError("socket died")
 
-    with pytest.raises(RuntimeError, match="socket died"):
-        _pump(stream())
+    result = _play(stream())
+    assert result.got_audio is True
+    assert result.error_message == "socket died"
 
 
-def test_an_exception_group_from_the_sdk_still_reaches_the_pump() -> None:
+def test_an_exception_group_from_the_sdk_still_reaches_the_turn() -> None:
     async def stream() -> AsyncIterator[bytes]:
         yield b"\x01\x02"
         raise BaseExceptionGroup("tasks", [ValueError("a"), asyncio.CancelledError()])
 
-    with pytest.raises(BaseExceptionGroup):
-        _pump(stream())
+    result = _play(stream())
+    assert result.got_audio is True
+    assert result.error_message == "a"  # the real error inside the group, not the cancel

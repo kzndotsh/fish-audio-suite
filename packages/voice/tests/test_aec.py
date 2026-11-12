@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import sys
 import wave
+from collections.abc import Callable
 from pathlib import Path
+from types import ModuleType
 
 import numpy as np
 import pytest
+from wire_helpers import FakeOutputStream, open_sounddevice_sink
 
 from fish_audio_suite_voice.aec import EchoCanceller, FarEndTap, resample_int16
 from fish_audio_suite_voice.floor import AdaptiveFloor
@@ -112,37 +116,46 @@ def test_iter_pcm_slices_caps_30ms() -> None:
     assert all(len(p) <= step for p in parts)
 
 
+class _RecordingAec(EchoCanceller):
+    """Records what the sink taps as far end and how often it is cleared."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.taps: list[tuple[bytes, int]] = []
+        self.cleared = 0
+
+    def tap_playback(self, pcm: bytes, sample_rate: int) -> None:
+        self.taps.append((pcm, sample_rate))
+
+    def clear(self) -> None:
+        self.cleared += 1
+
+
 def test_sounddevice_sink_taps_and_clears(monkeypatch: pytest.MonkeyPatch) -> None:
-    taps: list[tuple[bytes, int]] = []
-    cleared = {"n": 0}
-    aec = EchoCanceller()
-    monkeypatch.setattr(aec, "tap_playback", lambda pcm, sr: taps.append((pcm, sr)))
-    monkeypatch.setattr(aec, "clear", lambda: cleared.__setitem__("n", cleared["n"] + 1))
-    sink = SounddeviceSink(aec=aec)
-
-    class Fake:
-        def write(self, chunk: bytes) -> None:
-            return None
-
-        def stop(self) -> None:
-            return None
-
-        def close(self) -> None:
-            return None
-
-    sink._stream = Fake()
+    aec = _RecordingAec()
+    stream = FakeOutputStream()
+    sink = open_sounddevice_sink(monkeypatch, stream, aec=aec)
+    assert aec.cleared == 1  # a new turn starts with no far end
     pcm = b"\x00\x00" * 3000
     sink.write(pcm)
     step = dac_slice_bytes(44100)
-    assert taps
-    assert all(len(p) <= step for p, _sr in taps)
-    assert sum(len(p) for p, _sr in taps) == len(pcm)
+    # Each slice is tapped as it goes to the device, so the reference is what plays.
+    assert [p for p, _sr in aec.taps] == stream.written
+    assert all(len(p) <= step for p, _sr in aec.taps)
+    assert sum(len(p) for p, _sr in aec.taps) == len(pcm)
     sink.finish()
-    assert cleared["n"] == 1
+    assert aec.cleared == 2
 
 
 def _loud(n_samples: int) -> bytes:
     return (2_000).to_bytes(2, "little", signed=True) * n_samples
+
+
+def _install_processor(monkeypatch: pytest.MonkeyPatch, make: Callable[..., object]) -> None:
+    """Make ``pywebrtc_audio.AudioProcessor`` build what ``make`` returns."""
+    module = ModuleType("pywebrtc_audio")
+    vars(module)["AudioProcessor"] = make
+    monkeypatch.setitem(sys.modules, "pywebrtc_audio", module)
 
 
 def test_clean_mic_ignores_a_bad_processor(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -156,9 +169,9 @@ def test_clean_mic_ignores_a_bad_processor(monkeypatch: pytest.MonkeyPatch) -> N
                 raise RuntimeError("aec down")
             return near_a[:2]
 
+    _install_processor(monkeypatch, lambda **_kwargs: Processor())
     aec = EchoCanceller()
-    monkeypatch.setattr(aec, "load", Processor)
-    monkeypatch.setattr(aec.tap, "pop", lambda _n: _loud(8))
+    aec.tap_playback(_loud(16), 16000)  # the speaker is playing
     assert aec.clean(near) == near
     assert aec.clean(near) == near
     assert calls == ["process", "process"]
@@ -173,9 +186,9 @@ def test_clean_mic_mixes_when_the_processor_returns_silence(
         def process(self, near_a: np.ndarray, far_a: np.ndarray) -> np.ndarray:
             return np.zeros_like(near_a)
 
+    _install_processor(monkeypatch, lambda **_kwargs: Processor())
     aec = EchoCanceller(AecTune(wet=0.5))
-    monkeypatch.setattr(aec, "load", Processor)
-    monkeypatch.setattr(aec.tap, "pop", lambda _n: _loud(8))
+    aec.tap_playback(_loud(8), 16000)
     mixed = np.frombuffer(aec.clean(near), dtype=np.int16)
     assert mixed.tolist() == [1_000] * 8
 
@@ -191,9 +204,9 @@ def test_with_the_speaker_quiet_every_frame_is_still_processed_against_silence(
             fars.append(far_a.tolist())
             return near_a * 2  # the gain stage at work
 
+    _install_processor(monkeypatch, lambda **_kwargs: Processor())
     aec = EchoCanceller(AecTune(wet=0.5))
-    monkeypatch.setattr(aec, "load", Processor)
-    monkeypatch.setattr(aec.tap, "pop", lambda _n: b"\x05\x00" * 8)  # under the silence floor
+    aec.tap_playback(b"\x05\x00" * 8, 16000)  # under the silence floor
     # No echo to cancel, so none of the raw mic is mixed back in.
     assert np.frombuffer(aec.clean(near), dtype=np.int16).tolist() == [4_000] * 8
     assert fars == [[0] * 8]
@@ -210,25 +223,19 @@ def test_with_echo_cancellation_off_gain_and_noise_suppression_still_run(
             calls.append(tuple(a.size for a in arrays))
             return arrays[0] * 2
 
+    _install_processor(monkeypatch, lambda **_kwargs: Processor())
     aec = EchoCanceller(AecTune(enabled=False))
-    monkeypatch.setattr(aec, "load", Processor)
     assert np.frombuffer(aec.clean(near), dtype=np.int16).tolist() == [4_000] * 8
     assert calls == [(8,)]  # no far end at all
     assert not aec.available()  # so barge-in keeps the long bleed delay
 
 
 def test_sounddevice_sink_rejoins_odd_pcm_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
-    written: list[bytes] = []
-    sink = SounddeviceSink()
-
-    class Fake:
-        def write(self, chunk: bytes) -> None:
-            written.append(chunk)
-
-    sink._stream = Fake()
+    stream = FakeOutputStream()
+    sink = open_sounddevice_sink(monkeypatch, stream)
     sink.write(b"\x01\x02\x03")
     sink.write(b"\x04\x05\x06")
-    assert b"".join(written) == b"\x01\x02\x03\x04\x05\x06"
+    assert b"".join(stream.written) == b"\x01\x02\x03\x04\x05\x06"
     assert sink.bytes_played() == 6
 
 
@@ -318,8 +325,8 @@ def test_a_processor_that_fails_to_start_leaves_the_mic_raw(
     def broken(**_kwargs: object) -> object:
         raise RuntimeError("bad native build")
 
+    _install_processor(monkeypatch, broken)
     aec = EchoCanceller()
-    monkeypatch.setattr(aec, "_build", lambda _processor: broken())
     near = _loud(8)
     assert aec.clean(near) == near
     assert aec.load() is None

@@ -8,10 +8,9 @@ from pathlib import Path
 
 import pytest
 
-from fish_audio_suite_voice import log_file as log_file_module
 from fish_audio_suite_voice.debug import debug, trace, warn
 from fish_audio_suite_voice.events import EVENTS, Heard, ReplyEnd
-from fish_audio_suite_voice.log_file import log_file_path, log_to_file
+from fish_audio_suite_voice.log_file import close_log_file, log_file_path, log_to_file
 from fish_audio_suite_voice.log_setup import (
     configure_voice_logging,
     forward_logs,
@@ -20,10 +19,10 @@ from fish_audio_suite_voice.log_setup import (
 
 
 @pytest.fixture(autouse=True)
-def _fresh_log_file(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    monkeypatch.setattr(log_file_module, "_FILE", log_file_module._FileLog())  # pyright: ignore[reportPrivateUsage]
+def _fresh_log_file() -> Iterator[None]:
+    close_log_file()
     yield
-    log_file_module._FILE.close()  # pyright: ignore[reportPrivateUsage]
+    close_log_file()
     configure_voice_logging(debug=False)
 
 

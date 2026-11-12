@@ -19,7 +19,7 @@ from voice_fakes import FakeSink, ScriptedMic, make_result, set_tts
 from fish_audio_suite_kit import ChatMessage
 from fish_audio_suite_voice.aec import EchoCanceller
 from fish_audio_suite_voice.asr import transcribe_clip
-from fish_audio_suite_voice.config import VoiceCliConfig
+from fish_audio_suite_voice.config import VoiceCliConfig, sink_latency
 from fish_audio_suite_voice.console_sink import ConsoleSink
 from fish_audio_suite_voice.duplex import duplex_turns
 from fish_audio_suite_voice.duplex_state import Chat, DuplexContext, TurnInput
@@ -47,6 +47,7 @@ def make_config() -> VoiceCliConfig:
         tts=TtsTune(latency="balanced", temperature=0.7, top_p=0.7, repetition_penalty=1.2),
         playback="stdout",
         system_prompt="be brief",
+        pin_seed=False,  # as for a prompt written out in full
         device=None,
         llm=LlmTune(backend="openai", base="https://example.test/v1", api_key="lk", model="m"),
     )
@@ -80,19 +81,29 @@ def make_ctx(
     session: DuplexSession | None = None,
     muted: Callable[[], bool] | None = None,
 ) -> DuplexContext:
+    """Build a session's context the way ``duplex_turns`` does, with a scripted mic and LLM."""
     config = make_config()
-    turn = TurnInput(session=session or DuplexSession(), mic=ScriptedMic(aec=EchoCanceller()))
+    turn = TurnInput(
+        session=session or DuplexSession(), mic=ScriptedMic(aec=EchoCanceller(config.aec))
+    )
     return DuplexContext(
         config=config,
         device=None,
         turn_input=turn if muted is None else replace(turn, muted=muted),
         chat=Chat(
             FakeBackend(tokens),
-            History([{"role": "system", "content": "be brief"}], config.history_turns),
+            History.opening(config.system_prompt, seed=config.pin_seed, turns=config.history_turns),
         ),
-        tts=FishSpeaker(api_key="k", voice_id="voice"),
+        tts=FishSpeaker(
+            api_key=config.fish_api_key,
+            voice_id=config.fish_voice_id,
+            model=config.tts_model,
+            tune=config.tts,
+            cue_style=config.cue_style,
+            base_url=config.fish_base,
+        ),
         asr_http=httpx.AsyncClient(),
-        sink_latency="low",
+        sink_latency=sink_latency(config.output_latency, full_screen=False),
     )
 
 

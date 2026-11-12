@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-import inspect
-from types import SimpleNamespace
+import importlib
+from collections.abc import Iterator
+from types import ModuleType
 from typing import Any
 
 import pytest
@@ -11,68 +12,86 @@ from fish_audio_suite_voice import ws_tap
 from fish_audio_suite_voice.log_setup import configure_voice_logging
 from fish_audio_suite_voice.ws_tap import install_fish_ws_tap
 
-TAPPED = ws_tap._TAPPED_FUNCTIONS
+# The two SDK functions the tap wraps (the SDK has no public hook for its events).
+_STOP = "_should_stop"
+_PROCESS = "_process_audio_event"
 
 
-def test_the_installed_sdk_still_has_the_functions_the_tap_wraps() -> None:
+@pytest.fixture
+def sdk(monkeypatch: pytest.MonkeyPatch) -> Iterator[ModuleType]:
+    """The Fish SDK's realtime module, with the tap not yet installed.
+
+    The tap installs once per process, so ``ws_tap`` is reloaded before and after the
+    test, and the SDK functions are put back afterwards, so no wrapper outlives the test.
+    """
+    for name in (_STOP, _PROCESS):
+        monkeypatch.setattr(realtime, name, _sdk_function(realtime, name))
+    importlib.reload(ws_tap)
+    yield realtime
+    importlib.reload(ws_tap)
+
+
+def _sdk_function(module: ModuleType, name: str) -> Any:
+    return vars(module).get(name)
+
+
+def test_the_installed_sdk_still_has_the_functions_the_tap_wraps(
+    sdk: ModuleType, capsys: pytest.CaptureFixture[str]
+) -> None:
     # The debug tap wraps private SDK functions. If an SDK release renames or
     # re-shapes one, this fails in CI instead of the tap failing in a session.
-    for name in TAPPED:
-        function = getattr(realtime, name, None)
-        assert callable(function), f"fishaudio.resources.realtime.{name} is gone"
-        assert len(inspect.signature(function).parameters) == 1, f"{name} changed its signature"
-
-
-def _fake_realtime(**present: Any) -> SimpleNamespace:
-    return SimpleNamespace(**present)
+    before = {name: _sdk_function(sdk, name) for name in (_STOP, _PROCESS)}
+    configure_voice_logging(debug=1)
+    install_fish_ws_tap()
+    for name, original in before.items():
+        assert callable(original), f"fishaudio.resources.realtime.{name} is gone"
+        assert _sdk_function(sdk, name) is not original, f"{name} was not wrapped"
+    assert "skipped" not in capsys.readouterr().err
 
 
 def test_the_tap_is_skipped_with_one_debug_line_when_a_function_is_missing(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    sdk: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(ws_tap._WS_TAP, "on", False)
-    monkeypatch.setattr(ws_tap._WS_TAP, "skipped", False)
-
     def only_stop(data: dict[str, object]) -> bool:
         del data
         return False
 
-    fake = _fake_realtime(_should_stop=only_stop)
-    monkeypatch.setattr(ws_tap, "_fish_realtime", fake)
+    monkeypatch.setattr(sdk, _STOP, only_stop)
+    monkeypatch.delattr(sdk, _PROCESS)
     configure_voice_logging(debug=1)
     install_fish_ws_tap()
     install_fish_ws_tap()
-    assert ws_tap._WS_TAP.on is False
-    assert ws_tap._WS_TAP.skipped is True
-    assert fake._should_stop is only_stop
-    assert not hasattr(fake, "_process_audio_event")
+    assert _sdk_function(sdk, _STOP) is only_stop  # the SDK is left untouched
+    assert _sdk_function(sdk, _PROCESS) is None
     err = capsys.readouterr().err
     assert err.count("skipped") == 1
-    assert "_process_audio_event" in err
+    assert _PROCESS in err
 
 
 def test_the_tap_is_skipped_when_a_function_changes_its_signature(
-    monkeypatch: pytest.MonkeyPatch,
+    sdk: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(ws_tap._WS_TAP, "on", False)
-    monkeypatch.setattr(ws_tap._WS_TAP, "skipped", False)
-
     def two_args(data: dict[str, object], extra: object) -> bool:
         del data, extra
         return False
 
-    fake = _fake_realtime(_should_stop=two_args, _process_audio_event=lambda data: None)
-    monkeypatch.setattr(ws_tap, "_fish_realtime", fake)
+    def process(data: dict[str, object]) -> None:
+        del data
+
+    monkeypatch.setattr(sdk, _STOP, two_args)
+    monkeypatch.setattr(sdk, _PROCESS, process)
+    configure_voice_logging(debug=1)
     install_fish_ws_tap()
-    assert ws_tap._WS_TAP.on is False
-    assert fake._should_stop is two_args
+    assert _sdk_function(sdk, _STOP) is two_args
+    assert _sdk_function(sdk, _PROCESS) is process
+    err = capsys.readouterr().err
+    assert "skipped" in err
+    assert _STOP in err
 
 
-def test_the_tap_wraps_both_functions_and_passes_results_through(
-    monkeypatch: pytest.MonkeyPatch,
+def test_the_tap_logs_each_event_and_passes_results_through(
+    sdk: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr(ws_tap._WS_TAP, "on", False)
-    monkeypatch.setattr(ws_tap._WS_TAP, "skipped", False)
     seen: list[dict[str, Any]] = []
 
     def should_stop(data: dict[str, Any]) -> bool:
@@ -82,11 +101,22 @@ def test_the_tap_wraps_both_functions_and_passes_results_through(
     def process(data: dict[str, Any]) -> bytes | None:
         return data.get("audio")
 
-    fake = _fake_realtime(_should_stop=should_stop, _process_audio_event=process)
-    monkeypatch.setattr(ws_tap, "_fish_realtime", fake)
+    monkeypatch.setattr(sdk, _STOP, should_stop)
+    monkeypatch.setattr(sdk, _PROCESS, process)
+    configure_voice_logging(debug=2)
     install_fish_ws_tap()
-    assert ws_tap._WS_TAP.on is True
-    assert fake._should_stop({"event": "finish", "reason": "stop"}) is True
-    assert fake._should_stop({"event": "audio", "audio": b"xy"}) is False
-    assert fake._process_audio_event({"event": "audio", "audio": b"xy"}) == b"xy"
-    assert len(seen) == 2
+    stop = _sdk_function(sdk, _STOP)
+    proc = _sdk_function(sdk, _PROCESS)
+    assert stop is not should_stop
+    audio = {"event": "audio", "audio": b"secret-audio"}
+    assert stop({"event": "finish", "reason": "stop"}) is True
+    assert stop(audio) is False
+    assert stop({"event": "log", "message": "hi"}) is False
+    assert proc(audio) == b"secret-audio"
+    assert len(seen) == 3
+    err = capsys.readouterr().err
+    assert "finish reason=stop" in err
+    assert "audio 12 bytes" in err
+    assert "{'event': 'log', 'message': 'hi'}" in err
+    # Audio is logged as its byte length only.
+    assert "secret-audio" not in err

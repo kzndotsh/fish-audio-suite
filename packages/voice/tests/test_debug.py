@@ -16,16 +16,20 @@ from fish_audio_suite_voice.debug import (
     mark_turn,
     trace,
 )
-from fish_audio_suite_voice.events import EventBus, ReplyToken
-from fish_audio_suite_voice.log_meta import public_meta, ws_event_view
+from fish_audio_suite_voice.events import EventBus, Heard, ReplyEnd, ReplyToken
 from fish_audio_suite_voice.log_setup import configure_voice_logging
 from fish_audio_suite_voice.wording import short_model
 
 
 def conversation(role: str, text: str) -> None:
-    """Print one line of the conversation as the plain display does."""
-    with ConsoleSink(EventBus()) as display:
-        display._conversation(role, text)  # pyright: ignore[reportPrivateUsage]
+    """Print one line of the conversation through the plain display, as a session does."""
+    bus = EventBus()
+    with ConsoleSink(bus):
+        if role == "you":
+            bus.emit(Heard(text, 0.0))
+        else:
+            bus.emit(ReplyToken(text))
+            bus.emit(ReplyEnd(text))
 
 
 def test_configure_voice_logging_replaces_library_handlers() -> None:
@@ -127,34 +131,6 @@ def test_debug_lines_are_tagged_and_offset_from_the_turn(
     assert "asr" in later
 
 
-def test_ws_event_view_strips_audio() -> None:
-    view = ws_event_view({"event": "audio", "audio": b"\x00" * 12, "time": 1.5})
-    assert view == {"event": "audio", "audio_bytes": 12, "time": 1.5}
-
-
-def test_public_meta_drops_text_and_secrets() -> None:
-    meta = public_meta(
-        {
-            "text": "hello there friend",
-            "duration": 1.2,
-            "language": "en",
-            "Authorization": "Bearer secret",
-            "segments": [{}, {}],
-        }
-    )
-    assert meta["text_chars"] == 18
-    assert meta["duration"] == 1.2
-    assert meta["language"] == "en"
-    assert meta["segments_len"] == 2
-    assert "Authorization" not in meta
-
-
-def test_public_meta_drops_a_key_named_like_a_secret() -> None:
-    body = public_meta({"api_key": "sk-secret", "language": "en"})
-    assert "api_key" not in body
-    assert body["language"] == "en"
-
-
 def test_debug_flag_does_not_write_the_process_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -180,7 +156,8 @@ def test_conversation_on_a_terminal_with_debug_has_the_time_columns_on_stdout(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     configure_voice_logging(debug=1)
-    monkeypatch.setattr("fish_audio_suite_voice.console_sink._stdout_tty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setenv("NO_COLOR", "1")  # so the columns can be read by position
     mark_turn()
     capsys.readouterr()
     conversation("you", "Hey there")
@@ -201,7 +178,7 @@ def test_piped_conversation_stays_plain_on_stdout_even_with_debug(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     configure_voice_logging(debug=1)
-    monkeypatch.setattr("fish_audio_suite_voice.console_sink._stdout_tty", lambda: False)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
     conversation("you", "Hey there")
     captured = capsys.readouterr()
     assert captured.out == "you \u25b8 Hey there\n"
@@ -233,10 +210,17 @@ def test_debug_level_never_reads_the_environment_after_configuring(
     monkeypatch.delenv("FISH_VOICE_DEBUG", raising=False)
     configure_voice_logging(debug=2)
 
-    def forbidden() -> int:
-        raise AssertionError("the environment was read")
+    class Forbidden(dict[str, str]):
+        def get(self, *_args: object, **_kwargs: object) -> str:
+            raise AssertionError("the environment was read")
 
-    monkeypatch.setattr("fish_audio_suite_voice.debug._env_level", forbidden)
+        def __getitem__(self, _key: str) -> str:
+            raise AssertionError("the environment was read")
+
+        def __contains__(self, _key: object) -> bool:
+            raise AssertionError("the environment was read")
+
+    monkeypatch.setattr(os, "environ", Forbidden())
     for _ in range(100):
         assert debug_level() == 2
         assert heartbeat_due(20, 20)

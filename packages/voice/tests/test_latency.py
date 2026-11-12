@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
-
 from fish_audio_suite_voice.latency import LatencySnapshot
 
 
@@ -49,14 +47,3 @@ def test_latency_snapshot_log_line_names_every_time() -> None:
         "[timing asr=1ms llm_first_token=2ms tts_first_text=3ms tts_first_audio=4ms"
         " first_audio=6ms voice_to_voice=5ms trace=t]"
     )
-
-
-def test_a_latency_snapshot_is_still_built_by_position() -> None:
-    snapshot = LatencySnapshot(1.0, 2.0, 3.0, 4.0, 5.0, "trace-1")
-    assert (snapshot.asr_ms, snapshot.voice_to_voice_ms, snapshot.trace_id) == (
-        1.0,
-        5.0,
-        "trace-1",
-    )
-    assert snapshot.first_audio_ms is None
-    assert dataclasses.replace(snapshot, first_audio_ms=9.0).first_audio_ms == 9.0

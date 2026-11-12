@@ -12,6 +12,7 @@ import pytest
 from fish_audio_suite_kit import FishHttpError
 from fish_audio_suite_voice.asr import AsrResult
 from fish_audio_suite_voice.asr import fish_asr as fish_asr_result
+from fish_audio_suite_voice.log_setup import configure_voice_logging
 
 
 async def fish_asr(*args: Any, **kwargs: Any) -> str:
@@ -481,20 +482,21 @@ def test_asr_error_names_the_fish_request_id(monkeypatch: pytest.MonkeyPatch) ->
     assert caught.value.message == "plain failure"
 
 
-def test_asr_done_debug_line_names_the_fish_request_id(monkeypatch: pytest.MonkeyPatch) -> None:
-    lines: list[str] = []
-
-    def record(message: str, *args: object) -> None:
-        lines.append(message.format(*args))
-
-    monkeypatch.setattr("fish_audio_suite_voice.asr.debug", record)
+def test_asr_done_debug_line_names_the_fish_request_id(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     reply = _FakeAsrResponse(200, payload={"text": "hello there"})
     reply.headers = {"x-request-id": "req-ok"}
     _install_asr(monkeypatch, [reply])
-    assert asyncio.run(fish_asr(b"wav", "key", base="https://api.fish.audio")) == "hello there"
-    assert lines
-    assert lines[0].startswith("asr.done status=200")
-    assert lines[0].endswith("request_id=req-ok")
+    configure_voice_logging(debug=1)
+    try:
+        assert asyncio.run(fish_asr(b"wav", "key", base="https://api.fish.audio")) == "hello there"
+        done = [line for line in capsys.readouterr().err.splitlines() if "status=200" in line]
+    finally:
+        configure_voice_logging(debug=False)
+    assert len(done) == 1
+    assert "done" in done[0]
+    assert done[0].endswith("request_id=req-ok")
 
 
 _TONE_BODY: dict[str, Any] = {

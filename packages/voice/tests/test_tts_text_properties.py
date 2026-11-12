@@ -81,9 +81,9 @@ def _run(
     *,
     partial: int,
     mood_lead: bool = False,
-    early_flush: bool = False,
     cancelled: bool = False,
 ) -> list[Any]:
+    """The events the speaker sends Fish for ``tokens``, with its early flush."""
     cancel = threading.Event()
     if cancelled:
         cancel.set()
@@ -96,7 +96,6 @@ def _run(
                 cancel,
                 partial_chars=partial,
                 style=CueStyle(lead=mood_lead),
-                early_flush=early_flush,
             )
         ]
 
@@ -104,11 +103,11 @@ def _run(
 
 
 @_SETTINGS
-@given(tokens=_token_streams(), partial=_partial, mood=_flags, early=_flags)
+@given(tokens=_token_streams(), partial=_partial, mood=_flags)
 def test_only_text_and_flush_events_come_out_and_never_an_empty_one(
-    tokens: list[str], partial: int, mood: bool, early: bool
+    tokens: list[str], partial: int, mood: bool
 ) -> None:
-    events = _run(tokens, partial=partial, mood_lead=mood, early_flush=early)
+    events = _run(tokens, partial=partial, mood_lead=mood)
     for event in events:
         assert isinstance(event, TextEvent | FlushEvent)
         if isinstance(event, TextEvent):
@@ -117,15 +116,13 @@ def test_only_text_and_flush_events_come_out_and_never_an_empty_one(
 
 @_SETTINGS
 @given(tokens=_token_streams(), partial=_partial, mood=_flags)
-def test_a_reply_with_text_ends_in_one_flush_and_one_without_sends_nothing(
+def test_a_reply_with_text_ends_in_a_flush_and_one_without_sends_nothing(
     tokens: list[str], partial: int, mood: bool
 ) -> None:
     events = _run(tokens, partial=partial, mood_lead=mood)
     texts = [e for e in events if isinstance(e, TextEvent)]
-    flushes = [e for e in events if isinstance(e, FlushEvent)]
     if texts:
         assert isinstance(events[-1], FlushEvent)
-        assert len(flushes) == 1
     else:
         assert events == []
 
@@ -135,7 +132,7 @@ def test_a_reply_with_text_ends_in_one_flush_and_one_without_sends_nothing(
 def test_an_early_flush_never_leads_and_two_flushes_are_never_adjacent(
     tokens: list[str], partial: int, mood: bool
 ) -> None:
-    events = _run(tokens, partial=partial, mood_lead=mood, early_flush=True)
+    events = _run(tokens, partial=partial, mood_lead=mood)
     if events:
         assert isinstance(events[0], TextEvent)
     for first, second in pairwise(events):
@@ -144,23 +141,19 @@ def test_an_early_flush_never_leads_and_two_flushes_are_never_adjacent(
 
 
 @_SETTINGS
-@given(tokens=_token_streams(), partial=_partial, mood=_flags, early=_flags)
-def test_a_cancelled_stream_sends_nothing(
-    tokens: list[str], partial: int, mood: bool, early: bool
-) -> None:
-    assert _run(tokens, partial=partial, mood_lead=mood, early_flush=early, cancelled=True) == []
+@given(tokens=_token_streams(), partial=_partial, mood=_flags)
+def test_a_cancelled_stream_sends_nothing(tokens: list[str], partial: int, mood: bool) -> None:
+    assert _run(tokens, partial=partial, mood_lead=mood, cancelled=True) == []
 
 
 @_SETTINGS
-@given(tokens=_token_streams(), partial=_partial, mood=_flags, early=_flags)
-def test_the_same_tokens_give_the_same_events(
-    tokens: list[str], partial: int, mood: bool, early: bool
-) -> None:
+@given(tokens=_token_streams(), partial=_partial, mood=_flags)
+def test_the_same_tokens_give_the_same_events(tokens: list[str], partial: int, mood: bool) -> None:
     def shape(events: list[Any]) -> list[tuple[str, str]]:
         return [("text", e.text) if isinstance(e, TextEvent) else ("flush", "") for e in events]
 
-    first = _run(tokens, partial=partial, mood_lead=mood, early_flush=early)
-    second = _run(tokens, partial=partial, mood_lead=mood, early_flush=early)
+    first = _run(tokens, partial=partial, mood_lead=mood)
+    second = _run(tokens, partial=partial, mood_lead=mood)
     assert shape(first) == shape(second)
 
 
@@ -168,11 +161,7 @@ async def _events_of(tokens: list[str], *, partial: int = 40) -> list[tuple[str,
     return [
         ("text", ev.text) if isinstance(ev, TextEvent) else ("flush", "")
         async for ev in delta_events(
-            tokens,
-            threading.Event(),
-            partial_chars=partial,
-            style=CueStyle(),
-            early_flush=True,
+            tokens, threading.Event(), partial_chars=partial, style=CueStyle()
         )
     ]
 
@@ -207,7 +196,7 @@ def test_a_long_first_sentence_without_a_stop_still_flushes_early() -> None:
 def test_the_early_flush_never_cuts_a_sentence_short(
     tokens: list[str], partial: int, mood: bool
 ) -> None:
-    events = _run(tokens, partial=partial, mood_lead=mood, early_flush=True)
+    events = _run(tokens, partial=partial, mood_lead=mood)
     flushes = [i for i, event in enumerate(events) if isinstance(event, FlushEvent)]
     if len(flushes) < 2:
         return  # no early flush: the reply ended before one was due

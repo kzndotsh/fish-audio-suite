@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from collections.abc import Callable
 
 import pytest
 from session_fakes import (
@@ -32,6 +33,7 @@ class _Mic:
     def __init__(self, monkeypatch: pytest.MonkeyPatch, result: HeardLine | None = None) -> None:
         self.result = result
         self.opened = threading.Event()
+        self.stopped = threading.Event()
         self.calls = 0
         monkeypatch.setattr("fish_audio_suite_voice.duplex.hear_line", self._hear)
 
@@ -46,7 +48,20 @@ class _Mic:
         assert stop is not None
         while not stop.is_set():
             await asyncio.to_thread(time.sleep, 0.005)
+        self.stopped.set()
         return HeardLine("noise")
+
+    def then(self, *steps: Callable[[], object]) -> threading.Thread:
+        """Once the recording is open, run each step in a thread, in order."""
+
+        def run() -> None:
+            self.opened.wait(5)
+            for step in steps:
+                step()
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        return thread
 
 
 def _turn(source: LiveInput, ctx: DuplexContext) -> HeardLine:
@@ -88,13 +103,9 @@ def test_a_typed_line_stops_the_mic_and_drops_what_it_caught(
 ) -> None:
     mic = _Mic(monkeypatch)
     source = LiveInput()
-    timer = threading.Timer(0.05, source.submit, args=("typed instead",))
-    timer.start()
-    try:
-        heard = _turn(source, make_ctx())
-    finally:
-        timer.cancel()
-    assert mic.opened.is_set()
+    mic.then(lambda: source.submit("typed instead"))
+    heard = _turn(source, make_ctx())
+    assert mic.stopped.is_set()
     assert (heard.kind, heard.text) == ("line", "typed instead")
 
 
@@ -133,20 +144,16 @@ def test_a_muted_session_keeps_the_mic_closed_until_unmuted_or_typed(
 
 
 def test_muting_during_a_recording_stops_it(monkeypatch: pytest.MonkeyPatch) -> None:
-    _Mic(monkeypatch)
+    mic = _Mic(monkeypatch)
     source = LiveInput()
-    ctx = make_ctx()
-    timers = [
-        threading.Timer(0.05, source.mute),
-        threading.Timer(0.2, source.submit, args=("now typing",)),
-    ]
-    for timer in timers:
-        timer.start()
-    try:
-        heard = _turn(source, ctx)
-    finally:
-        for timer in timers:
-            timer.cancel()
+    stopped_by_mute: list[bool] = []
+    mic.then(
+        source.mute,
+        lambda: stopped_by_mute.append(mic.stopped.wait(5)),
+        lambda: source.submit("now typing"),
+    )
+    heard = _turn(source, make_ctx())
+    assert stopped_by_mute == [True]
     assert heard.text == "now typing"
 
 

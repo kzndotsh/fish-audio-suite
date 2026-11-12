@@ -195,8 +195,8 @@ def recorded() -> tuple[tuple[Read, ...], frozenset[str]]:
     with pytest.MonkeyPatch.context() as patch:
         for module, attr, value in readers:
             patch.setattr(module, attr, _recording(value, _package(module), reads))
-        # Unfrozen, the debug level is read from the environment on each call.
-        patch.setattr("fish_audio_suite_voice.debug._DEBUG.frozen", None)
+        # Unfixed, the debug level is read from the environment on each call.
+        voice_debug.reset_debug_level()
         for environment in ENVIRONMENTS:
             patch.setattr(os, "environ", _Lookups(environment, seen))
             _load_everything()

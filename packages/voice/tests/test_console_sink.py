@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import re
 import threading
+from collections.abc import Iterator
 
 import pytest
+from loguru import logger
 from session_fakes import (
     FakeBackend,
     hello_tokens,
@@ -18,6 +20,7 @@ from voice_fakes import install_audio
 
 from fish_audio_suite_voice.asr import AsrResult
 from fish_audio_suite_voice.console_sink import ConsoleSink
+from fish_audio_suite_voice.debug import warn
 from fish_audio_suite_voice.duplex import duplex_turns
 from fish_audio_suite_voice.duplex_state import TurnInput
 from fish_audio_suite_voice.events import (
@@ -44,6 +47,18 @@ def _emit(bus: EventBus, *events: Event) -> None:
         bus.emit(event)
 
 
+@pytest.fixture
+def debug_log(monkeypatch: pytest.MonkeyPatch) -> Iterator[list[str]]:
+    """Turn debug on, as ``FISH_VOICE_DEBUG=1`` does, and collect the log lines."""
+    monkeypatch.setenv("FISH_VOICE_DEBUG", "1")
+    lines: list[str] = []
+    sink = logger.add(lambda message: lines.append(message.record["message"]), level="DEBUG")
+    try:
+        yield lines
+    finally:
+        logger.remove(sink)
+
+
 def test_a_streamed_reply_prints_on_one_line_and_closes_it(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -51,6 +66,18 @@ def test_a_streamed_reply_prints_on_one_line_and_closes_it(
     ConsoleSink(bus)
     _emit(bus, ReplyToken("Hello "), ReplyToken("there."), ReplyEnd("Hello there."))
     assert capsys.readouterr().out == "llm ▸ Hello there.\n"
+
+
+def test_a_warning_mid_reply_closes_the_line_and_the_reply_goes_on_under_it(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    bus = EventBus()
+    with ConsoleSink(bus):
+        _emit(bus, ReplyToken("Hello "))
+        warn("[tts] slow")
+        _emit(bus, ReplyToken("there."), ReplyEnd("Hello there."))
+    # The warning goes to stderr (or the log), between the two halves of the reply.
+    assert capsys.readouterr().out == "llm ▸ Hello \nthere.\n"
 
 
 def test_an_empty_reply_prints_nothing(capsys: pytest.CaptureFixture[str]) -> None:
@@ -61,9 +88,9 @@ def test_an_empty_reply_prints_nothing(capsys: pytest.CaptureFixture[str]) -> No
 
 
 def test_with_debug_on_the_reply_is_held_and_printed_whole(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    capsys: pytest.CaptureFixture[str], debug_log: list[str]
 ) -> None:
-    monkeypatch.setattr("fish_audio_suite_voice.console_sink.debug_enabled", lambda: True)
+    del debug_log
     bus = EventBus()
     ConsoleSink(bus)
     _emit(bus, Listening(), ReplyToken("Hello "), ReplyToken("there."), ReplyEnd("Hello there."))
@@ -89,19 +116,15 @@ def test_each_event_prints_its_line(capsys: pytest.CaptureFixture[str]) -> None:
 
 
 def test_with_debug_on_the_summary_goes_to_the_log_not_stdout(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    capsys: pytest.CaptureFixture[str], debug_log: list[str]
 ) -> None:
-    logged: list[str] = []
-    monkeypatch.setattr("fish_audio_suite_voice.console_sink.debug_enabled", lambda: True)
-    monkeypatch.setattr(
-        "fish_audio_suite_voice.console_sink.debug", lambda message, *_a: logged.append(message)
-    )
-    monkeypatch.setattr("fish_audio_suite_voice.console_sink.trace", lambda *_a: None)
     bus = EventBus()
     ConsoleSink(bus)
     _emit(bus, Listening(), TurnEnded(LatencySnapshot(first_audio_ms=900.0)))
     assert capsys.readouterr().out == ""
-    assert logged == ["turn.summary {}"]
+    (line,) = debug_log
+    assert line.startswith("turn.summary ")
+    assert "0.90s" in line
 
 
 def test_a_closed_sink_prints_nothing(capsys: pytest.CaptureFixture[str]) -> None:
@@ -212,17 +235,10 @@ def test_a_session_with_no_turns_prints_no_summary(capsys: pytest.CaptureFixture
 
 
 def test_the_session_summary_goes_to_the_log_with_debug_on(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    capsys: pytest.CaptureFixture[str], debug_log: list[str]
 ) -> None:
-    lines: list[str] = []
-
-    def record(message: str, *args: object, **_kw: object) -> None:
-        lines.append(message.format(*args))
-
-    monkeypatch.setattr("fish_audio_suite_voice.console_sink.debug_enabled", lambda: True)
-    monkeypatch.setattr("fish_audio_suite_voice.console_sink.debug", record)
     bus = EventBus()
     ConsoleSink(bus)
     _emit(bus, _turn(1000, 500), Bye(ExitCode.FATAL))
-    assert any(line.startswith("session.summary 1 turns") for line in lines)
+    assert any(line.startswith("session.summary 1 turns") for line in debug_log)
     assert "session" not in capsys.readouterr().out

@@ -27,7 +27,12 @@ from fish_audio_suite_kit import (
     is_header_safe,
     should_retry_fish_status,
 )
-from fish_audio_suite_voice.cancel import first_real_error, is_cancel_noise, quiet_shutdown
+from fish_audio_suite_voice.cancel import (
+    first_real_error,
+    is_cancel_noise,
+    is_own_cancel,
+    quiet_shutdown,
+)
 from fish_audio_suite_voice.debug import debug, warn
 from fish_audio_suite_voice.pause import Retry, fish_retries
 from fish_audio_suite_voice.playback import PlaybackSink
@@ -147,9 +152,10 @@ async def _one_attempt(turn: _Turn, attempt: int) -> Retry | None:
     run = turn.run
     try:
         await send_turn(turn.socket, turn.events(), run)
-    except (asyncio.CancelledError, GeneratorExit) as exc:
+    except (asyncio.CancelledError, GeneratorExit):
         await turn.socket.close()
-        if run.cancel.is_set() or is_cancel_noise(exc):
+        # Quiet only for this turn's own cancel. A timeout or an outer task.cancel() goes up.
+        if is_own_cancel(run.cancel):
             return None
         raise
     except SinkError as exc:

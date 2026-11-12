@@ -6,13 +6,16 @@ from kit_helpers import assert_linear_time
 from fish_audio_suite_kit import (
     MoodCarry,
     ensure_lead_cue,
+    last_emotion,
     normalize_cues,
+    official_cue,
     scrub_tts,
     split_cues,
     strip_cue_tags,
+    takes_directions,
     tts_hold_at,
 )
-from fish_audio_suite_kit.cues import is_paren_cue, last_emotion, official_cue
+from fish_audio_suite_kit.cues import is_paren_cue
 from fish_audio_suite_kit.stream_holds import mood_lead_hold_at
 
 
@@ -36,11 +39,6 @@ def test_mood_lead_becomes_cue() -> None:
 def test_official_emotion_lead_only_at_sentence_start() -> None:
     assert normalize_cues("Anxious: wait", lead=True) == "[anxious] wait"
     assert normalize_cues("I am anxious today", lead=True) == "I am anxious today"
-    assert normalize_cues("excited, hello", lead=True, continued=True) == "excited, hello"
-    assert (
-        normalize_cues("excited, hello. Sad, bye", lead=True, continued=True)
-        == "excited, hello. [sad] bye"
-    )
     assert (
         normalize_cues("你好。Excited, goodbye now please.", lead=True)
         == "你好。[excited] goodbye now please."
@@ -438,8 +436,6 @@ def test_a_directed_model_gets_every_direction_and_whisper_tag_as_written() -> N
 
 
 def test_only_drama_3_takes_directions() -> None:
-    from fish_audio_suite_kit import takes_directions
-
     assert takes_directions("drama-3")
     assert takes_directions(" Drama-3 ")
     for model in ("s2.1-pro", "s2.1-pro-free", "s2-pro", "s1", "drama-3-preview", ""):

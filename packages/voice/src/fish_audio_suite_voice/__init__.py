@@ -4,6 +4,7 @@ from fish_audio_suite_voice.aec import EchoCanceller
 from fish_audio_suite_voice.barge import BargeGate
 from fish_audio_suite_voice.llm import ChatBackend
 from fish_audio_suite_voice.llm_tune import LlmTune
+from fish_audio_suite_voice.mic import Mic
 from fish_audio_suite_voice.playback import (
     FileSink,
     MpvSink,
@@ -14,7 +15,7 @@ from fish_audio_suite_voice.playback import (
 )
 from fish_audio_suite_voice.playback_kind import PlaybackKind
 from fish_audio_suite_voice.portaudio import PortAudioMissingError
-from fish_audio_suite_voice.signals import DuplexSession
+from fish_audio_suite_voice.signals import DuplexSession, TurnSignals
 from fish_audio_suite_voice.speaker import FishSpeaker
 from fish_audio_suite_voice.tts_tune import TtsTune
 from fish_audio_suite_voice.tune import AecTune, BargeTune, ListenTune
@@ -31,6 +32,7 @@ __all__ = [
     "FishSpeaker",
     "ListenTune",
     "LlmTune",
+    "Mic",
     "MpvSink",
     "PlaybackKind",
     "PlaybackSink",
@@ -39,5 +41,6 @@ __all__ = [
     "StdoutSink",
     "TtsResult",
     "TtsTune",
+    "TurnSignals",
     "make_sink",
 ]

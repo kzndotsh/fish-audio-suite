@@ -9,7 +9,15 @@ from collections.abc import AsyncIterator, Callable
 
 import httpx
 import pytest
-from session_fakes import FakeBackend, barge_clip, make_config, make_ctx, recognize
+from session_fakes import (
+    FakeBackend,
+    ScriptedHearing,
+    barge_clip,
+    make_config,
+    make_ctx,
+    quick_config,
+    recognize,
+)
 from voice_fakes import FakeGate, FakeSink, install_audio, make_result, set_tts
 
 from fish_audio_suite_kit import ChatMessage, FishHttpError
@@ -25,13 +33,7 @@ from fish_audio_suite_voice.history import History, trim_history
 from fish_audio_suite_voice.latency import LatencySnapshot
 from fish_audio_suite_voice.portaudio import PortAudioMissingError
 from fish_audio_suite_voice.recognised import BargeIn
-from fish_audio_suite_voice.reply import (
-    _after_speech,
-    _TokenPipe,
-    collect_reply,
-    speak_reply,
-    stream_turn,
-)
+from fish_audio_suite_voice.reply import collect_reply, speak_reply, stream_turn
 from fish_audio_suite_voice.signals import DuplexSession
 from fish_audio_suite_voice.speaker import FishSpeaker
 from fish_audio_suite_voice.wire import TtsResult
@@ -117,73 +119,70 @@ def test_a_small_history_cap_still_drops_one_turn_at_a_time() -> None:
     assert [m["content"] for m in history[1:]] == ["u1", "a1", "u2", "a2", "u3", "a3"]
 
 
-def test_after_speech_records_only_audio_that_was_played() -> None:
-    ctx = make_ctx()
-    snapshot = LatencySnapshot()
-    fatal, code = _after_speech(
-        ctx,
-        snapshot,
-        make_result(error_status=401, error_message="no"),
-        started=0.0,
+def _speak_once(
+    monkeypatch: pytest.MonkeyPatch, ctx: DuplexContext, result: TtsResult
+) -> tuple[LatencySnapshot, int | None]:
+    """Speak one whole reply, with Fish standing in to return ``result``."""
+    set_tts(monkeypatch, ctx.tts, speak=lambda *_a, **_k: result)
+    return asyncio.run(
+        speak_reply(
+            ctx,
+            "Hello there friend",
+            threading.Event(),
+            LatencySnapshot(),
+            started=0.0,
+            trace_id=None,
+        )
     )
+
+
+def test_a_spoken_reply_records_only_audio_that_was_played(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_audio(monkeypatch)
+    ctx = make_ctx()
+    fatal, code = _speak_once(monkeypatch, ctx, make_result(error_status=401, error_message="no"))
     assert code == 2
     assert len(ctx.chat.history.messages) == 1
     assert fatal.tts_first_audio_ms is None
 
     ctx = make_ctx()
-    _after_speech(
-        ctx,
-        snapshot,
-        make_result(cancelled=True),
-        started=0.0,
-    )
+    _speak_once(monkeypatch, ctx, make_result(cancelled=True))
     assert len(ctx.chat.history.messages) == 1
 
     ctx = make_ctx()
-    updated, code = _after_speech(
-        ctx,
-        snapshot,
-        make_result(
-            "hello",
-            bytes_played=8,
-            got_audio=True,
-            cancelled=True,
-            tts_first_audio_ms=12.0,
-            tts_first_text_ms=4.0,
-        ),
-        started=0.0,
+    heard_part = make_result(
+        "hello",
+        bytes_played=8,
+        got_audio=True,
+        cancelled=True,
+        tts_first_audio_ms=12.0,
+        tts_first_text_ms=4.0,
     )
+    updated, code = _speak_once(monkeypatch, ctx, heard_part)
     assert code is None
     assert ctx.chat.history.messages[-1] == {"role": "assistant", "content": "hello"}
     assert updated.tts_first_audio_ms == 12.0
 
     ctx = make_ctx()
     ctx.chat.history.messages.append({"role": "user", "content": "Hey! Can you hear me?"})
-    _after_speech(
-        ctx,
-        snapshot,
-        make_result(
-            "Hey! Can you hear me?",
-            bytes_played=8,
-            got_audio=True,
-            tts_first_audio_ms=12.0,
-            tts_first_text_ms=4.0,
-        ),
-        started=0.0,
+    echo = make_result(
+        "Hey! Can you hear me?",
+        bytes_played=8,
+        got_audio=True,
+        tts_first_audio_ms=12.0,
+        tts_first_text_ms=4.0,
     )
+    _speak_once(monkeypatch, ctx, echo)
     assert ctx.chat.history.messages[-1]["role"] == "user"
-    _after_speech(
-        ctx,
-        snapshot,
-        make_result(
-            "Yeah. What's up?",
-            bytes_played=8,
-            got_audio=True,
-            tts_first_audio_ms=12.0,
-            tts_first_text_ms=4.0,
-        ),
-        started=0.0,
+    answer = make_result(
+        "Yeah. What's up?",
+        bytes_played=8,
+        got_audio=True,
+        tts_first_audio_ms=12.0,
+        tts_first_text_ms=4.0,
     )
+    _speak_once(monkeypatch, ctx, answer)
     assert ctx.chat.history.messages[-1] == {"role": "assistant", "content": "Yeah. What's up?"}
 
 
@@ -451,41 +450,48 @@ def test_a_deliberate_repeat_is_kept_but_a_stale_copy_is_dropped() -> None:
     assert classify_transcript("no", "yes", stale=True) == "ok"
 
 
-def test_token_pipe_hands_tokens_across_in_order() -> None:
-    pipe = _TokenPipe()
-    for token in ("Hello ", "there"):
-        pipe.push(token)
-    pipe.close()
+def test_each_token_reaches_fish_while_the_model_is_still_writing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The TTS thread is woken by each token, not only when the reply is finished."""
+    fish_reading = threading.Event()
+    first_reached_fish = threading.Event()
 
-    async def drain() -> list[str]:
-        return [token async for token in pipe]
+    async def tokens(*_args: object, **_kwargs: object) -> AsyncIterator[str]:
+        # Write once the TTS thread is waiting, so the token has to wake it.
+        await asyncio.to_thread(fish_reading.wait, 5)
+        await asyncio.sleep(0.05)
+        yield "Hi "
+        # The model holds its next token until Fish has the first one.
+        yield "there." if await asyncio.to_thread(first_reached_fish.wait, 5) else "too late."
 
-    assert asyncio.run(drain()) == ["Hello ", "there"]
+    ctx = make_ctx(tokens)
+    install_audio(monkeypatch)
+    sent: list[str] = []
 
-
-def test_token_pipe_wakes_a_reader_on_another_thread() -> None:
-    pipe = _TokenPipe()
-    got: list[tuple[str, float]] = []
-    reading = threading.Event()
-
-    def reader() -> None:
+    def speak_stream(
+        deltas: AsyncIterator[str], sink: FakeSink, cancel: threading.Event, **_kw: object
+    ) -> TtsResult:
         async def drain() -> None:
-            reading.set()
-            got.extend([(token, time.perf_counter()) async for token in pipe])
+            fish_reading.set()
+            async for token in deltas:
+                sent.append(token)
+                first_reached_fish.set()
 
         asyncio.run(drain())
+        return make_result("Hi there.", bytes_played=4, got_audio=True, tts_first_audio_ms=3.0)
 
-    thread = threading.Thread(target=reader)
-    thread.start()
-    assert reading.wait(5)
-    time.sleep(0.05)
-    pushed = time.perf_counter()
-    pipe.push("Hi")
-    time.sleep(0.05)
-    pipe.close()
-    thread.join(5)
-    assert [token for token, _ in got] == ["Hi"]
-    assert got[0][1] >= pushed
+    set_tts(monkeypatch, ctx.tts, speak_stream=speak_stream)
+    _snapshot, code = asyncio.run(
+        stream_turn(
+            ctx,
+            HeardLine("line", text="hi", started=time.perf_counter()),
+            threading.Event(),
+            asyncio.Event(),
+        )
+    )
+    assert code is None
+    assert sent == ["Hi ", "there."]
 
 
 async def _two_tokens(*_args: object, **_kwargs: object) -> AsyncIterator[str]:
@@ -503,7 +509,7 @@ def test_stream_turn_feeds_tokens_to_tts_and_arms_barge_at_first_audio(
     armed_before_audio: list[int] = []
 
     def speak_stream(
-        deltas: _TokenPipe,
+        deltas: AsyncIterator[str],
         sink: FakeSink,
         cancel: threading.Event,
         on_first_audio: Callable[[], None] | None = None,
@@ -550,7 +556,7 @@ def test_stream_turn_speaks_the_finished_reply_when_fish_fails_before_audio(
     spoken: list[str] = []
 
     def speak_stream(
-        deltas: _TokenPipe,
+        deltas: AsyncIterator[str],
         sink: FakeSink,
         cancel: threading.Event,
         on_first_audio: Callable[[], None] | None = None,
@@ -639,19 +645,46 @@ def test_trim_history_still_pairs_user_and_assistant_without_a_seed() -> None:
     assert [m["content"] for m in history] == ["s", "u3", "a3", "u4", "a4"]
 
 
-def test_a_fatal_fish_status_stops_the_llm_but_a_transient_one_does_not() -> None:
-    from fish_audio_suite_voice.reply import _end_llm_when_tts_stops
+@pytest.mark.parametrize(("status", "stops_the_model"), [(401, True), (503, False)])
+def test_a_fatal_fish_status_stops_the_llm_but_a_transient_one_does_not(
+    monkeypatch: pytest.MonkeyPatch, status: int, *, stops_the_model: bool
+) -> None:
+    fish_gave_up = threading.Event()
+    model_stopped: list[bool] = []
 
-    async def scenario(status: int) -> bool:
-        loop = asyncio.get_running_loop()
-        done: asyncio.Future[TtsResult] = loop.create_future()
-        done.set_result(make_result(error_status=status))
-        llm_cancel = asyncio.Event()
-        _end_llm_when_tts_stops(done, llm_cancel)
-        return llm_cancel.is_set()
+    async def tokens(
+        *_args: object, cancel: asyncio.Event | None = None, **_kwargs: object
+    ) -> AsyncIterator[str]:
+        assert cancel is not None
+        yield "Hello "
+        await asyncio.to_thread(fish_gave_up.wait, 5)
+        for _ in range(50):  # the stop arrives on the loop just after Fish returns
+            if cancel.is_set():
+                break
+            await asyncio.sleep(0.01)
+        model_stopped.append(cancel.is_set())
+        yield "there friend."
 
-    assert asyncio.run(scenario(401)) is True
-    assert asyncio.run(scenario(503)) is False
+    ctx = make_ctx(tokens)
+    install_audio(monkeypatch)
+
+    def speak_stream(*_args: object, **_kwargs: object) -> TtsResult:
+        fish_gave_up.set()
+        return make_result(error_status=status)
+
+    def speak_whole(text: str, *_args: object, **_kwargs: object) -> TtsResult:
+        return make_result(text, bytes_played=4, got_audio=True, tts_first_audio_ms=3.0)
+
+    set_tts(monkeypatch, ctx.tts, speak=speak_whole, speak_stream=speak_stream)
+    asyncio.run(
+        stream_turn(
+            ctx,
+            HeardLine("line", text="hi", started=time.perf_counter()),
+            threading.Event(),
+            asyncio.Event(),
+        )
+    )
+    assert model_stopped == [stops_the_model]
 
 
 def test_stream_turn_with_an_empty_reply_speaks_nothing_and_reports_nothing(
@@ -666,7 +699,7 @@ def test_stream_turn_with_an_empty_reply_speaks_nothing_and_reports_nothing(
     seen_cancel: list[bool] = []
 
     def speak_stream(
-        deltas: _TokenPipe,
+        deltas: AsyncIterator[str],
         sink: FakeSink,
         cancel: threading.Event,
         on_first_audio: Callable[[], None] | None = None,
@@ -706,7 +739,7 @@ def test_quit_during_the_stream_fallback_rebind_does_not_speak(
     install_audio(monkeypatch)
 
     def speak_stream(
-        deltas: _TokenPipe,
+        deltas: AsyncIterator[str],
         sink: FakeSink,
         cancel: threading.Event,
         on_first_audio: Callable[[], None] | None = None,
@@ -806,7 +839,14 @@ def test_a_long_run_of_unanswered_lines_keeps_only_the_latest() -> None:
     assert history[-1]["content"] == "line 6\nline 7\nline 8\nline 9"
 
 
-def _cut_off_ctx(monkeypatch: pytest.MonkeyPatch, spoken: str) -> tuple[DuplexContext, list[str]]:
+def _cut_off_ctx(
+    monkeypatch: pytest.MonkeyPatch, spoken: str, tts: FishSpeaker | None = None
+) -> tuple[DuplexContext, list[str]]:
+    """A context whose first reply is cut off by a barge-in after ``spoken`` was heard.
+
+    Later replies play ``spoken`` to the end. ``tts`` is the speaker to fake, the
+    context's own when None.
+    """
     ctx = make_ctx()
     install_audio(monkeypatch, gate=FakeGate(captured=b"clip"))
     said: list[str] = []
@@ -828,7 +868,7 @@ def _cut_off_ctx(monkeypatch: pytest.MonkeyPatch, spoken: str) -> tuple[DuplexCo
             tts_first_text_ms=2.0,
         )
 
-    set_tts(monkeypatch, ctx.tts, speak=speak)
+    set_tts(monkeypatch, tts or ctx.tts, speak=speak)
     return ctx, said
 
 
@@ -847,71 +887,40 @@ def test_a_cut_off_reply_is_remembered_for_resuming(monkeypatch: pytest.MonkeyPa
     assert ctx.turn_input.carry.resume == "[calm] How was your day today?"
 
 
+async def _cut_off_reply(*_args: object, **_kwargs: object) -> AsyncIterator[str]:
+    yield "Hello there. How was your day today?"
+
+
+def _cut_off_session(
+    monkeypatch: pytest.MonkeyPatch, *after: HeardLine
+) -> tuple[list[str], list[ChatMessage]]:
+    """Run a session whose first reply is cut off after "Hello there.", then hears ``after``."""
+    tts = FishSpeaker(api_key="k", voice_id="voice")
+    _ctx, said = _cut_off_ctx(monkeypatch, "Hello there.", tts)
+    hearing = ScriptedHearing(monkeypatch, HeardLine("line", text="hi", started=0.0), *after)
+    session = DuplexSession()
+    asyncio.run(duplex_turns(quick_config(), tts, None, FakeBackend(_cut_off_reply), session))
+    assert hearing.ctx is not None
+    return said, hearing.ctx.chat.history.messages
+
+
 def test_noise_after_a_barge_in_speaks_the_rest_and_joins_history(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ctx, said = _cut_off_ctx(monkeypatch, "Hello there.")
-    ctx.chat.history.messages.append({"role": "user", "content": "hi"})
-    asyncio.run(
-        speak_reply(
-            ctx,
-            "Hello there. How was your day today?",
-            threading.Event(),
-            LatencySnapshot(),
-            started=0.0,
-            trace_id=None,
-        )
-    )
-    reads = iter([HeardLine("noise"), HeardLine("bye")])
-
-    async def hear(_ctx: DuplexContext, _last: str) -> HeardLine:
-        return next(reads)
-
-    monkeypatch.setattr("fish_audio_suite_voice.duplex.hear_line", hear)
-    monkeypatch.setattr("fish_audio_suite_voice.duplex.DuplexContext", lambda **_kw: ctx)
-    asyncio.run(duplex_turns(ctx.config, ctx.tts, None, ctx.chat.backend, session=DuplexSession()))
-    assert said[1] == "[calm] How was your day today?"
-    assert ctx.turn_input.carry.resume == ""
-    assert ctx.chat.history.messages[-1] == {
-        "role": "assistant",
-        "content": "Hello there. Hello there.",
-    }
+    said, history = _cut_off_session(monkeypatch, HeardLine("noise"))
+    assert said == ["[calm] Hello there. How was your day today?", "[calm] How was your day today?"]
+    assert history[-1] == {"role": "assistant", "content": "Hello there. Hello there."}
 
 
 def test_a_real_line_after_a_barge_in_drops_the_rest_for_good(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ctx, said = _cut_off_ctx(monkeypatch, "Hello there.")
-    asyncio.run(
-        speak_reply(
-            ctx,
-            "Hello there. How was your day today?",
-            threading.Event(),
-            LatencySnapshot(),
-            started=0.0,
-            trace_id=None,
-        )
+    said, _history = _cut_off_session(
+        monkeypatch, HeardLine("line", text="Tell me a joke.", started=0.0), HeardLine("noise")
     )
-    reads = iter(
-        [
-            HeardLine("line", text="Tell me a joke.", started=0.0),
-            HeardLine("noise"),
-            HeardLine("bye"),
-        ]
-    )
-
-    async def hear(_ctx: DuplexContext, _last: str) -> HeardLine:
-        return next(reads)
-
-    async def answer(_ctx: DuplexContext, _heard: HeardLine) -> int | None:
-        return None
-
-    monkeypatch.setattr("fish_audio_suite_voice.duplex.hear_line", hear)
-    monkeypatch.setattr("fish_audio_suite_voice.duplex._answer_line", answer)
-    monkeypatch.setattr("fish_audio_suite_voice.duplex.DuplexContext", lambda **_kw: ctx)
-    asyncio.run(duplex_turns(ctx.config, ctx.tts, None, ctx.chat.backend, session=DuplexSession()))
-    # The noise after the joke request must not bring back the reply the user talked over.
-    assert said == ["[calm] Hello there. How was your day today?"]
+    # The joke request is answered, and the noise after it must not bring back the reply
+    # the user talked over.
+    assert said == ["[calm] Hello there. How was your day today?"] * 2
 
 
 @pytest.mark.parametrize(("barge_prefix", "kind"), [(b"", "line"), (b"clip", "noise")])

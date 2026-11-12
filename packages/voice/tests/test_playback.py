@@ -4,15 +4,14 @@ import asyncio
 import io
 import threading
 import wave
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
-from fishaudio.exceptions import AuthenticationError, RateLimitError
-from voice_fakes import make_result
+from wire_helpers import FakeOutputStream, open_sounddevice_sink
 
 from fish_audio_suite_kit import SuiteDefaults
-from fish_audio_suite_voice.cancel import is_cancel_noise
 from fish_audio_suite_voice.events import EVENTS, Event, OutputLevel
 from fish_audio_suite_voice.log_setup import configure_voice_logging
 from fish_audio_suite_voice.pcm import write_mono_wav
@@ -23,7 +22,6 @@ from fish_audio_suite_voice.playback import (
     PlaybackSink,
     SounddeviceSink,
     StdoutSink,
-    _LevelTap,
     duplex_playback_problem,
     make_sink,
     sink_format,
@@ -31,8 +29,9 @@ from fish_audio_suite_voice.playback import (
 from fish_audio_suite_voice.playback_kind import PlaybackKind, parse_playback
 from fish_audio_suite_voice.portaudio import PortAudioMissingError, missing_portaudio
 from fish_audio_suite_voice.speaker import FishSpeaker
-from fish_audio_suite_voice.tts_turn import _classify_fish_exc
-from fish_audio_suite_voice.wire import TtsResult
+from fish_audio_suite_voice.tts_tune import TtsTune
+from fish_audio_suite_voice.tts_turn import SdkSocket
+from fish_audio_suite_voice.wire import TtsResult, TurnSpec
 
 
 def test_zero_sample_rate_still_writes_a_wav(tmp_path: Path) -> None:
@@ -97,6 +96,8 @@ def test_file_sink_does_not_count_a_failed_write(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # The disk is faked: a real failed open makes the standard library's wave writer
+    # log an ignored exception from its __del__.
     def full(*_args: object, **_kwargs: object) -> None:
         raise OSError(28, "No space left on device")
 
@@ -201,25 +202,6 @@ def test_stdout_sink_rejoins_odd_pcm_chunks(capsysbinary: pytest.CaptureFixture[
     assert sink.bytes_played() == 6
 
 
-def test_classify_fish_exc_retries_429_not_401() -> None:
-    retry, status, message = _classify_fish_exc(RateLimitError(429, "slow down", None))
-    assert retry is True
-    assert status == 429
-    assert message == "slow down"
-    retry, status, message = _classify_fish_exc(AuthenticationError(401, "Invalid Token", None))
-    assert retry is False
-    assert status == 401
-    assert message == "Invalid Token"
-
-
-def test_cancel_scope_runtime_error_is_noise() -> None:
-    err = RuntimeError("Attempted to exit cancel scope in a different task than it was entered in")
-    retry, status, _message = _classify_fish_exc(err)
-    assert retry is False
-    assert status is None
-    assert is_cancel_noise(err)
-
-
 def test_speak_reraises_a_sink_that_fails_to_open() -> None:
     tts = FishSpeaker(api_key="k", voice_id="v")
 
@@ -253,76 +235,69 @@ def test_sounddevice_sink_stops_after_the_slice_that_cancelled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cancel = threading.Event()
-    sink = SounddeviceSink(sample_rate=16_000, cancel=cancel)
-    written: list[bytes] = []
 
-    class Stream:
-        def write(self, chunk: bytes) -> None:
-            written.append(chunk)
-            cancel.set()
+    def cancel_now(_chunk: bytes) -> bool:
+        cancel.set()
+        return False
 
-    sink._stream = Stream()
+    stream = FakeOutputStream(cancel_now)
+    sink = open_sounddevice_sink(monkeypatch, stream, sample_rate=16_000, cancel=cancel)
     sink.write(b"\x00\x00" * 8_000)
-    assert len(written) == 1
-    assert sink.bytes_played() == len(written[0])
+    assert len(stream.written) == 1
+    assert sink.bytes_played() == len(stream.written[0])
 
 
 def test_sounddevice_sink_logs_an_underrun_when_the_device_ran_dry(
+    monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     configure_voice_logging(debug=True)
-    sink = SounddeviceSink(sample_rate=16_000)
-
-    class Stream:
-        def write(self, chunk: bytes) -> bool:
-            return True
-
-    sink._stream = Stream()
+    sink = open_sounddevice_sink(
+        monkeypatch, FakeOutputStream(lambda _chunk: True), sample_rate=16_000
+    )
     sink.write(b"\x00\x00" * 1_000)
     assert "underrun after" in capsys.readouterr().err
     assert sink.bytes_played() == 2_000
 
 
-def test_sounddevice_sink_skips_write_when_cancelled() -> None:
+def test_sounddevice_sink_skips_write_when_cancelled(monkeypatch: pytest.MonkeyPatch) -> None:
     cancel = threading.Event()
-    sink = SounddeviceSink(cancel=cancel)
-
-    class Boom:
-        def write(self, chunk: bytes) -> None:
-            raise AssertionError("cancelled sink must not write")
-
-    sink._stream = Boom()
+    stream = FakeOutputStream()
+    sink = open_sounddevice_sink(monkeypatch, stream, cancel=cancel)
     cancel.set()
     sink.write(b"\x00\x00" * 8)
+    assert stream.written == []
     assert sink.bytes_played() == 0
 
 
-def test_speak_works_inside_asyncio_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    async def fake_speak(
-        spec: object,
-        source: object,
-        sink: FileSink,
-        cancel: threading.Event,
-        *,
-        on_first_audio: object = None,
-    ) -> TtsResult:
-        sink.start()
-        sink.write(b"\x00\x00" * 64)
-        sink.finish()
-        return make_result(
-            "ok", bytes_played=128, got_audio=True, tts_first_audio_ms=1.0, tts_first_text_ms=1.0
-        )
+class _AudioSocket(SdkSocket):
+    """The SDK socket with 64 samples of audio in place of its websocket, and no client."""
 
-    monkeypatch.setattr("fish_audio_suite_voice.speaker.run_turn", fake_speak)
-    tts = FishSpeaker(api_key="k", voice_id="v")
-    sink = FileSink(tmp_path / "t.wav", sample_rate=44100, wav=True)
+    def stream(self, events: AsyncIterator[Any], spec: TurnSpec) -> AsyncIterator[bytes]:
+        del spec
+
+        async def audio() -> AsyncIterator[bytes]:
+            async for _event in events:
+                pass
+            yield b"\x00\x00" * 64
+
+        return audio()
+
+
+def test_speak_works_inside_asyncio_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setattr("fish_audio_suite_voice.tts_turn.SdkSocket", _AudioSocket)
+    tts = FishSpeaker(api_key="k", voice_id="v", tune=TtsTune(sample_rate=44_100))
+    path = tmp_path / "t.wav"
+    sink = FileSink(path, sample_rate=44_100, wav=True)
 
     async def outer() -> TtsResult:
+        # A caller already inside an event loop: the turn runs on a loop of its own.
         return tts.speak("[clear] hi", sink)
 
     result = asyncio.run(outer())
     assert result.got_audio
     assert result.bytes_played == 128
+    assert path.is_file()
 
 
 def test_parse_playback_names_every_sink_and_rejects_the_rest() -> None:
@@ -376,19 +351,18 @@ def test_write_mono_wav_accepts_a_path_a_string_and_a_file_object(tmp_path: Path
             assert wf.getnframes() == 160
 
 
-def test_a_sink_finished_mid_write_stops_writing() -> None:
-    sink = SounddeviceSink(sample_rate=16_000)
-    written: list[bytes] = []
+def test_a_sink_finished_mid_write_stops_writing(monkeypatch: pytest.MonkeyPatch) -> None:
+    sinks: list[SounddeviceSink] = []
 
-    class Stream:
-        def write(self, chunk: bytes) -> bool:
-            written.append(chunk)
-            sink._stream = None
-            return False
+    def finish_now(_chunk: bytes) -> bool:
+        sinks[0].finish()  # as barge-in does from another thread while a write runs
+        return False
 
-    sink._stream = Stream()
-    sink.write(b"\x00\x00" * 8_000)
-    assert len(written) == 1
+    stream = FakeOutputStream(finish_now)
+    sinks.append(open_sounddevice_sink(monkeypatch, stream, sample_rate=16_000))
+    sinks[0].write(b"\x00\x00" * 8_000)
+    assert len(stream.written) == 1
+    assert stream.closed
 
 
 def _levels_while(run: Callable[[], None]) -> list[float]:
@@ -401,40 +375,37 @@ def _levels_while(run: Callable[[], None]) -> list[float]:
     return [event.rms for event in seen if isinstance(event, OutputLevel)]
 
 
-def test_the_level_tap_reports_one_level_per_block_of_audio_and_keeps_the_remainder() -> None:
+def test_the_level_reports_one_level_per_block_of_audio_and_keeps_the_remainder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     rate = 16_000
     block = round(rate * OUTPUT_LEVEL_EVERY_S) * 2  # bytes in one block
     loud = (1000).to_bytes(2, "little", signed=True) * (block // 2)
-    tap = _LevelTap(rate)
+    sink = open_sounddevice_sink(monkeypatch, FakeOutputStream(), sample_rate=rate)
 
     def run() -> None:
-        tap.feed(loud[: block // 2])  # half a block: nothing yet
-        tap.feed(loud[block // 2 :] + loud)  # completes one, and holds a second as a whole block
-        tap.feed(loud[:10])  # a fragment of a third
+        sink.write(loud[: block // 2])  # half a block: nothing yet
+        sink.write(loud[block // 2 :] + loud)  # completes one, and holds a second as a whole block
+        sink.write(loud[:10])  # a fragment of a third
 
     levels = _levels_while(run)
     assert len(levels) == 2
     assert all(level == pytest.approx(1000.0, rel=0.01) for level in levels)
-    tap.clear()  # a new turn drops the fragment
-    assert _levels_while(lambda: tap.feed(loud[: block - 2])) == []
+    sink.start()  # a new turn drops the fragment
+    assert _levels_while(lambda: sink.write(loud[: block - 2])) == []
 
 
-def test_sounddevice_sink_reports_the_level_of_what_it_plays_and_never_of_what_it_dropped() -> None:
-    sink = SounddeviceSink(sample_rate=16_000)
-    played: list[bytes] = []
-
-    class Stream:
-        def write(self, chunk: bytes) -> bool:
-            played.append(chunk)
-            return False
-
-    sink._stream = Stream()
+def test_sounddevice_sink_reports_the_level_of_what_it_plays_and_never_of_what_it_dropped(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sink = open_sounddevice_sink(monkeypatch, FakeOutputStream(), sample_rate=16_000)
     pcm = (2000).to_bytes(2, "little", signed=True) * 16_000  # one second of a steady tone
     levels = _levels_while(lambda: sink.write(pcm))
     assert len(levels) >= 10  # about one every 60 ms
     assert all(level == pytest.approx(2000.0, rel=0.01) for level in levels)
     cancel = threading.Event()
-    cancelled = SounddeviceSink(sample_rate=16_000, cancel=cancel)
-    cancelled._stream = Stream()
+    cancelled = open_sounddevice_sink(
+        monkeypatch, FakeOutputStream(), sample_rate=16_000, cancel=cancel
+    )
     cancel.set()
     assert _levels_while(lambda: cancelled.write(pcm)) == []

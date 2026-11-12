@@ -31,6 +31,7 @@ __all__ = [
     "heartbeat_due",
     "mark_turn",
     "on_terminal_line",
+    "reset_debug_level",
     "trace",
     "warn",
 ]
@@ -123,6 +124,17 @@ def fix_debug_level(debug: bool | int | DebugLevel) -> DebugLevel:
     _DEBUG.frozen = level
     _DEBUG.configured = True
     return level
+
+
+def reset_debug_level() -> None:
+    """Undo ``fix_debug_level``: read ``FISH_VOICE_DEBUG`` live again, as before logging was set up.
+
+    ``warn`` writes straight to stderr again until logging is configured once more. For
+    tests and for a host that sets logging up a second time; it removes no loguru sinks.
+    """
+    _DEBUG.level = DebugLevel.OFF
+    _DEBUG.frozen = None
+    _DEBUG.configured = False
 
 
 def debug_enabled() -> bool:

@@ -7,11 +7,12 @@ from kit_helpers import assert_linear_time
 
 from fish_audio_suite_kit import (
     ends_sentence,
+    next_tts_cut,
     normalize_cues,
     scrub_tts,
+    sentence_cuts,
     split_tts_piece,
 )
-from fish_audio_suite_kit.cuts import next_tts_cut, sentence_cuts
 from fish_audio_suite_kit.stream_holds import sentence_closer_hold_at
 
 
@@ -37,7 +38,6 @@ def test_a_time_or_page_number_ends_the_sentence() -> None:
     assert "[excited]" in page
     assert ends_sentence("Meet at 10:30.")
     assert ends_sentence("See page 12.")
-    assert not ends_sentence("1. ")
 
 
 def test_ends_sentence_skips_abbreviations_and_list_numbers() -> None:

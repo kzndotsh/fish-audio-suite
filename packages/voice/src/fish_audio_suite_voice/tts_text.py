@@ -284,20 +284,18 @@ class _StreamShaper:
         *,
         partial_chars: int,
         style: CueStyle,
-        early_flush: bool,
     ) -> None:
         self._cancel = cancel
         self._style = style
         self._pieces = _Pieces(style)
         self._partial_chars = partial_chars
-        self._early_flush = early_flush
         self._raw = ""
         self._ready = ""
         # The last accepted character. ready is empty once that text is sent,
         # and the next span still needs the neighbor so its gap survives.
         self._last = ""
-        self._sent = 0
         self._flushed_early = False
+        # Text events since the last flush, or since the start before the early one.
         self._since_flush = 0
         # Everything sent before the early flush. The flush waits for a sentence
         # end in this whole text, not in the last piece alone: a piece that is
@@ -320,10 +318,9 @@ class _StreamShaper:
         event = self._pieces.event(piece)
         if event is None:
             return
-        self._sent += 1
         yield event
         self._since_flush += 1
-        if self._early_flush and not self._flushed_early:
+        if not self._flushed_early:
             self._sent_text += event.text
             if not self._cancel.is_set() and (
                 ends_sentence(self._sent_text) or len(self._sent_text) >= self._early_flush_cap
@@ -387,9 +384,7 @@ class _StreamShaper:
             piece, self._ready = split
             yield from self._emit(piece)
         # A flush with no text after the early one would ask Fish to flush nothing.
-        flush = flush_if_sent(
-            self._since_flush if self._flushed_early else self._sent, self._cancel
-        )
+        flush = flush_if_sent(self._since_flush, self._cancel)
         if flush is not None:
             yield flush
 
@@ -400,7 +395,6 @@ async def delta_events(
     *,
     partial_chars: int,
     style: CueStyle,
-    early_flush: bool = True,
 ) -> AsyncIterator[Any]:
     """Cut model deltas into Fish text events, shaping each span as it closes.
 
@@ -414,31 +408,27 @@ async def delta_events(
         Size of one Fish text event.
     style : CueStyle
         How cues are shaped, the same style a whole reply is shaped with.
-    early_flush : bool, optional
-        Flush once at the end of the first sentence, so Fish speaks it while
-        the model is still writing. Default True, which is what the speaker
-        sends; False sends one flush at the end only. Fish holds text until a
-        chunk fills or a flush arrives, so without this a streamed reply is
-        silent until the model finishes. The flush waits for a sentence end,
-        because a flush mid-sentence makes Fish end that fragment as a finished
-        utterance and pause before the rest. After two send windows of text
-        with no sentence end it flushes anyway.
 
     Yields
     ------
     Any
-        ``TextEvent`` pieces, then one ``FlushEvent`` when any text was sent.
-        With ``early_flush`` there is one more flush after the first sentence,
-        and the final flush is sent only if text followed it.
+        ``TextEvent`` pieces with one ``FlushEvent`` after the first sentence, and
+        a closing ``FlushEvent`` only if text followed that one.
 
     Notes
     -----
+    The early flush lets Fish speak the first sentence while the model is still
+    writing: Fish holds text until a chunk fills or a flush arrives, so with one
+    flush at the end a streamed reply would be silent until the model finished.
+    It waits for a sentence end, judged on all the text sent so far, because a
+    flush mid-sentence makes Fish end that fragment as a finished utterance and
+    pause before the rest. After two send windows of text with no sentence end
+    it flushes anyway.
+
     A thought, parenthesis, bracket, or URL stays buffered until it closes, so
     a cut cannot speak the inside of a span the closer would remove.
     """
-    shaper = _StreamShaper(
-        cancel, partial_chars=partial_chars, style=style, early_flush=early_flush
-    )
+    shaper = _StreamShaper(cancel, partial_chars=partial_chars, style=style)
     async for tok in as_async(deltas):
         if cancel.is_set():
             break

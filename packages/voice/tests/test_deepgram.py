@@ -12,7 +12,6 @@ import pytest
 
 from fish_audio_suite_voice.deepgram import (
     FluxStream,
-    _websockets_connect,
     flux_base,
     flux_url,
     parse_flux_message,
@@ -230,7 +229,7 @@ def test_a_refused_connection_says_whether_trying_again_could_help(
     for status, fatal in ((401, True), (402, True), (403, True), (500, False), (503, False)):
         monkeypatch.setattr("websockets.asyncio.client.connect", refuse(status))
         with pytest.raises(SttStreamError) as raised:
-            asyncio.run(_websockets_connect("wss://x/y", key="k"))
+            asyncio.run(FluxStream("wss://x/y", "k").open())
         assert raised.value.fatal is fatal, status
         assert str(status) in str(raised.value)
 
@@ -243,7 +242,7 @@ def test_an_unreachable_server_is_a_retryable_error_not_a_fatal_one(
 
     monkeypatch.setattr("websockets.asyncio.client.connect", connect)
     with pytest.raises(SttStreamError, match="no route") as raised:
-        asyncio.run(_websockets_connect("wss://x/y", key="k"))
+        asyncio.run(FluxStream("wss://x/y", "k").open())
     assert not raised.value.fatal
 
 
@@ -258,7 +257,7 @@ def test_the_real_connection_sends_the_key_as_a_header_and_never_in_the_address(
         return object()
 
     monkeypatch.setattr("websockets.asyncio.client.connect", connect)
-    asyncio.run(_websockets_connect("wss://x/y?model=m", key="sekrit"))
+    asyncio.run(FluxStream("wss://x/y?model=m", "sekrit").open())
     assert seen["additional_headers"] == {"Authorization": "Token sekrit"}
     assert "sekrit" not in seen["url"]
     assert seen["open_timeout"] > 0

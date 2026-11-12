@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-import asyncio
 import dataclasses
 import importlib
 import typing
 from collections.abc import Iterator
 from types import ModuleType
 
-import httpx
 import pytest
+from fastapi.testclient import TestClient
+from proxy_helpers import WAV_UPLOAD, AsrJson, capture_upstream
 from starlette.requests import Request
 
 from fish_audio_suite_kit import AsrFormat
@@ -26,6 +26,7 @@ from fish_audio_suite_proxy.errors import (
     proxy_error_response,
 )
 from fish_audio_suite_proxy.request_body import decode_audio_b64
+from fish_audio_suite_proxy.server import app
 from fish_audio_suite_proxy.settings import ProxySettings
 from fish_audio_suite_proxy.speech import (
     PackedTts,
@@ -35,9 +36,8 @@ from fish_audio_suite_proxy.transcribe import (
     ASR_FORMATS,
     InboundAsr,
     ProAsrOptions,
-    _response_format,
 )
-from fish_audio_suite_proxy.upstream import FishHttp, RetryPolicy
+from fish_audio_suite_proxy.upstream import RetryPolicy
 
 _MODULES = (
     "audio",
@@ -59,17 +59,11 @@ def _module(name: str) -> ModuleType:
 
 
 def _exports(module: ModuleType) -> list[str]:
+    # The private-type check below reads each module's __all__ to know what is public.
     declared: object = vars(module).get("__all__")
     assert isinstance(declared, list), f"{module.__name__} has no __all__"
     # By convention a module's __all__ is a list of names.
     return typing.cast(list[str], declared)
-
-
-@pytest.mark.parametrize("name", _MODULES)
-def test_every_module_lists_its_public_names_and_each_one_exists(name: str) -> None:
-    module = _module(name)
-    for item in _exports(module):
-        assert hasattr(module, item), f"{name}.__all__ names {item}, which does not exist"
 
 
 def _type_names(annotation: object) -> Iterator[str]:
@@ -121,11 +115,11 @@ def test_the_handler_sends_a_proxy_error_with_its_status() -> None:
 
 
 def test_the_audio_decoder_names_the_field_it_read() -> None:
-    with pytest.raises(ProxyError, match=r"^audio is empty$"):
+    with pytest.raises(ProxyError, match=r"^audio .*empty"):
         decode_audio_b64(None, field="audio")
-    with pytest.raises(ProxyError, match=r"^audio is not valid base64$"):
+    with pytest.raises(ProxyError, match=r"^audio .*base64"):
         decode_audio_b64("!!!!", field="audio")
-    with pytest.raises(ProxyError, match=r"^input_audio is empty$") as caught:
+    with pytest.raises(ProxyError, match=r"^input_audio .*empty") as caught:
         decode_audio_b64("  ", field="input_audio")
     assert caught.value.status == 400
     assert decode_audio_b64(b"RIFF", field="audio") == b"RIFF"
@@ -158,13 +152,39 @@ def test_formats_the_client_may_ask_for_and_the_format_fish_makes() -> None:
     assert client_format("aac") is None
 
 
-def test_asr_formats_are_the_kit_literal_and_the_reader_returns_a_member() -> None:
+# The reply each transcription format gets: its media type and how its body starts.
+_ASR_REPLIES = {
+    "json": ("application/json", '{"text":'),
+    "text": ("text/plain", "hello there"),
+    "srt": ("application/x-subrip", "1\n00:00:00,000 --> "),
+    "verbose_json": ("application/json", '{"task":"transcribe"'),
+    "vtt": ("text/vtt", "WEBVTT"),
+}
+
+
+def test_every_asr_format_in_any_case_gets_its_own_reply(monkeypatch: pytest.MonkeyPatch) -> None:
     assert typing.get_args(AsrFormat) == ASR_FORMATS
-    for name in ASR_FORMATS:
-        assert _response_format(f" {name.upper()} ") == name
-    assert _response_format(None) == _response_format(" ") == "json"
-    with pytest.raises(ProxyError, match="unsupported response_format"):
-        _response_format("xml")
+    assert set(_ASR_REPLIES) == set(ASR_FORMATS)
+    capture_upstream(monkeypatch, AsrJson())
+    with TestClient(app) as client:
+
+        def reply(fmt: str | None) -> tuple[str, str]:
+            data = {} if fmt is None else {"response_format": fmt}
+            r = client.post("/v1/audio/transcriptions", files=WAV_UPLOAD, data=data)
+            assert r.status_code == 200, r.text
+            return r.headers["content-type"], r.text
+
+        for name, (media, start) in _ASR_REPLIES.items():
+            media_type, text = reply(f" {name.upper()} ")
+            assert media_type.startswith(media), name
+            assert text.startswith(start), name
+        # A missing or blank format is json.
+        assert reply(None)[1] == reply(" ")[1] == '{"text":"hello there"}'
+        refused = client.post(
+            "/v1/audio/transcriptions", files=WAV_UPLOAD, data={"response_format": "xml"}
+        )
+    assert refused.status_code == 400
+    assert refused.json()["error"]["message"].startswith("unsupported response_format")
 
 
 def test_a_parsed_fish_error_becomes_a_provider_error_with_its_own_status() -> None:
@@ -174,13 +194,3 @@ def test_a_parsed_fish_error_becomes_a_provider_error_with_its_own_status() -> N
         b'{"error":{"code":429,"message":"slow down","type":"provider_error",'
         b'"metadata":{"provider_name":"fish-audio"}}}'
     )
-
-
-def test_an_httpx_client_satisfies_the_fish_http_protocol() -> None:
-    http = httpx.AsyncClient()
-    client: FishHttp = http
-    try:
-        request = client.build_request("POST", "https://example.test/x", json={"a": 1})
-        assert isinstance(request, httpx.Request)
-    finally:
-        asyncio.run(http.aclose())

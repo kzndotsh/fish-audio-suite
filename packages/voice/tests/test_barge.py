@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import collections.abc
 import io
+import itertools
 import sys
 import threading
 import types
 import wave
-from dataclasses import replace
+from collections.abc import Callable
 
 import pytest
 from voice_fakes import ScriptedMic, install_vad
@@ -15,26 +16,21 @@ from fish_audio_suite_voice.aec import EchoCanceller
 from fish_audio_suite_voice.barge import (
     BARGE_MISS_DECAY_FRAMES,
     BargeGate,
-    _barge_step,
     barge_rms_need,
 )
 from fish_audio_suite_voice.cancel import StopFlag
 from fish_audio_suite_voice.listen import (
-    _CAP_QUIET_FRAMES,
-    _clip_wav,
-    _encode_wav,
-    _Listen,
-    _prime_listen,
     cooldown_report,
     listen_reject_reason,
     record_utterance,
     spike_start_allowed,
     start_frames_needed,
     start_hit,
+    stream_utterance,
     trailing_start_hits,
     voice_needed,
 )
-from fish_audio_suite_voice.pcm import FRAME_BYTES, take_frames
+from fish_audio_suite_voice.pcm import FRAME_BYTES, SAMPLE_RATE, take_frames
 from fish_audio_suite_voice.recognised import BargeIn, StreamFallback
 from fish_audio_suite_voice.tune import (
     DEFAULT_AEC_BLEED_DELAY_S,
@@ -54,11 +50,79 @@ from fish_audio_suite_voice.tune import (
 )
 
 
-class _UnusedVad:
-    """A detector for tests that never score a frame."""
+def _pcm(level: int) -> bytes:
+    return level.to_bytes(2, "little", signed=True) * (FRAME_BYTES // 2)
 
-    def is_speech(self, frame: bytes, rate: int) -> bool:
-        raise AssertionError((len(frame), rate))
+
+def _vad(monkeypatch: pytest.MonkeyPatch, is_speech: Callable[[bytes], bool]) -> None:
+    """Make the default detector call a frame speech when ``is_speech`` says so."""
+
+    class Vad:
+        def __init__(self, mode: int) -> None:
+            del mode
+
+        def is_speech(self, frame: bytes, rate: int) -> bool:
+            del rate
+            return is_speech(frame)
+
+    install_vad(monkeypatch, Vad)
+
+
+def _stream(
+    frames: list[bytes], tune: ListenTune, carried: BargeIn | None = None
+) -> tuple[list[tuple[bytes, bool]], bool, int]:
+    """Run ``stream_utterance`` over ``frames``.
+
+    Returns what it passed on (each frame with whether it was speech), whether the
+    silence ended it, and how many mic frames it read.
+    """
+    kept: list[tuple[bytes, bool]] = []
+    pulled = 0
+
+    def script(stop: StopFlag | None) -> collections.abc.Iterator[bytes]:
+        del stop
+        nonlocal pulled
+        for frame in frames:
+            pulled += 1
+            yield frame
+
+    ended = stream_utterance(
+        ScriptedMic(script),
+        None,
+        lambda frame, hit: kept.append((frame, hit)),
+        carried=carried,
+        tune=tune,
+    )
+    return kept, ended, pulled
+
+
+def _hits(kept: list[tuple[bytes, bool]]) -> list[bool]:
+    return [hit for _frame, hit in kept]
+
+
+def _wav_frames(wav: bytes) -> list[bytes]:
+    with wave.open(io.BytesIO(wav)) as wf:
+        pcm = wf.readframes(wf.getnframes())
+    return [pcm[i : i + FRAME_BYTES] for i in range(0, len(pcm), FRAME_BYTES)]
+
+
+class _RecordingCancel(threading.Event):
+    """A cancel flag whose waits return at once and record their timeout, as a fake clock."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.waits: list[float | None] = []
+
+    def wait(self, timeout: float | None = None) -> bool:
+        self.waits.append(timeout)
+        return self.is_set()
+
+
+def _bleed_of(gate: BargeGate) -> float | None:
+    """The bleed delay ``start_after_bleed`` waits out before it watches."""
+    cancel = _RecordingCancel()
+    gate.start_after_bleed(cancel).join(timeout=5)
+    return cancel.waits[0]
 
 
 def test_listen_tune_keeps_vad_and_pre_pad_in_range(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -97,135 +161,110 @@ def test_pre_pad_zero_still_starts_on_speech(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setenv("FISH_VOICE_PRE_PAD_FRAMES", "0")
     monkeypatch.setenv("FISH_VOICE_SPEECH_FRAMES", "2")
     monkeypatch.setenv("FISH_VOICE_MIN_RMS", "200")
-
-    class Vad:
-        def is_speech(self, frame: bytes, rate: int) -> bool:
-            del frame, rate
-            return True
-
+    _vad(monkeypatch, lambda _frame: True)
     tune = ListenTune.from_env()
-    heard = _Listen(tune, Vad())
-    frame = _pcm(500)
-    for idle in range(tune.pre_pad_frames):
-        assert heard.take(frame, idle) is False
-    assert heard.triggered
+    kept, _ended, _pulled = _stream([_pcm(500)] * tune.pre_pad_frames, tune)
+    assert kept  # speech started, so its frames were passed on
 
 
-def test_loud_frames_do_not_raise_the_floor_above_the_voice() -> None:
-    class Vad:
-        on: bool = False
-
-        def is_speech(self, frame: bytes, rate: int) -> bool:
-            del frame, rate
-            return self.on
-
-    tune = ListenTune(1, 40, 4, 200.0, 10, 12)
-    vad = Vad()
-    heard = _Listen(tune, vad)
-    frame = _pcm(300)
-    for idle in range(30):
-        assert heard.take(frame, idle) is False
-    assert heard.min_speech_now == 200.0
-    vad.on = True
-    for idle in range(30, 40):
-        heard.take(frame, idle)
-    assert heard.triggered
+def test_loud_frames_do_not_raise_the_floor_above_the_voice(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # 30 frames at 300 that the detector calls noise, then the same level voiced. Had the
+    # loud noise taught the floor (300 x 2.5), the voice could never start a turn.
+    asked = itertools.count(1)
+    _vad(monkeypatch, lambda _frame: next(asked) > 30)
+    tune = ListenTune(
+        vad_aggressiveness=1,
+        end_silence_frames=40,
+        start_speech_frames=4,
+        min_speech_rms=200.0,
+        pre_pad_frames=10,
+        min_voiced_frames=12,
+    )
+    kept, _ended, _pulled = _stream([_pcm(300)] * 40, tune)
+    assert kept
 
 
-def test_a_gap_before_the_start_still_counts_as_voice() -> None:
-    class Vad:
-        def is_speech(self, frame: bytes, rate: int) -> bool:
-            del rate
-            return any(frame)
-
-    tune = ListenTune(1, 2, 4, 200.0, 20, 12)
-    heard = _Listen(tune, Vad())
-    loud = _pcm(500)
-    quiet = _pcm(0)
-    for _ in range(3):
-        assert heard.take(loud, 0) is False
-    assert heard.take(quiet, 0) is False
-    for _ in range(4):
-        heard.take(loud, 0)
-    assert heard.triggered
-    assert heard.speech_hits == 7
-    for _ in range(5):
-        assert heard.take(loud, 0) is False
-    assert heard.take(quiet, 0) is False
-    assert heard.take(quiet, 0) is True
-    assert _clip_wav(heard, tune) is not None
+def test_a_gap_before_the_start_still_counts_as_voice(monkeypatch: pytest.MonkeyPatch) -> None:
+    _vad(monkeypatch, any)
+    tune = ListenTune(
+        vad_aggressiveness=1,
+        end_silence_frames=2,
+        start_speech_frames=4,
+        min_speech_rms=200.0,
+        pre_pad_frames=20,
+        min_voiced_frames=12,
+    )
+    loud, quiet = _pcm(500), _pcm(0)
+    frames = [loud] * 3 + [quiet] + [loud] * 4 + [loud] * 5 + [quiet] * 2
+    kept, ended, pulled = _stream(frames, tune)
+    assert ended
+    assert pulled == len(frames)
+    # The voiced frames before the gap are part of the clip and count toward its voice.
+    assert _hits(kept) == [True] * 3 + [False] + [True] * 9 + [False] * 2
+    assert record_utterance(ScriptedMic(frames), tune=tune) is not None
 
 
-def test_a_dip_after_the_length_cap_does_not_end_the_utterance() -> None:
-    class Vad:
-        speech = True
-
-        def is_speech(self, frame: bytes, rate: int) -> bool:
-            del frame, rate
-            return self.speech
-
-    tune = ListenTune(1, 40, 1, 200.0, 4, 12)
-    heard = _Listen(tune, Vad())
-    loud = _pcm(500)
-    for _ in range(MAX_UTTERANCE_FRAMES):
-        assert heard.take(loud, 0) is False
-    assert len(heard.clip_frames) >= MAX_UTTERANCE_FRAMES
-    Vad.speech = False
-    quiet = _pcm(0)
-    assert heard.take(quiet, 0) is False
-    for _ in range(_CAP_QUIET_FRAMES - 2):
-        assert heard.take(quiet, 0) is False
-    assert heard.take(quiet, 0) is True
+def test_a_dip_after_the_length_cap_does_not_end_the_utterance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _vad(monkeypatch, any)
+    tune = ListenTune(
+        vad_aggressiveness=1,
+        end_silence_frames=40,
+        start_speech_frames=1,
+        min_speech_rms=200.0,
+        pre_pad_frames=4,
+        min_voiced_frames=12,
+    )
+    frames = [_pcm(500)] * MAX_UTTERANCE_FRAMES + [_pcm(0)] * tune.end_silence_frames
+    _kept, ended, pulled = _stream(frames, tune)
+    assert ended
+    quiet_read = pulled - MAX_UTTERANCE_FRAMES
+    # At the cap a short quiet run ends the turn, but not a single dip inside a word.
+    assert 1 < quiet_read < tune.end_silence_frames
 
 
-def test_a_long_utterance_keeps_only_the_recent_frames() -> None:
-    class Vad:
-        def is_speech(self, frame: bytes, rate: int) -> bool:
-            del frame, rate
-            return True
-
-    tune = ListenTune(1, 40, 1, 200.0, 4, 12)
-    heard = _Listen(tune, Vad())
-    first = _pcm(500)
-    rest = _pcm(800)
-    heard.take(first, 0)
-    for _ in range(MAX_UTTERANCE_FRAMES + 20):
-        assert heard.take(rest, 0) is False
-    assert len(heard.clip_frames) == MAX_UTTERANCE_FRAMES
-    assert first not in heard.clip_frames
-    assert heard.speech_hits == MAX_UTTERANCE_FRAMES
-
-
-def test_trimmed_barge_credit_does_not_keep_a_short_tail() -> None:
-    class Vad:
-        def is_speech(self, frame: bytes, rate: int) -> bool:
-            del frame, rate
-            return True
-
-    tune = ListenTune(1, 40, 1, 200.0, 4, 12)
-    heard = _Listen(tune, Vad())
-    loud = _pcm(800)
-    _prime_listen(heard, BargeIn(loud * 4, None, DEFAULT_BARGE_RMS))
-    assert heard.primed_hits == 4
-    quiet = _pcm(0)
-    for _ in range(MAX_UTTERANCE_FRAMES):
-        assert heard.take(quiet, 0) is False
-    assert heard.primed_hits == 0
-    assert heard.speech_hits == 0
-    for _ in range(4):
-        assert heard.take(loud, 0) is False
-    assert heard.speech_hits == 4
-    assert heard.primed_hits == 0
-    assert _clip_wav(heard, tune) is None
+def test_a_long_utterance_keeps_only_the_recent_frames(monkeypatch: pytest.MonkeyPatch) -> None:
+    _vad(monkeypatch, any)
+    tune = ListenTune(
+        vad_aggressiveness=1,
+        end_silence_frames=40,
+        start_speech_frames=1,
+        min_speech_rms=200.0,
+        pre_pad_frames=4,
+        min_voiced_frames=12,
+    )
+    first, rest, quiet = _pcm(500), _pcm(800), _pcm(0)
+    frames = [first] + [rest] * (MAX_UTTERANCE_FRAMES + 20) + [quiet] * tune.end_silence_frames
+    wav = record_utterance(ScriptedMic(frames), tune=tune)
+    assert wav is not None
+    kept = _wav_frames(wav)
+    assert len(kept) == MAX_UTTERANCE_FRAMES
+    assert first not in kept
 
 
-def test_encode_wav_keeps_pcm_samples() -> None:
-    pcm = b"\x01\x00\x02\x00"
-    with wave.open(io.BytesIO(_encode_wav(pcm))) as wf:
-        assert wf.getnchannels() == 1
-        assert wf.getsampwidth() == 2
-        assert wf.getframerate() == 16_000
-        assert wf.readframes(wf.getnframes()) == pcm
+def test_trimmed_barge_credit_does_not_keep_a_short_tail(monkeypatch: pytest.MonkeyPatch) -> None:
+    end = _pcm(1)  # the one frame the detector calls silence
+    _vad(monkeypatch, lambda frame: frame != end)
+    tune = ListenTune(
+        vad_aggressiveness=1,
+        end_silence_frames=40,
+        start_speech_frames=1,
+        min_speech_rms=200.0,
+        pre_pad_frames=4,
+        min_voiced_frames=12,
+    )
+    loud, hesitation = _pcm(800), _pcm(0)
+    barge = BargeIn(loud * 4, None, DEFAULT_BARGE_RMS)
+    # Straight after the barge-in, four more voiced frames are enough: the clip is credited.
+    short = [loud] * 4 + [end] * tune.end_silence_frames
+    assert record_utterance(ScriptedMic(short), carried=barge, tune=tune) is not None
+    # After a hesitation as long as the cap, the barge-in clip has left the clip, and so
+    # has its credit: four voiced frames are a short tail, not a turn.
+    trimmed = [hesitation] * MAX_UTTERANCE_FRAMES + [loud] * 4 + [end] * tune.end_silence_frames
+    assert record_utterance(ScriptedMic(trimmed), carried=barge, tune=tune) is None
 
 
 def test_bleed_wait_ends_when_the_turn_is_cancelled() -> None:
@@ -281,13 +320,10 @@ def test_barge_bleed_delay_cannot_be_negative(monkeypatch: pytest.MonkeyPatch) -
     no_aec = EchoCanceller(AecTune(enabled=False))
     gate = BargeGate(mic=ScriptedMic(aec=no_aec), tune=BargeTune.from_env())
     assert gate.tune.bleed_delay_s == DEFAULT_BLEED_DELAY_S
-    assert gate._bleed_wait() == DEFAULT_BLEED_DELAY_S
+    assert _bleed_of(gate) == DEFAULT_BLEED_DELAY_S
     with pytest.raises(ValueError, match="bleed_delay_s"):
         BargeTune(bleed_delay_s=-0.5)
-    assert (
-        BargeGate(mic=ScriptedMic(aec=no_aec), tune=BargeTune(bleed_delay_s=0.0))._bleed_wait()
-        == 0.0
-    )
+    assert _bleed_of(BargeGate(mic=ScriptedMic(aec=no_aec), tune=BargeTune(bleed_delay_s=0.0))) == 0
 
 
 def test_barge_hit_frames_must_be_positive(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -304,43 +340,48 @@ def test_barge_hit_frames_must_be_positive(monkeypatch: pytest.MonkeyPatch) -> N
     assert BargeGate(mic=ScriptedMic(), tune=BargeTune(min_rms=10)).tune.min_rms == 10
 
 
-def test_barge_gate_explicit_values_win(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("FISH_VOICE_BLEED_DELAY", "9.9")
-    gate = BargeGate(
-        mic=ScriptedMic(),
-        tune=replace(BargeTune.from_env(), bleed_delay_s=0.2, hit_frames=3, min_rms=10.0),
+def test_barge_keeps_the_lookback_that_tripped(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Distinct frames: 22 under the gate's level, then 3 loud ones that trip it.
+    frames = [_pcm(n) for n in range(1, 23)] + [_pcm(1000 + n) for n in range(3)]
+    gate, cancel = _watch_with(
+        monkeypatch,
+        frames,
+        aec=EchoCanceller(AecTune(enabled=False)),
+        tune=BargeTune(hit_frames=3, min_rms=200.0),
     )
-    assert gate.tune.bleed_delay_s == 0.2
-    assert gate.tune.hit_frames == 3
-    assert gate.tune.min_rms == 10.0
+    gate.watch(cancel)
+    assert cancel.is_set()
+    # The last 20 frames (600 ms) are kept for the next listen, the tripping ones included.
+    assert gate.captured == b"".join(frames[-20:])
 
 
-def test_barge_keeps_the_lookback_that_tripped() -> None:
-    gate = BargeGate(mic=ScriptedMic())
-    frame = b"\x01\x00" * 480
-    for n in range(25):
-        gate._heard.append(frame[:-1] + bytes([n]))
-    gate.captured = b"".join(gate._heard)
-    assert len(gate._heard) == 20
-    assert gate.captured.startswith(frame[:-1] + bytes([5]))
-    assert gate.captured.endswith(frame[:-1] + bytes([24]))
+def _barge_carried_listen(
+    monkeypatch: pytest.MonkeyPatch, *, min_speech_rms: float = 200.0
+) -> ListenTune:
+    """A listen whose detector hears no speech on the mic, so only a carried clip counts."""
+    _vad(monkeypatch, lambda _frame: False)
+    return ListenTune(
+        vad_aggressiveness=1,
+        end_silence_frames=1,
+        start_speech_frames=4,
+        min_speech_rms=min_speech_rms,
+        pre_pad_frames=20,
+        min_voiced_frames=DEFAULT_MIN_VOICED_FRAMES,
+    )
 
 
-def test_barge_prefix_meets_the_listen_minimum() -> None:
-    tune = ListenTune(1, 1, 4, 200.0, 20, DEFAULT_MIN_VOICED_FRAMES)
-    heard = _Listen(tune, _UnusedVad())
-    loud = (1000).to_bytes(2, "little", signed=True) * (FRAME_BYTES // 2)
-    _prime_listen(heard, BargeIn(loud * DEFAULT_BARGE_HIT_FRAMES, None, DEFAULT_BARGE_RMS))
-    assert heard.speech_hits == DEFAULT_BARGE_HIT_FRAMES
-    wav = _clip_wav(heard, tune)
+def test_barge_prefix_meets_the_listen_minimum(monkeypatch: pytest.MonkeyPatch) -> None:
+    tune = _barge_carried_listen(monkeypatch)
+    quiet = [_pcm(0)]
+    clip = BargeIn(_pcm(1000) * DEFAULT_BARGE_HIT_FRAMES, None, DEFAULT_BARGE_RMS)
+    kept, _ended, _pulled = _stream(quiet, tune, carried=clip)
+    assert _hits(kept)[:DEFAULT_BARGE_HIT_FRAMES] == [True] * DEFAULT_BARGE_HIT_FRAMES
+    wav = record_utterance(ScriptedMic(quiet), carried=clip, tune=tune)
     assert wav is not None
     assert wav.startswith(b"RIFF")
-    spike = (4000).to_bytes(2, "little", signed=True) * (FRAME_BYTES // 2)
-    bang = _Listen(tune, _UnusedVad())
-    _prime_listen(bang, BargeIn(spike * DEFAULT_BARGE_HIT_FRAMES, None, DEFAULT_BARGE_RMS))
-    kept = _clip_wav(bang, tune)
-    assert kept is not None
-    assert kept.startswith(b"RIFF")
+    # A loud barge-in clip is kept too, although the same clip on its own is an impulse.
+    bang = BargeIn(_pcm(4000) * DEFAULT_BARGE_HIT_FRAMES, None, DEFAULT_BARGE_RMS)
+    assert record_utterance(ScriptedMic(quiet), carried=bang, tune=tune) is not None
     assert (
         listen_reject_reason(
             clip_frames=14,
@@ -353,28 +394,37 @@ def test_barge_prefix_meets_the_listen_minimum() -> None:
     )
 
 
-def test_barge_prefix_counts_under_a_higher_listen_floor() -> None:
-    tune = ListenTune(1, 40, 4, 800.0, 20, DEFAULT_MIN_VOICED_FRAMES)
-    heard = _Listen(tune, _UnusedVad())
-    speech = (256).to_bytes(2, "little", signed=True) * (FRAME_BYTES // 2)
-    quiet = b"\x01\x00" * (FRAME_BYTES // 2)
-    _prime_listen(
-        heard, BargeIn(quiet + speech * DEFAULT_BARGE_HIT_FRAMES, None, DEFAULT_BARGE_RMS)
+def test_barge_prefix_counts_under_a_higher_listen_floor(monkeypatch: pytest.MonkeyPatch) -> None:
+    tune = _barge_carried_listen(monkeypatch, min_speech_rms=800.0)
+    speech = _pcm(256)
+    quiet = _pcm(1)
+    clip = BargeIn(quiet + speech * DEFAULT_BARGE_HIT_FRAMES, None, DEFAULT_BARGE_RMS)
+    kept, _ended, _pulled = _stream([_pcm(0)], tune, carried=clip)
+    assert (
+        _hits(kept)[: DEFAULT_BARGE_HIT_FRAMES + 1] == [False] + [True] * DEFAULT_BARGE_HIT_FRAMES
     )
-    assert heard.speech_hits == DEFAULT_BARGE_HIT_FRAMES
-    assert _clip_wav(heard, tune) is not None
+    assert record_utterance(ScriptedMic([_pcm(0)]), carried=clip, tune=tune) is not None
 
 
-def test_prime_listen_counts_loud_prefix_frames() -> None:
-    tune = ListenTune(1, 40, 4, 200.0, 20, 12)
-    heard = _Listen(tune, _UnusedVad())
+def test_a_barge_clip_starts_the_listen_and_passes_on_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _vad(monkeypatch, lambda _frame: False)
+    tune = ListenTune(
+        vad_aggressiveness=1,
+        end_silence_frames=40,
+        start_speech_frames=4,
+        min_speech_rms=200.0,
+        pre_pad_frames=20,
+        min_voiced_frames=12,
+    )
     loud = b"\x00\x10" * 480
     quiet = b"\x01\x00" * 480
-    _prime_listen(heard, BargeIn(quiet + loud, None, DEFAULT_BARGE_RMS))
-    assert heard.triggered
-    assert len(heard.clip_frames) == 2
-    assert heard.speech_hits == 1
-    assert heard.silence == 0
+    after = _pcm(0)
+    kept, _ended, _pulled = _stream([after], tune, carried=BargeIn(quiet + loud, None, 220.0))
+    # The clip goes first, scored at its gate's level, and the next mic frame follows at
+    # once: the listen started from the clip and did not wait for speech to start.
+    assert kept == [(quiet, False), (loud, True), (after, False)]
 
 
 def test_barge_defaults_without_env(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -448,26 +498,28 @@ def test_mic_chunks_join_when_short_and_split_when_long() -> None:
     assert pending == bytearray()
 
 
-def test_barge_hits_decay_after_three_misses_and_then_trip() -> None:
-    hit, miss, tripped = 2, 0, False
-    for _ in range(BARGE_MISS_DECAY_FRAMES - 1):
-        hit, miss, tripped = _barge_step(
-            hit=hit, miss=miss, voiced=False, rms=0, need=200, far=False, want=3
-        )
-        assert tripped is False
-        assert hit == 2
-    hit, miss, tripped = _barge_step(
-        hit=hit, miss=miss, voiced=False, rms=0, need=200, far=False, want=3
+def _trip_frame(monkeypatch: pytest.MonkeyPatch, frames: list[bytes]) -> int | None:
+    """The frame (counted from 1) on which a three-hit gate tripped, or None."""
+    gate, cancel = _watch_with(
+        monkeypatch,
+        frames,
+        aec=EchoCanceller(AecTune(enabled=False)),
+        tune=BargeTune(hit_frames=3, min_rms=200.0),
     )
-    assert (hit, miss, tripped) == (1, 0, False)
-    hit, miss, tripped = _barge_step(
-        hit=hit, miss=miss, voiced=True, rms=400, need=200, far=False, want=3
-    )
-    assert tripped is False
-    hit, miss, tripped = _barge_step(
-        hit=hit, miss=miss, voiced=True, rms=400, need=200, far=False, want=3
-    )
-    assert tripped is True
+    gate.watch(cancel)
+    return gate.resume_at  # ScriptedMic is always at position 0
+
+
+def test_barge_hits_decay_after_three_misses_and_then_trip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loud, quiet = _pcm(500), _pcm(0)
+    short_gap = [loud, loud] + [quiet] * (BARGE_MISS_DECAY_FRAMES - 1) + [loud]
+    # A gap shorter than the decay keeps both hits, so one more trips the gate.
+    assert _trip_frame(monkeypatch, short_gap) == len(short_gap)
+    long_gap = [loud, loud] + [quiet] * BARGE_MISS_DECAY_FRAMES + [loud, loud, loud]
+    # The third miss takes one hit back (not all of them), so it takes two more to trip.
+    assert _trip_frame(monkeypatch, long_gap) == 2 + BARGE_MISS_DECAY_FRAMES + 2
 
 
 def test_barge_watch_logs_a_mic_failure_without_cancelling(
@@ -499,31 +551,38 @@ def test_barge_watch_logs_a_mic_failure_without_cancelling(
 def test_bleed_thread_skips_the_mic_when_already_cancelled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    gate = BargeGate(mic=ScriptedMic(), tune=BargeTune(bleed_delay_s=0))
-    watched: list[bool] = []
-
-    def watch(cancel: threading.Event) -> None:
-        watched.append(cancel.is_set())
-
-    monkeypatch.setattr(gate, "watch", watch)
+    _vad(monkeypatch, lambda _frame: False)
+    mic = ScriptedMic()
+    gate = BargeGate(mic=mic, tune=BargeTune(bleed_delay_s=0))
     cancel = threading.Event()
     cancel.set()
     gate.start_after_bleed(cancel).join(timeout=1)
-    assert watched == []
+    assert mic.opened == 0
     cancel.clear()
     gate.start_after_bleed(cancel).join(timeout=1)
-    assert watched == [False]
+    assert mic.opened == 1
+    assert gate.failure is None
 
 
-def test_quiet_vad_frame_holds_the_turn() -> None:
-    tune = ListenTune(1, 2, 4, 200.0, 20, 12)
-    heard = _Listen(tune, _UnusedVad())
-    assert heard._hold(b"\x00\x00", False, vad_speech=True) is False
-    assert heard.silence == 0
-    assert heard.speech_hits == 0
-    assert heard._hold(b"\x00\x00", False, vad_speech=False) is False
-    assert heard.silence == 1
-    assert heard._hold(b"\x00\x00", False, vad_speech=False) is True
+def test_quiet_vad_frame_holds_the_turn(monkeypatch: pytest.MonkeyPatch) -> None:
+    end = _pcm(1)  # the one frame the detector calls silence
+    _vad(monkeypatch, lambda frame: frame != end)
+    tune = ListenTune(
+        vad_aggressiveness=1,
+        end_silence_frames=2,
+        start_speech_frames=1,
+        min_speech_rms=200.0,
+        pre_pad_frames=20,
+        min_voiced_frames=12,
+    )
+    hesitation = _pcm(0)  # too quiet to be speech, but the detector still hears a voice
+    frames = [_pcm(500)] + [hesitation] * 5 + [end] * 2
+    kept, ended, pulled = _stream(frames, tune)
+    # The hesitation is not silence, so only the two silent frames end the turn,
+    # and it is not counted as speech either.
+    assert ended
+    assert pulled == len(frames)
+    assert _hits(kept) == [True] + [False] * 7
 
 
 def test_listen_reject_cough_and_impulse() -> None:
@@ -545,10 +604,6 @@ def test_listen_reject_cough_and_impulse() -> None:
     assert reason(2, 2, 100.0) == "too_short"
 
 
-def _pcm(level: int) -> bytes:
-    return level.to_bytes(2, "little", signed=True) * (FRAME_BYTES // 2)
-
-
 def _install_listen_fakes(
     monkeypatch: pytest.MonkeyPatch,
     frames: list[bytes],
@@ -558,15 +613,7 @@ def _install_listen_fakes(
     monkeypatch.setenv("FISH_VOICE_SPEECH_FRAMES", "2")
     monkeypatch.setenv("FISH_VOICE_PRE_PAD_FRAMES", "2")
     monkeypatch.setenv("FISH_VOICE_MIN_RMS", "200")
-
-    class SpeechVad:
-        def __init__(self, mode: int) -> None:
-            self.mode = mode
-
-        def is_speech(self, frame: bytes, rate: int) -> bool:
-            return frame[:2] != b"\x00\x00"
-
-    install_vad(monkeypatch, SpeechVad)
+    _vad(monkeypatch, lambda frame: frame[:2] != b"\x00\x00")
 
     def fake_mic(stop: StopFlag | None) -> collections.abc.Iterator[bytes]:
         del stop
@@ -578,13 +625,16 @@ def _install_listen_fakes(
 def test_record_utterance_writes_a_wav_for_a_held_phrase(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    loud = _pcm(500)
-    quiet = _pcm(0)
-    mic, tune = _install_listen_fakes(monkeypatch, [loud, loud, quiet, quiet])
+    frames = [_pcm(500), _pcm(500), _pcm(0), _pcm(0)]
+    mic, tune = _install_listen_fakes(monkeypatch, frames)
     wav = record_utterance(mic, tune=tune)
     assert wav is not None
-    assert wav.startswith(b"RIFF")
-    assert len(wav) > 44
+    # 16 kHz mono int16, as Fish ASR is sent it, holding every frame the listen kept.
+    with wave.open(io.BytesIO(wav)) as wf:
+        assert wf.getnchannels() == 1
+        assert wf.getsampwidth() == 2
+        assert wf.getframerate() == SAMPLE_RATE
+        assert wf.readframes(wf.getnframes()) == b"".join(frames)
 
 
 def test_record_utterance_drops_a_finished_clip_when_quit_is_set(
@@ -625,21 +675,8 @@ def _watch_with(
     tune: BargeTune,
     vad_speech: bool = True,
 ) -> tuple[BargeGate, threading.Event]:
-    class Vad:
-        def __init__(self, mode: int) -> None:
-            self.mode = mode
-
-        def is_speech(self, frame: bytes, rate: int) -> bool:
-            del frame, rate
-            return vad_speech
-
-    install_vad(monkeypatch, Vad)
-
-    def fake_mic(stop: StopFlag | None) -> collections.abc.Iterator[bytes]:
-        del stop
-        yield from frames
-
-    return BargeGate(mic=ScriptedMic(fake_mic, aec=aec), tune=tune), threading.Event()
+    _vad(monkeypatch, lambda _frame: vad_speech)
+    return BargeGate(mic=ScriptedMic(frames, aec=aec), tune=tune), threading.Event()
 
 
 def test_barge_watch_aligns_the_far_end_before_reading_the_mic(
@@ -648,7 +685,7 @@ def test_barge_watch_aligns_the_far_end_before_reading_the_mic(
     aec = EchoCanceller(AecTune(enabled=False))
     order: list[str] = []
     monkeypatch.setattr(aec, "align", lambda: order.append("align"))
-    gate, cancel = _watch_with(monkeypatch, [_pcm(0)], aec=aec, tune=BargeTune())
+    _vad(monkeypatch, lambda _frame: False)
 
     def mic(stop: StopFlag | None) -> collections.abc.Iterator[bytes]:
         del stop
@@ -656,7 +693,7 @@ def test_barge_watch_aligns_the_far_end_before_reading_the_mic(
         yield _pcm(0)
 
     gate = BargeGate(mic=ScriptedMic(mic, aec=aec), tune=BargeTune())
-    gate.watch(cancel)
+    gate.watch(threading.Event())
     assert order == ["align", "mic"]
 
 
@@ -700,52 +737,45 @@ def test_barge_floor_follows_the_room_noise_above_the_seed(
     assert cancel3.is_set()
 
 
-def _constant_frame(level: int) -> bytes:
-    return level.to_bytes(2, "little", signed=True) * (FRAME_BYTES // 2)
+class _ScriptedFarEnd(EchoCanceller):
+    """No echo cancellation, and the speaker plays while ``playing`` says so."""
+
+    def __init__(self) -> None:
+        super().__init__(AecTune(enabled=False))
+        self.playing = True
+
+    def far_end_playing(self, window_s: float = 0.0) -> bool:
+        del window_s
+        return self.playing
 
 
 def test_speech_between_the_floor_and_the_boosted_need_does_not_raise_the_floor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    seen: list[tuple[float, bool]] = []
-
-    class Floor:
-        def __init__(self, default: float) -> None:
-            self.default = default
-
-        def value(self) -> float:
-            return self.default
-
-        def observe(self, rms: float, *, quiet: bool) -> None:
-            seen.append((rms, quiet))
-
-    class SilentVad:
-        def __init__(self, mode: int) -> None:
-            del mode
-
-        def is_speech(self, frame: bytes, rate: int) -> bool:
-            del frame, rate
-            return False
+    far = _ScriptedFarEnd()
 
     def mic(stop: StopFlag | None) -> collections.abc.Iterator[bytes]:
         del stop
-        yield from [_constant_frame(300)] * 5
+        # While the speaker plays, with AEC off, the need is 220 x 2.2 = 484: speech at 300
+        # is under it but over the 220 floor, so it is not the room's hiss.
+        yield from [_pcm(300)] * 40
+        far.playing = False
+        yield from [_pcm(400)] * 3
 
-    install_vad(monkeypatch, SilentVad)
-    monkeypatch.setattr("fish_audio_suite_voice.scorer.AdaptiveFloor", Floor)
-    aec = EchoCanceller(AecTune(enabled=False))
-    # The speaker is playing and AEC is off, so ``need`` is 220 x 2.2 = 484.
-    aec.tap_playback(b"\x00\x00" * 16000, 16000)
-    gate = BargeGate(mic=ScriptedMic(mic, aec=aec), tune=BargeTune(min_rms=220.0, playing_gain=2.2))
-    gate.watch(threading.Event())
-    assert len(seen) == 5
-    assert all(not quiet for _, quiet in seen)
+    _vad(monkeypatch, lambda _frame: True)
+    gate = BargeGate(
+        mic=ScriptedMic(mic, aec=far), tune=BargeTune(hit_frames=3, min_rms=220.0, playing_gain=2.2)
+    )
+    cancel = threading.Event()
+    gate.watch(cancel)
+    # Had those 40 frames taught the floor (300 x 2.5), 400 could not trip it afterwards.
+    assert cancel.is_set()
 
 
 def test_a_gate_without_an_aec_runs_without_one() -> None:
     gate = BargeGate(mic=ScriptedMic())
     assert gate.aec.available() is False
-    assert gate._bleed_wait() == gate.tune.bleed_delay_s
+    assert _bleed_of(gate) == gate.tune.bleed_delay_s
 
 
 def test_with_echo_cancellation_the_aec_bleed_delay_applies(
@@ -759,10 +789,10 @@ def test_with_echo_cancellation_the_aec_bleed_delay_applies(
             tune=BargeTune(bleed_delay_s=barge_bleed, aec_bleed_delay_s=aec_bleed),
         )
 
-    assert gate(0.3)._bleed_wait() == 0.3
-    assert gate(1.5)._bleed_wait() == 1.5
-    assert gate(0.0)._bleed_wait() == 0.0
-    assert gate(0.3, barge_bleed=1.5)._bleed_wait() == 0.3
+    assert _bleed_of(gate(0.3)) == 0.3
+    assert _bleed_of(gate(1.5)) == 1.5
+    assert _bleed_of(gate(0.0)) == 0.0
+    assert _bleed_of(gate(0.3, barge_bleed=1.5)) == 0.3
     with pytest.raises(ValueError, match="bleed_delay_s"):
         BargeTune(aec_bleed_delay_s=-1.0)
 
@@ -771,13 +801,11 @@ def test_the_bleed_wait_follows_whether_echo_cancellation_runs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     off = EchoCanceller(AecTune(enabled=False))
-    assert (
-        BargeGate(mic=ScriptedMic(aec=off), tune=BargeTune(bleed_delay_s=0.9))._bleed_wait() == 0.9
-    )
+    assert _bleed_of(BargeGate(mic=ScriptedMic(aec=off), tune=BargeTune(bleed_delay_s=0.9))) == 0.9
     on = EchoCanceller(AecTune())
-    monkeypatch.setattr(on, "load", object)
+    monkeypatch.setattr(on, "load", object)  # a processor that loaded
     assert (
-        BargeGate(mic=ScriptedMic(aec=on), tune=BargeTune(bleed_delay_s=0.9))._bleed_wait()
+        _bleed_of(BargeGate(mic=ScriptedMic(aec=on), tune=BargeTune(bleed_delay_s=0.9)))
         == DEFAULT_AEC_BLEED_DELAY_S
     )
 
@@ -796,16 +824,20 @@ def test_a_small_floor_window_still_warms_up() -> None:
     assert tiny.value() == 150.0
 
 
-def test_a_setup_failure_in_the_watcher_thread_is_reported(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    gate = BargeGate(mic=ScriptedMic(), tune=BargeTune(hit_frames=2, min_rms=1.0, bleed_delay_s=0))
+class _BrokenAec(EchoCanceller):
+    """An echo canceller whose processor fails as the watcher asks about it."""
 
-    def broken_bleed() -> float:
+    def available(self) -> bool:
         raise RuntimeError("aec failed to load")
 
-    monkeypatch.setattr(gate, "_bleed_wait", broken_bleed)
+
+def test_a_setup_failure_in_the_watcher_thread_is_reported(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    gate = BargeGate(
+        mic=ScriptedMic(aec=_BrokenAec(AecTune.off())),
+        tune=BargeTune(hit_frames=2, min_rms=1.0, bleed_delay_s=0),
+    )
     cancel = threading.Event()
     thread = gate.start_after_bleed(cancel)
     thread.join(timeout=5)
@@ -817,9 +849,7 @@ def test_a_setup_failure_in_the_watcher_thread_is_reported(
     assert "off for this reply" in err
 
 
-def test_a_reply_that_starts_muted_is_not_watched_and_the_mic_is_not_opened(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_a_reply_that_starts_muted_is_not_watched_and_the_mic_is_not_opened() -> None:
     mic = ScriptedMic()
     gate = BargeGate(mic=mic, tune=BargeTune(bleed_delay_s=0), muted=lambda: True)
     gate.start_after_bleed(threading.Event()).join(timeout=1)
@@ -841,9 +871,10 @@ def test_muting_during_a_reply_ends_the_watch_without_interrupting_it(
                 muted.set()
             yield _pcm(0)
 
+    _vad(monkeypatch, lambda _frame: True)
     aec = EchoCanceller(AecTune(enabled=False))
-    gate, cancel = _watch_with(monkeypatch, [], aec=aec, tune=BargeTune())
     gate = BargeGate(mic=ScriptedMic(mic, aec=aec), tune=BargeTune(), muted=muted.is_set)
+    cancel = threading.Event()
     gate.watch(cancel)
     assert len(read) == 2  # it stopped reading when muted
     assert not cancel.is_set()  # and the reply was not interrupted
@@ -866,54 +897,62 @@ def test_a_trip_records_where_the_next_listen_reads_on_from(
         def position(self) -> int:
             return 100
 
+    _vad(monkeypatch, lambda _frame: True)
     aec = EchoCanceller(AecTune(enabled=False))
-    gate, cancel = _watch_with(
-        monkeypatch, [_pcm(500)] * 5, aec=aec, tune=BargeTune(hit_frames=3, min_rms=200.0)
-    )
     source = _Positioned([_pcm(500)] * 5, aec=aec)
-    gate.mic = source
+    gate = BargeGate(mic=source, tune=BargeTune(hit_frames=3, min_rms=200.0))
+    cancel = threading.Event()
     gate.watch(cancel)
     assert cancel.is_set()
     assert source.since == 100  # read from where the mic was when the watch began
     assert gate.resume_at == 103  # the trip came on the third frame
 
 
-def _level(rms: int) -> bytes:
-    return rms.to_bytes(2, "little", signed=True) * (FRAME_BYTES // 2)
-
-
 @pytest.mark.parametrize(("gate_rms", "credited"), [(100.0, 10), (DEFAULT_BARGE_RMS, 0)])
 def test_a_barge_clip_is_scored_at_the_level_its_own_gate_admitted_it(
-    gate_rms: float, credited: int
+    monkeypatch: pytest.MonkeyPatch, gate_rms: float, credited: int
 ) -> None:
     # FISH_VOICE_BARGE_RMS=100 let a soft interruption at 150 stop the reply. Scored at the
     # default 220 instead, none of it counted and the words that stopped the reply were lost.
-    tune = ListenTune(1, 40, 4, DEFAULT_MIN_SPEECH_RMS, 20, DEFAULT_MIN_VOICED_FRAMES)
-    heard = _Listen(tune, _UnusedVad())
-    _prime_listen(heard, BargeIn(_level(150) * 10, None, gate_rms))
-    assert heard.primed_hits == credited
-    assert (_clip_wav(heard, tune) is not None) is (credited > 0)
+    tune = _barge_carried_listen(monkeypatch, min_speech_rms=DEFAULT_MIN_SPEECH_RMS)
+    clip = BargeIn(_pcm(150) * 10, None, gate_rms)
+    kept, _ended, _pulled = _stream([_pcm(0)], tune, carried=clip)
+    assert sum(_hits(kept)) == credited
+    wav = record_utterance(ScriptedMic([_pcm(0)]), carried=clip, tune=tune)
+    assert (wav is not None) is (credited > 0)
 
 
-def test_a_fallback_clip_goes_on_as_ordinary_speech_with_no_barge_in_credit() -> None:
-    tune = ListenTune(1, 40, 4, DEFAULT_MIN_SPEECH_RMS, 20, DEFAULT_MIN_VOICED_FRAMES)
-    flags = [False, True, True, False, True]
-    heard = _Listen(tune, _UnusedVad())
-    _prime_listen(heard, StreamFallback(tuple((_level(600), f) for f in flags), 7))
-    assert heard.triggered  # speech already started: the first words are kept
-    assert heard.speech_flags == flags  # as the listen gate judged each frame
-    assert heard.primed_hits == 0  # not an interruption, so it needs the voice any turn needs
-    assert _clip_wav(heard, tune) is None
+def test_a_fallback_clip_goes_on_as_ordinary_speech_with_no_barge_in_credit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tune = _barge_carried_listen(monkeypatch, min_speech_rms=DEFAULT_MIN_SPEECH_RMS)
+    voiced = (_pcm(600), True)
+    unvoiced = (_pcm(600), False)
+    # Speech already started, so the first words are kept and the listen reads on from
+    # the position after them; the mic alone never starts a turn here.
+    mic = ScriptedMic([_pcm(0)])
+    full = StreamFallback((voiced,) * DEFAULT_MIN_VOICED_FRAMES, 7)
+    wav = record_utterance(mic, carried=full, tune=tune)
+    assert wav is not None
+    assert _wav_frames(wav)[:DEFAULT_MIN_VOICED_FRAMES] == [voiced[0]] * DEFAULT_MIN_VOICED_FRAMES
+    assert mic.since == 7
+    # Each frame counts as the listen gate judged it when it was captured, and a fallback
+    # is not an interruption: one frame short of the voice any turn needs is not a turn.
+    short = StreamFallback((voiced,) * (DEFAULT_MIN_VOICED_FRAMES - 1) + (unvoiced,), 7)
+    assert record_utterance(ScriptedMic([_pcm(0)]), carried=short, tune=tune) is None
 
 
-def test_a_fallback_from_a_barged_turn_keeps_the_credit_of_the_barge_in_clip() -> None:
-    tune = ListenTune(1, 40, 4, DEFAULT_MIN_SPEECH_RMS, 20, DEFAULT_MIN_VOICED_FRAMES)
-    barge = BargeIn(_level(600) * 4, 3, DEFAULT_BARGE_RMS)
-    frames = ((_level(600), True),) * 4 + ((_level(600), True), (_level(5), False))
-    heard = _Listen(tune, _UnusedVad())
-    _prime_listen(heard, StreamFallback(frames, 9, barge=barge))
-    assert heard.primed_hits == 4
-    assert _clip_wav(heard, tune) is not None  # 5 voiced frames: enough after a barge-in
+def test_a_fallback_from_a_barged_turn_keeps_the_credit_of_the_barge_in_clip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tune = _barge_carried_listen(monkeypatch, min_speech_rms=DEFAULT_MIN_SPEECH_RMS)
+    barge = BargeIn(_pcm(600) * 4, 3, DEFAULT_BARGE_RMS)
+    frames = ((_pcm(600), True),) * 4 + ((_pcm(600), True), (_pcm(5), False))
+    barged = StreamFallback(frames, 9, barge=barge)
+    # 5 voiced frames: enough after a barge-in, too few for a turn that began on its own.
+    assert record_utterance(ScriptedMic([_pcm(0)]), carried=barged, tune=tune) is not None
+    alone = StreamFallback(frames, 9)
+    assert record_utterance(ScriptedMic([_pcm(0)]), carried=alone, tune=tune) is None
 
 
 @pytest.mark.parametrize(
@@ -966,8 +1005,8 @@ def test_each_gate_asks_its_detector_about_a_frame_at_most_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Distinct levels, so each frame is its own key: quiet ones under every floor, loud ones over.
-    quiet = [_level(n) for n in range(1, 31)]
-    loud = [_level(1000 + n) for n in range(4)]
+    quiet = [_pcm(n) for n in range(1, 31)]
+    loud = [_pcm(1000 + n) for n in range(4)]
     frames = [*quiet, *loud, *quiet[:5]]
     engine, opened = _counting_engine(monkeypatch)
     listen = ListenTune(vad_engine=engine, end_silence_frames=40)

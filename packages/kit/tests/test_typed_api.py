@@ -11,7 +11,6 @@ import pytest
 import fish_audio_suite_kit as kit
 from fish_audio_suite_kit import (
     FISH_TTS_MODEL_IDS,
-    AsrFormat,
     AudioFormat,
     ChatMessage,
     FishAuthError,
@@ -22,9 +21,9 @@ from fish_audio_suite_kit import (
     FishTimeoutError,
     FishUpstreamError,
     SuiteDefaults,
-    TtsModel,
     env_bool,
     known_latency,
+    normalize_tts_model,
     parse_asr_body,
     retry_after_s,
 )
@@ -74,18 +73,12 @@ def test_a_rate_limit_error_carries_the_hint_and_catches_by_type() -> None:
         raise error
 
 
-def test_the_factories_return_the_right_subclass_with_the_old_message() -> None:
+def test_the_factories_return_the_subclass_for_their_status() -> None:
+    # The status and message of each are in test_http_errors.
     assert type(FishHttpError.for_unreachable()) is FishUpstreamError
     assert type(FishHttpError.for_non_json()) is FishUpstreamError
     assert type(FishHttpError.for_non_object()) is FishUpstreamError
     assert type(FishHttpError.for_timeout()) is FishTimeoutError
-    assert (FishHttpError.for_unreachable().status, FishHttpError.for_unreachable().message) == (
-        502,
-        "Fish upstream unreachable",
-    )
-    assert FishHttpError.for_timeout().status == 504
-    assert FishHttpError.for_non_json().message == "Fish returned a non-JSON body"
-    assert FishHttpError.for_non_object().message == "Fish returned a non-object body"
     # Calling a factory on a subclass still gives the fixed class.
     assert type(FishAuthError.for_unreachable()) is FishUpstreamError
 
@@ -119,22 +112,23 @@ def test_parse_asr_body_returns_the_typed_body_and_text() -> None:
 # --- literals and narrowing -----------------------------------------------------
 
 
-def test_the_literal_types_list_the_closed_value_sets() -> None:
-    assert set(get_args(FishLatency)) == {"low", "balanced", "normal"}
-    assert set(get_args(AudioFormat)) == {"wav", "pcm", "mp3", "opus"}
-    assert set(get_args(AsrFormat)) == {"json", "text", "verbose_json", "srt", "vtt"}
-    # Every catalog model is a TtsModel, the preview ones included.
-    assert set(get_args(TtsModel)) == set(FISH_TTS_MODEL_IDS)
-    assert get_type_hints(ChatMessage) == {
-        "role": get_type_hints(ChatMessage)["role"],
-        "content": str,
-    }
-    assert set(get_args(get_type_hints(ChatMessage)["role"])) == {"system", "user", "assistant"}
+def test_every_latency_mode_reads_back_from_its_name() -> None:
+    modes = get_args(FishLatency)
+    for mode in modes:
+        fallback = next(other for other in modes if other != mode)
+        assert known_latency(f" {mode.upper()} ", fallback) == mode
 
 
-def test_known_latency_returns_a_literal() -> None:
-    assert known_latency("LOW", "normal") == "low"
-    assert known_latency("turbo", "balanced") == "balanced"
+def test_every_catalog_model_is_recognised_whatever_its_case() -> None:
+    assert FISH_TTS_MODEL_IDS
+    for model in FISH_TTS_MODEL_IDS:
+        assert normalize_tts_model(f" {model.upper()} ") == model
+
+
+def test_a_chat_message_has_only_a_role_and_content() -> None:
+    hints = get_type_hints(ChatMessage)
+    assert set(hints) == {"role", "content"}
+    assert hints["content"] is str
 
 
 def test_the_defaults_use_the_literal_values_and_stay_light() -> None:

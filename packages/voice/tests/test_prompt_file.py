@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 from pathlib import Path
+from typing import BinaryIO
 
 import pytest
 
@@ -132,10 +133,43 @@ def test_a_directory_or_a_fifo_is_refused_without_reading_it(
     assert capsys.readouterr().err.count("is not a regular file") == 2
 
 
-def test_only_one_byte_past_the_limit_is_read(tmp_path: Path) -> None:
+class _CountingFile:
+    """A binary file that counts the bytes read from it."""
+
+    def __init__(self, handle: BinaryIO) -> None:
+        self._handle = handle
+        self.bytes_read = 0
+
+    def __enter__(self) -> _CountingFile:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._handle.close()
+
+    def read(self, size: int = -1) -> bytes:
+        data = self._handle.read(size)
+        self.bytes_read += len(data)
+        return data
+
+
+def test_only_one_byte_past_the_limit_is_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     big = tmp_path / "big.md"
     big.write_bytes(b"a" * (10 * 1024 * 1024))
+    opened: list[_CountingFile] = []
+    original = Path.open
+
+    def counting_open(self: Path, mode: str = "r") -> _CountingFile:
+        assert mode == "rb"
+        counted = _CountingFile(original(self, "rb"))
+        opened.append(counted)
+        return counted
+
+    monkeypatch.setattr(Path, "open", counting_open)
     assert system_prompt_from_file(str(big), "RULES") is None
+    assert [file.bytes_read for file in opened] == [64 * 1024 + 1]
+    assert "is over 64 KiB" in capsys.readouterr().err
 
 
 def test_a_slot_in_the_file_puts_the_voice_rules_where_the_file_says(tmp_path: Path) -> None:

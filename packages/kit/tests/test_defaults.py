@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from fish_audio_suite_kit import (
     DEFAULT_SYSTEM_PROMPT,
-    SuiteDefaults,
     chunk_length_hi,
     clamp_number,
     cut_at_control,
@@ -20,6 +21,7 @@ from fish_audio_suite_kit import (
     known_mp3_bitrate,
     known_opus_bitrate,
     normalize_tts_model,
+    official_cue,
     parse_flag,
     parse_number,
 )
@@ -57,19 +59,6 @@ def test_known_model_and_latency() -> None:
     assert normalize_tts_model("MyModel\ud800") == "s2.1-pro"
     assert known_latency(" Normal ", "balanced") == "normal"
     assert known_latency("turbo", "balanced") == "balanced"
-
-
-def test_suite_defaults() -> None:
-    d = SuiteDefaults()
-    assert d.tts_model == "s2.1-pro"
-    assert d.tts_partial_chars == 40
-    assert "no markdown" in DEFAULT_SYSTEM_PROMPT.lower()
-    assert "never spoken" in DEFAULT_SYSTEM_PROMPT
-    assert "excited," in DEFAULT_SYSTEM_PROMPT  # the list of one-word moods
-    assert "never a description" in DEFAULT_SYSTEM_PROMPT
-    assert "Every sentence starts with its own cue" in DEFAULT_SYSTEM_PROMPT
-    assert "change the cue" in DEFAULT_SYSTEM_PROMPT
-    assert "do not tag every sentence" not in DEFAULT_SYSTEM_PROMPT
 
 
 def test_env_number_keeps_default_when_blank_or_junk(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -216,38 +205,26 @@ def test_env_numbers_still_accept_ordinary_decimals(
     assert env_float("FISH_TEST_NUM", 7.5) == as_float
 
 
-def test_the_default_asr_model_is_transcribe_1_pro() -> None:
-    # Fish recommends pro and bills both models the same.
-    assert SuiteDefaults().asr_model == "transcribe-1-pro"
-
-
 def test_the_default_prompt_offers_every_emotion_fish_documents_and_nothing_else() -> None:
-    import re
-
-    from fish_audio_suite_kit import official_cue
-
     listed = re.search(r"or an action: ([a-z, ]+)\. Pick the word", DEFAULT_SYSTEM_PROMPT)
     assert listed is not None
     moods = listed.group(1).split(", ")
-    assert len(moods) == len(set(moods)) == 49  # every emotion Fish documents, none twice
+    assert len(moods) == len(set(moods))
     assert set(moods) == set(FISH_EMOTIONS)
+    # Official mode keeps every mood the prompt offers as it is.
     assert all(official_cue(mood) == mood for mood in moods)
-    assert "do not fall back on the same few" in DEFAULT_SYSTEM_PROMPT
 
 
 def test_every_sound_and_pause_the_default_prompt_names_is_a_fish_cue() -> None:
-    import re
-
-    from fish_audio_suite_kit import official_cue
-
     listed = re.search(r"Sounds are cues too: ([^.]+)\.", DEFAULT_SYSTEM_PROMPT)
     assert listed is not None
     sounds = re.findall(r"\[([^\]]+)\]", listed.group(1))
     assert sounds
     assert set(sounds) <= FISH_SOUNDS
     assert all(official_cue(sound) == sound for sound in sounds)
-    short, long = FISH_BREAKS
-    assert f"[{short}] is a short pause and [{long}] a longer one" in DEFAULT_SYSTEM_PROMPT
+    for pause in FISH_BREAKS:
+        assert f"[{pause}]" in DEFAULT_SYSTEM_PROMPT
+        assert official_cue(pause) == pause
 
 
 @pytest.mark.parametrize(

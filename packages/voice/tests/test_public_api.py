@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
+import re
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -12,7 +14,6 @@ import fish_audio_suite_voice as voice
 from fish_audio_suite_voice.debug import DebugLevel, debug_level
 from fish_audio_suite_voice.env_read import read_flag
 from fish_audio_suite_voice.listen import start_hit
-from fish_audio_suite_voice.llm_tune import LlmTune
 from fish_audio_suite_voice.log_setup import configure_voice_logging
 
 
@@ -42,11 +43,21 @@ def test_the_root_exports_the_types_public_signatures_use() -> None:
         "TtsResult",
         "TtsTune",
         "DuplexSession",
+        "TurnSignals",
+        "BargeGate",
+        "Mic",
         "ChatBackend",
         "PlaybackKind",
     ):
         assert name in voice.__all__, name
         assert getattr(voice, name) is not None
+
+
+def test_every_name_the_root_exports_is_documented_in_the_readme() -> None:
+    readme = (Path(__file__).parents[1] / "README.md").read_text(encoding="utf-8")
+    for name in voice.__all__:
+        assert hasattr(voice, name), name
+        assert re.search(rf"\b{name}\b", readme), f"{name} is exported but not in the README"
 
 
 def test_the_debug_level_is_a_named_ordered_value() -> None:
@@ -55,10 +66,6 @@ def test_the_debug_level_is_a_named_ordered_value() -> None:
     configure_voice_logging(debug=9)
     assert debug_level() is DebugLevel.TRACE
     configure_voice_logging(debug=False)
-
-
-def test_the_llm_backend_is_one_of_the_two_names() -> None:
-    assert LlmTune().backend in {"openrouter", "openai"}
 
 
 def test_boolean_flags_are_keyword_only() -> None:

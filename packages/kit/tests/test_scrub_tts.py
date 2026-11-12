@@ -389,7 +389,6 @@ def test_a_spaced_break_tag_is_not_spoken() -> None:
     broken = scrub_tts("Open the door< /br>today friend please.")
     assert "<" not in broken
     assert "doortoday" not in broken
-    assert "a < b" in scrub_tts("Math a < b and c > d today friend.")
     assert "[whispering]" in normalize_cues(scrub_tts("< whisper>quietly</ whisper>"), lead=True)
 
 

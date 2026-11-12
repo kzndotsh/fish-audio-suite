@@ -564,11 +564,7 @@ def test_early_flush_speaks_the_first_piece_then_flushes_again_at_the_end() -> N
         return [
             event
             async for event in delta_events(
-                deltas,
-                threading.Event(),
-                partial_chars=tts.tune.partial_chars,
-                style=CueStyle(),
-                early_flush=True,
+                deltas, threading.Event(), partial_chars=tts.tune.partial_chars, style=CueStyle()
             )
         ]
 
@@ -588,7 +584,6 @@ def test_early_flush_with_one_piece_does_not_flush_twice() -> None:
                 threading.Event(),
                 partial_chars=FishSpeaker(api_key="k", voice_id="v").tune.partial_chars,
                 style=CueStyle(),
-                early_flush=True,
             )
         ]
 
@@ -600,7 +595,7 @@ def test_early_flush_on_an_empty_reply_sends_nothing() -> None:
         return [
             event
             async for event in delta_events(
-                [], threading.Event(), partial_chars=50, style=CueStyle(), early_flush=True
+                [], threading.Event(), partial_chars=50, style=CueStyle()
             )
         ]
 
@@ -617,7 +612,6 @@ def test_early_flush_is_not_sent_after_a_cancel() -> None:
             cancel,
             partial_chars=40,
             style=CueStyle(),
-            early_flush=True,
         ):
             kinds.append(type(event).__name__)
             if type(event).__name__ == "TextEvent":

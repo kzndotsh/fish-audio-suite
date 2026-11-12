@@ -243,7 +243,6 @@ def test_thanks_for_watching() -> None:
     assert is_asr_hallucination("I hope you enjoyed the video.")
     loop = "If the sentence is cut off, do not make up words. " * 12
     assert is_asr_hallucination(loop)
-    assert not is_asr_hallucination("hello there friend")
 
 
 def test_scrub_asr_strips_pro_cues_only_when_asked() -> None:

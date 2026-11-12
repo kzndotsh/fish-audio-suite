@@ -178,7 +178,7 @@ def test_backoff_honors_retry_after_up_to_a_cap() -> None:
     assert 0.5 <= fish_backoff_s(0) <= 1.0
 
 
-def test_fish_http_error_constructors_carry_the_documented_status_and_message() -> None:
+def test_fish_http_error_factories_carry_the_documented_status_and_message() -> None:
     for built, status, message in (
         (FishHttpError.for_unreachable(), 502, "Fish upstream unreachable"),
         (FishHttpError.for_non_json(), 502, "Fish returned a non-JSON body"),

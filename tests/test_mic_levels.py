@@ -51,14 +51,13 @@ def test_the_waveform_numbers_are_the_ones_speech_scale_takes() -> None:
     room = [-55.0, -56.0, -54.0, -55.0, -57.0, -55.0, -56.0, -54.0, -55.0, -56.0]
     speech = [-30.0, -26.0, -28.0, -24.0, -29.0]
     noise, level = scale_levels(room + speech)
-    assert noise == percentile(room + speech, 0.1)  # the quiet end, above the -70 dB floor
-    assert level is not None
-    assert level == percentile(speech, 0.9)  # loud, but not the loudest block
+    assert noise == -56.0  # the quiet end (10th percentile), above the -70 dB floor
+    assert level == -24.0  # the 90th percentile of the speech blocks
     scale = SpeechScale()
     for index, db in enumerate(room + speech):
         scale.update(32768.0 * 10 ** (db / 20), index * 0.09)
     # The same speech level sets the top of the bar: a block there is near full.
-    assert scale.update(32768.0 * 10 ** (level / 20), 2.0) > 0.85
+    assert scale.update(32768.0 * 10 ** (-24.0 / 20), 2.0) > 0.85
     assert scale_levels(room)[1] is None  # no speech to measure
 
 

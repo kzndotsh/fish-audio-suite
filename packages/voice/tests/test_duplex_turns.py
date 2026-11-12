@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import replace
 from typing import cast
 
@@ -22,6 +22,7 @@ from fish_audio_suite_voice import reply
 from fish_audio_suite_voice.duplex_state import DuplexContext
 from fish_audio_suite_voice.events import ExitCode
 from fish_audio_suite_voice.hearing import HeardLine
+from fish_audio_suite_voice.log_setup import configure_voice_logging
 from fish_audio_suite_voice.portaudio import PortAudioMissingError
 from fish_audio_suite_voice.signals import DuplexSession
 from fish_audio_suite_voice.speaker import FishSpeaker
@@ -178,16 +179,18 @@ def test_noise_with_nothing_to_resume_just_listens_again(monkeypatch: pytest.Mon
     assert loop.last_user == ["", "", ""]
 
 
+@pytest.mark.usefixtures("debug_on")
 def test_debug_mode_logs_the_turn_summary_instead_of_printing_it(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     tts = FishSpeaker(api_key="k", voice_id="voice")
     install_audio(monkeypatch)
     speak_with_fakes(monkeypatch, tts)
-    monkeypatch.setattr("fish_audio_suite_voice.console_sink.debug_enabled", lambda: True)
     ScriptedHearing(monkeypatch, heard_line())
     assert run_session(quick_config(), tts) == 0
-    assert "first audio" not in capsys.readouterr().out
+    printed = capsys.readouterr()
+    assert "first audio" not in printed.out
+    assert "first audio" in printed.err
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -217,7 +220,17 @@ class _LoudVad:
         return frame[:2] != b"\x00\x00"
 
 
-def _logged_cooldowns(monkeypatch: pytest.MonkeyPatch, *, barged: bool) -> list[str]:
+@pytest.fixture
+def debug_on() -> Iterator[None]:
+    """Run with ``--debug``, as the CLI configures it, then put logging back."""
+    configure_voice_logging(debug=1)
+    yield
+    configure_voice_logging(debug=False)
+
+
+def _logged_cooldowns(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], *, barged: bool
+) -> list[str]:
     tts = FishSpeaker(api_key="k", voice_id="voice")
     install_audio(monkeypatch)
     speak_with_fakes(monkeypatch, tts)
@@ -238,31 +251,26 @@ def _logged_cooldowns(monkeypatch: pytest.MonkeyPatch, *, barged: bool) -> list[
         lambda *_a, **_k: ScriptedMic([quiet, echo, echo, quiet]),
     )
     install_vad(monkeypatch, _LoudVad)
-    logged: list[str] = []
-
-    def record(message: str, *args: object, **_kw: object) -> None:
-        logged.append(message.format(*args))
-
-    monkeypatch.setattr("fish_audio_suite_voice.duplex.debug_enabled", lambda: True)
-    monkeypatch.setattr("fish_audio_suite_voice.duplex.debug", record)
     assert run_session(quick_config(), tts) == 0
-    return [line for line in logged if line.startswith("listen.cooldown")]
+    err = capsys.readouterr().err
+    return [line[line.index("cooldown ") :] for line in err.splitlines() if "cooldown " in line]
 
 
+@pytest.mark.usefixtures("debug_on")
 def test_what_the_mic_heard_in_the_cooldown_is_logged_after_each_reply(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    logged = _logged_cooldowns(monkeypatch, barged=False)
+    logged = _logged_cooldowns(monkeypatch, capsys, barged=False)
     assert logged == [
-        "listen.cooldown frames=4 peak_rms=300 floor=200 voiced=2 over_floor=2 "
-        "speech_like=2 start_needs=4"
+        "cooldown frames=4 peak_rms=300 floor=200 voiced=2 over_floor=2 speech_like=2 start_needs=4"
     ]
 
 
+@pytest.mark.usefixtures("debug_on")
 def test_a_reply_cut_off_by_a_barge_in_has_no_cooldown_to_log(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    assert _logged_cooldowns(monkeypatch, barged=True) == []
+    assert _logged_cooldowns(monkeypatch, capsys, barged=True) == []
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -286,6 +294,7 @@ def test_a_reply_watches_for_barge_in_with_the_listen_detector(
     assert built == [listen]
 
 
+@pytest.mark.usefixtures("debug_on")
 def test_a_detector_that_fails_in_the_cooldown_log_does_not_end_the_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -296,7 +305,6 @@ def test_a_detector_that_fails_in_the_cooldown_log_does_not_end_the_session(
     monkeypatch.setattr(
         "fish_audio_suite_voice.duplex.SessionMic", lambda *_a, **_k: ScriptedMic([b"\x00" * 960])
     )
-    monkeypatch.setattr("fish_audio_suite_voice.duplex.debug_enabled", lambda: True)
     config = quick_config()
     broken = replace(config, listen=replace(config.listen, vad_engine="not-an-engine"))
     assert run_session(broken, tts) == 0

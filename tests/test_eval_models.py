@@ -7,8 +7,10 @@ import json
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import eval_models
+import httpx
 import pytest
 from loguru import logger
 
@@ -16,6 +18,9 @@ from fish_audio_suite_kit import ChatMessage
 from fish_audio_suite_voice import llm
 from fish_audio_suite_voice.llm_tune import LlmTune
 from fish_audio_suite_voice.log_setup import configure_voice_logging
+
+if TYPE_CHECKING:
+    from loguru import Message
 
 
 def test_voice_checks_flag_what_a_voice_cannot_say() -> None:
@@ -205,24 +210,51 @@ def test_the_prompts_file_setting_at_the_top_replaces_the_list(
     assert eval_models.read_prompts(["Flag prompt"], None) == ["Flag prompt"]
 
 
+_SSE_REPLY = (
+    'data: {"choices":[{"delta":{"content":"Hi there."}}],"model":"some/model"}\n\n'
+    'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"provider":"DeepInfra",'
+    '"usage":{"prompt_tokens":262,"completion_tokens":26,"cost":0.00009}}\n\n'
+    "data: [DONE]\n\n"
+)
+
+
 def test_the_cost_parser_reads_the_line_the_backend_really_logs() -> None:
     """Guard against the backend changing its ``llm.stream_end`` line, which the script reads."""
+
+    def reply(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=_SSE_REPLY, headers={"Content-Type": "text/event-stream"})
+
+    async def stream() -> list[str]:
+        tune = LlmTune(
+            backend="openai",
+            base="https://llm.example.test/v1",
+            api_key="sk-test",
+            model="some/model",
+        )
+        async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as http:
+            return [
+                token
+                async for token in llm.llm_token_stream(
+                    [{"role": "user", "content": "hi"}], tune=tune, http=http
+                )
+            ]
+
     lines: list[str] = []
-    configure_voice_logging(debug=True)
-    logger.remove()
-    logger.add(lambda message: lines.append(str(message.record["message"])), level="DEBUG")  # pyright: ignore[reportUnknownMemberType, reportUnknownLambdaType]
+
+    def keep(message: Message) -> None:
+        lines.append(message.record["message"])
+
+    configure_voice_logging(debug=True, to_stderr=False)
+    sink = logger.add(keep, level="DEBUG")
     try:
-        stats = getattr(llm, "_ChatStats")()  # noqa: B009 - a private type, built only for this guard
-        stats.last_finish, stats.yielded, stats.last_provider = "stop", 25, "DeepInfra"
-        stats.last_usage = {"prompt_tokens": 262, "completion_tokens": 26, "cost": 0.00009}
-        getattr(llm, "_finish_llm")(stats, "some/model")  # noqa: B009
+        assert asyncio.run(stream()) == ["Hi there."]
     finally:
+        logger.remove(sink)
         configure_voice_logging(debug=False)
     parsed = [u for u in map(eval_models.parse_stream_end, lines) if u is not None]
     assert len(parsed) == 1
     assert parsed[0].cost == pytest.approx(0.00009)
     assert parsed[0].provider == "DeepInfra"
-    stats.last_usage = {"prompt_tokens": 1, "completion_tokens": 2}
     unpriced = eval_models.parse_stream_end(
         "llm.stream_end finish=stop in=1 out=2 chunks=3 provider=Local model=m"
     )

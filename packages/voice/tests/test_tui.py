@@ -11,7 +11,6 @@ from typing import Any
 
 import pytest
 from textual.app import App, ComposeResult
-from textual.binding import Binding
 from textual.color import Color
 from textual.geometry import Region
 from textual.pilot import Pilot
@@ -39,7 +38,7 @@ from fish_audio_suite_voice.events import (
 from fish_audio_suite_voice.inputs import LiveInput
 from fish_audio_suite_voice.latency import LatencySnapshot
 from fish_audio_suite_voice.signals import DuplexSession
-from fish_audio_suite_voice.tui import _BAR_COLOURS, Conversation, Timings, VoiceApp, Waveform
+from fish_audio_suite_voice.tui import Conversation, Timings, VoiceApp, Waveform
 
 
 class _SpyInput(LiveInput):
@@ -362,12 +361,6 @@ def test_the_app_stops_collecting_events_when_it_closes() -> None:
     assert harness.app.view.heard != "after"
 
 
-@pytest.mark.parametrize("key", ["f2", "escape", "ctrl+q"])
-def test_the_default_keys_are_the_ones_bound(key: str) -> None:
-    bound = {binding.key for binding in VoiceApp.BINDINGS if isinstance(binding, Binding)}
-    assert key in bound
-
-
 @pytest.mark.parametrize("size", [(80, 24), (60, 20), (120, 40)])
 def test_the_layout_fits_the_screen_and_nothing_overlaps(size: tuple[int, int]) -> None:
     harness = _Harness()
@@ -642,13 +635,23 @@ def test_the_layout_gives_up_secondary_panels_as_the_terminal_shrinks(
 def test_an_event_that_arrives_as_the_app_closes_is_ignored() -> None:
     harness = _Harness()
 
+    def held(message: Any) -> bool:
+        del message
+        return True
+
     async def main() -> None:
         async with harness.app.run_test() as pilot:
             await pilot.pause(0.05)
+            # The wake for this event is still on its way when the app exits.
+            harness.app.post_message = held
+            harness.bus.emit(Heard("too late", 1.0))
             harness.app.exit(0)
-        harness.app._apply([Heard("too late", 1.0)])  # the screen is gone by now
+        harness.session.request_quit()
+        harness.app.on_voice_app_wake()  # it lands once the screen is gone, and changes nothing
 
     asyncio.run(asyncio.wait_for(main(), 20))
+    assert harness.app.return_value == 0
+    assert harness.app.view.heard != "too late"
 
 
 def test_the_pulse_holds_still_when_animations_are_turned_off() -> None:
@@ -1209,27 +1212,61 @@ def _contrast(first: Color, second: Color) -> float:
     return (lighter + 0.05) / (darker + 0.05)
 
 
+class _FaintBars(App[None]):
+    """One strip per kind of bar, each drawn at its faintest: a level of zero."""
+
+    def compose(self) -> ComposeResult:
+        for kind in ("quiet", "heard", "speaker", "thinking", "cursor"):
+            yield Waveform(id=kind)
+
+    def on_mount(self) -> None:
+        self.animation_level = "none"  # the thinking wave and the cursor hold still
+        for _ in range(8):
+            self.query_one("#quiet", Waveform).push(0.0, 1.0)
+            self.query_one("#heard", Waveform).push(1.0, 1.0)  # at the speech level: heard
+            self.query_one("#speaker", Waveform).push_speaker(0.0)
+        self.query_one("#thinking", Waveform).set_mood("thinking")
+        self.query_one("#cursor", Waveform).set_mood("listening")
+
+
+def _drawn_colours(wave: Waveform, cells: slice) -> set[tuple[int, int, int]]:
+    """The colours ``wave`` draws its dots in across ``cells``, in every row."""
+    colours: set[tuple[int, int, int]] = set()
+    for row in range(4):
+        colours.update(c for c in _wave_colours(wave, row)[cells] if c is not None)
+    return colours
+
+
 def test_every_bar_colour_stays_visible_against_the_background_in_every_builtin_theme() -> None:
-    harness = _Harness()
+    # The newest cells hold the bars just added; the last one is the cursor's.
+    cells = {
+        "quiet": slice(-4, -1),
+        "heard": slice(-4, -1),
+        "speaker": slice(-4, -1),
+        "thinking": slice(-30, -1),  # a frozen wave, with soft and loud parts
+        "cursor": slice(-1, None),
+    }
 
-    async def scenario(pilot: Pilot[int]) -> None:
-        for theme in sorted(harness.app.available_themes):
-            if theme.startswith("ansi"):
-                continue  # these use the terminal's own colours, which cannot be measured here
-            harness.app.theme = theme
-            await pilot.pause(0.02)
-            variables = harness.app.get_css_variables()
-            background = Color.parse(variables["background"])
-            for kind, (name, strengths) in _BAR_COLOURS.items():
-                base = Color.parse(variables[name.removeprefix("$")])
-                weakest = _contrast(background.blend(base, strengths[0] / 100), background)
-                # Braille dots are small, so they need more than text does. A faint "quiet" line
-                # is meant to be quiet, but it must still be there.
-                minimum = 2.2 if kind == "quiet" else 2.6
-                assert weakest >= minimum, f"{kind} in {theme}: contrast {weakest:.1f}"
-        await pilot.press("ctrl+q")
+    async def main() -> None:
+        app = _FaintBars()
+        async with app.run_test(size=(40, 30)) as pilot:
+            await pilot.pause()
+            for theme in sorted(app.available_themes):
+                if theme.startswith("ansi"):
+                    continue  # these use the terminal's own colours, which cannot be measured here
+                app.theme = theme
+                await pilot.pause(0.02)
+                background = Color.parse(app.get_css_variables()["background"])
+                for kind, where in cells.items():
+                    drawn = _drawn_colours(app.query_one(f"#{kind}", Waveform), where)
+                    assert drawn, f"{kind} draws nothing in {theme}"
+                    weakest = min(_contrast(Color(*rgb), background) for rgb in drawn)
+                    # Braille dots are small, so they need more than text does. A faint "quiet"
+                    # line is meant to be quiet, but it must still be there.
+                    minimum = 2.2 if kind == "quiet" else 2.6
+                    assert weakest >= minimum, f"{kind} in {theme}: contrast {weakest:.1f}"
 
-    assert _drive(harness, scenario) == 0
+    asyncio.run(asyncio.wait_for(main(), 20))
 
 
 def test_the_strip_scrolls_at_one_speed_through_a_whole_turn() -> None:

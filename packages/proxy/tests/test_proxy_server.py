@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator
+from typing import cast
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from proxy_helpers import capture_upstream
 
-from fish_audio_suite_proxy.server import _iter_upstream, app, lifespan
+from fish_audio_suite_proxy.server import app, lifespan
 from fish_audio_suite_proxy.settings import load_settings
 
 
@@ -76,17 +78,27 @@ def test_uvicorn_run_kwargs_workers_and_limit(monkeypatch: pytest.MonkeyPatch) -
     assert kw["timeout_graceful_shutdown"] == 90
 
 
-def test_streamed_audio_is_passed_on_as_it_arrives() -> None:
+def test_streamed_audio_is_passed_on_as_it_arrives(monkeypatch: pytest.MonkeyPatch) -> None:
+    closed: list[bool] = []
+
     class Pieces(httpx.AsyncByteStream):
         async def __aiter__(self) -> AsyncIterator[bytes]:
             for piece in (b"a" * 10, b"b" * 20, b"c" * 5):
                 yield piece
 
-    async def collect() -> list[bytes]:
-        response = httpx.Response(200, stream=Pieces())
-        return [chunk async for chunk in _iter_upstream(response)]
+        async def aclose(self) -> None:
+            closed.append(True)
 
-    assert asyncio.run(collect()) == [b"a" * 10, b"b" * 20, b"c" * 5]
+    capture_upstream(monkeypatch, httpx.Response(200, stream=Pieces()))
+    with (
+        TestClient(app) as client,
+        client.stream("POST", "/v1/audio/speech", json={"input": "Hello there friend"}) as reply,
+    ):
+        assert reply.status_code == 200
+        # Each piece reaches the client as Fish sent it, not held back to fill a chunk.
+        pieces = list(cast(Iterator[bytes], reply.iter_raw()))
+        assert pieces == [b"a" * 10, b"b" * 20, b"c" * 5]
+    assert closed == [True]
 
 
 def test_lifespan_closes_the_client_when_shutdown_raises() -> None:

@@ -283,9 +283,6 @@ def test_a_scale_keeps_the_noise_floor_it_measured_through_a_gap_in_the_audio() 
     # Twenty seconds with no audio at all (the model thinking and speaking), then the room again.
     first_blocks = [scale.update(room, 40.0 + step * BLOCK_S) for step in range(3)]
     assert max(first_blocks) < 0.15  # not a blip while it relearns the room
-    fresh = SpeechScale()
-    for step in range(130):
-        fresh.update(speech if step % 8 < 4 else room, step * BLOCK_S)
     forgetful = SpeechScale()  # the same, but it was started again after the gap
     assert forgetful.update(room, 40.0) > max(first_blocks)  # what it did before this fix
 

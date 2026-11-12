@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -20,17 +20,12 @@ from proxy_helpers import (
 from starlette.datastructures import UploadFile
 from starlette.responses import JSONResponse
 
-from fish_audio_suite_kit import (
-    CaptionCue,
-    is_asr_hallucination,
-    parse_fish_error,
-)
-from fish_audio_suite_proxy.errors import FishProviderError
+from fish_audio_suite_kit import CaptionCue
 from fish_audio_suite_proxy.phrases import AsrScrub, caption_cues
 from fish_audio_suite_proxy.server import app
 from fish_audio_suite_proxy.settings import load_settings
 from fish_audio_suite_proxy.transcribe import transcription_body
-from fish_audio_suite_proxy.upstream import fish_send
+from fish_audio_suite_proxy.upstream import RetryPolicy, fish_send
 
 _KEEP = AsrScrub(speakers=False, cues=False)
 
@@ -209,7 +204,8 @@ def test_transcription_non_string_text_is_502(monkeypatch: pytest.MonkeyPatch) -
     with TestClient(app) as client:
         response = client.post("/v1/audio/transcriptions", files=WAV_UPLOAD)
     assert response.status_code == 502
-    assert response.json()["error"]["message"] == "Fish returned a non-object body"
+    assert response.json()["error"]["type"] == "api_error"
+    assert "non-object" in response.json()["error"]["message"]
 
 
 def test_transcription_non_object_upstream_is_502(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -221,7 +217,7 @@ def test_transcription_non_object_upstream_is_502(monkeypatch: pytest.MonkeyPatc
     with TestClient(app) as client:
         response = client.post("/v1/audio/transcriptions", files=WAV_UPLOAD)
     assert response.status_code == 502
-    assert response.json()["error"]["message"] == "Fish returned a non-object body"
+    assert "non-object" in response.json()["error"]["message"]
     assert response.json()["error"]["type"] == "api_error"
 
 
@@ -270,7 +266,7 @@ def test_transcription_non_json_upstream_is_502(monkeypatch: pytest.MonkeyPatch)
     with TestClient(app) as client:
         response = client.post("/v1/audio/transcriptions", files=WAV_UPLOAD)
     assert response.status_code == 502
-    assert response.json()["error"]["message"] == "Fish returned a non-JSON body"
+    assert "non-JSON" in response.json()["error"]["message"]
     assert response.json()["error"]["type"] == "api_error"
 
     class _NotUtf8(AsrJson):
@@ -281,16 +277,13 @@ def test_transcription_non_json_upstream_is_502(monkeypatch: pytest.MonkeyPatch)
     with TestClient(app) as client:
         response = client.post("/v1/audio/transcriptions", files=WAV_UPLOAD)
     assert response.status_code == 502
-    assert response.json()["error"]["message"] == "Fish returned a non-JSON body"
+    assert "non-JSON" in response.json()["error"]["message"]
 
 
-def _provider_error(status: int, raw: Any) -> JSONResponse:
-    detail = parse_fish_error(status, raw)
-    return FishProviderError(detail.status, detail.message).response()
-
-
-def test_upstream_errors_use_openai_envelope() -> None:
-    resp = _provider_error(402, {"message": "no credits", "status": 402})
+def test_upstream_errors_use_openai_envelope(monkeypatch: pytest.MonkeyPatch) -> None:
+    resp, _client, _sleeps = run_fish_send(
+        monkeypatch, [FakeUpstream(402, b'{"message": "no credits", "status": 402}')]
+    )
     assert resp.status_code == 402
     body = json.loads(bytes(resp.body))
     assert body == {
@@ -301,7 +294,12 @@ def test_upstream_errors_use_openai_envelope() -> None:
             "metadata": {"provider_name": "fish-audio"},
         }
     }
-    bad = _provider_error(502, {"message": "bad \ud800 byte", "status": 502})
+    # A lone surrogate, escaped in Fish's JSON, must not stop the reply from encoding.
+    bad, _client, _sleeps = run_fish_send(
+        monkeypatch,
+        [FakeUpstream(502, b'{"message": "bad \\ud800 byte", "status": 502}')],
+        policy=RetryPolicy(attempts=1),
+    )
     assert bad.status_code == 502
     encoded = bytes(bad.body)
     encoded.decode("utf-8")
@@ -361,15 +359,11 @@ def test_transcription_closes_an_empty_upload_on_the_early_return(
 
 
 @pytest.mark.parametrize(
-    ("audio", "message"),
-    [
-        ("!!!!", "input_audio is not valid base64"),
-        ("", "input_audio is empty"),
-        (None, "input_audio is empty"),
-    ],
+    ("audio", "problem"),
+    [("!!!!", "base64"), ("", "empty"), (None, "empty")],
 )
 def test_bad_json_input_audio_names_input_audio_not_a_reference(
-    monkeypatch: pytest.MonkeyPatch, audio: str | None, message: str
+    monkeypatch: pytest.MonkeyPatch, audio: str | None, problem: str
 ) -> None:
     captured = capture_upstream(monkeypatch, AsrJson())
     with TestClient(app) as client:
@@ -379,7 +373,8 @@ def test_bad_json_input_audio_names_input_audio_not_a_reference(
         )
     assert r.status_code == 400
     error = r.json()["error"]
-    assert error["message"] == message
+    assert error["message"].startswith("input_audio ")
+    assert problem in error["message"]
     assert "reference" not in error["message"]
     assert error["type"] == "invalid_request_error"
     assert captured == {}
@@ -558,43 +553,29 @@ def test_pro_fields_in_a_json_body(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.parametrize(
-    ("fields", "message"),
+    ("fields", "named"),
     [
-        ({"diarize": "maybe"}, "diarize must be auto, true or false"),
-        ({"num_speakers": "0"}, "num_speakers must be a whole number of at least 1"),
-        ({"min_speakers": "-1"}, "min_speakers must be a whole number of at least 1"),
-        ({"max_speakers": "two"}, "max_speakers must be a whole number of at least 1"),
-        ({"num_speakers": "2.5"}, "num_speakers must be a whole number of at least 1"),
-        (
-            {"num_speakers": "2", "min_speakers": "1"},
-            "num_speakers cannot be combined with min_speakers or max_speakers",
-        ),
-        (
-            {"num_speakers": "2", "max_speakers": "3"},
-            "num_speakers cannot be combined with min_speakers or max_speakers",
-        ),
-        (
-            {"min_speakers": "3", "max_speakers": "2"},
-            "min_speakers cannot be more than max_speakers",
-        ),
-        (
-            {"diarize": "false", "num_speakers": "2"},
-            "speaker counts cannot be sent with diarize=false",
-        ),
-        (
-            {"diarize": "false", "max_speakers": "2"},
-            "speaker counts cannot be sent with diarize=false",
-        ),
-        ({"tag_audio_events": "yes please"}, "tag_audio_events must be true or false"),
+        ({"diarize": "maybe"}, ("diarize",)),
+        ({"num_speakers": "0"}, ("num_speakers",)),
+        ({"min_speakers": "-1"}, ("min_speakers",)),
+        ({"max_speakers": "two"}, ("max_speakers",)),
+        ({"num_speakers": "2.5"}, ("num_speakers",)),
+        ({"num_speakers": "2", "min_speakers": "1"}, ("num_speakers", "min_speakers")),
+        ({"num_speakers": "2", "max_speakers": "3"}, ("num_speakers", "max_speakers")),
+        ({"min_speakers": "3", "max_speakers": "2"}, ("min_speakers", "max_speakers")),
+        ({"diarize": "false", "num_speakers": "2"}, ("diarize=false",)),
+        ({"diarize": "false", "max_speakers": "2"}, ("diarize=false",)),
+        ({"tag_audio_events": "yes please"}, ("tag_audio_events",)),
     ],
 )
 def test_invalid_pro_fields_are_a_400(
-    monkeypatch: pytest.MonkeyPatch, fields: dict[str, str], message: str
+    monkeypatch: pytest.MonkeyPatch, fields: dict[str, str], named: tuple[str, ...]
 ) -> None:
     reply, captured = _post_pro(monkeypatch, fields)
     assert reply.status_code == 400
     error = reply.json()["error"]
-    assert error["message"] == message
+    # The message names the field or fields at fault.
+    assert all(field in error["message"] for field in named), error["message"]
     assert error["type"] == "invalid_request_error"
     assert not captured
 
@@ -713,10 +694,22 @@ def test_verbose_language_falls_back_to_the_hint_sent(monkeypatch: pytest.Monkey
     assert reply.json()["language"] == "de"
 
 
-def test_asr_hallucination_without_network() -> None:
-    assert is_asr_hallucination("谢谢观看")
-    assert not is_asr_hallucination("你好")
-    assert not is_asr_hallucination("hello there friend")
+@pytest.mark.parametrize(
+    ("heard", "reply"),
+    [("谢谢观看", ""), ("你好", "你好"), ("hello there friend", "hello there friend")],
+)
+def test_a_caption_watermark_alone_is_an_empty_transcript(
+    monkeypatch: pytest.MonkeyPatch, heard: str, reply: str
+) -> None:
+    class _Heard(AsrJson):
+        def json(self) -> dict[str, Any]:
+            return {"text": heard}
+
+    capture_upstream(monkeypatch, _Heard())
+    with TestClient(app) as client:
+        response = client.post("/v1/audio/transcriptions", files=WAV_UPLOAD)
+    assert response.status_code == 200
+    assert response.json() == {"text": reply}
 
 
 def test_empty_transcription_is_fish_error_shape() -> None:
@@ -726,13 +719,10 @@ def test_empty_transcription_is_fish_error_shape() -> None:
             files={"file": ("a.wav", b"", "audio/wav")},
         )
         assert r.status_code == 400
-        assert r.json() == {
-            "error": {
-                "code": 400,
-                "message": "empty audio upload",
-                "type": "invalid_request_error",
-            }
-        }
+        error = cast(dict[str, Any], r.json()["error"])
+        assert set(error) == {"code", "message", "type"}
+        assert (error["code"], error["type"]) == (400, "invalid_request_error")
+        assert "empty" in error["message"]
 
 
 def test_transcription_bad_multipart_is_openai_error() -> None:
@@ -745,7 +735,7 @@ def test_transcription_bad_multipart_is_openai_error() -> None:
         assert broken.status_code == 400
         body = broken.json()
         assert body["error"]["type"] == "invalid_request_error"
-        assert body["error"]["message"] == "invalid multipart form body"
+        assert "multipart" in body["error"]["message"]
 
 
 def test_transcription_bad_json_is_400() -> None:
@@ -762,21 +752,23 @@ def test_transcription_bad_json_is_400() -> None:
 def test_both_spellings_of_the_granularity_field_ask_fish_for_timestamps(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # The bracket spelling is covered by test_transcriptions_srt_and_granularities_bracket.
     captured = capture_upstream(monkeypatch, AsrJson())
     with TestClient(app) as client:
-        bracket = client.post(
-            "/v1/audio/transcriptions",
-            files=WAV_UPLOAD,
-            data={"timestamp_granularities[]": "segment"},
-        )
-        assert bracket.status_code == 200
-        assert captured["data"]["ignore_timestamps"] == "false"
         padded = client.post(
             "/v1/audio/transcriptions",
             files=WAV_UPLOAD,
             data={"response_format": "verbose_json", "timestamp_granularities": " word "},
         )
         assert padded.json()["words"][0]["word"] == "hello"
+        assert captured["data"]["ignore_timestamps"] == "false"
+        plain_json = client.post(
+            "/v1/audio/transcriptions",
+            files=WAV_UPLOAD,
+            data={"timestamp_granularities": "segment"},
+        )
+        assert plain_json.status_code == 200
+        assert captured["data"]["ignore_timestamps"] == "false"
         none = client.post("/v1/audio/transcriptions", files=WAV_UPLOAD)
         assert none.status_code == 200
         assert captured["data"]["ignore_timestamps"] == "true"

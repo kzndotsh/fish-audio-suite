@@ -8,11 +8,15 @@ from fish_audio_suite_voice import debug as voice_debug
 from fish_audio_suite_voice import log_format, speaker
 
 
+def _no_display() -> None:
+    return None
+
+
 def _reset() -> None:
-    voice_debug._DEBUG.level = voice_debug.DebugLevel.OFF
-    voice_debug._DEBUG.frozen = None
-    voice_debug._TERMINAL.before_line = voice_debug._nothing  # a display a test left open
-    log_format._TURN.t0 = None
+    voice_debug.reset_debug_level()  # so ``warn`` writes to stderr again
+    # A display a test left open: take the hook over, then let it go back to nothing.
+    voice_debug.on_terminal_line(_no_display)()
+    log_format.stop_turn_clock()
     speaker._warn_coerced.cache_clear()
 
 

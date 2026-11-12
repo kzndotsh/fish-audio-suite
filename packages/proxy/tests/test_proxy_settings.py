@@ -22,11 +22,12 @@ from proxy_helpers import (
     post_speech,
     run_fish_send,
 )
+from starlette.types import Message, Receive, Scope, Send
 
 from fish_audio_suite_proxy.audio import (
     SILENT_MP3,
 )
-from fish_audio_suite_proxy.body_limit import _declared_too_large
+from fish_audio_suite_proxy.body_limit import BodyLimitMiddleware
 from fish_audio_suite_proxy.errors import ProxyError
 from fish_audio_suite_proxy.models import catalog_ids, resolve_tts_model
 from fish_audio_suite_proxy.phrases import AsrScrub
@@ -73,7 +74,8 @@ def test_a_missing_server_key_is_a_503_not_the_callers_401(
         r = client.post("/v1/audio/speech", json={"input": "hello there friend"})
     assert r.status_code == 503
     assert r.json()["error"]["type"] == "api_error"
-    assert "FISH_API_KEY" in r.json()["error"]["message"]
+    # Quoted in docs/TROUBLESHOOTING.md.
+    assert r.json()["error"]["message"] == "proxy has no FISH_API_KEY configured"
 
 
 def test_an_oversized_body_is_a_413(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -82,6 +84,8 @@ def test_an_oversized_body_is_a_413(monkeypatch: pytest.MonkeyPatch) -> None:
     with TestClient(app) as client:
         declared = client.post("/v1/audio/speech", json=big)
         assert declared.status_code == 413
+        # Quoted in docs/TROUBLESHOOTING.md.
+        assert declared.json()["error"]["message"] == "request body exceeds 200 bytes"
 
         def chunks() -> Any:
             yield b'{"input": "'
@@ -103,7 +107,8 @@ def test_input_longer_than_the_cap_is_a_400(monkeypatch: pytest.MonkeyPatch) -> 
     with TestClient(app) as client:
         r = client.post("/v1/audio/speech", json={"input": "this is far too long"})
     assert r.status_code == 400
-    assert "10" in r.json()["error"]["message"]
+    # Quoted in docs/TROUBLESHOOTING.md.
+    assert r.json()["error"]["message"] == "input is longer than 10 characters"
 
 
 def test_an_unsupported_response_format_is_a_400(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -442,14 +447,45 @@ def test_a_failed_error_body_read_still_retries_a_503(monkeypatch: pytest.Monkey
     assert out.status_code == 200
 
 
+def _limited(content_length: bytes) -> int:
+    """Send an empty body declaring ``content_length`` through a 1000-byte cap.
+
+    Returns the status the client gets; 200 means the request reached the app.
+    """
+    sent: list[Message] = []
+
+    async def inner(scope: Scope, receive: Receive, send: Send) -> None:
+        del scope, receive
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    async def receive() -> Message:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: Message) -> None:
+        sent.append(message)
+
+    scope: Scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/v1/audio/speech",
+        "headers": [(b"content-length", content_length)],
+    }
+    middleware = BodyLimitMiddleware(inner, limit=lambda: 1000)
+    asyncio.run(middleware(scope, receive, send))
+    return next(m["status"] for m in sent if m["type"] == "http.response.start")
+
+
 def test_a_huge_content_length_is_too_large_not_an_error() -> None:
-    assert _declared_too_large("9" * 5000, 1000) is True
-    assert _declared_too_large("1001", 1000) is True
-    assert _declared_too_large("1000", 1000) is False
-    assert _declared_too_large("0" * 5000 + "5", 1000) is False
-    assert _declared_too_large("\u00b2", 1000) is False
-    assert _declared_too_large("", 1000) is False
-    assert _declared_too_large("abc", 1000) is False
+    # Too many digits for int() is still a 413, not a crash.
+    assert _limited(b"9" * 5000) == 413
+    assert _limited(b"1001") == 413
+    assert _limited(b"1000") == 200
+    assert _limited(b"0" * 5000 + b"5") == 200
+    # Not a plain ASCII number: the declared length is ignored and bytes are counted.
+    assert _limited("\u00b2".encode("latin-1")) == 200
+    assert _limited(b"") == 200
+    assert _limited(b"abc") == 200
 
 
 def test_an_unsupported_transcription_format_is_a_400_and_never_calls_fish(

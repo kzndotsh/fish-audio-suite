@@ -1,16 +1,14 @@
 from __future__ import annotations
 
-import asyncio
-from collections.abc import AsyncIterator
-from dataclasses import replace
-
 import numpy as np
+import pytest
 from hypothesis import given
 from hypothesis import strategies as st
-from wire_helpers import make_run
+from wire_helpers import RecordingSink, install_fish_audio
 
 from fish_audio_suite_voice.declick import EdgeFade
-from fish_audio_suite_voice.wire import _pump_ws_audio
+from fish_audio_suite_voice.speaker import FishSpeaker
+from fish_audio_suite_voice.tts_tune import TtsTune
 
 RATE = 44100
 
@@ -131,23 +129,24 @@ def test_fading_never_makes_a_sample_louder_or_changes_the_length(
     assert np.all(np.abs(_samples(out)) <= np.abs(_samples(pcm)))
 
 
-def test_the_pump_fades_pcm_before_it_reaches_the_sink() -> None:
-    run, sink = make_run()
+def test_the_speaker_fades_pcm_before_it_reaches_the_sink(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_fish_audio(
+        monkeypatch, [_pcm(np.zeros(RATE // 2, dtype=int)), _pcm(np.full(2000, 6000))]
+    )
 
-    async def close_client() -> None:
-        return None
+    def played_with(fade_ms: float) -> np.ndarray:
+        sink = RecordingSink()
+        tts = FishSpeaker(
+            api_key="k", voice_id="v", tune=TtsTune(sample_rate=RATE, fade_ms=fade_ms)
+        )
+        tts.speak("Hello there.", sink)
+        return _samples(b"".join(sink.chunks))
 
-    async def stream() -> AsyncIterator[bytes]:
-        yield _pcm(np.zeros(RATE // 2, dtype=int))
-        yield _pcm(np.full(2000, 6000))
-
-    faded = replace(run, spec=replace(run.spec, fade_ms=4.0))
-    asyncio.run(_pump_ws_audio(stream(), faded, close_client))
-    played = _samples(b"".join(sink.chunks))
+    played = played_with(4.0)
     assert played[RATE // 2] < 100
     assert played[-1] < 100  # the reply ends faded
     assert played[RATE // 2 + 500] == 6000
-    # A turn built without a fade, as the helpers do, passes the audio through unchanged.
-    plain_run, plain_sink = make_run()
-    asyncio.run(_pump_ws_audio(stream(), plain_run, close_client))
-    assert _samples(b"".join(plain_sink.chunks))[RATE // 2] == 6000
+    # With no fade the audio passes through unchanged.
+    assert played_with(0.0)[RATE // 2] == 6000

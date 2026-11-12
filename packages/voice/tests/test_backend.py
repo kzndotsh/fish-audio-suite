@@ -177,16 +177,24 @@ def test_openrouter_backend_checks_the_model_once_and_passes_the_session_id(
     assert sent[1]["session_id"] == "sess-1"
 
 
-def _keepalive_s(client: httpx.AsyncClient) -> float | None:
-    pool = getattr(getattr(client, "_transport", None), "_pool", None)
-    return getattr(pool, "_keepalive_expiry", None)
+def test_session_clients_keep_idle_connections_between_turns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # httpx closes an idle connection after 5 s by default, shorter than the gap
+    # between two turns, so each turn would pay a new TLS handshake.
+    built: list[httpx.Limits] = []
+    real = httpx.AsyncClient
 
+    def recording(**kwargs: Any) -> httpx.AsyncClient:
+        built.append(kwargs["limits"])
+        return real(**kwargs)
 
-def test_session_clients_keep_idle_connections_between_turns() -> None:
+    monkeypatch.setattr(httpx, "AsyncClient", recording)
+
     async def check() -> None:
-        async with asr_client() as asr:
-            assert _keepalive_s(asr) == HTTP_KEEPALIVE_S
-        async with http_client(LlmTune()) as llm:
-            assert _keepalive_s(llm) == HTTP_KEEPALIVE_S
+        async with asr_client(), http_client(LlmTune()):
+            pass
 
     asyncio.run(check())
+    assert [limits.keepalive_expiry for limits in built] == [HTTP_KEEPALIVE_S] * 2
+    assert HTTP_KEEPALIVE_S > 60
