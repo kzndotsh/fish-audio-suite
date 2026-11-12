@@ -4,15 +4,34 @@ import pytest
 from kit_helpers import assert_linear_time
 
 from fish_audio_suite_kit import (
+    CueMode,
+    CueStyle,
     MoodCarry,
     ensure_lead_cue,
+    last_emotion,
     normalize_cues,
+    official_cue,
     scrub_tts,
     split_cues,
     strip_cue_tags,
+    takes_directions,
     tts_hold_at,
 )
-from fish_audio_suite_kit.cues import last_emotion, mood_lead_hold_at, official_cue
+from fish_audio_suite_kit.cues import is_paren_cue
+from fish_audio_suite_kit.stream_holds import mood_lead_hold_at
+
+
+def test_every_alias_is_a_known_tag_like_the_tag_it_stands_for() -> None:
+    # (sob), (groan) and (cry) were aliases but not known tags, so they were left as
+    # asides and [groan] and [sob] were kept as words.
+    assert normalize_cues("(sob) hi (groan) (cry) (laugh)") == (
+        "[sobbing] hi [groaning] [sobbing] [laughing]"
+    )
+    assert strip_cue_tags("[groan] hi [sob] [laugh]") == "hi"
+    assert is_paren_cue("groan")
+    for alias in ("groan", "yawn", "sob", "cry", "laugh", "pause", "whisper"):
+        assert is_paren_cue(alias), alias
+        assert official_cue(alias) is not None, alias
 
 
 def test_mood_lead_becomes_cue() -> None:
@@ -22,11 +41,6 @@ def test_mood_lead_becomes_cue() -> None:
 def test_official_emotion_lead_only_at_sentence_start() -> None:
     assert normalize_cues("Anxious: wait", lead=True) == "[anxious] wait"
     assert normalize_cues("I am anxious today", lead=True) == "I am anxious today"
-    assert normalize_cues("excited, hello", lead=True, continued=True) == "excited, hello"
-    assert (
-        normalize_cues("excited, hello. Sad, bye", lead=True, continued=True)
-        == "excited, hello. [sad] bye"
-    )
     assert (
         normalize_cues("你好。Excited, goodbye now please.", lead=True)
         == "你好。[excited] goodbye now please."
@@ -258,6 +272,53 @@ def test_a_continued_chunk_skips_only_its_first_sentence() -> None:
     assert normalize_cues("excited, hello", continued=True) == "excited, hello"
 
 
+def test_a_new_line_in_a_continued_chunk_starts_a_sentence() -> None:
+    # The whole reply reads a new line as a new sentence, so a chunk that continues
+    # "Line one" must not keep the mood word after its line break as speech.
+    assert normalize_cues("\nExcited, two.", lead=True, continued=True) == "\n[excited] two."
+    assert normalize_cues("\n\nExcited, two.", lead=True, continued=True) == ("\n\n[excited] two.")
+    assert normalize_cues("\nExcited, two.", continued=True) == "\nExcited, two."
+
+
+def test_a_stop_at_the_start_of_a_continued_chunk_ends_a_sentence_only_by_what_came_before() -> (
+    None
+):
+    chunk = ". Happy, the patient arrived."
+    assert normalize_cues(chunk, lead=True, continued=True, before="Dr") == (
+        ". Happy, the patient arrived."
+    )
+    assert normalize_cues(chunk, lead=True, continued=True, before="Well and more") == (
+        ". [happy] the patient arrived."
+    )
+    # Only the line the chunk continues counts: a list number on its own line is a marker.
+    assert normalize_cues(chunk, lead=True, continued=True, before="Done.\n1") == chunk
+
+
+@pytest.mark.parametrize("mode", ["official", "free"])
+def test_a_style_shapes_later_sentences_of_a_chunk_that_continues_one(mode: CueMode) -> None:
+    # A chunk that continues a sentence once turned the lead off for all of it, so
+    # "Excited," after "more." was spoken while the whole reply led with it.
+    style = CueStyle(mode, lead=True)
+    chunk = "and more. Excited, hi there. Sad, bye."
+    assert style.shape(chunk, sentence_start=False) == "and more. [excited] hi there. [sad] bye."
+    assert style.shape("Excited, hi. Sad, bye.", sentence_start=False) == (
+        "Excited, hi. [sad] bye."
+    )
+    off = CueStyle(mode, lead=False)
+    assert off.shape(chunk, sentence_start=False) == chunk
+
+
+def test_a_style_keeps_the_gap_scrub_kept_for_the_word_before_the_chunk() -> None:
+    # A closer then a tab ("*" then "\thello") left the tab at the edge, and only an
+    # edge space was put back, so "hello" joined the word before it.
+    assert CueStyle().shape("*\thello there", before="hello", line_start=False) == ("\thello there")
+    assert CueStyle(lead=True).shape("\tExcited, hi", before="Done.", line_start=False) == (
+        "\t[excited] hi"
+    )
+    # At the start of a line there is no word before the gap.
+    assert CueStyle().shape("*\thello there", before="hello\n") == "hello there"
+
+
 def test_explicit_cues_are_normalized_without_the_lead_switch() -> None:
     assert normalize_cues("[Happy] hi. (sigh) ok") == "[happy] hi. [sighing] ok"
 
@@ -424,9 +485,15 @@ def test_a_directed_model_gets_every_direction_and_whisper_tag_as_written() -> N
 
 
 def test_only_drama_3_takes_directions() -> None:
-    from fish_audio_suite_kit import takes_directions
-
     assert takes_directions("drama-3")
     assert takes_directions(" Drama-3 ")
     for model in ("s2.1-pro", "s2.1-pro-free", "s2-pro", "s1", "drama-3-preview", ""):
         assert not takes_directions(model)
+
+
+def test_a_mood_word_after_a_stop_inside_a_cue_is_not_a_lead() -> None:
+    text = "Well [laugh!] Excited, I said."
+    assert normalize_cues(text, lead=True) == text
+    assert normalize_cues("(he pauses. then) Excited, hi.", lead=True) == (
+        "(he pauses. then) Excited, hi."
+    )

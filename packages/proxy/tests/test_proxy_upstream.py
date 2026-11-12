@@ -1,17 +1,20 @@
 from __future__ import annotations
 
+from typing import Any
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
 from proxy_helpers import (
+    WAV_UPLOAD,
+    AsrJson,
+    AudioStream,
     FakeUpstream,
+    capture_upstream,
     run_fish_send,
 )
 from starlette.responses import JSONResponse
 
-from fish_audio_suite_kit import (
-    ensure_trace_headers,
-)
 from fish_audio_suite_proxy.server import app
 
 
@@ -27,13 +30,31 @@ def test_fish_client_timeout_and_user_agent() -> None:
         assert http.headers["User-Agent"].startswith("fish-audio-suite-proxy/")
 
 
-def test_upstream_trace_headers_forward_or_mint() -> None:
+@pytest.mark.parametrize(
+    ("route", "fish_reply", "request_kw"),
+    [
+        ("/v1/audio/speech", AudioStream(), {"json": {"input": "Hello there friend"}}),
+        ("/v1/audio/transcriptions", AsrJson(), {"files": WAV_UPLOAD}),
+    ],
+)
+def test_a_client_trace_is_forwarded_to_fish_and_one_is_minted_otherwise(
+    monkeypatch: pytest.MonkeyPatch, route: str, fish_reply: object, request_kw: dict[str, Any]
+) -> None:
     sample = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
-    forwarded = ensure_trace_headers({"traceparent": sample, "tracestate": "vendor=1"})
-    assert forwarded["traceparent"] == sample
-    assert forwarded["tracestate"] == "vendor=1"
-    minted = ensure_trace_headers({})
-    assert minted["traceparent"].startswith("00-")
+    captured = capture_upstream(monkeypatch, fish_reply)
+    with TestClient(app) as client:
+        traced = client.post(
+            route, headers={"traceparent": sample, "tracestate": "vendor=1"}, **request_kw
+        )
+        assert traced.status_code == 200
+        assert captured["headers"]["traceparent"] == sample
+        assert captured["headers"]["tracestate"] == "vendor=1"
+        untraced = client.post(route, **request_kw)
+        assert untraced.status_code == 200
+        minted = captured["headers"]["traceparent"]
+    assert minted.startswith("00-")
+    assert minted != sample
+    assert "tracestate" not in captured["headers"]
 
 
 def test_fish_send_retries_429_then_ok(monkeypatch: pytest.MonkeyPatch) -> None:

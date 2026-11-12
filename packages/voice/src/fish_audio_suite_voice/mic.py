@@ -16,37 +16,23 @@ from collections.abc import Iterator
 from typing import Any, Final, Protocol, Self
 
 from fish_audio_suite_kit import MS_PER_S
-from fish_audio_suite_voice.aec import AEC_RATE, SAMPLE_BYTES, EchoCanceller
-from fish_audio_suite_voice.playback import load_sounddevice, pcm_stream_kwargs
+from fish_audio_suite_voice.aec import EchoCanceller
+from fish_audio_suite_voice.cancel import StopFlag
+from fish_audio_suite_voice.pcm import FRAME_MS, FRAME_SAMPLES, SAMPLE_RATE, take_frames
+from fish_audio_suite_voice.portaudio import load_sounddevice, pcm_stream_kwargs
 from fish_audio_suite_voice.tune import AecTune
 
 __all__ = [
-    "FRAME_BYTES",
-    "FRAME_MS",
-    "SAMPLE_RATE",
     "Mic",
     "SessionMic",
-    "StopFlag",
 ]
 
-SAMPLE_RATE: Final = AEC_RATE
-FRAME_MS: Final = 30
-FRAME_SAMPLES: Final = SAMPLE_RATE * FRAME_MS // MS_PER_S
-FRAME_BYTES: Final = FRAME_SAMPLES * SAMPLE_BYTES
 # How long a read waits for audio before it checks the stop flag again.
 _POLL_S: Final = 0.2
 # About two seconds, both of cleaned frames kept for readers and of PortAudio
 # blocks queued for the reader thread. Anything older is the past, so the
 # oldest makes room for the newest.
 _MAX_BACKLOG: Final = 2 * MS_PER_S // FRAME_MS
-
-
-class StopFlag(Protocol):
-    """Anything with ``is_set``, such as a ``threading.Event``, that ends a mic stream."""
-
-    def is_set(self) -> bool:
-        """Return whether the stream should stop."""
-        ...
 
 
 class Mic(Protocol):
@@ -82,7 +68,7 @@ class Mic(Protocol):
         Returns
         -------
         Iterator
-            One frame of ``FRAME_BYTES`` bytes at a time.
+            One frame of ``pcm.FRAME_BYTES`` bytes at a time.
         """
         ...
 
@@ -104,20 +90,6 @@ def _shut(stream: Any) -> None:
         stream.stop()
     with contextlib.suppress(Exception):
         stream.close()
-
-
-def _take_full_frames(pending: bytearray, chunk: bytes, frame_bytes: int) -> list[bytes]:
-    # PortAudio may deliver a short buffer or more than one block. A short
-    # buffer has to wait for the next callback, and the tail of a long buffer
-    # has to be kept. Dropping either cuts a hole in the utterance.
-    if frame_bytes < 1:
-        return []
-    pending.extend(chunk)
-    frames: list[bytes] = []
-    while len(pending) >= frame_bytes:
-        frames.append(bytes(pending[:frame_bytes]))
-        del pending[:frame_bytes]
-    return frames
 
 
 class SessionMic:
@@ -304,7 +276,7 @@ class SessionMic:
                     chunk = blocks.get(timeout=_POLL_S)
                 except queue.Empty:
                     continue
-                for frame in _take_full_frames(pending, chunk, FRAME_BYTES):
+                for frame in take_frames(pending, chunk):
                     # Cleaned as it arrives, so the echo canceller sees the mic and
                     # the speaker in step even while no one is reading.
                     clean = self.aec.clean(frame)

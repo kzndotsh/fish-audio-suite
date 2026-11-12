@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
+from collections.abc import AsyncIterator
 
 import pytest
 from wire_helpers import (
@@ -12,11 +13,14 @@ from wire_helpers import (
 )
 
 from fish_audio_suite_kit import (
+    CueMode,
+    CueStyle,
     normalize_cues,
     scrub_tts,
 )
 from fish_audio_suite_voice.speaker import FishSpeaker
-from fish_audio_suite_voice.stream_scrub import delta_events
+from fish_audio_suite_voice.tts_text import delta_events, text_events
+from fish_audio_suite_voice.tts_tune import TtsTune
 from fish_audio_suite_voice.wire import (
     FlushEvent,
     TextEvent,
@@ -498,7 +502,7 @@ def test_three_character_chunks_match_a_one_shot_scrub() -> None:
 
 
 def test_streaming_space_token_stays_between_words() -> None:
-    tts = FishSpeaker(api_key="k", voice_id="v", partial_chars=20)
+    tts = FishSpeaker(api_key="k", voice_id="v", tune=TtsTune(partial_chars=20))
     sentence = "The quick brown fox jumps today."
     deltas: list[str] = []
     for word in sentence.split(" "):
@@ -514,7 +518,7 @@ def test_streaming_space_token_stays_between_words() -> None:
 
 
 def test_streaming_deltas_cut_inside_the_window() -> None:
-    tts = FishSpeaker(api_key="k", voice_id="v", partial_chars=20)
+    tts = FishSpeaker(api_key="k", voice_id="v", tune=TtsTune(partial_chars=20))
     cancel = threading.Event()
 
     async def collect() -> list[TextEvent | FlushEvent]:
@@ -540,14 +544,14 @@ def test_streaming_deltas_cut_inside_the_window() -> None:
 
 
 def test_stream_scrub_leaves_a_mood_word_alone_by_default() -> None:
-    tts = FishSpeaker(api_key="k", voice_id="v", partial_chars=40)
+    tts = FishSpeaker(api_key="k", voice_id="v", tune=TtsTune(partial_chars=40))
 
     async def collect(mood_lead: bool) -> str:
         events = delta_events(
             ["Curious, ", "isn't it today my friend."],
             threading.Event(),
-            partial_chars=tts.partial_chars,
-            mood_lead=mood_lead,
+            partial_chars=tts.tune.partial_chars,
+            style=CueStyle(lead=mood_lead),
         )
         return "".join([e.text async for e in events if isinstance(e, TextEvent)])
 
@@ -562,7 +566,7 @@ def test_early_flush_speaks_the_first_piece_then_flushes_again_at_the_end() -> N
         return [
             event
             async for event in delta_events(
-                deltas, threading.Event(), partial_chars=tts.partial_chars, early_flush=True
+                deltas, threading.Event(), partial_chars=tts.tune.partial_chars, style=CueStyle()
             )
         ]
 
@@ -580,8 +584,8 @@ def test_early_flush_with_one_piece_does_not_flush_twice() -> None:
             async for event in delta_events(
                 ["Hello there my friend."],
                 threading.Event(),
-                partial_chars=FishSpeaker(api_key="k", voice_id="v").partial_chars,
-                early_flush=True,
+                partial_chars=FishSpeaker(api_key="k", voice_id="v").tune.partial_chars,
+                style=CueStyle(),
             )
         ]
 
@@ -593,7 +597,7 @@ def test_early_flush_on_an_empty_reply_sends_nothing() -> None:
         return [
             event
             async for event in delta_events(
-                [], threading.Event(), partial_chars=50, early_flush=True
+                [], threading.Event(), partial_chars=50, style=CueStyle()
             )
         ]
 
@@ -609,7 +613,7 @@ def test_early_flush_is_not_sent_after_a_cancel() -> None:
             ["Hello there my friend. ", "How are you doing today?"],
             cancel,
             partial_chars=40,
-            early_flush=True,
+            style=CueStyle(),
         ):
             kinds.append(type(event).__name__)
             if type(event).__name__ == "TextEvent":
@@ -626,7 +630,7 @@ def test_a_mood_word_inside_a_long_sentence_is_not_rewritten_as_a_cue() -> None:
         pieces = ["a " * 20, "Excited, people talk. "]
         text = ""
         async for event in delta_events(
-            pieces, threading.Event(), partial_chars=40, mood_lead=True
+            pieces, threading.Event(), partial_chars=40, style=CueStyle(lead=True)
         ):
             text += getattr(event, "text", "") or ""
         return text
@@ -646,7 +650,9 @@ def test_a_long_held_span_streams_without_rechecking_everything_per_token(opener
     pieces = [text[i : i + 4] for i in range(0, len(text), 4)]
 
     async def drain() -> None:
-        events = delta_events(pieces, threading.Event(), partial_chars=40, mood_lead=True)
+        events = delta_events(
+            pieces, threading.Event(), partial_chars=40, style=CueStyle(lead=True)
+        )
         async for _event in events:
             pass
 
@@ -657,7 +663,12 @@ def test_a_long_held_span_streams_without_rechecking_everything_per_token(opener
 
 def _streamed_pieces(tokens: list[str], *, official: bool = False) -> list[str]:
     async def run() -> list[str]:
-        events = delta_events(tokens, threading.Event(), partial_chars=40, official=official)
+        events = delta_events(
+            tokens,
+            threading.Event(),
+            partial_chars=40,
+            style=CueStyle("official" if official else "free"),
+        )
         return [event.text async for event in events if isinstance(event, TextEvent)]
 
     return asyncio.run(run())
@@ -695,7 +706,10 @@ def test_a_directed_model_is_streamed_its_directions_and_paired_tags_as_written(
 
     async def run(*, directed: bool) -> str:
         events = delta_events(
-            tokens, threading.Event(), partial_chars=40, official=True, directed=directed
+            tokens,
+            threading.Event(),
+            partial_chars=40,
+            style=CueStyle("directed" if directed else "official"),
         )
         return "".join([event.text async for event in events if isinstance(event, TextEvent)])
 
@@ -707,3 +721,173 @@ def test_a_directed_model_is_streamed_its_directions_and_paired_tags_as_written(
     plain = asyncio.run(run(directed=False))
     assert "<emphasis>" not in plain
     assert "[barely holding it together]" not in plain
+
+
+@pytest.mark.parametrize("lead", [False, True])
+def test_a_mood_word_held_to_the_end_is_shaped_as_the_whole_reply_shapes_it(lead: bool) -> None:
+    # The strikethrough holds "Excited," back until the stream ends, so the last chunk
+    # is shaped at a sentence start. With the lead off it once became "[excited]" here
+    # while the whole reply kept the word.
+    tokens = ["Hi. ", "~~Excited, there"]
+    style = CueStyle(lead=lead)
+
+    async def streamed() -> str:
+        events = delta_events(tokens, threading.Event(), partial_chars=40, style=style)
+        return "".join([event.text async for event in events if isinstance(event, TextEvent)])
+
+    async def whole() -> str:
+        shaped = style.shape("".join(tokens))
+        events = text_events(shaped, threading.Event(), 40, style=style)
+        return "".join([event.text async for event in events if isinstance(event, TextEvent)])
+
+    sent = asyncio.run(streamed())
+    assert sent == asyncio.run(whole())
+    assert sent == ("Hi. [excited] there" if lead else "Hi. Excited, there")
+
+
+@pytest.mark.parametrize(
+    ("tokens", "with_lead", "without_lead"),
+    [
+        (
+            ["Well and more.", " Excited, hi there friend."],
+            "Well and more. [excited] hi there friend.",
+            "Well and more. Excited, hi there friend.",
+        ),
+        (
+            ["Well and more", ". Excited, hi there friend."],
+            "Well and more. [excited] hi there friend.",
+            "Well and more. Excited, hi there friend.",
+        ),
+        (
+            ["Well", " and more. Excited, hi", " there friend."],
+            "Well and more. [excited] hi there friend.",
+            "Well and more. Excited, hi there friend.",
+        ),
+        (
+            ["Well and more. Excited, hi there friend."],
+            "Well and more. [excited] hi there friend.",
+            "Well and more. Excited, hi there friend.",
+        ),
+        # "Dr." does not end a sentence, so the mood word after it stays a word.
+        (
+            ["Dr.", " Happy, the patient arrived today."],
+            "Dr. Happy, the patient arrived today.",
+            "Dr. Happy, the patient arrived today.",
+        ),
+        (
+            ["1.", " Excited, the first item is ready today."],
+            "1. Excited, the first item is ready today.",
+            "1. Excited, the first item is ready today.",
+        ),
+    ],
+)
+@pytest.mark.parametrize("lead", [False, True])
+def test_a_mood_word_after_a_stop_in_a_continuing_chunk_is_shaped_as_the_whole_reply(
+    tokens: list[str], with_lead: str, without_lead: str, lead: bool
+) -> None:
+    # A chunk that continues a sentence once turned mood leads off for every sentence
+    # in it, so "Excited," after "more." was spoken while the whole reply led with it.
+    style = CueStyle(lead=lead)
+
+    async def streamed() -> str:
+        events = delta_events(tokens, threading.Event(), partial_chars=40, style=style)
+        return "".join([event.text async for event in events if isinstance(event, TextEvent)])
+
+    sent = asyncio.run(streamed())
+    assert sent == style.shape("".join(tokens))
+    assert sent == (with_lead if lead else without_lead)
+
+
+def _streamed_and_whole(tokens: list[str], style: CueStyle) -> tuple[str, str]:
+    async def texts(events: AsyncIterator[object]) -> str:
+        return "".join([event.text async for event in events if isinstance(event, TextEvent)])
+
+    streamed = delta_events(tokens, threading.Event(), partial_chars=40, style=style)
+    whole = text_events(style.shape("".join(tokens)), threading.Event(), 40, style=style)
+    return asyncio.run(texts(streamed)), asyncio.run(texts(whole))
+
+
+@pytest.mark.parametrize(
+    ("tokens", "with_lead", "without_lead"),
+    [
+        (
+            ["Line one", "\nExcited, line two."],
+            "Line one\n[excited] line two.",
+            "Line one\nExcited, line two.",
+        ),
+        (
+            ["Line one", "\n\nExcited, line two."],
+            "Line one\n\n[excited] line two.",
+            "Line one\n\nExcited, line two.",
+        ),
+        (
+            ["Title\n### ", "Excited, heading."],
+            "Title\n[excited] heading.",
+            "Title\nExcited, heading.",
+        ),
+        (
+            ["Title", "\n### Excited, heading."],
+            "Title\n[excited] heading.",
+            "Title\nExcited, heading.",
+        ),
+        (
+            ["Intro\n- ", "Excited, bullet."],
+            "Intro\n[excited] bullet.",
+            "Intro\nExcited, bullet.",
+        ),
+    ],
+)
+@pytest.mark.parametrize("mode", ["official", "free"])
+@pytest.mark.parametrize("lead", [False, True])
+def test_a_mood_word_after_a_new_line_in_the_next_token_is_shaped_as_the_whole_reply(
+    tokens: list[str], with_lead: str, without_lead: str, mode: CueMode, lead: bool
+) -> None:
+    # The token after "Line one" once looked mid-sentence, so the mood word that opens
+    # the new line was spoken while the whole reply sent it as a cue.
+    streamed, whole = _streamed_and_whole(tokens, CueStyle(mode, lead=lead))
+    assert streamed == whole
+    assert streamed == (with_lead if lead else without_lead)
+
+
+@pytest.mark.parametrize(
+    ("tokens", "with_lead", "without_lead"),
+    [
+        (["Hi there\t", "friend."], "Hi there\tfriend.", "Hi there\tfriend."),
+        (["Hello.\t", "Excited, tab."], "Hello.\t[excited] tab.", "Hello.\tExcited, tab."),
+        (["Hello.\t", "Excited", ", tab."], "Hello.\t[excited] tab.", "Hello.\tExcited, tab."),
+        (["Word ", "nbsp here."], "Word nbsp here.", "Word nbsp here."),
+    ],
+)
+@pytest.mark.parametrize("lead", [False, True])
+def test_a_token_that_ends_in_a_tab_keeps_its_words_apart(
+    tokens: list[str], with_lead: str, without_lead: str, lead: bool
+) -> None:
+    # Only a space at a token's edge was kept, so "there\t" + "friend" became one word.
+    streamed, whole = _streamed_and_whole(tokens, CueStyle(lead=lead))
+    assert streamed == whole
+    assert streamed == (with_lead if lead else without_lead)
+
+
+@pytest.mark.parametrize(
+    ("tokens", "expected"),
+    [
+        (["**", "Note", ":**", " this is it."], "Note: this is it."),
+        (["**Note:", "**", " ok."], "Note: ok."),
+        (["**", "Hello", ".**", " Yes."], "Hello. Yes."),
+        (["**", "Really", "?**", " Yes."], "Really? Yes."),
+        (["Hi ", "**Note**", ": ok."], "Hi Note: ok."),
+        (["*", "Wow", "!*", " ok."], "Wow! ok."),
+        (["End on bold **h", "ere**."], "End on bold here."),
+        (["Done\n**Exc", "ited,** bold lead."], "Done\nExcited, bold lead."),
+        (['Quote "*h', 'i*." done.'], 'Quote "hi." done.'),
+    ],
+)
+@pytest.mark.parametrize("mode", ["official", "free", "directed"])
+def test_an_emphasis_mark_cut_from_its_word_is_not_spoken(
+    tokens: list[str], expected: str, mode: CueMode
+) -> None:
+    # A closer after a stop ("Note:" then "**") or an opener before a cut word ("**"
+    # then "h") was read without the text beside it, so Fish was sent the stars.
+    streamed, whole = _streamed_and_whole(tokens, CueStyle(mode))
+    assert streamed == whole
+    assert streamed == expected

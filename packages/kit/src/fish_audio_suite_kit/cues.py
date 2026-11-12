@@ -8,117 +8,60 @@ an emotion cue across the pieces of a streamed reply.
 from __future__ import annotations
 
 import re
+from typing import Final
 
-from fish_audio_suite_kit.cuts import ends_sentence, next_tts_cut
+from fish_audio_suite_kit.cuts import ABBREVIATION_LOOKBACK, ends_sentence, sentence_cuts
 
 __all__ = [
+    "CLEAR_CUE",
     "MoodCarry",
     "ensure_lead_cue",
-    "is_paren_cue",
     "last_emotion",
-    "mood_lead_hold_at",
     "normalize_cues",
     "official_cue",
-    "rewrite_s1_parens",
     "split_cues",
-    "spoken_mood_span",
     "strip_cue_tags",
 ]
 
-# Official single-word emotions (basic + advanced). Both the sentence-lead
-# pattern and the S1 parenthesis rewriter use this set, so the lists cannot drift.
+# Official single-word emotions (basic + advanced), the common ones first. The default
+# system prompt lists them in this order, and the sentence-lead pattern and the S1
+# parenthesis rewriter read the same tuple.
 # https://docs.fish.audio/api-reference/emotion-reference.md
-_FISH_EMOTIONS = frozenset(
-    {
-        "happy",
-        "sad",
-        "angry",
-        "excited",
-        "calm",
-        "nervous",
-        "confident",
-        "surprised",
-        "satisfied",
-        "delighted",
-        "scared",
-        "worried",
-        "upset",
-        "frustrated",
-        "depressed",
-        "empathetic",
-        "embarrassed",
-        "disgusted",
-        "moved",
-        "proud",
-        "relaxed",
-        "grateful",
-        "curious",
-        "sarcastic",
-        "disdainful",
-        "unhappy",
-        "anxious",
-        "hysterical",
-        "indifferent",
-        "uncertain",
-        "doubtful",
-        "confused",
-        "disappointed",
-        "regretful",
-        "guilty",
-        "ashamed",
-        "jealous",
-        "envious",
-        "hopeful",
-        "optimistic",
-        "pessimistic",
-        "nostalgic",
-        "lonely",
-        "bored",
-        "contemptuous",
-        "sympathetic",
-        "compassionate",
-        "determined",
-        "resigned",
-    }
+FISH_EMOTIONS: Final = (
+    *("happy", "sad", "angry", "excited", "calm", "nervous", "confident", "surprised"),
+    *("delighted", "scared", "worried", "frustrated", "empathetic", "embarrassed", "proud"),
+    *("relaxed", "grateful", "curious", "sarcastic", "hopeful", "disappointed", "determined"),
+    *("satisfied", "optimistic", "moved", "nostalgic", "sympathetic", "compassionate"),
+    *("confused", "uncertain", "doubtful", "anxious", "upset", "unhappy", "lonely", "bored"),
+    *("indifferent", "resigned", "regretful", "guilty", "ashamed", "jealous", "envious"),
+    *("disgusted", "disdainful", "contemptuous", "pessimistic", "depressed", "hysterical"),
 )
+_FISH_EMOTIONS: Final = frozenset(FISH_EMOTIONS)
 # The only Fish tone tags that are one word and open a sentence
 # ("Whispering, come here"). "in a hurry tone" and "soft tone" are phrases.
 # "emphasis" marks a word mid-sentence. Sound effects are not leads: "Pause, wait"
 # is speech.
-_SPOKEN_TONE = frozenset({"whispering", "shouting", "screaming"})
-# "Excited, hello" -> [excited] hello. Longest word first so a shorter emotion
-# cannot take a prefix. Punctuation is required, so "I am anxious today" stays speech.
-# A bare bracket ("Happy [chuckling]") is also accepted as the delimiter.
-_SPOKEN_MOOD_LEAD = re.compile(
-    r"^\s*("
-    + "|".join(
-        re.escape(word) for word in sorted(_FISH_EMOTIONS | _SPOKEN_TONE, key=len, reverse=True)
-    )
-    + r")\s*(?:[,:!\-–—，！：]+\s*|(?=\[))",
-    re.IGNORECASE,
+_SPOKEN_TONE: Final = frozenset({"whispering", "shouting", "screaming"})
+# Every word that can open a sentence as a mood lead.
+LEAD_WORDS: Final = _FISH_EMOTIONS | _SPOKEN_TONE
+# Tone tags that do not fit the one-word sentence lead.
+_PHRASE_TONES: Final = frozenset({"emphasis", "in a hurry tone", "soft tone"})
+# Fish's pauses, the short one first.
+FISH_BREAKS: Final = ("break", "long-break")
+# Fish's official sound effects.
+FISH_SOUNDS: Final = frozenset(
+    {
+        *("laughing", "chuckling", "sighing", "sobbing", "crying loudly", "groaning"),
+        *("panting", "gasping", "yawning", "snoring", "clear throat", "audience laughing"),
+        *("background laughter", "crowd laughing"),
+    }
 )
-# The same marks the lead regex consumes. A stream can end on the first "!"
-# of "Anxious !!", so that bang stays buffered until a space or a word.
-# Fullwidth comma, bang, and colon are the same marks in mixed CJK text.
-_LEAD_PUNCT = frozenset(",:!-\u2013\u2014\uff0c\uff01\uff1a")
-# Closing emphasis still belongs to the mood word: "Excited*" is not done.
-_LEAD_WRAP = frozenset("*_~`")
-
-# Longest cue text and longest whispered span the patterns look at. Each pattern
-# scans at most this far from a bracket or tag, so a long run of openers with no
-# closer costs a fixed amount per opener instead of the rest of the text.
-_MAX_CUE_CHARS = 200
-_MAX_WHISPER_CHARS = 1000
-# Any [cue], including free-form S2 text. A newline ends the tag.
-_CUE_RE = re.compile(rf"\[([^\]\n]{{1,{_MAX_CUE_CHARS}}})\]")
-# Some models write <whisper>...</whisper> instead of a Fish cue.
-_WHISPER_XML_RE = re.compile(
-    rf"<\s{{0,8}}whisper\s{{0,8}}>(.{{0,{_MAX_WHISPER_CHARS}}}?)<\s{{0,8}}/\s{{0,8}}whisper\s{{0,8}}>",
-    re.IGNORECASE | re.DOTALL,
-)
+# breath/cough/lip-smacking from older prompts, and common S2 cues from Fish's models
+# guide that are not in the official lists.
+_OTHER_SOUNDS: Final = frozenset({"breath", "cough", "lip-smacking", "inhale", "exhale"})
 
 # Spellings models write that are not the Fish tag. [cough] is not aliased.
-_CUE_ALIASES = {
+_CUE_ALIASES: Final = {
     "laugh": "laughing",
     "laughs": "laughing",
     "whisper": "whispering",
@@ -133,83 +76,126 @@ _CUE_ALIASES = {
     "cry": "sobbing",
 }
 
-# (happy) from the old S1 model. Emotions and the three sentence tones are
-# unioned above. Unknown (asides) are left for the scrubber.
-_S1_PAREN_TAGS = (
+# Every tag name a (paren) or [bracket] is known by. Each alias and the tag it stands
+# for are in it by construction, so an alias is never an unknown tag: (sob) is
+# rewritten and [groan] is stripped like the tags they stand for.
+_KNOWN_TAGS: Final = (
     _FISH_EMOTIONS
     | _SPOKEN_TONE
-    | frozenset(
-        {
-            # Tone tags that do not fit the one-word sentence lead.
-            "emphasis",
-            "in a hurry tone",
-            "soft tone",
-            # Official sound effects, plus breath/cough/lip-smacking from older prompts.
-            "break",
-            "long-break",
-            "laughing",
-            "chuckling",
-            "sighing",
-            "sobbing",
-            "crying loudly",
-            "groaning",
-            "panting",
-            "gasping",
-            "yawning",
-            "snoring",
-            "clear throat",
-            "audience laughing",
-            "background laughter",
-            "crowd laughing",
-            "breath",
-            "cough",
-            "lip-smacking",
-            # Common S2 cues from Fish's models guide that are not in the official lists.
-            "gasp",
-            "inhale",
-            "exhale",
-            # Alias spellings, so (laugh) and (pause) match before the alias map.
-            "pause",
-            "laugh",
-            "laughs",
-            "chuckle",
-            "sigh",
-            "whisper",
-            "whispers",
-        }
-    )
+    | _PHRASE_TONES
+    | frozenset(FISH_BREAKS)
+    | FISH_SOUNDS
+    | _OTHER_SOUNDS
+    | frozenset(_CUE_ALIASES)
+    | frozenset(_CUE_ALIASES.values())
 )
-# Longest tag first, so "laughing" wins over "laugh".
-_S1_PAREN_RE = re.compile(
+# (happy) from the old S1 model, longest tag first so "laughing" wins over "laugh".
+# Unknown (asides) are left for the scrubber.
+_S1_PAREN_RE: Final = re.compile(
     r"\(\s*("
-    + "|".join(re.escape(t) for t in sorted(_S1_PAREN_TAGS, key=len, reverse=True))
+    + "|".join(re.escape(t) for t in sorted(_KNOWN_TAGS, key=len, reverse=True))
     + r")\s*\)",
     re.IGNORECASE,
 )
 
-
-# A heading, list marker, task box, or emphasis mark before a mood lead.
-# "### Excited," and "*Sad," are cues. Releasing the word after the mark
-# speaks the mood instead.
-_LEAD_MARK_RE = re.compile(
-    r"^(?:[ \t]{0,3}#{1,6}[ \t]+)?"
-    r"(?:[ \t]{0,3}[-*_~+]+[ \t]+)?"
-    r"(?:\[[ \t]*[xX]?[ \t]*\][ \t]+)?"
-    r"(?:[*_~`]+(?=[A-Za-z]))?"
+# "Excited, hello" -> [excited] hello. Longest word first so a shorter emotion
+# cannot take a prefix. Punctuation is required, so "I am anxious today" stays speech.
+# A bare bracket ("Happy [chuckling]") is also accepted as the delimiter.
+LEAD_PUNCT: Final = ",:!-\u2013\u2014\uff0c\uff01\uff1a"
+SPOKEN_MOOD_LEAD_RE: Final = re.compile(
+    r"^\s*("
+    + "|".join(re.escape(word) for word in sorted(LEAD_WORDS, key=len, reverse=True))
+    + rf")\s*(?:[{re.escape(LEAD_PUNCT)}]+\s*|(?=\[))",
+    re.IGNORECASE,
 )
+
+
+def cue_pattern(
+    max_chars: int, *, min_chars: int = 1, capture: bool = False, flat: bool = False
+) -> str:
+    """Return the regex source for one ``[cue]``: a bracket with no newline or ``]`` inside.
+
+    Parameters
+    ----------
+    max_chars : int
+        The longest cue text it matches. The bound keeps a scan from each ``[`` short, so
+        a long run of openers with no closer costs a fixed amount per opener.
+    min_chars : int, optional
+        The shortest cue text. Default 1; 0 also matches ``[]``.
+    capture : bool, optional
+        Put the cue text in a group. Default False, to embed in a larger pattern.
+    flat : bool, optional
+        Refuse a ``[`` inside the cue too, so ``[[calm]`` matches only ``[calm]``.
+        Default False.
+
+    Returns
+    -------
+    str
+        The pattern source.
+
+    Examples
+    --------
+    >>> import re
+    >>> re.findall(cue_pattern(80, flat=True), "[[calm] hi [a [sad]")
+    ['[calm]', '[sad]']
+    """
+    body = (
+        rf"[^\[\]\n]{{{min_chars},{max_chars}}}" if flat else rf"[^\]\n]{{{min_chars},{max_chars}}}"
+    )
+    return rf"\[({body})\]" if capture else rf"\[{body}\]"
+
+
+# Longest cue text and longest whispered span the patterns look at.
+_MAX_CUE_CHARS: Final = 200
+_MAX_WHISPER_CHARS: Final = 1000
+# Any [cue], including free-form S2 text. A newline ends the tag. Group 1 is the text.
+_CUE_RE: Final = re.compile(cue_pattern(_MAX_CUE_CHARS, capture=True))
+WHISPER_TAG: Final = "whisper"
+
+
+def whisper_tag(*, close: bool, space: str = r"\s{0,8}") -> str:
+    """Return the regex source for ``<whisper>`` or ``</whisper>`` as models write it.
+
+    Parameters
+    ----------
+    close : bool
+        True for the closing tag.
+    space : str, optional
+        The pattern for the space allowed around the name and the slash. Default a
+        bounded run, so the rewrite stays linear.
+
+    Returns
+    -------
+    str
+        A pattern with no group.
+    """
+    slash = rf"/{space}" if close else ""
+    return rf"<{space}{slash}{WHISPER_TAG}{space}>"
+
+
+# Some models write <whisper>...</whisper> instead of a Fish cue.
+_WHISPER_XML_RE: Final = re.compile(
+    rf"{whisper_tag(close=False)}(.{{0,{_MAX_WHISPER_CHARS}}}?){whisper_tag(close=True)}",
+    re.IGNORECASE | re.DOTALL,
+)
+
 # One or more [cues] already at the start of a sentence. Group 2 is the spoken rest.
 # A cue body cannot contain "[", so "[[page]]" is not a stack.
-_LEAD_STACK_RE = re.compile(r"^((?:\[[^\[\]]+\]\s*)+)(.*)$", re.DOTALL)
-# Each cue inside that stack, so [sad][whispering] stays two tags.
-_INNER_CUE_RE = re.compile(rf"\[([^\]]{{1,{_MAX_CUE_CHARS}}})\]")
+_LEAD_STACK_RE: Final = re.compile(r"^((?:\[[^\[\]]+\]\s*)+)(.*)$", re.DOTALL)
+# Each cue inside that stack, so [sad][whispering] stays two tags. A newline does not end
+# it: the stack it reads from may span lines.
+_INNER_CUE_RE: Final = re.compile(rf"\[([^\]]{{1,{_MAX_CUE_CHARS}}})\]")
 # Keep the newlines, so a blank line is not folded into the next sentence.
-_LINE_SPLIT_RE = re.compile(r"(\n+)")
+_LINE_SPLIT_RE: Final = re.compile(r"(\n+)")
 
 
-_PAREN_CUE_NAMES = _S1_PAREN_TAGS | {"clear"}
+# The short [clear] tag. Fish's list names only [clear throat], yet Fish speaks [clear] as
+# an ahem too, so it counts as a cue. It was once the default lead cue.
+CLEAR_CUE: Final = "clear"
+_PAREN_CUE_NAMES: Final = _KNOWN_TAGS | {CLEAR_CUE}
 # [name] for any known cue name, longest first so "laughing" beats "laugh".
 # A tag inside a larger bracket expression ("[[happy]]") is literal text.
-_KNOWN_CUE_TAG_RE = re.compile(
+_KNOWN_CUE_TAG_RE: Final = re.compile(
     r"(?<!\[)\[(?:"
     + "|".join(re.escape(tag) for tag in sorted(_PAREN_CUE_NAMES, key=len, reverse=True))
     + r")\](?!\])",
@@ -298,25 +284,6 @@ def is_paren_cue(label: str) -> bool:
         True for a known S1 tag or ``clear``.
     """
     return label.strip().lower() in _PAREN_CUE_NAMES
-
-
-def spoken_mood_span(text: str) -> tuple[int, int] | None:
-    """Return the span of a mood lead at the start of text.
-
-    Parameters
-    ----------
-    text : str
-        Unsent model text.
-
-    Returns
-    -------
-    tuple of int and int or None
-        Start and end of the lead. None when the text does not open with one.
-    """
-    lead = _SPOKEN_MOOD_LEAD.match(text)
-    if lead is None:
-        return None
-    return lead.start(), lead.end()
 
 
 # A word a model writes in a cue that Fish's own list lacks, and the official cue that sounds
@@ -497,7 +464,7 @@ def _official_bracket(inner: str) -> str:
 
 def _cue_word(inner: str) -> bool:
     word = inner.strip().lower()
-    return word in _CUE_ALIASES or word in _FISH_EMOTIONS or word in _SPOKEN_TONE or word == "clear"
+    return word in _CUE_ALIASES or word in LEAD_WORDS or word == CLEAR_CUE
 
 
 def rewrite_s1_parens(text: str) -> str:
@@ -509,86 +476,21 @@ def _lead(tags: str, rest: str) -> str:
     return f"{tags} {rest}" if rest else tags
 
 
-def mood_lead_hold_at(text: str, *, sentence_start: bool) -> int | None:
-    """Return where an unfinished sentence-lead cue starts.
-
-    Parameters
-    ----------
-    text : str
-        Unsent model text.
-    sentence_start : bool
-        True when ``text`` begins a sentence. A later line in ``text`` is
-        its own sentence either way.
-
-    Returns
-    -------
-    int or None
-        Index to keep buffered. None when a later character shows the cue
-        is finished, the word has ended, or this is not the start of a sentence.
-
-    Notes
-    -----
-    A token stream can emit ``Exc`` before ``ited,``. Scrubbing that prefix
-    speaks the emotion. The comma has to arrive before the word is released.
-    ``Happy - hello`` puts a space before the dash. Releasing ``Happy`` at
-    that space speaks the mood before the dash arrives. A list marker is
-    not the mood word: ``* E`` still has to wait for ``xcited,``.
-    """
-    line_at = text.rfind("\n") + 1
-    if line_at == 0 and not sentence_start:
-        return None
-    line = text[line_at:]
-    skipped = len(line) - len(line.lstrip(" \t"))
-    marked = _LEAD_MARK_RE.match(line.lstrip(" \t"))
-    mark_len = marked.end() if marked is not None else 0
-    body = line.lstrip(" \t")[mark_len:]
-    if not body:
-        return None
-    lead = _SPOKEN_MOOD_LEAD.match(body)
-    if lead is not None:
-        # "Anxious!" matches with one bang. "Anxious !!" is the same cue.
-        # Hold through every bang, and through the closing star of "*Excited,*".
-        tail = body[lead.end() :]
-        if not tail and body[-1] in _LEAD_PUNCT:
-            return line_at + skipped
-        if tail and all(ch in _LEAD_WRAP or ch.isspace() for ch in tail):
-            return line_at + skipped
-        return None
-    idx = 0
-    while idx < len(body) and body[idx].isalpha():
-        idx += 1
-    if idx == 0:
-        return None
-    token = body[:idx].lower()
-    words = _FISH_EMOTIONS | _SPOKEN_TONE
-    held = line_at + skipped + mark_len
-    if idx < len(body):
-        tail = body[idx:]
-        if token in words and tail.strip() == "":
-            return held
-        # "**Excited**," is one cue: closing stars do not end the word.
-        if token in words and all(ch in _LEAD_WRAP or ch.isspace() for ch in tail):
-            return held
-        return None
-    if any(word.startswith(token) for word in words):
-        return held
-    return None
-
-
-def _sentence_spans(part: str) -> list[tuple[str, str]]:
+def _sentence_spans(part: str, before: str = "") -> list[tuple[str, str]]:
+    # Only a real sentence end splits, so "Dr. Happy" is not a new sentence. A stop at
+    # the start of a streamed chunk ends a sentence only by what came before it.
     spans: list[tuple[str, str]] = []
-    rest = part
-    while rest:
-        # A huge window disables the partial-word cut. Only a real sentence
-        # end splits, so "Dr. Happy" is not a new sentence.
-        cut = next_tts_cut(rest, partial_chars=len(rest) + 1)
-        if cut < 1:
-            spans.append((rest, ""))
-            break
-        piece = rest[:cut]
-        rest = rest[cut:]
+    start = 0
+    for cut in sentence_cuts(before + part):
+        end = cut - len(before)
+        if end <= 0:
+            continue
+        piece = part[start:end]
         body = piece.rstrip()
         spans.append((body, piece[len(body) :]))
+        start = end
+    if start < len(part):
+        spans.append((part[start:], ""))
     return spans
 
 
@@ -605,7 +507,7 @@ def _one_sentence(chunk: str, *, lead: bool) -> str:
             return _lead(tags, m.group(2).lstrip())
     # A stream may cut before this word. It is a lead only at a real sentence start.
     if lead:
-        m2 = _SPOKEN_MOOD_LEAD.match(chunk)
+        m2 = SPOKEN_MOOD_LEAD_RE.match(chunk)
         if m2:
             return _lead(_bracket(m2.group(1)), chunk[m2.end() :].lstrip())
     return chunk
@@ -616,6 +518,7 @@ def normalize_cues(
     *,
     lead: bool = False,
     continued: bool = False,
+    before: str = "",
     official: bool = False,
     directed: bool = False,
 ) -> str:
@@ -636,6 +539,10 @@ def normalize_cues(
         True when ``text`` continues a sentence already sent. The first
         sentence is then not a mood lead, but later ones still are. Only
         meaningful with ``lead``. Default False.
+    before : str, optional
+        Text already sent on the line ``text`` continues. It is read only to tell
+        whether a stop at the start of ``text`` ends a sentence (``Dr`` then
+        ``. Happy`` does not). Default empty.
     official : bool, optional
         Keep only Fish's own cues. Any other cue is replaced by the nearest official one
         (``[smiling]`` becomes ``[happy]``, ``[soft chuckle]`` becomes ``[chuckling]``) or
@@ -686,12 +593,20 @@ def normalize_cues(
     parts = _LINE_SPLIT_RE.split(text)
     out: list[str] = []
     allow_lead = lead and not continued
+    # Whether a stop ends a sentence depends only on the word before it, so a short tail
+    # of the line is enough, and a long single-line reply is not rescanned per chunk.
+    context = before.rsplit("\n", 1)[-1][-2 * ABBREVIATION_LOOKBACK :]
     for part in parts:
         if not part or part.isspace():
             out.append(part)
+            context = ""
+            # A new line starts a sentence even when the chunk continued one, as it does
+            # in the whole reply.
+            if "\n" in part:
+                allow_lead = lead
             continue
         spoken: list[str] = []
-        for sent, sep in _sentence_spans(part):
+        for sent, sep in _sentence_spans(part, context):
             if not sent.strip():
                 if sep:
                     spoken.append(sep)
@@ -699,10 +614,11 @@ def normalize_cues(
             spoken.append(_one_sentence(sent, lead=allow_lead) + sep)
             allow_lead = lead
         out.append("".join(spoken))
+        context = ""
     return "".join(out)
 
 
-_LEADING_CUES_RE = re.compile(rf"^\s*((?:\[[^\[\]\n]{{1,{_MAX_CUE_CHARS}}}\]\s*)*)")
+_LEADING_CUES_RE: Final = re.compile(rf"^\s*((?:{cue_pattern(_MAX_CUE_CHARS, flat=True)}\s*)*)")
 
 
 class MoodCarry:

@@ -2,8 +2,8 @@
 
 Every mic frame gets a high-pass filter, automatic gain and noise suppression, and AEC3
 while the speaker plays (far-end is speaker PCM, near-end is the mic). A missing extra,
-or every stage turned off, returns the mic unchanged, and barge-in falls back to the
-longer bleed delay. PipeWire echo-cancel is a host setting, not this module.
+or every stage turned off, returns the mic unchanged, and ``available`` says so.
+PipeWire echo-cancel is a host setting, not this module.
 """
 
 from __future__ import annotations
@@ -15,39 +15,27 @@ from typing import Any, Final
 import numpy as np
 
 from fish_audio_suite_voice.debug import debug
-from fish_audio_suite_voice.tune import DEFAULT_AEC_BLEED_DELAY_S, AecTune
+from fish_audio_suite_voice.pcm import SAMPLE_BYTES, SAMPLE_RATE, even_pcm, pcm_rms
+from fish_audio_suite_voice.tune import AecTune
 
 __all__ = [
-    "AEC_RATE",
-    "SAMPLE_BYTES",
     "EchoCanceller",
     "FarEndTap",
-    "even_pcm",
-    "pcm_rms",
     "resample_int16",
 ]
 
-AEC_RATE: Final = 16_000
-SAMPLE_BYTES: Final = 2
 _FAR_HOLD_S: Final = 2
-FAR_HOLD_SAMPLES: Final = AEC_RATE * _FAR_HOLD_S
+_FAR_HOLD_SAMPLES: Final = SAMPLE_RATE * _FAR_HOLD_S
 # Playback that ended this recently still counts as playing: its tail is still in the
 # device buffer and the room.
 _FAR_RECENT_S: Final = 0.4
-_RMS_FLOOR: Final = 1e-9
 # A far-end frame quieter than this has no echo worth cancelling, so the mic frame is
 # treated as if nothing played.
-FAR_SILENCE_RMS: Final = 40.0
+_FAR_SILENCE_RMS: Final = 40.0
 # A wet mix this close to 1 skips the blend with the raw mic.
 _FULL_WET: Final = 0.999
 # WebRTC's ns_level for each attenuation step in AecTune.noise_suppression_db.
 _NS_LEVELS: Final = {6: 0, 12: 1, 18: 2, 21: 3}
-
-
-def even_pcm(pcm: bytes) -> bytes:
-    """Drop a trailing odd byte so the buffer stays int16-aligned."""
-    extra = len(pcm) % SAMPLE_BYTES
-    return pcm if extra == 0 else pcm[:-extra]
 
 
 def _realign(buf: bytearray) -> None:
@@ -106,13 +94,13 @@ class FarEndTap:
 
     def push(self, pcm: bytes, sample_rate: int) -> None:
         """Append resampled far-end PCM and keep only the recent hold window."""
-        chunk = resample_int16(pcm, sample_rate, AEC_RATE)
+        chunk = resample_int16(pcm, sample_rate, SAMPLE_RATE)
         if not chunk:
             return
         duration_s = len(even_pcm(pcm)) / SAMPLE_BYTES / sample_rate
         with self._lock:
             self._pcm.extend(chunk)
-            extra = len(self._pcm) - FAR_HOLD_SAMPLES * SAMPLE_BYTES
+            extra = len(self._pcm) - _FAR_HOLD_SAMPLES * SAMPLE_BYTES
             if extra > 0:
                 self._drop_front(extra)
             self._note_playing(duration_s)
@@ -140,7 +128,7 @@ class FarEndTap:
         seconds : float
             Audio to keep, at the 16 kHz far-end rate.
         """
-        keep = max(0, int(seconds * AEC_RATE)) * SAMPLE_BYTES
+        keep = max(0, int(seconds * SAMPLE_RATE)) * SAMPLE_BYTES
         with self._lock:
             extra = len(self._pcm) - keep
             if extra > 0:
@@ -149,14 +137,6 @@ class FarEndTap:
     def playing_recently(self, window_s: float = _FAR_RECENT_S) -> bool:
         """Return whether playback ended inside the recent window."""
         return time.monotonic() < (self._playing_until + window_s)
-
-
-def pcm_rms(frame: bytes) -> float:
-    """Return RMS of an int16 frame, floored so silence is not zero."""
-    if not frame:
-        return 0.0
-    samples = np.frombuffer(frame, dtype=np.int16).astype(np.float32)
-    return float(np.sqrt(np.mean(samples * samples)) + _RMS_FLOOR)
 
 
 # ``align`` keeps the output latency, at least this much, plus the margin.
@@ -227,7 +207,7 @@ class EchoCanceller:
     def _build(self, processor: Any) -> Any:
         tune = self.tune
         return processor(
-            sample_rate=AEC_RATE,
+            sample_rate=SAMPLE_RATE,
             num_channels=1,
             echo_cancellation=tune.enabled,
             noise_suppression=tune.noise_suppression_db > 0,
@@ -271,31 +251,12 @@ class EchoCanceller:
         Notes
         -----
         The sink pushes PCM when it hands it to PortAudio. It reaches the air
-        ``output_latency_s`` later. The barge gate starts reading the ring
-        after the bleed delay, so without this the reference would trail the
-        mic by that whole delay for the rest of the reply.
+        ``output_latency_s`` later. Call this when the mic starts being read
+        while the speaker has been playing for a while: without it the reference
+        would trail the mic by that time for the rest of the reply.
         """
         keep_s = max(self.output_latency_s, _ALIGN_MIN_S) + _ALIGN_MARGIN_S
         self.tap.keep_last(keep_s)
-
-    def effective_bleed_s(self, fallback_s: float) -> float:
-        """Seconds to ignore the mic after TTS starts, so speaker bleed is not speech.
-
-        Parameters
-        ----------
-        fallback_s : float
-            Delay used when AEC3 is not loaded.
-
-        Returns
-        -------
-        float
-            ``AecTune.bleed_delay_s`` when AEC3 is loaded, otherwise ``fallback_s``.
-            Negative values become 0 or the AEC default.
-        """
-        if not self.available():
-            return fallback_s if fallback_s >= 0 else 0.0
-        bleed = self.tune.bleed_delay_s
-        return bleed if bleed >= 0 else DEFAULT_AEC_BLEED_DELAY_S
 
     def clean(self, near: bytes) -> bytes:
         """Run one mic frame through the processor, cancelling echo while the speaker plays.
@@ -324,7 +285,7 @@ class EchoCanceller:
         near_a = np.frombuffer(near, dtype=np.int16)
         far = self.tap.pop(len(near)) if self.tune.enabled else b""
         far_a = np.frombuffer(far, dtype=np.int16) if far else None
-        echo = far_a is not None and far_a.size == near_a.size and pcm_rms(far) >= FAR_SILENCE_RMS
+        echo = far_a is not None and far_a.size == near_a.size and pcm_rms(far) >= _FAR_SILENCE_RMS
         if self.tune.enabled and not echo:
             far_a = np.zeros_like(near_a)
         try:

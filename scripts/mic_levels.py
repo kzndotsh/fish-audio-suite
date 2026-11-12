@@ -3,8 +3,9 @@ r"""Record your mic level for a few seconds and print it, to tune the waveform i
 It opens the default mic (or `--device`), reads it in the 30 ms frames `fish-voice` uses, and
 prints one line about every 90 ms, the rate of the app's `MicLevel` events: the time, the RMS on the
 int16 scale, the level in dB below full scale and a small bar. It ends with a summary of
-what the room and your voice look like in numbers: the noise floor, the typical level
-while you speak, the loudest moment and how far apart they are. The levels are the raw mic.
+what the room and your voice look like in numbers: the noise floor and speech level the app's
+waveform (`session_view.SpeechScale`) would take from them, then the average level while you
+speak, the loudest moment and how far apart they are. The levels are the raw mic.
 The app's automatic gain and noise suppression are not applied, so with `FISH_VOICE_AGC` on
 the app hears a quiet voice louder than this shows.
 
@@ -29,11 +30,12 @@ import threading
 import time
 from collections.abc import Sequence
 
-from fish_audio_suite_voice.aec import pcm_rms
-from fish_audio_suite_voice.barge import MIC_LEVEL_EVERY_FRAMES
+from fish_audio_suite_voice.latency import percentile
 from fish_audio_suite_voice.mic import SessionMic
+from fish_audio_suite_voice.pcm import FULL_SCALE, MIC_LEVEL_EVERY_FRAMES, pcm_rms
+from fish_audio_suite_voice.portaudio import parse_device
+from fish_audio_suite_voice.session_view import noise_floor_db, speech_level_db
 
-_FULL_SCALE = 32768.0
 _SILENCE_DB = -90.0
 _BAR_FROM_DB = -70.0  # a bar is empty at this level and full at 0 dB
 
@@ -56,34 +58,27 @@ def to_db(rms: float) -> float:
     >>> round(to_db(32768.0), 1), round(to_db(3276.8), 1), to_db(0.0)
     (0.0, -20.0, -90.0)
     """
-    ratio = rms / _FULL_SCALE
+    ratio = rms / FULL_SCALE
     return 20 * math.log10(ratio) if ratio > 0 else _SILENCE_DB
 
 
-def percentile(values: Sequence[float], fraction: float) -> float:
-    """Return the value that ``fraction`` of ``values`` fall at or below.
+def scale_levels(levels_db: Sequence[float]) -> tuple[float, float | None]:
+    """Return the noise floor and speech level the app's waveform reads from a recording.
 
     Parameters
     ----------
-    values : Sequence[float]
-        Any numbers. Must not be empty.
-    fraction : float
-        From 0 (the smallest) to 1 (the largest).
+    levels_db : Sequence[float]
+        The level of each block, in dB. Must not be empty.
 
     Returns
     -------
-    float
-        A value from ``values``.
-
-    Examples
-    --------
-    >>> percentile([5.0, 1.0, 3.0, 2.0, 4.0], 0.5)
-    3.0
-    >>> percentile([5.0, 1.0, 3.0], 1.0)
-    5.0
+    tuple of float and float or None
+        ``SpeechScale``'s noise floor and speech level, from its own functions, over the
+        whole recording instead of its last six seconds. The speech level is None when
+        too few blocks were speech.
     """
-    ordered = sorted(values)
-    return ordered[min(len(ordered) - 1, max(0, round(fraction * (len(ordered) - 1))))]
+    noise = noise_floor_db(levels_db)
+    return noise, speech_level_db(levels_db, noise)
 
 
 def summarize(levels_db: Sequence[float]) -> dict[str, float]:
@@ -138,9 +133,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--seconds", type=float, default=12.0, help="how long to record")
     parser.add_argument("--device", default=None, help="a PortAudio device name or number")
     args = parser.parse_args(argv)
-    device: str | int | None = args.device
-    if isinstance(device, str) and device.isdigit():
-        device = int(device)
+    device = parse_device(args.device)
 
     stop = threading.Event()
     levels: list[float] = []
@@ -160,8 +153,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("no audio heard: check the device and the PortAudio setup", file=sys.stderr)
         return 1
     stats = summarize(levels)
+    scale_noise, scale_speech = scale_levels(levels)
+    scale_speech_text = f"{scale_speech:6.1f}" if scale_speech is not None else "   n/a"
     print(
         "\nsummary (dB below full scale, 0 is the loudest the mic can record)\n"
+        "  the app's waveform (session_view.SpeechScale) would take:\n"
+        f"  waveform floor   {scale_noise:6.1f}   the noise floor it measures\n"
+        f"  waveform speech  {scale_speech_text}   its speech level (90th percentile of speech)\n"
+        "  more about the recording:\n"
         f"  noise floor      {stats['noise']:6.1f}   the quiet end (10th percentile)\n"
         f"  your speech      {stats['speech']:6.1f}   the average while you were talking\n"
         f"  95th percentile  {stats['p95']:6.1f}\n"

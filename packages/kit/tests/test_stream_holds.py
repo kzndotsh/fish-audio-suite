@@ -47,3 +47,27 @@ def test_a_spaced_less_than_is_a_comparison_and_is_not_held(text: str) -> None:
 @pytest.mark.parametrize("text", ["ok <b", "ok </ p", "ok <", "go &lt;br", "go &lt;/b"])
 def test_an_unfinished_tag_is_still_held(text: str) -> None:
     assert tts_hold_at(text, line_start=True, sentence_start=True) < len(text)
+
+
+@pytest.mark.parametrize("text", ["Title\n### ", "Intro\n- ", "Intro\n* \t", "### "])
+def test_a_marker_with_no_words_after_it_yet_is_held_with_its_space(text: str) -> None:
+    # Shaped alone, "Title\n### " loses its line, and the mood word after it is
+    # then read as mid-sentence.
+    held = text.rstrip(" \t").rstrip("#-*")
+    assert tts_hold_at(text, line_start=True, sentence_start=True) == len(held)
+
+
+def test_a_mid_line_star_and_space_is_not_held() -> None:
+    assert tts_hold_at("2 * ", line_start=False, sentence_start=True) == len("2 * ")
+
+
+@pytest.mark.parametrize(
+    ("text", "held_at"),
+    [("> Excited", 2), (">> Exc", 3), ("  > Excited", 4), ("> ### Excited", 6), ("> Hello", 7)],
+)
+def test_a_mood_word_after_a_blockquote_mark_is_held_like_one_after_a_heading(
+    text: str, held_at: int
+) -> None:
+    # The whole reply drops the "> " and reads "Excited," as a lead cue. Released
+    # early, the word would be spoken before its comma arrives.
+    assert tts_hold_at(text, lead=True, line_start=True, sentence_start=True) == held_at

@@ -1,4 +1,4 @@
-"""Quiet-percentile RMS floor shared by the listen and barge gates."""
+"""Quiet-percentile RMS floor that every mic gate scores frames against."""
 
 from __future__ import annotations
 
@@ -32,31 +32,15 @@ class AdaptiveFloor:
         The seed, used until enough quiet frames are seen. The floor never drops below it.
     window : int, optional
         Quiet frames remembered.
-    percentile : float, optional
-        Percentile of the quiet frames the estimate starts from.
-    gain : float, optional
-        Multiplier on that percentile.
-    lo : float, optional
-        Lowest estimate.
-    hi : float, optional
-        Highest estimate. The seed still wins when it is higher.
+
+    Notes
+    -----
+    The estimate is the 20th percentile of the quiet frames times 2.5, held between 80
+    and 450. The seed still wins when it is higher.
     """
 
-    def __init__(
-        self,
-        default: float,
-        *,
-        window: int = _FLOOR_WINDOW,
-        percentile: float = _FLOOR_PERCENTILE,
-        gain: float = _FLOOR_GAIN,
-        lo: float = _FLOOR_LO,
-        hi: float = _FLOOR_HI,
-    ) -> None:
+    def __init__(self, default: float, *, window: int = _FLOOR_WINDOW) -> None:
         self.default = default
-        self.percentile = percentile
-        self.gain = gain
-        self.lo = lo
-        self.hi = hi
         # A window smaller than the warm-up count could never fill.
         self.window: collections.deque[float] = collections.deque(maxlen=max(1, window))
 
@@ -70,8 +54,8 @@ class AdaptiveFloor:
         if len(self.window) < min(_FLOOR_FILL, self.window.maxlen or _FLOOR_FILL):
             return self.default
         quiet = np.fromiter(self.window, dtype=np.float64)
-        est = float(np.percentile(quiet, self.percentile) * self.gain)
+        est = float(np.percentile(quiet, _FLOOR_PERCENTILE) * _FLOOR_GAIN)
         # The high cap limits the estimate. It must not undercut the seed, or a seed
         # set above it (FISH_VOICE_MIN_RMS, FISH_VOICE_BARGE_RMS) would accept quieter frames.
-        capped = min(self.hi, max(self.lo, est))
+        capped = min(_FLOOR_HI, max(_FLOOR_LO, est))
         return float(max(self.default, capped))

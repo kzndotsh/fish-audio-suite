@@ -4,20 +4,23 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+from dataclasses import replace
+from typing import Any, get_args
 
 import httpx
 import pytest
 
-from fish_audio_suite_voice.cli import llm_setting_names
-from fish_audio_suite_voice.debug import configure_voice_logging
 from fish_audio_suite_voice.llm import open_chat_backend
 from fish_audio_suite_voice.llm_tune import (
     EXPERIENTIAL_API_BASE,
+    LLM_PROVIDERS,
     OPENROUTER_API_BASE,
+    KnownLlmProvider,
     LlmTune,
+    llm_problem,
     provider_for_base,
 )
+from fish_audio_suite_voice.log_setup import configure_voice_logging
 
 _ENV = (
     "FISH_LLM_PROVIDER",
@@ -51,6 +54,24 @@ def test_the_default_is_openrouter_and_never_reads_the_experiential_key(
     assert tune.backend == "openrouter"
     assert tune.base == OPENROUTER_API_BASE
     assert tune.api_key == "or-key"
+
+
+@pytest.mark.parametrize(
+    ("base", "backend"),
+    [
+        (OPENROUTER_API_BASE, "openrouter"),
+        ("https://eu.openrouter.ai/api/v1", "openrouter"),
+        ("https://api.example.com/v1", "openai"),
+        (EXPERIENTIAL_API_BASE, "openai"),
+        ("http://localhost:11434/v1", "openai"),
+        ("https://example.test/openrouter.ai", "openai"),
+    ],
+)
+def test_a_tune_built_in_code_takes_its_backend_from_the_base(base: str, backend: str) -> None:
+    # A caller who sets only the base must not send OpenRouter SDK traffic to another host.
+    tune = LlmTune(base=base, api_key="k", model="m")
+    assert tune.backend == backend
+    assert tune.uses_openrouter_sdk is (backend == "openrouter")
 
 
 def test_naming_experiential_picks_its_base_key_and_model(env: pytest.MonkeyPatch) -> None:
@@ -173,7 +194,6 @@ def test_service_tier_is_validated(
 
 def _experiential_tune(**kw: Any) -> LlmTune:
     fields: dict[str, Any] = {
-        "backend": "openai",
         "base": EXPERIENTIAL_API_BASE,
         "api_key": "xpl_test",
         "model": "glm-5.3-flash-abliterated",
@@ -324,15 +344,31 @@ def test_the_startup_blockers_name_the_selected_providers_variables(
     env: pytest.MonkeyPatch,
 ) -> None:
     env.setenv("FISH_LLM_PROVIDER", "experiential")
-    assert llm_setting_names(LlmTune.from_env()) == (
-        "EXPLABS_API_KEY",
-        "FISH_LLM_MODEL_EXPERIENTIAL / FISH_LLM_MODEL",
+    assert llm_problem(LlmTune.from_env()) == "FISH_LLM_API_KEY / EXPLABS_API_KEY missing"
+    assert llm_problem(replace(LlmTune.from_env(), api_key="k")) == (
+        "FISH_LLM_MODEL / FISH_LLM_MODEL_EXPERIENTIAL / FISH_LLM_MODEL missing"
     )
     env.setenv("FISH_LLM_PROVIDER", "openrouter")
-    assert llm_setting_names(LlmTune.from_env()) == (
-        "OPENROUTER_API_KEY",
-        "FISH_LLM_MODEL_OPENROUTER / FISH_LLM_MODEL",
+    assert llm_problem(LlmTune.from_env()) == "FISH_LLM_API_KEY / OPENROUTER_API_KEY missing"
+    assert llm_problem(replace(LlmTune.from_env(), api_key="k")) == (
+        "FISH_LLM_MODEL / FISH_LLM_MODEL_OPENROUTER / FISH_LLM_MODEL missing"
     )
     env.setenv("FISH_LLM_PROVIDER", "custom")
     env.setenv("FISH_LLM_BASE", "http://127.0.0.1:11434/v1")
-    assert llm_setting_names(LlmTune.from_env()) == ("OPENAI_API_KEY", "FISH_LLM_MODEL")
+    assert llm_problem(LlmTune.from_env()) == "FISH_LLM_API_KEY / OPENAI_API_KEY missing"
+    assert llm_problem(replace(LlmTune.from_env(), api_key="k")) == (
+        "FISH_LLM_MODEL / FISH_LLM_MODEL missing"
+    )
+    assert llm_problem(replace(LlmTune.from_env(), api_key="k", model="m")) is None
+
+
+def test_the_startup_blocker_does_not_name_a_key_a_plain_http_base_ignores(
+    env: pytest.MonkeyPatch,
+) -> None:
+    env.setenv("FISH_LLM_BASE", "http://openrouter.ai/api/v1")
+    env.setenv("OPENROUTER_API_KEY", "x")
+    assert llm_problem(LlmTune.from_env()) == "FISH_LLM_API_KEY missing"
+
+
+def test_the_provider_table_names_exactly_the_known_providers() -> None:
+    assert tuple(provider.name for provider in LLM_PROVIDERS) == get_args(KnownLlmProvider)

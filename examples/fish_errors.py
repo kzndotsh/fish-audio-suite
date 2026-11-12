@@ -48,9 +48,9 @@ def main() -> None:
         parsed_body = parse_fish_error(status, body)
 
         # `retry_after_s` reads the `Retry-After` header, if there is one, as a
-        # number of seconds. `FishHttpError.from_status` then picks the right
+        # number of seconds. `FishHttpError` then picks the right
         # exception class for the status and stores that wait on it.
-        fish_error = FishHttpError.from_status(
+        fish_error = FishHttpError(
             parsed_body.status, parsed_body.message, retry_after=retry_after_s(headers)
         )
 

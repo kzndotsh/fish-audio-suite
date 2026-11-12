@@ -19,14 +19,13 @@ import numpy as np
 from numpy.typing import NDArray
 
 from fish_audio_suite_kit import MS_PER_S
-from fish_audio_suite_voice.aec import SAMPLE_BYTES
+from fish_audio_suite_voice.pcm import FULL_SCALE, SAMPLE_BYTES, SAMPLE_DTYPE
 
 __all__ = [
     "LoudnessMatch",
 ]
 
 _BLOCK_MS: Final = 20
-_FULL_SCALE: Final = 32768.0
 # Blocks quieter than this are pauses and breath, not speech, so they do not set the level.
 _GATE_DB: Final = -50.0
 # Speech needed before the level is trusted. Until then the reply plays untouched.
@@ -36,6 +35,9 @@ _SLEW_DB_PER_S: Final = 6.0
 # The limiter leaves everything below the knee alone and bends the rest toward the ceiling.
 _KNEE: Final = 0.8
 _CEILING: Final = 0.98
+# The most the gain may make the audio louder or quieter, in dB.
+_MAX_BOOST_DB: Final = 12.0
+_MAX_CUT_DB: Final = 12.0
 
 
 def _soft_limit(samples: NDArray[np.float64]) -> NDArray[np.float64]:
@@ -54,11 +56,8 @@ class LoudnessMatch:
     sample_rate : int
         Samples per second of the audio.
     target_db : float
-        The level to bring speech to, in dB below full scale (RMS), such as ``-18``.
-    max_boost_db : float, optional
-        The most the audio may be made louder, in dB.
-    max_cut_db : float, optional
-        The most the audio may be made quieter, in dB.
+        The level to bring speech to, in dB below full scale (RMS), such as ``-18``. The
+        gain stays within 12 dB either way.
 
     Notes
     -----
@@ -72,14 +71,9 @@ class LoudnessMatch:
         self,
         sample_rate: int,
         target_db: float,
-        *,
-        max_boost_db: float = 12.0,
-        max_cut_db: float = 12.0,
     ) -> None:
         self._block = max(1, sample_rate * _BLOCK_MS // MS_PER_S)
         self._target_db = target_db
-        self._max_boost_db = max_boost_db
-        self._max_cut_db = max_cut_db
         self._step_db = _SLEW_DB_PER_S * _BLOCK_MS / MS_PER_S
         self._min_speech = int(sample_rate * _MIN_SPEECH_S)
         self._energy = 0.0
@@ -113,7 +107,7 @@ class LoudnessMatch:
         self._odd = data[usable:]
         if usable == 0:
             return b""
-        samples = np.frombuffer(data[:usable], dtype="<i2").astype(np.float64) / _FULL_SCALE
+        samples = np.frombuffer(data[:usable], dtype=SAMPLE_DTYPE).astype(np.float64) / FULL_SCALE
         self._measure(samples)
         wanted = self._wanted_db()
         if wanted is None:
@@ -137,9 +131,9 @@ class LoudnessMatch:
             out[start : start + block.size] = block * np.power(10.0, ramp / 20.0)
         shaped = _soft_limit(out)
         return (
-            np.rint(shaped * _FULL_SCALE)
-            .clip(-_FULL_SCALE, _FULL_SCALE - 1)
-            .astype("<i2")
+            np.rint(shaped * FULL_SCALE)
+            .clip(-FULL_SCALE, FULL_SCALE - 1)
+            .astype(SAMPLE_DTYPE)
             .tobytes()
         )
 
@@ -156,7 +150,7 @@ class LoudnessMatch:
         if self._speech < self._min_speech:
             return None
         level_db = 10.0 * math.log10(self._energy / self._speech)
-        return min(self._max_boost_db, max(-self._max_cut_db, self._target_db - level_db))
+        return min(_MAX_BOOST_DB, max(-_MAX_CUT_DB, self._target_db - level_db))
 
     def _slew_toward(self, wanted: float) -> None:
         delta = wanted - self._gain_db

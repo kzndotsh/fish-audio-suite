@@ -11,47 +11,77 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Iterator
 from functools import partial
+from typing import Final
 
 from fish_audio_suite_kit._charsets import (
+    EMPHASIS_MARKS,
     SENTENCE_CLOSERS,
     SENTENCE_STOPS,
     THOUGHT_CLOSE_RE,
     THOUGHT_OPEN_RE,
     THOUGHT_WORDS,
+    TRAILING_EMPHASIS_MARKS,
 )
-from fish_audio_suite_kit.cues import mood_lead_hold_at, spoken_mood_span
-from fish_audio_suite_kit.cuts import next_tts_cut
+from fish_audio_suite_kit.cues import (
+    LEAD_PUNCT,
+    LEAD_WORDS,
+    SPOKEN_MOOD_LEAD_RE,
+    WHISPER_TAG,
+    whisper_tag,
+)
+from fish_audio_suite_kit.cuts import sentence_cuts
 from fish_audio_suite_kit.scrub_tts import (
+    HEADING_MARK,
     HTML_BLOCK_CLOSE_RE,
     HTML_BLOCK_OPEN_RE,
     HTML_ENTITY_RE,
+    LINE_INDENT,
+    LIST_MARK,
+    QUOTE_MARK,
+    TASK_BOX,
     html_char,
     unclosed_span_start,
 )
 
 __all__ = [
-    "is_empty_delta",
-    "sentence_closer_hold_at",
     "tts_hold_at",
 ]
 
 _Hold = Callable[[str], int | None]
 
-_WHISPER_OPEN_RE = re.compile(r"<\s*whisper\s*>", re.IGNORECASE)
-_WHISPER_CLOSE_RE = re.compile(r"<\s*/\s*whisper\s*>", re.IGNORECASE)
+# The hold allows any space inside the tag, where the rewrite in ``cues`` stops at
+# eight: a span is held whatever its spacing, and holding longer never speaks markup.
+_WHISPER_OPEN_RE = re.compile(whisper_tag(close=False, space=r"\s*"), re.IGNORECASE)
+_WHISPER_CLOSE_RE = re.compile(whisper_tag(close=True, space=r"\s*"), re.IGNORECASE)
 # The address ends at a closing parenthesis or angle bracket, as in scrub.
 # Holding past either would release the "<" or "[label](" in front of it.
 _URL_AT_END_RE = re.compile(r"https?://[^\s)>]*$", re.IGNORECASE)
 # A hash run at the start of a line is a heading only once a space follows.
-_OPEN_HEADING_RE = re.compile(r"(?m)^[ \t]{0,3}#{1,6}$")
 # "* item" is a list mark only once a space follows. A lone "*" is not speech.
-_OPEN_LIST_RE = re.compile(r"(?m)^[ \t]{0,3}[-*_~+]+$")
+# The space is held too: "Title\n### " shaped alone loses its line, and the mood
+# word after it is then mid-sentence.
+_OPEN_HEADING_RE = re.compile(rf"(?m)^{LINE_INDENT}{HEADING_MARK}[ \t]*$")
+_OPEN_LIST_RE = re.compile(rf"(?m)^{LINE_INDENT}{LIST_MARK}[ \t]*$")
 _LT_ENTITY_RE = re.compile(r"&(?:lt|#0*60|#x0*3c);", re.IGNORECASE)
 _GT_ENTITY_RE = re.compile(r"&(?:gt|#0*62|#x0*3e);|>", re.IGNORECASE)
 # A split "<thi" is not a tag yet. The tag names that open a removed span.
-_TAG_WORDS = (*THOUGHT_WORDS, "whisper")
-# Backticks stay with the fence holds, so they are not trailing emphasis.
-_TRAIL_MARKS = frozenset("*_~")
+_TAG_WORDS = (*THOUGHT_WORDS, WHISPER_TAG)
+_TRAIL_MARKS = frozenset(TRAILING_EMPHASIS_MARKS)
+# Still no ">" this far after a "<" means prose after a "<", not a tag.
+_TAG_SCAN_CHARS: Final = 80
+# A blockquote, heading, list marker, task box, or emphasis mark before a mood
+# lead. "> Excited," "### Excited," and "*Sad," are cues. Releasing the word
+# after the mark speaks the mood instead.
+_LEAD_MARK_RE = re.compile(
+    rf"^(?:{LINE_INDENT}{QUOTE_MARK}[ \t]*)?"
+    rf"(?:{LINE_INDENT}{HEADING_MARK}[ \t]+)?"
+    rf"(?:{LINE_INDENT}{LIST_MARK}[ \t]+)?"
+    rf"(?:{TASK_BOX}[ \t]+)?"
+    rf"(?:[{re.escape(EMPHASIS_MARKS)}]+(?=[A-Za-z]))?"
+)
+_LEAD_PUNCT_CHARS = frozenset(LEAD_PUNCT)
+# Closing emphasis still belongs to the mood word: "Excited*" is not done.
+_LEAD_WRAP = frozenset(EMPHASIS_MARKS)
 
 
 def _first_unclosed_pair(
@@ -214,8 +244,7 @@ def _incomplete_html(text: str) -> int | None:
         tail = tail[1:].lstrip(" \t")
     if tail[:1] and not tail[0].isalpha():
         return None
-    # Still no ">" after 80 characters means prose after a "<", not a tag.
-    if len(tail) > 80:
+    if len(tail) > _TAG_SCAN_CHARS:
         return None
     return start
 
@@ -232,8 +261,7 @@ def _incomplete_escaped_tag(text: str) -> int | None:
         body = rest[1:].lstrip(" \t") if rest[:1] == "/" else rest
         if body[:1] and not body[0].isalpha():
             continue
-        # The same 80-character bound as _incomplete_html.
-        if len(body) > 80:
+        if len(body) > _TAG_SCAN_CHARS:
             continue
         found = match.start() if found is None else min(found, match.start())
     return found
@@ -409,6 +437,71 @@ def _hold_closes_paren(text: str, index: int) -> bool:
     return depth > 0
 
 
+def mood_lead_hold_at(text: str, *, sentence_start: bool) -> int | None:
+    """Return where an unfinished sentence-lead cue starts.
+
+    Parameters
+    ----------
+    text : str
+        Unsent model text.
+    sentence_start : bool
+        True when ``text`` begins a sentence. A later line in ``text`` is
+        its own sentence either way.
+
+    Returns
+    -------
+    int or None
+        Index to keep buffered. None when a later character shows the cue
+        is finished, the word has ended, or this is not the start of a sentence.
+
+    Notes
+    -----
+    A token stream can emit ``Exc`` before ``ited,``. Scrubbing that prefix
+    speaks the emotion. The comma has to arrive before the word is released.
+    ``Happy - hello`` puts a space before the dash. Releasing ``Happy`` at
+    that space speaks the mood before the dash arrives. A list marker is
+    not the mood word: ``* E`` still has to wait for ``xcited,``.
+    """
+    line_at = text.rfind("\n") + 1
+    if line_at == 0 and not sentence_start:
+        return None
+    line = text[line_at:]
+    skipped = len(line) - len(line.lstrip(" \t"))
+    marked = _LEAD_MARK_RE.match(line.lstrip(" \t"))
+    mark_len = marked.end() if marked is not None else 0
+    body = line.lstrip(" \t")[mark_len:]
+    if not body:
+        return None
+    lead = SPOKEN_MOOD_LEAD_RE.match(body)
+    if lead is not None:
+        # "Anxious!" matches with one bang. "Anxious !!" is the same cue.
+        # Hold through every bang, and through the closing star of "*Excited,*".
+        tail = body[lead.end() :]
+        if not tail and body[-1] in _LEAD_PUNCT_CHARS:
+            return line_at + skipped
+        if tail and all(ch in _LEAD_WRAP or ch.isspace() for ch in tail):
+            return line_at + skipped
+        return None
+    idx = 0
+    while idx < len(body) and body[idx].isalpha():
+        idx += 1
+    if idx == 0:
+        return None
+    token = body[:idx].lower()
+    held = line_at + skipped + mark_len
+    if idx < len(body):
+        tail = body[idx:]
+        if token in LEAD_WORDS and tail.strip() == "":
+            return held
+        # "**Excited**," is one cue: closing stars do not end the word.
+        if token in LEAD_WORDS and all(ch in _LEAD_WRAP or ch.isspace() for ch in tail):
+            return held
+        return None
+    if any(word.startswith(token) for word in LEAD_WORDS):
+        return held
+    return None
+
+
 def sentence_closer_hold_at(text: str, *, lead: bool = False) -> int | None:
     """Return where a stop is waiting for a possible closing quote.
 
@@ -445,29 +538,12 @@ def sentence_closer_hold_at(text: str, *, lead: bool = False) -> int | None:
         return None
     while index > 0 and text[index - 1] in SENTENCE_STOPS:
         index -= 1
-    span = spoken_mood_span(text) if lead else None
-    if span is not None and span[1] > index:
-        if span[1] == len(text):
+    span = SPOKEN_MOOD_LEAD_RE.match(text) if lead else None
+    if span is not None and span.end() > index:
+        if span.end() == len(text):
             return None
-        return span[0]
+        return span.start()
     return index
-
-
-def is_empty_delta(piece: str) -> bool:
-    """Return whether a TTS delta has no speakable characters.
-
-    Parameters
-    ----------
-    piece : str
-        One split piece. Whitespace-only is empty.
-
-    Returns
-    -------
-    bool
-        True when the websocket sender should not emit a ``TextEvent``.
-        An empty turn must not be followed by a bare ``FlushEvent``.
-    """
-    return not (piece or "").strip()
 
 
 def _entity_stop_hold(text: str) -> int | None:
@@ -488,19 +564,8 @@ def _sentence_lead_hold(text: str, *, sentence_start: bool, before: str = "") ->
     # and the stop can land in the next chunk ("Don" then "e.Ex"). Hold the last
     # sentence, taken over the already-accepted text plus this buffer.
     combined = before + text
-    start = 0
-    pos = 0
-    buf = combined
-    found = False
-    while buf:
-        cut = next_tts_cut(buf, partial_chars=len(buf) + 1)
-        if cut < 0:
-            break
-        pos += cut
-        buf = combined[pos:]
-        start = pos
-        found = True
-    if found:
+    start = max(sentence_cuts(combined), default=None)
+    if start is not None:
         held = mood_lead_hold_at(combined[start:], sentence_start=True)
         if held is None:
             return None

@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
+from typing import Any
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from proxy_helpers import capture_upstream
 
-from fish_audio_suite_proxy.server import _iter_upstream, _uvicorn_run_kwargs, app, lifespan
+from fish_audio_suite_proxy.server import app, lifespan
+from fish_audio_suite_proxy.settings import load_settings
 
 
 def test_health_without_api_key() -> None:
@@ -32,7 +36,7 @@ def test_uvicorn_run_kwargs_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("FISH_PROXY_LIMIT_CONCURRENCY", raising=False)
     monkeypatch.delenv("FISH_PROXY_GRACEFUL_SHUTDOWN", raising=False)
     monkeypatch.delenv("FISH_PROXY_PORT", raising=False)
-    kw = _uvicorn_run_kwargs()
+    kw = load_settings().uvicorn_kwargs()
     assert kw["workers"] == 1
     assert kw["port"] == 8849
     assert kw["loop"] == "auto"
@@ -45,22 +49,22 @@ def test_uvicorn_run_kwargs_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_uvicorn_port_out_of_range_uses_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FISH_PROXY_PORT", "70000")
-    assert _uvicorn_run_kwargs()["port"] == 8849
+    assert load_settings().uvicorn_kwargs()["port"] == 8849
     monkeypatch.setenv("FISH_PROXY_PORT", "0")
-    assert _uvicorn_run_kwargs()["port"] == 8849
+    assert load_settings().uvicorn_kwargs()["port"] == 8849
     monkeypatch.setenv("FISH_PROXY_PORT", "9000")
-    assert _uvicorn_run_kwargs()["port"] == 9000
+    assert load_settings().uvicorn_kwargs()["port"] == 9000
 
 
 def test_uvicorn_timeouts_cannot_be_negative(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FISH_PROXY_KEEP_ALIVE", "-1")
     monkeypatch.setenv("FISH_PROXY_GRACEFUL_SHUTDOWN", "-5")
-    kw = _uvicorn_run_kwargs()
+    kw = load_settings().uvicorn_kwargs()
     assert kw["timeout_keep_alive"] == 5
     assert kw["timeout_graceful_shutdown"] == 120
     monkeypatch.setenv("FISH_PROXY_KEEP_ALIVE", "0")
     monkeypatch.setenv("FISH_PROXY_GRACEFUL_SHUTDOWN", "0")
-    kw = _uvicorn_run_kwargs()
+    kw = load_settings().uvicorn_kwargs()
     assert kw["timeout_keep_alive"] == 0
     assert kw["timeout_graceful_shutdown"] == 0
 
@@ -69,23 +73,66 @@ def test_uvicorn_run_kwargs_workers_and_limit(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv("FISH_PROXY_WORKERS", "4")
     monkeypatch.setenv("FISH_PROXY_LIMIT_CONCURRENCY", "32")
     monkeypatch.setenv("FISH_PROXY_GRACEFUL_SHUTDOWN", "90")
-    kw = _uvicorn_run_kwargs()
+    kw = load_settings().uvicorn_kwargs()
     assert kw["workers"] == 4
     assert kw["limit_concurrency"] == 32
     assert kw["timeout_graceful_shutdown"] == 90
 
 
-def test_streamed_audio_is_passed_on_as_it_arrives() -> None:
+def test_streamed_audio_is_passed_on_as_it_arrives(monkeypatch: pytest.MonkeyPatch) -> None:
+    closed: list[bool] = []
+
     class Pieces(httpx.AsyncByteStream):
         async def __aiter__(self) -> AsyncIterator[bytes]:
             for piece in (b"a" * 10, b"b" * 20, b"c" * 5):
                 yield piece
 
-    async def collect() -> list[bytes]:
-        response = httpx.Response(200, stream=Pieces())
-        return [chunk async for chunk in _iter_upstream(response)]
+        async def aclose(self) -> None:
+            closed.append(True)
 
-    assert asyncio.run(collect()) == [b"a" * 10, b"b" * 20, b"c" * 5]
+    capture_upstream(monkeypatch, httpx.Response(200, stream=Pieces()))
+    payload = json.dumps({"input": "Hello there friend"}).encode()
+    scope: dict[str, Any] = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "path": "/v1/audio/speech",
+        "raw_path": b"/v1/audio/speech",
+        "query_string": b"",
+        "headers": [
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(payload)).encode()),
+        ],
+        "client": ("127.0.0.1", 1),
+        "server": ("testserver", 80),
+        "scheme": "http",
+    }
+    sent: list[dict[str, Any]] = []
+
+    async def call_app() -> None:
+        body = [payload]
+
+        async def receive() -> dict[str, Any]:
+            if body:
+                return {"type": "http.request", "body": body.pop(), "more_body": False}
+            # The client stays connected and sends nothing more.
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        async def send(message: Any) -> None:
+            sent.append(dict(message))
+
+        async with lifespan(app):
+            await app(scope, receive, send)
+
+    # The app is called directly: a test client may join pieces, depending on its version.
+    asyncio.run(call_app())
+    assert sent[0]["status"] == 200
+    # Each piece reaches the client as Fish sent it, not held back to fill a chunk.
+    pieces = [m["body"] for m in sent[1:] if m.get("body")]
+    assert pieces == [b"a" * 10, b"b" * 20, b"c" * 5]
+    assert closed == [True]
 
 
 def test_lifespan_closes_the_client_when_shutdown_raises() -> None:

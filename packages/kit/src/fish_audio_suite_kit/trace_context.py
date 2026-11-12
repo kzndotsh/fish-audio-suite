@@ -7,8 +7,9 @@ import secrets
 from collections.abc import Mapping
 from typing import Final
 
+from fish_audio_suite_kit._charsets import is_header_safe
+
 __all__ = [
-    "canonical_traceparent",
     "ensure_trace_headers",
     "make_traceparent",
     "trace_id_of",
@@ -142,7 +143,7 @@ def _tracestate_ok(state: str) -> bool:
         return False
     # Header values are ASCII. A control character splits the line, and a
     # surrogate makes the HTTP client refuse the request.
-    return all(32 <= ord(ch) < 127 for ch in state)
+    return is_header_safe(state)
 
 
 def _header(incoming: Mapping[str, str], name: str) -> str:

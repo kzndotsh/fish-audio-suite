@@ -7,24 +7,23 @@ from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
+from loguru import logger
 
-from fish_audio_suite_voice import debug as debug_module
-from fish_audio_suite_voice.debug import (
+from fish_audio_suite_voice.debug import debug, trace, warn
+from fish_audio_suite_voice.events import EVENTS, Heard, ReplyEnd
+from fish_audio_suite_voice.log_file import close_log_file, log_file_path, log_to_file
+from fish_audio_suite_voice.log_setup import (
     configure_voice_logging,
-    debug,
-    log_file_path,
-    log_to_file,
-    trace,
-    warn,
+    forward_logs,
+    mirror_conversation,
 )
-from fish_audio_suite_voice.events import EVENTS, Heard, ReplyEnd, forward_logs, mirror_conversation
 
 
 @pytest.fixture(autouse=True)
-def _fresh_log_file(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
-    monkeypatch.setattr(debug_module, "_FILE", debug_module._FileLog())  # pyright: ignore[reportPrivateUsage]
+def _fresh_log_file() -> Iterator[None]:
+    close_log_file()
     yield
-    debug_module._FILE.close()  # pyright: ignore[reportPrivateUsage]
+    close_log_file()
     configure_voice_logging(debug=False)
 
 
@@ -130,3 +129,31 @@ def test_the_full_screen_log_pane_does_not_get_lines_only_the_file_wants(tmp_pat
         stop_forwarding()
     assert shown == ["loud"]
     assert "quiet" in _log(tmp_path)
+
+
+def test_a_logged_exception_writes_its_traceback_to_the_file(tmp_path: Path) -> None:
+    def fall_over() -> None:
+        raise ValueError("the model fell over")
+
+    configure_voice_logging(debug=False, log_dir=str(tmp_path))
+    try:
+        fall_over()
+    except ValueError:
+        logger.exception("llm.request failed")
+    text = _log(tmp_path)
+    assert "request failed" in text
+    assert "Traceback (most recent call last)" in text
+    assert "ValueError: the model fell over" in text
+
+
+def test_reopening_within_the_same_second_starts_a_new_file(tmp_path: Path) -> None:
+    first = configure_voice_logging(debug=False, log_dir=str(tmp_path))
+    log_to_file("you", "first run")
+    close_log_file()
+    second = configure_voice_logging(debug=False, log_dir=str(tmp_path))
+    log_to_file("you", "second run")
+    assert first is not None
+    assert second is not None
+    assert first != second
+    assert "second run" not in first.read_text(encoding="utf-8")
+    assert "first run" not in second.read_text(encoding="utf-8")

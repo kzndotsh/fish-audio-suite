@@ -2,67 +2,116 @@
 
 from __future__ import annotations
 
-import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Final
+from typing import Final, Literal, overload
 from urllib.parse import urlsplit
 
 from fish_audio_suite_kit import (
-    CHUNK_LENGTH_LO,
-    MIN_CHUNK_LENGTH_HI,
-    MIN_CHUNK_LENGTH_LO,
-    TTS_SPEED_HI,
-    TTS_SPEED_LO,
-    UNIT_INTERVAL_HI,
-    UNIT_INTERVAL_LO,
-    FishLatency,
+    DEFAULT_SYSTEM_PROMPT,
+    FISH_ASR_MODEL_IDS,
+    PRO_ASR_MODEL,
+    CueStyle,
     SuiteDefaults,
-    chunk_length_hi,
-    clamp_number,
-    env_base,
-    env_float,
-    env_int,
-    env_text,
-    env_token,
     is_insecure_fish_base,
-    known_latency,
     normalize_tts_model,
+    strip_base,
 )
 from fish_audio_suite_voice.debug import warn
-from fish_audio_suite_voice.llm_tune import DEFAULT_HISTORY_TURNS, OPENROUTER_API_BASE, LlmTune
-from fish_audio_suite_voice.playback import DEFAULT_PLAYBACK, playback_key
-from fish_audio_suite_voice.tune import (
-    DEFAULT_FADE_MS,
-    DEFAULT_LOUDNESS_TARGET_DB,
-    AecTune,
-    BargeTune,
-    ListenTune,
-    SttTune,
-    TurnTune,
+from fish_audio_suite_voice.env_read import (
+    FloatSetting,
+    IntSetting,
+    read_choice,
     read_flag,
-    read_float,
-    read_int,
     read_text,
+    read_verbatim,
+    read_word,
 )
+from fish_audio_suite_voice.llm_tune import LLM_BASE_ENV, LlmTune
+from fish_audio_suite_voice.playback_kind import DEFAULT_PLAYBACK, playback_key
+from fish_audio_suite_voice.tts_tune import TtsTune
+from fish_audio_suite_voice.tune import AecTune, BargeTune, ListenTune, SttTune, TurnTune
 
+__all__ = [
+    "DEFAULT_HISTORY_TURNS",
+    "DEFAULT_REPEAT_WINDOW_S",
+    "OUTPUT_LATENCIES",
+    "TTS_CUE_MODES",
+    "OutputLatency",
+    "SinkLatency",
+    "SystemPrompt",
+    "TtsCues",
+    "VoiceCliConfig",
+    "fish_problem",
+    "load_config",
+    "log_dir_from_env",
+    "prompt_from_file",
+    "sink_latency",
+    "warn_if_insecure_base",
+]
+
+# User and assistant pairs the chat history keeps.
+DEFAULT_HISTORY_TURNS: Final = 20
+_HISTORY_TURNS_LO: Final = 1
 # A fresh utterance cannot end sooner: the turn needs about 1.2 s of silence plus
 # the minimum voiced time. A faster clip is mostly pre-roll or leftover audio.
 DEFAULT_REPEAT_WINDOW_S: Final = 1.5
-OUTPUT_LATENCIES: Final = ("auto", "low", "high")
-TTS_CUE_MODES: Final = ("official", "free")
+_REPEAT_WINDOW_LO_S: Final = 0.0
+# How cues reach Fish: only its own (``official``), or every cue as written (``free``).
+TtsCues = Literal["official", "free"]
+TTS_CUE_MODES: Final[tuple[TtsCues, ...]] = ("official", "free")
+# The sound card's playback buffer, and the two sizes a stream asks for.
+OutputLatency = Literal["auto", "low", "high"]
+SinkLatency = Literal["low", "high"]
+OUTPUT_LATENCIES: Final[tuple[OutputLatency, ...]] = ("auto", "low", "high")
+# Names that appear in a read and in a message.
+_FISH_KEY_ENV: Final = "FISH_API_KEY"
+_VOICE_ID_ENV: Final = "FISH_VOICE_ID"
+_FISH_BASE_ENV: Final = "FISH_BASE"
+_PROMPT_ENV: Final = "FISH_VOICE_SYSTEM_PROMPT"
+_PROMPT_FILE_ENV: Final = "FISH_VOICE_SYSTEM_PROMPT_FILE"
+# An unknown word for these keeps the default and says which words there are.
+_USE_ONE_OF: Final = "fish-voice: ignoring {name}={value!r}, use {one_of}"
+# Read by ``load_config`` and checked by ``VoiceCliConfig`` with the same range.
+_HISTORY_TURNS = IntSetting("FISH_VOICE_HISTORY_TURNS", DEFAULT_HISTORY_TURNS, lo=_HISTORY_TURNS_LO)
+_REPEAT_WINDOW = FloatSetting(
+    "FISH_VOICE_REPEAT_WINDOW", DEFAULT_REPEAT_WINDOW_S, lo=_REPEAT_WINDOW_LO_S
+)
 
-__all__ = [
-    "OPENROUTER_API_BASE",
-    "OUTPUT_LATENCIES",
-    "TTS_CUE_MODES",
-    "VoiceCliConfig",
-    "load_config",
-    "log_dir_from_env",
-    "system_prompt_from_file",
-    "warn_if_insecure_base",
-]
+
+@dataclass(frozen=True, slots=True)
+class SystemPrompt:
+    """The session's system prompt, and whether the opening exchange is pinned after it.
+
+    Attributes
+    ----------
+    text : str
+        The system prompt.
+    pin_seed : bool
+        Pin the opening exchange that shows several cues. It is pinned for the default
+        prompt and for a character file, which keeps the voice rules. A prompt written
+        out in full is left alone. This is the one place that decides it.
+    """
+
+    text: str
+    pin_seed: bool
+
+    @classmethod
+    def written(cls, text: str) -> SystemPrompt:
+        """Take a prompt written out in full, such as ``FISH_VOICE_SYSTEM_PROMPT``.
+
+        Parameters
+        ----------
+        text : str
+            The whole system prompt.
+
+        Returns
+        -------
+        SystemPrompt
+            Pinned only when it is the default prompt.
+        """
+        return cls(text, pin_seed=text == DEFAULT_SYSTEM_PROMPT)
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,6 +120,8 @@ class VoiceCliConfig:
 
     Attributes
     ----------
+    tts : TtsTune
+        What Fish is asked to speak with, and the fade and level applied before the sink.
     llm : LlmTune
         Chat backend and request settings.
     listen : ListenTune
@@ -83,6 +134,8 @@ class VoiceCliConfig:
         Which speech recognition hears the user.
     turn : TurnTune
         The end-of-turn check on the Fish path. Off by default.
+    prompt : SystemPrompt
+        The system prompt, and whether the opening exchange is pinned after it.
     hear_tone : bool
         Keep the tone Fish ASR hears in the voice (``[laughter]``) and give the model a short
         note about it for that turn. Experimental, and off by default.
@@ -93,23 +146,17 @@ class VoiceCliConfig:
         within this many seconds of the mic opening. 0 never drops a repeat.
     mood_lead : bool
         Rewrite a sentence-leading mood word into a ``[cue]``.
-    tts_cues : str
+    tts_cues : {"official", "free"}
         ``"official"`` keeps only Fish's own cues and maps or removes the rest (a voice may act
         out ``[smiling]`` as a hum). ``"free"`` sends every cue the model writes as written.
     stream_tts : bool
         Speak the reply while the model is still writing it. Off by default.
-    fade_ms : float
-        Fade at each edge between a sound and silence, so a sentence does not click
-        when it starts or stops. 0 turns it off.
-    loudness_db : float or None
-        The level, in dB below full scale, each reply is brought to while it plays, or None
-        (the default) to play it as Fish sends it.
     drop_narration : bool
         Drop stage-direction lines such as ``She smiles.`` before TTS.
-    output_latency : str
+    output_latency : {"auto", "low", "high"}
         The sound card's playback buffer: ``"low"`` or ``"high"`` (bigger, so a busy moment
-        does not make it run dry and click). ``"auto"`` is ``"high"`` in the full-screen app,
-        which is busy drawing, and ``"low"`` otherwise.
+        does not make it run dry and click). ``"auto"`` is decided by ``sink_latency`` when
+        the session starts.
 
     Notes
     -----
@@ -123,21 +170,12 @@ class VoiceCliConfig:
     fish_voice_id: str
     fish_asr_language: str
     tts_model: str
-    latency: FishLatency
-    speed: float
-    temperature: float
-    top_p: float
-    repetition_penalty: float
-    chunk_length: int
-    min_chunk_length: int
-    volume: float
-    sample_rate: int
     playback: str
-    system_prompt: str
+    prompt: SystemPrompt
     device: str | None
-    output_latency: str = "auto"
-    asr_model: str = "transcribe-1-pro"
-    pin_seed: bool = True
+    output_latency: OutputLatency = "auto"
+    asr_model: str = PRO_ASR_MODEL
+    tts: TtsTune = field(default_factory=TtsTune)
     llm: LlmTune = field(default_factory=LlmTune)
     listen: ListenTune = field(default_factory=ListenTune)
     barge: BargeTune = field(default_factory=BargeTune)
@@ -148,27 +186,71 @@ class VoiceCliConfig:
     history_turns: int = DEFAULT_HISTORY_TURNS
     repeat_window_s: float = DEFAULT_REPEAT_WINDOW_S
     mood_lead: bool = False
-    tts_cues: str = "official"
+    tts_cues: TtsCues = "official"
     drop_narration: bool = False
     stream_tts: bool = False
-    fade_ms: float = DEFAULT_FADE_MS
-    loudness_db: float | None = None
+
+    def __post_init__(self) -> None:
+        """Reject a history or repeat window ``load_config`` would not give.
+
+        Raises
+        ------
+        ValueError
+            When ``history_turns`` is under 1 or ``repeat_window_s`` is negative.
+        """
+        _HISTORY_TURNS.check("VoiceCliConfig.history_turns", self.history_turns)
+        _REPEAT_WINDOW.check("VoiceCliConfig.repeat_window_s", self.repeat_window_s)
 
     @property
-    def official_cues(self) -> bool:
-        """Return whether cues other than Fish's own are mapped or removed."""
-        return self.tts_cues == "official"
+    def cue_style(self) -> CueStyle:
+        """Return how cues are shaped for ``tts_model``, from ``tts_cues`` and ``mood_lead``.
 
-    @property
-    def sink_latency(self) -> str:
-        """Return the buffer size the playback stream asks for: ``low`` or ``high``."""
-        return "low" if self.output_latency == "auto" else self.output_latency
+        The speaker and the reply both take it from here, so they shape alike.
+        """
+        return CueStyle.for_model(
+            self.tts_model, official=self.tts_cues == "official", lead=self.mood_lead
+        )
 
 
-def _asr_model(default: str) -> str:
-    # Voice only runs the two native ids. Anything else would 4xx on every turn.
-    chosen = env_token("FISH_ASR_MODEL", default).lower()
-    return chosen if chosen in {"transcribe-1", "transcribe-1-pro"} else default
+def sink_latency(output_latency: OutputLatency, *, full_screen: bool) -> SinkLatency:
+    """Return the buffer size the playback stream asks for. This alone decides ``auto``.
+
+    Parameters
+    ----------
+    output_latency : {"auto", "low", "high"}
+        The setting, ``VoiceCliConfig.output_latency``.
+    full_screen : bool
+        Whether the session runs in the full-screen app.
+
+    Returns
+    -------
+    {"low", "high"}
+        The setting, or for ``auto``: ``high`` in the full-screen app and ``low`` otherwise.
+    """
+    if output_latency != "auto":
+        return output_latency
+    # The screen is busy drawing, so a bigger buffer rides it out.
+    return "high" if full_screen else "low"
+
+
+def fish_problem(c: VoiceCliConfig) -> str | None:
+    """Say which Fish setting a session cannot start without.
+
+    Parameters
+    ----------
+    c : VoiceCliConfig
+        The settings.
+
+    Returns
+    -------
+    str or None
+        ``FISH_API_KEY missing`` or ``FISH_VOICE_ID missing``, or None when both are set.
+    """
+    if not c.fish_api_key:
+        return f"{_FISH_KEY_ENV} missing"
+    if not c.fish_voice_id:
+        return f"{_VOICE_ID_ENV} missing"
+    return None
 
 
 def _base_host(base: str) -> str:
@@ -197,52 +279,29 @@ def warn_if_insecure_base(c: VoiceCliConfig) -> bool:
     warned = False
     if c.fish_api_key and is_insecure_fish_base(c.fish_base):
         warn(
-            f"[fish] FISH_BASE host {_base_host(c.fish_base)} is plain http, so FISH_API_KEY is sent "
-            "unencrypted. Use https unless this host is on a network you trust."
+            f"[fish] {_FISH_BASE_ENV} host {_base_host(c.fish_base)} is plain http, so "
+            f"{_FISH_KEY_ENV} is sent unencrypted. Use https unless this host is on a network "
+            "you trust."
         )
         warned = True
     if c.llm.api_key and is_insecure_fish_base(c.llm.base):
         warn(
-            f"[llm] FISH_LLM_BASE host {_base_host(c.llm.base)} is plain http, so the LLM key is sent "
-            "unencrypted. Use https unless this host is on a network you trust."
+            f"[llm] {LLM_BASE_ENV} host {_base_host(c.llm.base)} is plain http, so the LLM key "
+            "is sent unencrypted. Use https unless this host is on a network you trust."
         )
         warned = True
     return warned
 
 
 def log_dir_from_env() -> str:
-    """Read ``FISH_VOICE_LOG_DIR``: a folder to write a complete log of each run to, or empty."""
+    """Read ``FISH_VOICE_LOG_DIR``: a folder to write a complete log of each run to, or empty.
+
+    Returns
+    -------
+    str
+        The folder, or ``""``.
+    """
     return read_text("FISH_VOICE_LOG_DIR")
-
-
-def _tts_cues() -> str:
-    """Read ``FISH_TTS_CUES``: ``official`` or ``free``."""
-    value = read_text("FISH_TTS_CUES", "official").lower() or "official"
-    if value not in TTS_CUE_MODES:
-        warn(f"fish-voice: ignoring FISH_TTS_CUES={value!r}, use official or free")
-        return "official"
-    return value
-
-
-def _loudness_db() -> float | None:
-    """Read ``FISH_VOICE_NORMALIZE_LOUDNESS`` and, when it is on, ``FISH_VOICE_LOUDNESS_TARGET_DB``."""
-    if not read_flag("FISH_VOICE_NORMALIZE_LOUDNESS", default=False):
-        return None
-    return read_float(
-        "FISH_VOICE_LOUDNESS_TARGET_DB",
-        DEFAULT_LOUDNESS_TARGET_DB,
-        lo=_LOUDNESS_TARGET_LO_DB,
-        hi=_LOUDNESS_TARGET_HI_DB,
-    )
-
-
-def _output_latency() -> str:
-    """Read ``FISH_VOICE_OUTPUT_LATENCY``: ``auto``, ``low`` or ``high``."""
-    value = read_text("FISH_VOICE_OUTPUT_LATENCY", "auto").lower() or "auto"
-    if value not in OUTPUT_LATENCIES:
-        warn(f"fish-voice: ignoring FISH_VOICE_OUTPUT_LATENCY={value!r}, use auto, low or high")
-        return "auto"
-    return value
 
 
 def load_config() -> VoiceCliConfig:
@@ -251,70 +310,34 @@ def load_config() -> VoiceCliConfig:
     Returns
     -------
     VoiceCliConfig
-        Clamped numeric knobs. A missing key keeps the ``SuiteDefaults`` value.
-        Call this after dotenv loading; an earlier call will not see those keys.
+        Each tune from its ``from_env``, and the settings only the CLI uses. A missing key
+        keeps the ``SuiteDefaults`` value. Call this after dotenv loading; an earlier call
+        will not see those keys.
 
     Notes
     -----
-    ``FISH_API_KEY`` uses ``env_text``, so a blank value stays blank instead
-    of falling back to a default key. There is no default voice id.
+    ``FISH_API_KEY`` is read as text, so a blank value stays blank instead of falling back
+    to a default key. There is no default voice id.
     """
     d = SuiteDefaults()
-    fish_base = env_base("FISH_BASE", d.fish_base)
-    sample_rate = env_int("FISH_SAMPLE_RATE", d.sample_rate)
-    prompt = _system_prompt(d.system_prompt)
+    # Read first, so its warnings come before the tunes'.
+    prompt = _system_prompt()
     return VoiceCliConfig(
-        fish_api_key=env_text("FISH_API_KEY"),
-        fish_base=fish_base,
-        fish_voice_id=env_text("FISH_VOICE_ID"),
-        fish_asr_language=env_text("FISH_ASR_LANGUAGE", d.asr_language),
-        tts_model=normalize_tts_model(env_token("FISH_TTS_MODEL", d.tts_model)),
-        latency=known_latency(env_token("FISH_LATENCY", d.latency), d.latency),
-        speed=clamp_number(
-            env_float("FISH_SPEED", d.speed),
-            TTS_SPEED_LO,
-            TTS_SPEED_HI,
-            d.speed,
-            float,
+        fish_api_key=read_text(_FISH_KEY_ENV),
+        fish_base=strip_base(read_word(_FISH_BASE_ENV, d.fish_base)) or strip_base(d.fish_base),
+        fish_voice_id=read_text(_VOICE_ID_ENV),
+        fish_asr_language=read_text("FISH_ASR_LANGUAGE", d.asr_language),
+        tts_model=normalize_tts_model(read_word("FISH_TTS_MODEL", d.tts_model)),
+        tts=TtsTune.from_env(),
+        playback=playback_key(read_word("FISH_VOICE_PLAYBACK", DEFAULT_PLAYBACK)),
+        prompt=prompt,
+        device=read_verbatim("FISH_VOICE_DEVICE"),
+        output_latency=read_choice(
+            "FISH_VOICE_OUTPUT_LATENCY", "auto", OUTPUT_LATENCIES, warning=_USE_ONE_OF
         ),
-        temperature=clamp_number(
-            env_float("FISH_TEMPERATURE", d.temperature),
-            UNIT_INTERVAL_LO,
-            UNIT_INTERVAL_HI,
-            d.temperature,
-            float,
-        ),
-        top_p=clamp_number(
-            env_float("FISH_TOP_P", d.top_p), UNIT_INTERVAL_LO, UNIT_INTERVAL_HI, d.top_p, float
-        ),
-        repetition_penalty=env_float("FISH_REPETITION_PENALTY", d.repetition_penalty),
-        chunk_length=clamp_number(
-            env_int("FISH_CHUNK_LENGTH", d.chunk_length),
-            CHUNK_LENGTH_LO,
-            chunk_length_hi(fish_base),
-            d.chunk_length,
-            int,
-        ),
-        min_chunk_length=clamp_number(
-            env_int("FISH_MIN_CHUNK_LENGTH", d.min_chunk_length),
-            MIN_CHUNK_LENGTH_LO,
-            MIN_CHUNK_LENGTH_HI,
-            d.min_chunk_length,
-            int,
-        ),
-        volume=env_float("FISH_VOLUME", d.volume),
-        sample_rate=sample_rate if sample_rate > 0 else d.sample_rate,
-        playback=playback_key(
-            env_token(
-                "FISH_VOICE_PLAYBACK",
-                DEFAULT_PLAYBACK,
-            )
-        ),
-        system_prompt=prompt.text,
-        pin_seed=prompt.pin_seed,
-        device=os.environ.get("FISH_VOICE_DEVICE"),
-        output_latency=_output_latency(),
-        asr_model=_asr_model(d.asr_model),
+        # Silent, as the proxy is: an unknown id keeps the default, since anything Fish
+        # does not list would fail every turn.
+        asr_model=read_choice("FISH_ASR_MODEL", d.asr_model, FISH_ASR_MODEL_IDS, quiet=True),
         llm=LlmTune.from_env(),
         listen=ListenTune.from_env(),
         barge=BargeTune.from_env(),
@@ -322,48 +345,18 @@ def load_config() -> VoiceCliConfig:
         stt=SttTune.from_env(),
         turn=TurnTune.from_env(),
         hear_tone=read_flag("FISH_VOICE_HEAR_TONE", default=False),
-        history_turns=read_int(
-            "FISH_VOICE_HISTORY_TURNS",
-            DEFAULT_HISTORY_TURNS,
-            lo=1,
-        ),
-        repeat_window_s=read_float(
-            "FISH_VOICE_REPEAT_WINDOW",
-            DEFAULT_REPEAT_WINDOW_S,
-            lo=0.0,
-        ),
-        fade_ms=read_float("FISH_VOICE_FADE_MS", DEFAULT_FADE_MS, lo=0.0, hi=_FADE_MAX_MS),
-        loudness_db=_loudness_db(),
+        history_turns=_HISTORY_TURNS.read(),
+        repeat_window_s=_REPEAT_WINDOW.read(),
         mood_lead=read_flag("FISH_TTS_MOOD_LEAD", default=False),
-        tts_cues=_tts_cues(),
-        drop_narration=read_flag(
-            "FISH_TTS_DROP_NARRATION",
-            default=False,
-        ),
-        stream_tts=read_flag(
-            "FISH_VOICE_STREAM_TTS",
-            default=False,
-        ),
+        tts_cues=read_choice("FISH_TTS_CUES", "official", TTS_CUE_MODES, warning=_USE_ONE_OF),
+        drop_narration=read_flag("FISH_TTS_DROP_NARRATION", default=False),
+        stream_tts=read_flag("FISH_VOICE_STREAM_TTS", default=False),
     )
-
-
-@dataclass(frozen=True, slots=True)
-class _Prompt:
-    text: str
-    # The opening exchange that shows several cues is pinned for the default prompt
-    # and for a character file (which keeps the voice rules). A prompt written out in
-    # full is left alone.
-    pin_seed: bool
 
 
 # A character card is a few KB. This stops a wrong path (a log, a binary) from
 # becoming the system prompt.
 _PROMPT_FILE_MAX_BYTES: Final = 64 * 1024
-# A fade longer than this would blur the start and end of every word.
-_FADE_MAX_MS: Final = 50.0
-# Quieter than this leaves nothing to hear, and louder leaves no room for a peak.
-_LOUDNESS_TARGET_LO_DB: Final = -40.0
-_LOUDNESS_TARGET_HI_DB: Final = -6.0
 # Where a character file asks for the default voice rules. ``{{default_prompt}}``, with
 # optional spaces inside the braces.
 _DEFAULT_SLOT: Final = re.compile(r"\{\{\s*default_prompt\s*\}\}")
@@ -417,20 +410,40 @@ def system_prompt_from_file(path: str, default: str) -> str | None:
     return f"{card}\n\n{default}"
 
 
-def _system_prompt(default: str) -> _Prompt:
-    file = os.environ.get("FISH_VOICE_SYSTEM_PROMPT_FILE", "").strip()
-    inline = os.environ.get("FISH_VOICE_SYSTEM_PROMPT")
+@overload
+def prompt_from_file(path: str, *, required: Literal[True]) -> SystemPrompt | None: ...
+@overload
+def prompt_from_file(path: str, *, required: Literal[False]) -> SystemPrompt: ...
+def prompt_from_file(path: str, *, required: bool) -> SystemPrompt | None:
+    """Build the system prompt from a character file, with the voice rules.
+
+    Parameters
+    ----------
+    path : str
+        The file, as ``system_prompt_from_file`` reads it.
+    required : bool
+        What a file that cannot be used means. True (``--prompt-file``) returns None, so
+        the caller can stop. False (``FISH_VOICE_SYSTEM_PROMPT_FILE``) falls back to the
+        default prompt. Either way a warning says why first.
+
+    Returns
+    -------
+    SystemPrompt or None
+        The file and the voice rules, with the opening exchange pinned.
+    """
+    composed = system_prompt_from_file(path, DEFAULT_SYSTEM_PROMPT)
+    if composed is not None:
+        return SystemPrompt(composed, pin_seed=True)
+    return None if required else SystemPrompt.written(DEFAULT_SYSTEM_PROMPT)
+
+
+def _system_prompt() -> SystemPrompt:
+    file = read_text(_PROMPT_FILE_ENV)
+    # Read as written: a prompt set but blank means "no system prompt", so unlike the other
+    # keys a blank value still counts here.
+    inline = read_verbatim(_PROMPT_ENV)
     if file:
         if inline is not None:
-            warn(
-                "fish-voice: FISH_VOICE_SYSTEM_PROMPT_FILE is set, so FISH_VOICE_SYSTEM_PROMPT is ignored"
-            )
-        composed = system_prompt_from_file(file, default)
-        if composed is not None:
-            return _Prompt(composed, pin_seed=True)
-        return _Prompt(default, pin_seed=True)
-    # A prompt set but blank means "no system prompt", so unlike the other keys
-    # a blank value still counts here.
-    if inline is None:
-        return _Prompt(default, pin_seed=True)
-    return _Prompt(inline, pin_seed=inline == default)
+            warn(f"fish-voice: {_PROMPT_FILE_ENV} is set, so {_PROMPT_ENV} is ignored")
+        return prompt_from_file(file, required=False)
+    return SystemPrompt.written(DEFAULT_SYSTEM_PROMPT if inline is None else inline)

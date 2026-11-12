@@ -1,8 +1,8 @@
 """Start writing the reply while the user may still be finishing, and keep it only if they were.
 
-With ``FISH_VOICE_EAGER_EOT_THRESHOLD`` set, Deepgram Flux says when a turn is *probably* over
-a little before it is sure. The model is asked for its reply then, in the background, and
-nothing is shown or spoken. If Flux then confirms the same words, the reply that is already
+With ``FISH_VOICE_EAGER_EOT_THRESHOLD`` set, the streaming recogniser says when a turn is
+*probably* over a little before it is sure. The model is asked for its reply then, in the
+background, and nothing is shown or spoken. If the recogniser then confirms the same words, the reply that is already
 under way is used, which saves the time between the two signals. If the user carried on, or
 the confirmed words differ, it is thrown away and the reply is asked for as usual.
 """
@@ -13,43 +13,13 @@ import asyncio
 import contextlib
 from collections.abc import AsyncIterator
 
-from fish_audio_suite_kit import ChatMessage
+from fish_audio_suite_kit import ChatMessage, is_same_utterance
 from fish_audio_suite_voice.debug import debug
 from fish_audio_suite_voice.llm import ChatBackend
 
-__all__ = ["Speculation", "same_words"]
+__all__ = ["Speculation"]
 
 type _Item = tuple[str | None, BaseException | None]
-
-
-def same_words(a: str, b: str) -> bool:
-    """Say whether two transcripts are the same words, ignoring case, punctuation and spacing.
-
-    Parameters
-    ----------
-    a : str
-        One transcript.
-    b : str
-        Another.
-
-    Returns
-    -------
-    bool
-        True when they match.
-
-    Examples
-    --------
-    >>> same_words("Hey,  there.", "hey, there.")
-    True
-    >>> same_words("hey there", "hey there you")
-    False
-    """
-    words = _words(a)
-    return bool(words) and words == _words(b)
-
-
-def _words(text: str) -> list[str]:
-    return "".join(c if c.isalnum() or c.isspace() else " " for c in text.casefold()).split()
 
 
 class Speculation:
@@ -89,8 +59,8 @@ class Speculation:
         self._task.cancel()
 
     def matches(self, text: str) -> bool:
-        """Say whether this reply answers ``text``."""
-        return same_words(self.text, text)
+        """Say whether this reply answers ``text``: the same words, whatever the case or stops."""
+        return is_same_utterance(text, self.text)
 
     async def replay(self, cancel: asyncio.Event) -> AsyncIterator[str]:
         """Hand over the tokens written so far, then the rest as they arrive.

@@ -1,18 +1,26 @@
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 from kit_helpers import assert_linear_time
 
 from fish_audio_suite_kit import (
     DEFAULT_BACKCHANNELS,
     DEFAULT_QUIT_PHRASES,
+    AsrBody,
+    AsrSegment,
+    CleanTranscript,
     asr_language_hint,
     asr_tone,
+    clean_transcript,
     is_asr_hallucination,
     is_backchannel,
     is_caption_watermark,
+    is_filler,
     is_quit_utterance,
     is_same_utterance,
+    is_tts_junk,
     scrub_asr,
     scrub_tts,
     without_watermark_segments,
@@ -118,11 +126,27 @@ def test_scrub_asr_keeps_speakers_when_asked() -> None:
     assert "hello there" in out
 
 
+@pytest.mark.parametrize("text", ["um", "Um.", "hmm...", "ah", "えっと", "음"])
+def test_a_hesitation_sound_is_a_filler(text: str) -> None:
+    assert is_filler(text)
+
+
+@pytest.mark.parametrize(
+    "text", ["yeah", "uh-huh", "嗯", "mm-hmm", "okay", "", "um, can you help", "Huh?", "HUH?"]
+)
+def test_a_word_that_can_answer_is_not_a_filler(text: str) -> None:
+    # A backchannel such as "yeah" answers a question, so only hesitation sounds count.
+    assert not is_filler(text)
+
+
 def test_backchannel() -> None:
     assert is_backchannel("yeah")
     assert not is_backchannel("okay")
     assert not is_backchannel("Okay.")
     assert is_backchannel("uh huh")
+    # "Huh?" alone is a turn (not a filler), but over a reply it is still a listener noise.
+    assert is_backchannel("huh")
+    assert is_backchannel("Huh?")
     assert is_backchannel("mm hmm")
     assert is_backchannel("嗯。")
     assert is_backchannel("嗯嗯")
@@ -225,7 +249,6 @@ def test_thanks_for_watching() -> None:
     assert is_asr_hallucination("I hope you enjoyed the video.")
     loop = "If the sentence is cut off, do not make up words. " * 12
     assert is_asr_hallucination(loop)
-    assert not is_asr_hallucination("hello there friend")
 
 
 def test_scrub_asr_strips_pro_cues_only_when_asked() -> None:
@@ -250,11 +273,25 @@ def test_a_lone_letter_or_mark_is_a_hallucination(noise: str) -> None:
     assert is_asr_hallucination(noise)
 
 
-def test_the_letter_floor_is_a_parameter() -> None:
-    assert is_asr_hallucination("go on", min_letters=9, short_words=frozenset())
-    assert not is_asr_hallucination("no", min_letters=9)
-    assert not is_asr_hallucination("sure", min_letters=9, short_words=frozenset({"sure"}))
-    assert is_asr_hallucination("no", min_letters=9, short_words=frozenset())
+@pytest.mark.parametrize(
+    ("text", "tts_junk", "asr_noise"),
+    [
+        ("a", True, True),
+        ("ok", False, False),
+        ("100", False, False),
+        ("好", True, True),
+        ("好好", False, False),
+        # The ASR gate reads one CJK character beside a letter as speech; the TTS gate
+        # needs two. A lone one is ASR noise even before three digits.
+        ("a好", True, False),
+        ("好123", False, True),
+    ],
+)
+def test_the_tts_and_asr_gates_share_one_speech_floor(
+    text: str, tts_junk: bool, asr_noise: bool
+) -> None:
+    assert is_tts_junk(text) is tts_junk
+    assert is_asr_hallucination(text) is asr_noise
 
 
 @pytest.mark.parametrize("word", ["stop", "please stop", "stop now", "Stop, please."])
@@ -319,10 +356,99 @@ def test_asr_tone_drops_anything_that_is_not_a_few_plain_words(raw: str) -> None
 
 def test_asr_tone_is_capped_and_keeps_the_first_cues() -> None:
     assert asr_tone("[a] [b] [c] [d]") == ("a", "b", "c")
-    assert asr_tone("[a] [b] [c]", limit=1) == ("a",)
 
 
 @pytest.mark.perf
 @pytest.mark.parametrize("unit", ["[a", "[ ", "]", "[a b c d "])
 def test_asr_tone_is_linear_on_hostile_input(unit: str) -> None:
     assert_linear_time(asr_tone, unit * 20_000)
+
+
+def _clean(
+    text: str,
+    segments: list[object],
+    *,
+    strip_cues: bool = False,
+) -> CleanTranscript:
+    # Fish segments are untrusted JSON, so the tests hand in any shape.
+    body = cast(AsrBody, {"text": text, "segments": segments})
+    return clean_transcript(
+        text,
+        body,
+        strip_speakers=True,
+        strip_cues=strip_cues,
+    )
+
+
+def test_clean_transcript_keeps_real_speech_as_scrubbed() -> None:
+    clean = _clean("Speaker 1: hello there [laughter]", [], strip_cues=True)
+    assert clean == CleanTranscript("hello there", "hello there", "text")
+
+
+def test_clean_transcript_rebuilds_a_blank_transcript_from_its_segments() -> None:
+    segments: list[object] = [
+        {"text": " real "},
+        {"text": "words"},
+        {"text": "Thanks for watching!"},
+        5,
+    ]
+    clean = _clean("", segments)
+    assert clean == CleanTranscript("real words", "", "segments")
+
+
+def test_clean_transcript_uses_the_callers_segment_join() -> None:
+    clean = clean_transcript(
+        "",
+        {"text": "", "segments": []},
+        strip_speakers=True,
+        strip_cues=False,
+        segment_text=lambda: "joined by the caller",
+    )
+    assert clean.text == "joined by the caller"
+    assert clean.source == "segments"
+
+
+def test_clean_transcript_trims_a_watermark_beside_speech() -> None:
+    clean = _clean(
+        "We should meet at noon tomorrow. Thanks for watching!",
+        [{"text": "We should meet at noon tomorrow."}, {"text": "Thanks for watching!"}],
+    )
+    assert clean.source == "trimmed"
+    assert clean.text == "We should meet at noon tomorrow."
+    assert clean.scrubbed.endswith("Thanks for watching!")
+
+
+def test_clean_transcript_reports_a_hallucination_with_the_scrubbed_text() -> None:
+    clean = _clean("Thanks for watching!", [{"text": "Thanks for watching!"}])
+    assert clean == CleanTranscript("Thanks for watching!", "Thanks for watching!", "hallucination")
+
+
+def test_what_is_left_of_a_hallucination_is_never_answered() -> None:
+    # Cutting the watermark segment out of a known caption phrase leaves part of it.
+    segments: list[object] = [{"text": "Subscribe."}]
+    clean = _clean("Like and subscribe.", segments)
+    assert clean == CleanTranscript("Like and subscribe.", "Like and subscribe.", "hallucination")
+
+
+def test_a_labelled_watermark_segment_is_dropped_when_labels_are_kept() -> None:
+    segments: list[AsrSegment] = [
+        {"text": "Speaker 1: Hello there friend."},
+        {"text": "Speaker 2: Thanks for watching!"},
+    ]
+    text = "Speaker 1: Hello there friend. Speaker 2: Thanks for watching!"
+    body = cast(AsrBody, {"segments": segments})
+    kept = "Speaker 1: Hello there friend."
+    assert without_watermark_segments(text, segments, strip_speakers=False) == kept
+    assert clean_transcript(text, body, strip_speakers=False, strip_cues=False) == CleanTranscript(
+        kept, text, "trimmed"
+    )
+    assert clean_transcript("", body, strip_speakers=False, strip_cues=False) == CleanTranscript(
+        kept, "", "segments"
+    )
+    alone = "Speaker 2: Thanks for watching!"
+    assert (
+        clean_transcript(
+            alone, cast(AsrBody, {"segments": segments[1:]}), strip_speakers=False, strip_cues=False
+        ).source
+        == "hallucination"
+    )

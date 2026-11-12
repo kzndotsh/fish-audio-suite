@@ -16,7 +16,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 from fish_audio_suite_kit import TurnJudgement, judge_turn
-from fish_audio_suite_voice.mic import StopFlag
+from fish_audio_suite_voice.cancel import StopFlag, any_of
 from fish_audio_suite_voice.tune import ListenTune, TurnTune
 
 __all__ = [
@@ -152,15 +152,6 @@ def wait_frames(turn: TurnTune) -> int:
     return max(1, turn.extend_frames - turn.silence_frames)
 
 
-class _Either:
-    def __init__(self, first: StopFlag, second: StopFlag) -> None:
-        self._first = first
-        self._second = second
-
-    def is_set(self) -> bool:
-        return self._first.is_set() or self._second.is_set()
-
-
 class Reopened:
     """A recording that listens for a continuation while the clip so far is transcribed.
 
@@ -181,7 +172,7 @@ class Reopened:
 
     def __init__(self, record: Callable[[StopFlag], bytes | None], stop: StopFlag) -> None:
         self._dropped = threading.Event()
-        self._task = asyncio.ensure_future(asyncio.to_thread(record, _Either(stop, self._dropped)))
+        self._task = asyncio.ensure_future(asyncio.to_thread(record, any_of(stop, self._dropped)))
 
     async def clip(self) -> bytes | None:
         """Wait for the continuation.

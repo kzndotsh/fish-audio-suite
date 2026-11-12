@@ -2,18 +2,13 @@
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any, Final
 
 from fish_audio_suite_kit import (
-    CHUNK_LENGTH_LO,
     FISH_RETRY_ATTEMPTS,
-    MIN_CHUNK_LENGTH_HI,
-    MIN_CHUNK_LENGTH_LO,
-    TTS_SPEED_HI,
-    TTS_SPEED_LO,
+    TTS_RANGES,
     SuiteDefaults,
     chunk_length_hi,
     clamp_number,
@@ -27,7 +22,7 @@ from fish_audio_suite_kit import (
     known_mp3_bitrate,
     normalize_tts_model,
 )
-from fish_audio_suite_proxy.audio import ClientFormat, fish_audio_format, known_client_format
+from fish_audio_suite_proxy.audio import ClientFormat, client_format, fish_audio_format
 from fish_audio_suite_proxy.models import default_tts_aliases, parse_aliases, resolve_asr_model
 
 __all__ = [
@@ -43,12 +38,8 @@ __all__ = [
     "DEFAULT_READ_S",
     "DEFAULT_RETRY_DEADLINE_S",
     "ProxySettings",
-    "SettingsError",
     "load_settings",
-    "runtime_defaults",
 ]
-
-log: Final[logging.Logger] = logging.getLogger("fish-audio-suite-proxy")
 
 DEFAULT_HOST: Final = "127.0.0.1"
 DEFAULT_PORT: Final = 8849
@@ -66,6 +57,11 @@ DEFAULT_GRACEFUL_S: Final = 120
 _PORT_MAX = 65535
 _MAX_RETRY_ATTEMPTS = 10
 _LOOPBACK = frozenset({"127.0.0.1", "localhost", "::1"})
+# Left out of /health: the client keys are secrets, a base URL can carry credentials,
+# and ``defaults`` is shown flat, field by field.
+_HEALTH_HIDDEN: Final = frozenset({"api_keys", "fish_base", "defaults"})
+# A SuiteDefaults field shown under another name on /health.
+_HEALTH_NAMES: Final = {"speed": "tts_speed"}
 
 
 def _non_negative(name: str, default: int) -> int:
@@ -120,11 +116,12 @@ class ProxySettings:
     Built once in the app lifespan and stored on ``app.state.settings``.
     ``FISH_API_KEY`` and ``FISH_PROXY_API_KEYS`` are read there too, but the
     secret values stay out of ``health``. Request bodies can still override
-    most per-call knobs; these are the defaults.
+    most per-call knobs; these are the defaults. ``tts_format`` is the one
+    default format: ``defaults.audio_format`` is the Fish name for it.
     """
 
     defaults: SuiteDefaults = field(default_factory=SuiteDefaults)
-    tts_aliases: Mapping[str, str] = field(default_factory=lambda: default_tts_aliases("s2.1-pro"))
+    tts_aliases: Mapping[str, str] = field(default_factory=dict[str, str])
     quality_guard: bool = False
     asr_strip_speakers: bool = True
     asr_strip_cues: bool = False
@@ -148,6 +145,19 @@ class ProxySettings:
     keep_alive_s: int = DEFAULT_KEEP_ALIVE_S
     graceful_shutdown_s: int = DEFAULT_GRACEFUL_S
     limit_concurrency: int = 0
+
+    @property
+    def model_aliases(self) -> dict[str, str]:
+        """TTS model aliases: the OpenAI names on the default model, then ``tts_aliases``.
+
+        Returns
+        -------
+        dict
+            Lowercase alias to Fish model id. ``tts-1``, ``tts-1-hd`` and
+            ``gpt-4o-mini-tts`` map to ``defaults.tts_model`` unless
+            ``FISH_PROXY_TTS_ALIASES`` maps them elsewhere.
+        """
+        return {**default_tts_aliases(self.defaults.tts_model), **self.tts_aliases}
 
     @property
     def auth_required(self) -> bool:
@@ -189,32 +199,22 @@ class ProxySettings:
         Returns
         -------
         dict
-            Models, language, latency, chunk length, format, speed, the text
-            flags, the body and input limits, and the retry and ASR timeout
-            knobs. No key value appears, only ``auth_required``.
+            Every field of ``defaults`` (``speed`` as ``tts_speed``) and of these
+            settings, except the client keys and the Fish base URL, plus
+            ``auth_required``. A new setting appears here without an edit.
         """
-        d = self.defaults
-        return {
-            "tts_model": d.tts_model,
-            "asr_model": d.asr_model,
-            "asr_language": d.asr_language,
-            "latency": d.latency,
-            "chunk_length": d.chunk_length,
-            "tts_format": self.tts_format,
-            "tts_speed": d.speed,
-            "quality_guard": self.quality_guard,
-            "asr_strip_speakers": self.asr_strip_speakers,
-            "asr_strip_cues": self.asr_strip_cues,
-            "tts_dialogue_only": self.tts_dialogue_only,
-            "tts_mood_lead": self.tts_mood_lead,
-            "tts_drop_narration": self.tts_drop_narration,
-            "auth_required": self.auth_required,
-            "max_body_bytes": self.max_body_bytes,
-            "max_input_chars": self.max_input_chars,
-            "retry_attempts": self.retry_attempts,
-            "retry_deadline_s": self.retry_deadline_s,
-            "asr_timeout_s": self.asr_timeout_s,
+        shown: dict[str, Any] = {
+            _HEALTH_NAMES.get(item.name, item.name): getattr(self.defaults, item.name)
+            for item in fields(self.defaults)
+            if item.name not in _HEALTH_HIDDEN
         }
+        shown.update(
+            (item.name, getattr(self, item.name))
+            for item in fields(self)
+            if item.name not in _HEALTH_HIDDEN
+        )
+        shown["auth_required"] = self.auth_required
+        return shown
 
 
 def _tts_format() -> ClientFormat:
@@ -226,10 +226,10 @@ def _tts_format() -> ClientFormat:
         A supported format, or ``mp3`` for a missing or unknown value. ``pcm16``
         is allowed here, though Fish itself only knows ``pcm``.
     """
-    return known_client_format(env_token("FISH_TTS_FORMAT", "mp3"), "mp3")
+    return client_format(env_token("FISH_TTS_FORMAT", "mp3")) or "mp3"
 
 
-def _suite_defaults() -> SuiteDefaults:
+def _suite_defaults(tts_format: ClientFormat) -> SuiteDefaults:
     stock = SuiteDefaults()
     fish_base = env_base("FISH_BASE", stock.fish_base)
     return SuiteDefaults(
@@ -239,46 +239,24 @@ def _suite_defaults() -> SuiteDefaults:
         latency=known_latency(env_token("FISH_LATENCY", stock.latency), stock.latency),
         chunk_length=clamp_number(
             env_int("FISH_CHUNK_LENGTH", stock.chunk_length),
-            CHUNK_LENGTH_LO,
+            TTS_RANGES.chunk_length[0],
             chunk_length_hi(fish_base),
             stock.chunk_length,
             int,
         ),
         min_chunk_length=clamp_number(
             env_int("FISH_MIN_CHUNK_LENGTH", stock.min_chunk_length),
-            MIN_CHUNK_LENGTH_LO,
-            MIN_CHUNK_LENGTH_HI,
+            *TTS_RANGES.min_chunk_length,
             stock.min_chunk_length,
             int,
         ),
-        audio_format=fish_audio_format(_tts_format()),
+        audio_format=fish_audio_format(tts_format),
         mp3_bitrate=known_mp3_bitrate(env_int("FISH_MP3_BITRATE", stock.mp3_bitrate)),
         speed=clamp_number(
-            env_float("FISH_SPEED", stock.speed),
-            TTS_SPEED_LO,
-            TTS_SPEED_HI,
-            stock.speed,
-            float,
+            env_float("FISH_SPEED", stock.speed), *TTS_RANGES.speed, stock.speed, float
         ),
         fish_base=fish_base,
     )
-
-
-def runtime_defaults() -> SuiteDefaults:
-    """Build ``SuiteDefaults`` from the process environment.
-
-    Returns
-    -------
-    SuiteDefaults
-        Clamped chunk length, speed, latency, and format. ``FISH_API_KEY``
-        is not read here.
-
-    Notes
-    -----
-    A ``FISH_BASE`` that is not Fish Cloud allows ``chunk_length`` up to 1000.
-    Cloud caps it at 300.
-    """
-    return _suite_defaults()
 
 
 def load_settings() -> ProxySettings:
@@ -295,15 +273,11 @@ def load_settings() -> ProxySettings:
         When ``FISH_PROXY_API_KEYS`` is set but holds no key, so a typo cannot
         switch client auth off.
     """
-    defaults = _suite_defaults()
-    aliases = {
-        **default_tts_aliases(defaults.tts_model),
-        **parse_aliases(env_text("FISH_PROXY_TTS_ALIASES")),
-    }
+    tts_format = _tts_format()
     port = env_int("FISH_PROXY_PORT", DEFAULT_PORT)
     return ProxySettings(
-        defaults=defaults,
-        tts_aliases=aliases,
+        defaults=_suite_defaults(tts_format),
+        tts_aliases=parse_aliases(env_text("FISH_PROXY_TTS_ALIASES")),
         quality_guard=env_bool("FISH_QUALITY_GUARD"),
         # On by default: transcribe-1-pro labels speakers even when one person talks.
         asr_strip_speakers=env_bool(
@@ -314,7 +288,7 @@ def load_settings() -> ProxySettings:
         tts_dialogue_only=env_bool("FISH_TTS_DIALOGUE_ONLY"),
         tts_mood_lead=env_bool("FISH_TTS_MOOD_LEAD"),
         tts_drop_narration=env_bool("FISH_TTS_DROP_NARRATION"),
-        tts_format=_tts_format(),
+        tts_format=tts_format,
         api_keys=_api_keys(env_text("FISH_PROXY_API_KEYS")),
         max_body_bytes=_non_negative("FISH_PROXY_MAX_BODY_BYTES", DEFAULT_MAX_BODY_BYTES),
         max_input_chars=_non_negative("FISH_PROXY_MAX_INPUT_CHARS", DEFAULT_MAX_INPUT_CHARS),

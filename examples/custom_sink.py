@@ -14,8 +14,11 @@ A sink only needs these members (the `PlaybackSink` protocol):
 - `finish(kill=False)`: called once at the end. `kill` is `True` if the
   speech was cut off, for example because the user started talking.
 - `bytes_played()`: how many bytes the sink accepted.
-- `output_latency_s`: how many seconds of audio the sink holds before it is
-  heard. Use `0.0` when there is no buffering.
+
+A sink may also set `audio_format` to the format it takes (`"pcm"`, `"wav"`,
+`"mp3"` or `"opus"`). This one leaves it out, so Fish sends raw PCM. And it may set
+`output_latency_s`, how many seconds of audio it holds before they are heard
+(0 when it is left out).
 
 There is no base class to inherit from. Any class with these members works.
 
@@ -31,8 +34,7 @@ import sys
 from array import array
 from pathlib import Path
 
-from fish_audio_suite_voice import FishSpeaker
-from fish_audio_suite_voice.envfile import load_dotenv
+from fish_audio_suite_voice import FishSpeaker, load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -105,9 +107,9 @@ def main() -> None:
 
     speaker = FishSpeaker(api_key=api_key, voice_id=voice_id)
 
-    # Pass `speaker.sample_rate` so the meter's 100 ms windows match the audio.
+    # Pass `speaker.tune.sample_rate` so the meter's 100 ms windows match the audio.
     result = speaker.speak(
-        "[calm] Watch the meter follow my voice.", MeterSink(speaker.sample_rate)
+        "[calm] Watch the meter follow my voice.", MeterSink(speaker.tune.sample_rate)
     )
     if result.error:
         sys.exit(f"Fish failed: {type(result.error).__name__}: {result.error.message}")

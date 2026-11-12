@@ -4,18 +4,23 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncGenerator, AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import eval_models
+import httpx
 import pytest
+from chat_fakes import install_chat
 from loguru import logger
 
 from fish_audio_suite_kit import ChatMessage
 from fish_audio_suite_voice import llm
-from fish_audio_suite_voice.debug import configure_voice_logging
 from fish_audio_suite_voice.llm_tune import LlmTune
+from fish_audio_suite_voice.log_setup import configure_voice_logging
+
+if TYPE_CHECKING:
+    from loguru import Message
 
 
 def test_voice_checks_flag_what_a_voice_cannot_say() -> None:
@@ -52,45 +57,24 @@ def test_the_models_listed_at_the_top_of_the_script_are_not_empty() -> None:
     assert all("/" in model for model in eval_models.MODELS)
 
 
-class _FakeBackend:
-    def __init__(self, model: str) -> None:
-        self.model = model
-
-    async def stream(
-        self,
-        messages: list[ChatMessage],
-        *,
-        cancel: asyncio.Event | None = None,
-        trace_id: str | None = None,
-    ) -> AsyncIterator[str]:
-        del cancel, trace_id
-        assert messages[0]["role"] == "system"
-        assert messages[-1]["role"] == "user"
-        if self.model == "empty/model":
-            return
-        if self.model == "broken/model":
-            raise RuntimeError("provider down")
-        yield "[happy] "
-        yield f"Hello from {self.model}!"
-        # The real backend logs this line when a reply ends, with the cost OpenRouter reports.
-        logger.debug(
-            "llm.stream_end finish=stop in=262 out=26 cost=$0.00012 chunks=25 provider=DeepInfra model=x"
-        )
-
-    async def aclose(self) -> None:
-        return None
+async def _answer(model: str, messages: list[ChatMessage]) -> AsyncIterator[str]:
+    assert messages[0]["role"] == "system"
+    assert messages[-1]["role"] == "user"
+    if model == "empty/model":
+        return
+    if model == "broken/model":
+        raise RuntimeError("provider down")
+    yield "[happy] "
+    yield f"Hello from {model}!"
+    # The real backend logs this line when a reply ends, with the cost OpenRouter reports.
+    logger.debug(
+        "llm.stream_end finish=stop in=262 out=26 cost=$0.00012 chunks=25 provider=DeepInfra model=x"
+    )
 
 
 @pytest.fixture
 def fake_backend(monkeypatch: pytest.MonkeyPatch) -> None:
-    @asynccontextmanager
-    async def opened(
-        tune: LlmTune, *, session_id: str | None = None
-    ) -> AsyncGenerator[_FakeBackend, None]:
-        del session_id
-        yield _FakeBackend(tune.model)
-
-    monkeypatch.setattr(eval_models, "open_chat_backend", opened)
+    install_chat(monkeypatch, _answer)
 
 
 @pytest.mark.usefixtures("fake_backend")
@@ -102,7 +86,7 @@ def test_every_model_and_prompt_runs_and_failures_do_not_stop_the_sweep() -> Non
             ["one", "two"],
             "system",
             runs=2,
-            seed=None,
+            seed=True,
             warmup=True,
         )
     )
@@ -123,7 +107,7 @@ def test_the_summary_counts_only_successful_runs() -> None:
             ["one"],
             "system",
             runs=3,
-            seed=None,
+            seed=True,
             warmup=False,
         )
     )
@@ -205,24 +189,50 @@ def test_the_prompts_file_setting_at_the_top_replaces_the_list(
     assert eval_models.read_prompts(["Flag prompt"], None) == ["Flag prompt"]
 
 
+_SSE_REPLY = (
+    'data: {"choices":[{"delta":{"content":"Hi there."}}],"model":"some/model"}\n\n'
+    'data: {"choices":[{"delta":{},"finish_reason":"stop"}],"provider":"DeepInfra",'
+    '"usage":{"prompt_tokens":262,"completion_tokens":26,"cost":0.00009}}\n\n'
+    "data: [DONE]\n\n"
+)
+
+
 def test_the_cost_parser_reads_the_line_the_backend_really_logs() -> None:
     """Guard against the backend changing its ``llm.stream_end`` line, which the script reads."""
+
+    def reply(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=_SSE_REPLY, headers={"Content-Type": "text/event-stream"})
+
+    async def stream() -> list[str]:
+        tune = LlmTune(
+            base="https://llm.example.test/v1",
+            api_key="sk-test",
+            model="some/model",
+        )
+        async with httpx.AsyncClient(transport=httpx.MockTransport(reply)) as http:
+            return [
+                token
+                async for token in llm.llm_token_stream(
+                    [{"role": "user", "content": "hi"}], tune=tune, http=http
+                )
+            ]
+
     lines: list[str] = []
-    configure_voice_logging(debug=True)
-    logger.remove()
-    logger.add(lambda message: lines.append(str(message.record["message"])), level="DEBUG")  # pyright: ignore[reportUnknownMemberType, reportUnknownLambdaType]
+
+    def keep(message: Message) -> None:
+        lines.append(message.record["message"])
+
+    configure_voice_logging(debug=True, to_stderr=False)
+    sink = logger.add(keep, level="DEBUG")
     try:
-        stats = getattr(llm, "_ChatStats")()  # noqa: B009 - a private type, built only for this guard
-        stats.last_finish, stats.yielded, stats.last_provider = "stop", 25, "DeepInfra"
-        stats.last_usage = {"prompt_tokens": 262, "completion_tokens": 26, "cost": 0.00009}
-        getattr(llm, "_finish_llm")(stats, "some/model")  # noqa: B009
+        assert asyncio.run(stream()) == ["Hi there."]
     finally:
+        logger.remove(sink)
         configure_voice_logging(debug=False)
     parsed = [u for u in map(eval_models.parse_stream_end, lines) if u is not None]
     assert len(parsed) == 1
     assert parsed[0].cost == pytest.approx(0.00009)
     assert parsed[0].provider == "DeepInfra"
-    stats.last_usage = {"prompt_tokens": 1, "completion_tokens": 2}
     unpriced = eval_models.parse_stream_end(
         "llm.stream_end finish=stop in=1 out=2 chunks=3 provider=Local model=m"
     )

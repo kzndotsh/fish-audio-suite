@@ -1,28 +1,18 @@
-"""Audio formats, silence clips and base64 audio decoding for the OpenAI endpoints."""
+"""Audio formats a client may ask for, and the silent clip sent for junk text."""
 
 from __future__ import annotations
 
-import base64
-import binascii
 import io
 import wave
 from typing import Any, Final, Literal, get_args
 
-from fish_audio_suite_kit import (
-    AudioFormat,
-    parse_number,
-)
-from fish_audio_suite_proxy.errors import ProxyError
+from fish_audio_suite_kit import AudioFormat, parse_number
 
 __all__ = [
-    "CLIENT_FORMATS",
-    "SILENT_MP3",
     "SUPPORTED_FORMATS",
-    "AudioDecodeError",
     "ClientFormat",
-    "decode_audio_b64",
+    "client_format",
     "fish_audio_format",
-    "known_client_format",
     "media_type",
     "pcm_sample_rate",
     "silent_speech",
@@ -44,8 +34,24 @@ _PCM16_RATE = 24_000
 # wave stores the byte rate (rate x 2 bytes for mono 16-bit) as an unsigned 32-bit
 # field and raises on a larger one, so the silent WAV falls back to 24 kHz above this.
 _WAV_RATE_HI = (2**32 - 1) // 2
-SUPPORTED_FORMATS: tuple[ClientFormat, ...] = tuple(_MEDIA)
-CLIENT_FORMATS: dict[str, ClientFormat] = {name: name for name in get_args(ClientFormat)}
+SUPPORTED_FORMATS: tuple[ClientFormat, ...] = get_args(ClientFormat)
+_BY_NAME: dict[str, ClientFormat] = {name: name for name in SUPPORTED_FORMATS}
+
+
+def client_format(name: str) -> ClientFormat | None:
+    """Look up a format name from a request or the environment.
+
+    Parameters
+    ----------
+    name : str
+        Compared after strip and lowercase.
+
+    Returns
+    -------
+    ClientFormat or None
+        The format, or None when the proxy cannot produce it (``aac``, ``flac``).
+    """
+    return _BY_NAME.get(name.strip().lower())
 
 
 def fish_audio_format(fmt: ClientFormat) -> AudioFormat:
@@ -54,7 +60,7 @@ def fish_audio_format(fmt: ClientFormat) -> AudioFormat:
     Parameters
     ----------
     fmt : ClientFormat
-        A format from ``read_format``.
+        A format the client asked for.
 
     Returns
     -------
@@ -112,110 +118,22 @@ def silent_speech(fmt: ClientFormat, sample_rate: int) -> tuple[bytes, str]:
     return SILENT_MP3, media_type("mp3")
 
 
-_DATA_URI = "data:"
-
-
-class AudioDecodeError(ProxyError):
-    """Audio in a request body could not be decoded. The route returns 400.
-
-    Attributes
-    ----------
-    status : int
-        Always 400.
-    message : str
-        Shown in the OpenAI error envelope.
-    """
-
-    def __init__(self, message: str) -> None:
-        """Store ``message`` with status 400.
-
-        Parameters
-        ----------
-        message : str
-            Client-facing reason.
-        """
-        super().__init__(400, message)
-
-
-def _b64_audio(value: str, field: str) -> bytes:
-    raw = "".join(value.strip().split())
-    # The data-URI scheme is case-insensitive, so "DATA:" is a prefix too.
-    head, sep, tail = raw.partition(",")
-    if sep and head.lower().startswith(_DATA_URI):
-        raw = tail
-    # URL-safe alphabets use - and _. The strict decoder rejects those, so
-    # real audio would 400.
-    raw = raw.replace("-", "+").replace("_", "/")
-    padded = raw + ("=" * ((-len(raw)) % 4))
-    try:
-        return base64.b64decode(padded, validate=True)
-    except (binascii.Error, ValueError) as exc:
-        raise AudioDecodeError(f"{field} is not valid base64") from exc
-
-
-def decode_audio_b64(value: Any, *, field: str = "audio") -> bytes:
-    """Decode audio from raw bytes or base64, including a data URI.
-
-    Parameters
-    ----------
-    value : Any
-        ``bytes``, or a base64 string. Whitespace inside the string is removed.
-    field : str, optional
-        What the client calls this audio, used to start the error message:
-        ``"input_audio"`` for a transcription, ``"reference audio"`` for a
-        voice clip. Default ``"audio"``.
-
-    Returns
-    -------
-    bytes
-        Decoded audio. Never empty.
-
-    Raises
-    ------
-    AudioDecodeError
-        When the value is empty or not valid base64, with a message such as
-        ``"audio is empty"`` or ``"audio is not valid base64"``.
-    """
-    if isinstance(value, (bytes, bytearray)):
-        audio = bytes(value)
-    elif isinstance(value, str) and value.strip():
-        audio = _b64_audio(value, field)
-    else:
-        audio = b""
-    if not audio:
-        raise AudioDecodeError(f"{field} is empty")
-    return audio
-
-
-def known_client_format(name: str, default: ClientFormat) -> ClientFormat:
-    """Read a format from config, keeping ``default`` when the name is unsupported.
-
-    Parameters
-    ----------
-    name : str
-        Env value such as ``FISH_TTS_FORMAT``. Compared after strip and lowercase.
-    default : ClientFormat
-        Returned when ``name`` is blank or not a supported format.
-
-    Returns
-    -------
-    ClientFormat
-        A supported format.
-    """
-    return CLIENT_FORMATS.get(name.strip().lower(), default)
-
-
-def pcm_sample_rate(fmt: ClientFormat, body: dict[str, Any], default: int) -> int:
+def pcm_sample_rate(
+    fmt: ClientFormat, body: dict[str, Any], default: int, *, hi: int | None = None
+) -> int:
     """Choose the PCM rate. ``pcm16`` is 24 kHz unless the client sets one.
 
     Parameters
     ----------
     fmt : ClientFormat
-        Format from ``read_format``.
+        The format the client asked for.
     body : dict
         May contain ``sample_rate``.
     default : int
         Rate when the format is not ``pcm16`` and the body omits one.
+    hi : int or None, optional
+        Largest rate the caller can send on. A larger client rate keeps the
+        fallback, as junk does. None sets no bound.
 
     Returns
     -------
@@ -227,22 +145,20 @@ def pcm_sample_rate(fmt: ClientFormat, body: dict[str, Any], default: int) -> in
     if raw is None:
         return fallback
     rate = parse_number(raw, fallback, int)
-    return rate if rate > 0 else fallback
+    return rate if rate > 0 and (hi is None or rate <= hi) else fallback
 
 
-def media_type(fmt: str) -> str:
-    """Content-Type for a Fish audio format.
+def media_type(fmt: ClientFormat) -> str:
+    """Content-Type for a format the client asked for.
 
     Parameters
     ----------
-    fmt : str
+    fmt : ClientFormat
         ``mp3``, ``opus``, ``pcm``, ``pcm16``, or ``wav``.
 
     Returns
     -------
     str
-        A MIME type. Unknown formats are ``audio/mpeg``. ``pcm16`` is
-        ``audio/pcm``.
+        A MIME type. ``pcm16`` is ``audio/pcm``.
     """
-    known = CLIENT_FORMATS.get(fmt)
-    return _MEDIA[known] if known is not None else "audio/mpeg"
+    return _MEDIA[fmt]

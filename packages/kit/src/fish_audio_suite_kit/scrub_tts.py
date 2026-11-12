@@ -9,6 +9,8 @@ from functools import cache, partial
 from fish_audio_suite_kit._charsets import (
     ANGLE_TOKEN_RE,
     BREAKS_RE,
+    EMPHASIS_MARKS,
+    PUNCT_BEFORE_CLOSER,
     THOUGHT_CLOSE_RE,
     THOUGHT_OPEN_RE,
     plain_breaks,
@@ -21,19 +23,16 @@ from fish_audio_suite_kit._single_pass import (
     flatten_table_rows,
     strip_space_before_newline,
 )
-from fish_audio_suite_kit.cues import is_paren_cue, rewrite_s1_parens
+from fish_audio_suite_kit.catalog import DIRECTED_PAIRED_TAGS
+from fish_audio_suite_kit.cues import WHISPER_TAG, is_paren_cue, rewrite_s1_parens
 
 __all__ = [
-    "HTML_BLOCK_CLOSE_RE",
-    "HTML_BLOCK_OPEN_RE",
-    "HTML_ENTITY_RE",
-    "html_char",
     "scrub_tts",
-    "unclosed_span_start",
 ]
 
-# (neighbor before the chunk, neighbor after the chunk). Empty means the call
-# is the whole string, so the string's own edges are the edges.
+# (the last two characters before the chunk, the first one after it). Empty means
+# the call is the whole string, so the string's own edges are the edges. Two before,
+# because a closer after a stop ("Note:" then "**") is told by the word before the stop.
 _Edge = tuple[str, str]
 _Repl = str | Callable[[re.Match[str]], str]
 _Replacement = tuple[tuple[re.Pattern[str], _Repl], ...]
@@ -141,16 +140,23 @@ _MD_BARE_REF_RE = re.compile(rf"(?<!\w)\[([^\]]{{1,{_LABEL}}})\]\[([^\]]{{0,{_LA
 
 # --- Line-level markdown -----------------------------------------------------
 
-_MD_HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+", re.MULTILINE)
+# The line markers, each written once. A rule adds where the mark may sit and what must
+# follow it; the stream holds and the mood-lead hold build their patterns from these.
+LINE_INDENT = r"[ \t]{0,3}"
+HEADING_MARK = r"#{1,6}"
+LIST_MARK = r"[-*_~+]+"
+# A task checkbox after the bullet. [x] would be read as a Fish cue.
+TASK_BOX = r"\[[ \t]*(?:[xX][ \t]*)?\]"
+# A blockquote mark. "> text" is a quote. "2 > 1" stays, because the mark sits at the line start.
+QUOTE_MARK = r">+"
+_MD_HEADING_RE = re.compile(rf"(?m)^{LINE_INDENT}{HEADING_MARK}\s+")
 # A list marker needs a space after it and sits at the line start: "-5" and
 # "2 - 3" are not bullets.
-_MD_LIST_RE = re.compile(r"(?m)^[ \t]{0,3}[-*_~+]+[ \t]+")
+_MD_LIST_RE = re.compile(rf"(?m)^{LINE_INDENT}{LIST_MARK}[ \t]+")
 # A line of only ---, ***, or ___ is a rule, not speech.
 _MD_RULE_RE = re.compile(r"(?m)^[ \t]{0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$")
-# "> text" is a quote mark. "2 > 1" stays.
-_MD_QUOTE_RE = re.compile(r"(?m)^[ \t]{0,3}>+[ \t]?")
-# A task checkbox after the bullet. [x] would be read as a Fish cue.
-_MD_TASK_RE = re.compile(r"(?m)^[ \t]{0,3}\[[ \t]*(?:[xX][ \t]*)?\][ \t]+")
+_MD_QUOTE_RE = re.compile(rf"(?m)^{LINE_INDENT}{QUOTE_MARK}[ \t]?")
+_MD_TASK_RE = re.compile(rf"(?m)^{LINE_INDENT}{TASK_BOX}[ \t]+")
 # ~~retracted~~ is a deletion. Dropping only the marks would speak the word.
 _MD_STRIKE_RE = re.compile(r"~~[^~\n]+~~")
 _MD_FOOTNOTE_RE = re.compile(rf"\[\^[^\]]{{1,{_LABEL}}}\]")
@@ -171,11 +177,10 @@ _MD_BREAK_RE = re.compile(
     rf"[^>\n]{{0,{_TAG}}}>",
     re.IGNORECASE,
 )
-_MD_HTML_RE = re.compile(rf"<(?!/?\s*whisper\b)/?[A-Za-z][^>\n]{{0,{_TAG}}}>", re.IGNORECASE)
+_MD_HTML_RE = re.compile(rf"<(?!/?\s*{WHISPER_TAG}\b)/?[A-Za-z][^>\n]{{0,{_TAG}}}>", re.IGNORECASE)
 # A directed model (drama-3) reads these around the words they change, so they are kept for it.
-_DIRECTED_PAIRED_TAGS = ("whisper", "emphasis", "soft", "fast", "slow", "stress", "forceful")
 _MD_HTML_DIRECTED_RE = re.compile(
-    rf"<(?!/?\s*(?:{'|'.join(_DIRECTED_PAIRED_TAGS)})\s*>)/?[A-Za-z][^>\n]{{0,{_TAG}}}>",
+    rf"<(?!/?\s*(?:{'|'.join(DIRECTED_PAIRED_TAGS)})\s*>)/?[A-Za-z][^>\n]{{0,{_TAG}}}>",
     re.IGNORECASE,
 )
 HTML_ENTITY_RE = re.compile(r"&(#x[0-9A-Fa-f]+|#\d+|[A-Za-z]+);")
@@ -196,7 +201,7 @@ def _edge_char(match: re.Match[str], *, end: bool, edge: _Edge) -> str:
         return nxt or edge[1][:1]
     if match.start():
         return match.string[match.start() - 1]
-    return edge[0][:1]
+    return edge[0][-1:]
 
 
 def _with_word_gap(match: re.Match[str], body: str, edge: _Edge) -> str:
@@ -258,10 +263,18 @@ def _spaced_ref(match: re.Match[str]) -> str:
 def _unwrap_marks(text: str, edge: _Edge) -> str:
     # Emphasis marks go. Two or more between words are bold: "door**today" is two
     # words. One mark between words stays: 5*5 and fish_audio are single tokens.
+    # A chunk's marks are read between its neighbours, so a closer that arrives alone
+    # ("**Note:" then "** next") still closes, and an opener cut from its word ("**"
+    # then "Note") still opens. A neighbour that is a mark could join a run across the
+    # edge, so that side is left out.
+    left = "" if any(ch in EMPHASIS_MARKS for ch in edge[0]) else edge[0]
+    right = "" if edge[1] in EMPHASIS_MARKS else edge[1]
     out: list[str] = []
     last = 0
-    for start, end in emphasis_runs(text):
-        before = text[start - 1] if start else edge[0][:1]
+    for run_start, run_end in emphasis_runs(left + text + right):
+        start = run_start - len(left)
+        end = run_end - len(left)
+        before = text[start - 1] if start else edge[0][-1:]
         after = text[end] if end < len(text) else edge[1][:1]
         out.append(text[last:start])
         if before.isalnum() and after.isalnum():
@@ -376,11 +389,14 @@ def html_char(match: re.Match[str]) -> str:
 def _unwrap_edge_marks(text: str, *, line_start: bool, before: str, after: str) -> str:
     # A chunk of only emphasis marks: decide from its neighbors whether it is
     # an opener, a closer, or a literal operator such as "2*3".
-    marks = "*_`~"
+    marks = EMPHASIS_MARKS
     prev = before[-1:]
     nxt = after[:1]
-    # "]" closes an index, so a backtick after `a[i]` is still a closer.
-    attached = prev.isalnum() or prev == "]"
+    # "]" closes an index, so a backtick after `a[i]` is still a closer, and so is a
+    # mark after a word and a stop ("Note:" then "**").
+    attached = (
+        prev.isalnum() or prev == "]" or (prev in PUNCT_BEFORE_CLOSER and before[-2:-1].isalnum())
+    )
     if text and all(ch in marks for ch in text):
         if len(text) == 1 and attached and nxt.isalnum():
             return text
@@ -578,8 +594,9 @@ def scrub_tts(
         True when text was already sent before this chunk. Default False.
         A leading parenthesis is then an aside, not the whole reply.
     before : str, optional
-        Text already spoken before this chunk. Only its last character is
-        read. Default empty.
+        Text already spoken before this chunk. Only its last two characters
+        are read: a mark after a word and a stop (``Note:`` then ``**``) closes
+        emphasis. Default empty.
     after : str, optional
         Text still held after this chunk. Only its first character is read.
         Default empty.
@@ -609,7 +626,7 @@ def scrub_tts(
     """
     if not text:
         return ""
-    edge = (before[-1:], after[:1])
+    edge = (before[-2:], after[:1])
     text = _unwrap_edge_marks(text, line_start=line_start, before=before, after=after)
     if not text:
         return ""

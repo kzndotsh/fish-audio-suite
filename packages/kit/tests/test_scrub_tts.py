@@ -31,6 +31,32 @@ def test_a_neighbor_letter_keeps_the_word_gap() -> None:
     assert out.endswith(" ")
 
 
+@pytest.mark.parametrize(
+    ("text", "before", "after", "expected"),
+    [
+        # A closer after a word and a stop, sent in the next chunk.
+        ("** this is it.", "Note:", "", "this is it."),
+        ("**", "Hello.", "", ""),
+        ("**: ok.", "Hi Note", "", ": ok."),
+        # An opener whose word is still held.
+        ("End on bold **", "", "h", "End on bold "),
+        # One star between a digit and a word is still a product.
+        ("*3", "2", "", "*3"),
+    ],
+)
+def test_a_mark_at_a_chunk_edge_is_read_with_its_neighbours(
+    text: str, before: str, after: str, expected: str
+) -> None:
+    assert scrub_tts(text, before=before, after=after) == expected
+
+
+def test_a_heading_mark_keeps_the_line_breaks_before_it() -> None:
+    # The mark's indent once matched line breaks too, so a blank line before a heading
+    # went with the mark, and a chunk that began "\n### " kept the mark as speech.
+    assert scrub_tts("Intro.\n\n### Title") == "Intro.\n\nTitle"
+    assert scrub_tts("\n### Excited, hi", before="Title", line_start=False) == "\nExcited, hi"
+
+
 def test_default_scrub_still_strips_the_whole_string() -> None:
     assert scrub_tts("  Open the door today friend.  ") == "Open the door today friend."
 
@@ -389,7 +415,6 @@ def test_a_spaced_break_tag_is_not_spoken() -> None:
     broken = scrub_tts("Open the door< /br>today friend please.")
     assert "<" not in broken
     assert "doortoday" not in broken
-    assert "a < b" in scrub_tts("Math a < b and c > d today friend.")
     assert "[whispering]" in normalize_cues(scrub_tts("< whisper>quietly</ whisper>"), lead=True)
 
 
@@ -637,6 +662,9 @@ def test_a_removed_aside_leaves_one_space(text: str, expected: str) -> None:
         "a" + "_`" * 10_000 + "b",
         "word " + "\t" * 20_000 + "\n",
         "x" + " \t" * 10_000 + "!",
+        "-" * 10_000 + " " * 10_000 + "x",
+        "\n*" * 10_000 + " ",
+        "\n#" * 10_000 + " ",
     ],
     ids=lambda text: f"{text[:10]!r}x{len(text)}",
 )

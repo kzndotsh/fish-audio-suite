@@ -5,29 +5,36 @@ from __future__ import annotations
 import re
 import unicodedata
 import zlib
-from collections.abc import Sequence, Set
-from typing import Final, cast
+from collections.abc import Callable, Sequence, Set
+from dataclasses import dataclass
+from typing import Final, Literal, cast
 
 from fish_audio_suite_kit._charsets import (
     ANGLE_TOKEN_RE,
+    ASCII_STOPS,
     BREAKS_RE,
+    IDEOGRAPHIC_STOPS,
+    LATIN_CLOSER_CHARS,
     SENTENCE_STOPS,
-    cjk_latin_counts,
     plain_breaks,
     utf8_text,
 )
 from fish_audio_suite_kit._single_pass import collapse_space_before_stop
-from fish_audio_suite_kit.junk import DEFAULT_MIN_LETTERS, DEFAULT_SHORT_WORDS
-from fish_audio_suite_kit.payloads import AsrSegment
+from fish_audio_suite_kit._speech_floor import too_little_speech
+from fish_audio_suite_kit.payloads import AsrBody, AsrSegment
 
 __all__ = [
     "DEFAULT_BACKCHANNELS",
     "DEFAULT_QUIT_PHRASES",
+    "CleanTranscript",
+    "TranscriptSource",
     "asr_language_hint",
     "asr_tone",
+    "clean_transcript",
     "is_asr_hallucination",
     "is_backchannel",
     "is_caption_watermark",
+    "is_filler",
     "is_quit_utterance",
     "is_same_utterance",
     "scrub_asr",
@@ -105,6 +112,11 @@ DEFAULT_BACKCHANNELS: Final = frozenset(
         "어",
     }
 )
+# Hesitation sounds, never an answer, already folded. "yeah", "yep", "uh-huh" and "嗯" are
+# backchannels too, but after a question they answer it, so they are not here. Nor is
+# "huh": said alone it asks the speaker to repeat, so it is a turn. Said over a reply it
+# is still a backchannel.
+_FILLERS: Final = frozenset({"ah", "hmm", "mm", "uh", "um", "えっと", "呃", "唔", "啊", "어", "음"})
 
 # Whole utterance, after folding. These end the session, so they are explicit
 # goodbyes. "stop" is not here: people say it to interrupt speech. A caller can
@@ -144,12 +156,19 @@ _EN_HALLUCINATION_PHRASES = frozenset(
 )
 # Same watermarks in Chinese. Punctuation is stripped before this lookup.
 _CJK_HALLUCINATION_PHRASES = frozenset({"谢谢观看", "感谢观看", "请订阅", "字幕"})
-# Strip spaces and quotes too, so "谢谢观看。" matches the phrase with no marks.
-_ASR_PUNCT_RE = re.compile(r"[\s.。、，,!?！？…·・~～'\"“”‘’]+")
+# Pause marks folded away with the stops: commas, middle dots and tildes.
+_PAUSE_MARKS = "、，,·・~～"
+# Strip spaces and quotes too, so "谢谢观看。" matches the phrase with no marks. The
+# spaced stops (Arabic, Devanagari, Urdu) are not stripped here: these phrases are CJK.
+_ASR_PUNCT_RE = re.compile(
+    rf"[\s{re.escape(ASCII_STOPS + IDEOGRAPHIC_STOPS + _PAUSE_MARKS)}'\"“”‘’]+"
+)
 # Fold for phrase lists. Spaces stay, so "uh huh" does not become "uhhuh".
-# Includes the Arabic comma, semicolon, and question mark, plus the danda and
-# Urdu stop, so the same utterance folds the same way in every script.
-_FOLD_PUNCT_RE = re.compile(r"[.。、，,!?！？…·・~～؟،؛।۔]+")
+# Every sentence stop, including the danda and Urdu stop, plus the Arabic comma and
+# semicolon, so the same utterance folds the same way in every script.
+_FOLD_PUNCT_RE = re.compile(
+    f"[{re.escape(''.join(sorted(SENTENCE_STOPS)) + _PAUSE_MARKS + '،؛')}]+"
+)
 _SPACE_RE = re.compile(r"\s+")
 # Below this size, gzip ratio is noise. A stuck caption loop compresses past the ratio.
 _GZIP_MIN_BYTES = 48
@@ -278,20 +297,19 @@ _TONE_CUE_RE = re.compile(r"[^\W\d_]+(?:[ '-][^\W\d_]+){0,2}")
 _TONE_CUES_MAX = 3
 
 
-def asr_tone(text: str, *, limit: int = _TONE_CUES_MAX) -> tuple[str, ...]:
+def asr_tone(text: str) -> tuple[str, ...]:
     """List the tone annotations ``transcribe-1-pro`` left in a raw transcript.
 
     Parameters
     ----------
     text : str
         The transcript before ``scrub_asr`` removed its annotations.
-    limit : int, optional
-        The most cues to return. Default 3.
 
     Returns
     -------
     tuple of str
-        Each distinct annotation in order, lowercased, such as ``("laughter", "tired")``. An
+        The first three distinct annotations in order, lowercased, such as
+        ``("laughter", "tired")``. An
         annotation that is not one to three plain words (a timestamp, a long phrase,
         anything with a digit or a symbol) is left out, so the result is safe to put in a
         prompt.
@@ -308,9 +326,15 @@ def asr_tone(text: str, *, limit: int = _TONE_CUES_MAX) -> tuple[str, ...]:
         cue = " ".join(match.group()[1:-1].split()).casefold()
         if _TONE_CUE_RE.fullmatch(cue) and cue not in found:
             found.append(cue)
-            if len(found) >= limit:
+            if len(found) >= _TONE_CUES_MAX:
                 break
     return tuple(found)
+
+
+def _unlabelled(scrubbed: str) -> str:
+    # A speaker label is not speech: "Speaker 2: Thanks for watching!" is still a
+    # caption. The checks read the text without labels; the output keeps them.
+    return scrub_asr(scrubbed, strip_speakers=True)
 
 
 def _known_hallucination(s: str) -> bool:
@@ -345,7 +369,7 @@ def is_caption_watermark(text: str) -> bool:
 
 # A caption after any sentence stop is a separate clause, so it is dropped.
 _STOP_CLASS = re.escape("".join(sorted(SENTENCE_STOPS)))
-_CLAUSE_END_RE = re.compile(rf"[{_STOP_CLASS}][\"'”’)\]]*\s*$")
+_CLAUSE_END_RE = re.compile(rf"[{_STOP_CLASS}][{re.escape(LATIN_CLOSER_CHARS)}\]]*\s*$")
 _WATERMARK_STOP_RE = re.compile(rf"[{_STOP_CLASS}]")
 
 
@@ -428,20 +452,27 @@ def without_watermark_segments(
         if not isinstance(raw_text, str):
             continue
         body = scrub_asr(raw_text, strip_speakers=strip_speakers, strip_cues=strip_cues)
-        if not body or not is_caption_watermark(body):
+        plain = _unlabelled(body)
+        if not plain or not is_caption_watermark(plain):
             continue
         dropped = True
         # The segment ("Thanks for watching.") rarely matches the transcript's
-        # spelling exactly, so match the folded phrase first. A literal replace
-        # runs only when the pattern finds no copy at all.
-        updated = _drop_watermark_clause(cleaned, body)
+        # spelling exactly, so match the folded phrase first, with its label when
+        # it kept one so the label goes too. A literal replace runs only when no
+        # pattern finds a copy at all.
+        phrases = (body, plain) if body != plain else (body,)
+        updated = cleaned
+        for phrase in phrases:
+            updated = _drop_watermark_clause(cleaned, phrase)
+            if updated != cleaned:
+                break
         if updated != cleaned:
             cleaned = updated
             continue
-        pattern = _watermark_pattern(body)
-        if pattern is not None and pattern.search(cleaned):
+        patterns = (_watermark_pattern(phrase) for phrase in phrases)
+        if any(pattern is not None and pattern.search(cleaned) for pattern in patterns):
             continue
-        for needle in {raw_text.strip(), body}:
+        for needle in {raw_text.strip(), body, plain}:
             if needle:
                 cleaned = cleaned.replace(needle, " ")
     if not dropped:
@@ -458,24 +489,13 @@ def _without_marks(s: str) -> str | None:
     return tagged or None
 
 
-def is_asr_hallucination(
-    text: str,
-    *,
-    min_letters: int = DEFAULT_MIN_LETTERS,
-    short_words: Set[str] | None = None,
-) -> bool:
+def is_asr_hallucination(text: str) -> bool:
     """Return whether an ASR string is silence, a caption watermark, or too thin.
 
     Parameters
     ----------
     text : str
         Transcript, usually after ``scrub_asr``.
-    min_letters : int, optional
-        Fewest letters that count as speech. Default 2, so ``no``, ``ok``,
-        and ``hi`` are kept and a lone letter is dropped.
-    short_words : AbstractSet of str or None, optional
-        Lowercase words kept even below ``min_letters``. Default
-        ``DEFAULT_SHORT_WORDS``. Matters when a caller raises the floor.
 
     Returns
     -------
@@ -483,15 +503,14 @@ def is_asr_hallucination(
         True for empty text, ``nospeech``, YouTube-caption boilerplate
         (thanks-for-watching, Amara, 谢谢观看), gzip-repetitive text, emoji-only
         or angle-token-only text, a single CJK character with no other letter,
-        or fewer than ``min_letters`` letters. ``Été`` and a Russian sentence
-        are speech. Three or more digits are a number, so ``100`` is kept, and
-        a longer CJK sentence is kept.
+        or fewer than two letters unless it is a short answer such as ``no``,
+        ``ok`` or ``hi``. ``Été`` and a Russian sentence are speech. Three or more
+        digits are a number, so ``100`` is kept, and a longer CJK sentence is kept.
 
     Notes
     -----
     A caller uses this to drop a turn before the LLM, so a false positive
-    discards real speech. Callers who want a stricter gate can raise
-    ``min_letters`` and rely on ``short_words`` for the answers they keep.
+    discards real speech.
     """
     if not text or not text.strip():
         return True
@@ -501,17 +520,115 @@ def is_asr_hallucination(
     tagged = _without_marks(s)
     if tagged is None or _gzip_repetitive(tagged):
         return True
-    cjk, letters = cjk_latin_counts(s)
-    if letters == 0 and cjk == 1:
-        return True
-    if cjk:
-        return False
-    if sum(ch.isdigit() for ch in s) >= 3:
-        return False
-    words = DEFAULT_SHORT_WORDS if short_words is None else short_words
-    if "".join(ch for ch in s.lower() if ch.isalnum()) in words:
-        return False
-    return letters < min_letters
+    return too_little_speech(s, any_cjk=True)
+
+
+TranscriptSource = Literal["text", "trimmed", "segments", "hallucination"]
+
+
+@dataclass(frozen=True, slots=True)
+class CleanTranscript:
+    """A Fish transcript after ``clean_transcript``.
+
+    Attributes
+    ----------
+    text : str
+        The text to answer or return. For ``source == "hallucination"`` it is the
+        scrubbed transcript, which is still a hallucination; the caller decides
+        whether to drop it.
+    scrubbed : str
+        The transcript after ``scrub_asr``, before any fallback or trim.
+    source : TranscriptSource
+        Where ``text`` came from: ``"text"`` (the scrubbed transcript),
+        ``"trimmed"`` (watermark segments removed from it), ``"segments"`` (rebuilt
+        from the segments because the transcript was a hallucination) or
+        ``"hallucination"`` (nothing usable was found).
+    """
+
+    text: str
+    scrubbed: str
+    source: TranscriptSource
+
+
+def _segment_text(segments: object, *, strip_speakers: bool, strip_cues: bool) -> str:
+    # Fish may send any shape. Only an object with a string "text" is a segment.
+    if not isinstance(segments, list):
+        return ""
+    parts: list[str] = []
+    for seg in cast(list[object], segments):
+        if not isinstance(seg, dict):
+            continue
+        raw = cast(dict[str, object], seg).get("text")
+        if not isinstance(raw, str):
+            continue
+        piece = scrub_asr(raw.strip(), strip_speakers=strip_speakers, strip_cues=strip_cues)
+        # A watermark segment beside real speech would be spoken with it.
+        if piece and not is_caption_watermark(_unlabelled(piece)):
+            parts.append(piece)
+    return " ".join(parts)
+
+
+def clean_transcript(
+    transcript: str,
+    body: AsrBody,
+    *,
+    strip_speakers: bool,
+    strip_cues: bool,
+    segment_text: Callable[[], str] | None = None,
+) -> CleanTranscript:
+    """Scrub a Fish transcript and recover the speech from its segments when needed.
+
+    The steps: ``scrub_asr``; when that is a hallucination (blank, a caption
+    watermark, too thin), rebuild the text from the segments, leaving out
+    watermark segments; otherwise remove the watermark segments a real transcript
+    still holds (``without_watermark_segments``), keeping the trim only when it is
+    not a hallucination itself.
+
+    Parameters
+    ----------
+    transcript : str
+        Fish's top-level ``text``.
+    body : AsrBody
+        The decoded Fish reply. Only ``segments`` is read, and any shape is safe.
+    strip_speakers : bool
+        Drop ``Speaker 1:`` labels. Passed to ``scrub_asr`` for the transcript and
+        every segment.
+    strip_cues : bool
+        Drop ``[laughter]`` style annotations. Passed to ``scrub_asr`` the same way.
+    segment_text : Callable or None, optional
+        Builds the fallback text from the segments. None joins each segment,
+        stripped and scrubbed, with a space, skipping caption watermarks. A caller
+        that groups segments into phrases passes its own join.
+
+    Returns
+    -------
+    CleanTranscript
+        The text, the scrubbed transcript and which step produced the text.
+
+    Examples
+    --------
+    >>> body = {"text": "", "segments": [{"text": "hello"}, {"text": "there"}]}
+    >>> clean_transcript("", body, strip_speakers=True, strip_cues=False)
+    CleanTranscript(text='hello there', scrubbed='', source='segments')
+    """
+    segments = body.get("segments")
+    scrubbed = scrub_asr(transcript, strip_speakers=strip_speakers, strip_cues=strip_cues)
+    if is_asr_hallucination(_unlabelled(scrubbed)):
+        if segment_text is None:
+            alt = _segment_text(segments, strip_speakers=strip_speakers, strip_cues=strip_cues)
+        else:
+            alt = segment_text()
+        if alt and not is_asr_hallucination(_unlabelled(alt)):
+            return CleanTranscript(alt, scrubbed, "segments")
+        # What is left of a hallucination once its watermark segments are cut out is
+        # part of it ("Like and" from "Like and subscribe."), so it is never trimmed.
+        return CleanTranscript(scrubbed, scrubbed, "hallucination")
+    trimmed = without_watermark_segments(
+        scrubbed, segments, strip_speakers=strip_speakers, strip_cues=strip_cues
+    )
+    if trimmed != scrubbed and trimmed and not is_asr_hallucination(_unlabelled(trimmed)):
+        return CleanTranscript(trimmed, scrubbed, "trimmed")
+    return CleanTranscript(scrubbed, scrubbed, "text")
 
 
 def _known_phrase(text: str, phrases: Set[str]) -> bool:
@@ -541,6 +658,31 @@ def is_backchannel(text: str, *, phrases: Set[str] | None = None) -> bool:
     """
     known = DEFAULT_BACKCHANNELS if phrases is None else _folded_phrases(phrases)
     return _known_phrase(text, known)
+
+
+def is_filler(text: str) -> bool:
+    """Return whether the utterance is only a hesitation sound.
+
+    Parameters
+    ----------
+    text : str
+        Short transcript such as ``um`` or ``hmm.``.
+
+    Returns
+    -------
+    bool
+        True for a hesitation sound after case-folding, in English or the Chinese,
+        Japanese and Korean ones models emit. A listener's ``yeah`` or ``uh-huh`` is
+        not one: unlike ``is_backchannel``, this keeps a word that can answer a question.
+
+    Examples
+    --------
+    >>> is_filler("Um.")
+    True
+    >>> is_filler("yeah")
+    False
+    """
+    return _known_phrase(text, _FILLERS)
 
 
 def is_quit_utterance(text: str, *, phrases: Set[str] | None = None) -> bool:

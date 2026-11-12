@@ -18,7 +18,7 @@ result = tts.speak("Hello there.", FileSink(Path("turn.wav")))
 
 `speak` runs the websocket on a private thread and event loop, so it is safe under `asyncio.run` or `to_thread`. Retry of 429 and 5xx happens only before the first audio byte. There is no default `voice_id`.
 
-`speak(text, sink, *, cancel=None, on_first_audio=None)` takes `cancel` (a `threading.Event`) by keyword. The returned `TtsResult` carries `error`, a kit error such as `FishAuthError` (401, 402, 403), `FishRateLimitError` (429) or `FishUpstreamError` (5xx), when the turn failed with a status. Test it with `isinstance`; `error_status` and `error_message` stay for display. Its timings use the kit's `LatencySnapshot` names: `tts_first_text_ms` (TTS start to the first text sent to Fish) and `tts_first_audio_ms` (TTS start to the first audio from Fish, Fish's time-to-first-audio). `speak_stream(deltas, sink, ...)` does the same for a token stream while the model is still writing. The package root exports the types its signatures use: `FishSpeaker`, `TtsResult`, `PlaybackSink`, `PlaybackKind`, `make_sink`, the four sinks (`SounddeviceSink`, `FileSink`, `StdoutSink`, `MpvSink`), `BargeGate`, `EchoCanceller`, `DuplexSession`, `ChatBackend`, `ListenTune`, `BargeTune`, `AecTune`, `LlmTune` and `PortAudioMissingError`. Each module lists its own exports in `__all__`.
+`FishSpeaker(api_key=..., voice_id=..., model=..., tune=TtsTune(...), cue_style=..., base_url=...)` takes the Fish TTS settings as one `TtsTune` (latency, speed, sample rate, sampling, chunking, volume, the cut window, and the fade and loudness applied before the sink); `TtsTune.from_env()` reads them from the `FISH_*` variables below. The audio format is the sink's: a sink may set `audio_format` (`pcm`, `wav`, `mp3` or `opus`), the shipped ones do (`mp3` for `MpvSink`, `pcm` for the rest), and a sink without it is sent 16-bit mono PCM. `speak(text, sink, *, cancel=None, on_first_audio=None, trace_headers=None)` takes `cancel` (a `threading.Event`) and the turn's `traceparent` header by keyword. An error the sink raises (opening, writing or closing) is raised from `speak`; a Fish failure is not. The returned `TtsResult` carries `error`, a kit error such as `FishAuthError` (401, 402, 403), `FishRateLimitError` (429) or `FishUpstreamError` (5xx), when the turn failed with a status; `error_status` and `error_message` stay for display. `failed` says whether Fish failed the turn (a status, or a message for a dropped socket), and `fatal` whether the failure is the key's, which no later turn can pass. Its timings use the names of `fish_audio_suite_voice.latency.LatencySnapshot`, the record of one `fish-voice` turn: `tts_first_text_ms` (TTS start to the first text sent to Fish) and `tts_first_audio_ms` (TTS start to the first audio from Fish, Fish's time-to-first-audio). `speak_stream(deltas, sink, ...)` does the same for a token stream while the model is still writing. Both shape the text for Fish with the speaker's `cue_style`, a kit `CueStyle` (by default `CueStyle.for_model(model, official=False, lead=False)`: cues as written, or directions as written for `drama-3`). `speak_shaped(text, sink, ...)` speaks a reply you already shaped with that style, so it is not shaped twice. The package root exports the types its signatures use: `FishSpeaker`, `TtsTune`, `TtsResult`, `PlaybackSink`, `PlaybackKind`, `make_sink`, the four sinks (`SounddeviceSink`, `FileSink`, `StdoutSink`, `MpvSink`), `BargeGate` with `Mic` (the microphone protocol it reads from), `EchoCanceller`, `DuplexSession` with `TurnSignals` (the type of its `turn`), `ChatBackend`, `ListenTune`, `BargeTune`, `AecTune`, `LlmTune` and `PortAudioMissingError`, and `load_dotenv(path)`, which copies a `.env` file into `os.environ` without replacing a variable already set, as the examples do. Each module lists its own exports in `__all__`.
 
 ```bash
 cp .env.example .env
@@ -151,7 +151,8 @@ the chosen provider's own model variable comes before `FISH_LLM_MODEL`. Keep bot
 
 The backend follows the base URL's host: OpenRouter uses its SDK, and every other server (Experiential,
 Ollama, any OpenAI-compatible host) uses one pooled httpx client that speaks the OpenAI
-chat-completions API. What to know about Experiential, from its published contract:
+chat-completions API. In code, `LlmTune(base=...)` decides it the same way: `LlmTune.backend` is read
+from `base`, not set beside it. What to know about Experiential, from its published contract:
 
 - **Reasoning.** `FISH_LLM_REASONING_EFFORT` (`none`, `minimal`, `low`, `medium`, `high` or `max`) is
   sent as `reasoning_effort` to OpenAI-compatible servers and as `reasoning.effort` to OpenRouter.
@@ -428,7 +429,7 @@ Speech:
 | `FISH_VOLUME` | `0` (dB) |
 | `FISH_TEMPERATURE`, `FISH_TOP_P` | `0.7`, `0.7`. 0 to 1 |
 | `FISH_REPETITION_PENALTY` | `1.2` |
-| `FISH_CHUNK_LENGTH` | `200`. 100 to 300 on the cloud API, up to 1000 self-hosted |
+| `FISH_CHUNK_LENGTH` | `200`. 100 to 300, for a self-hosted base too: the Fish SDK's websocket refuses more than 300 |
 | `FISH_MIN_CHUNK_LENGTH` | `50`. 0 to 100 |
 | `FISH_SAMPLE_RATE` | `44100` |
 | `FISH_ASR_LANGUAGE` | omitted, so Fish detects the language |
@@ -469,7 +470,7 @@ Speech recognition. See [Streaming speech recognition](#streaming-speech-recogni
 | `FISH_VOICE_DEEPGRAM_MODEL` | `flux-general-en` | `flux-general-multi` for ten languages. Only Flux models stream turns, so any other name uses the default |
 | `FISH_VOICE_DEEPGRAM_REGION` | `global` | `eu`, `au` or `in` to have Deepgram process the audio inside the European Union, Australia or India. A regional request fails instead of going elsewhere |
 | `FISH_VOICE_EOT_THRESHOLD` | `0.7` | How sure Flux must be that you have finished, 0.5 to 1. Higher waits a little longer and cuts in less often |
-| `FISH_VOICE_EAGER_EOT_THRESHOLD` | `0` (off) | 0.3 to 0.9, and no higher than `FISH_VOICE_EOT_THRESHOLD`. Flux says when a turn is probably over a little before it is sure, and the reply starts being written then, held back until Flux confirms it. Saves about 150 to 250 ms, and costs 50 to 70 percent more model calls. See the streaming section |
+| `FISH_VOICE_EAGER_EOT_THRESHOLD` | `0` (off) | 0.3 to 0.9, and with Deepgram no higher than `FISH_VOICE_EOT_THRESHOLD`. Flux says when a turn is probably over a little before it is sure, and the reply starts being written then, held back until Flux confirms it. Saves about 150 to 250 ms, and costs 50 to 70 percent more model calls. See the streaming section |
 | `FISH_VOICE_STT_SAVE_DIR` | unset | A folder. Each streamed turn's audio, as Deepgram was sent it, is saved there as a 16 kHz WAV, to find out why it heard nothing. Only for debugging: it writes your voice to disk |
 
 Sounding more human. All off by default. See [Sounding more human](#sounding-more-human-opt-in).
@@ -496,7 +497,7 @@ Listen and interrupt. Times are approximate at 30 ms frames.
 | `FISH_VOICE_VAD` | `1` | Voice detector strictness, 0 to 3. Higher is pickier. Listening and barge-in both use it |
 | `FISH_VOICE_VAD_ENGINE` | `webrtc` | The voice detector: `webrtc`, `silero` (the `silero` extra) or a plugin as `package.module:factory`. See [Voice detectors](#voice-detectors) |
 | `FISH_VOICE_COOLDOWN` | `0.8` | Seconds after a reply before the next listen starts. A barge-in skips it |
-| `FISH_VOICE_FADE_MS` | `4` | Milliseconds of fade at each sentence start and end (a sound next to silence), so it does not click. 0 turns it off. Up to 50 |
+| `FISH_VOICE_FADE_MS` | `4` | Milliseconds of fade at each sentence start and end (a sound next to silence), so it does not click. 0 to 50, and 0 turns it off |
 | `FISH_VOICE_BLEED_DELAY` | `0.9` | Seconds the mic is ignored after a reply starts, when AEC is off or missing |
 | `FISH_VOICE_AEC` | on | `0` turns off echo cancellation. Gain and noise suppression stay |
 | `FISH_VOICE_AEC_WET` | `0.85` | While the speaker plays, the share of echo-cancelled mic mixed with the raw mic, 0 to 1 |

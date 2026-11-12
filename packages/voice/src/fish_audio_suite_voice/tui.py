@@ -14,6 +14,7 @@ import time
 import unicodedata
 from collections import deque
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from typing import Any, ClassVar
 
 from textual.app import App, ComposeResult, RenderResult
@@ -28,7 +29,7 @@ from textual.widget import Widget
 from textual.widgets import Footer, Header, Input, Log, Static
 from textual.worker import Worker, WorkerState
 
-from fish_audio_suite_kit import LatencySnapshot, split_cues
+from fish_audio_suite_kit import split_cues
 from fish_audio_suite_voice.events import (
     DEFAULT_KEYS,
     EVENTS,
@@ -37,6 +38,7 @@ from fish_audio_suite_voice.events import (
     Event,
     EventBus,
     EventQueue,
+    ExitCode,
     Heard,
     Interim,
     LogLine,
@@ -50,7 +52,7 @@ from fish_audio_suite_voice.events import (
     available_actions,
 )
 from fish_audio_suite_voice.inputs import LiveInput
-from fish_audio_suite_voice.reply import turn_summary
+from fish_audio_suite_voice.latency import LatencySnapshot, turn_summary
 from fish_audio_suite_voice.session_view import (
     Ballistics,
     SessionView,
@@ -347,7 +349,7 @@ class Timings(Widget):
             return Content.assemble((_NO_TURNS, "dim"))
         timings = turn_timings(snapshot)
         if timings is None:
-            return Content(turn_summary(snapshot).strip().removeprefix("↳ ") or _NO_TURNS)
+            return Content(turn_summary(snapshot) or _NO_TURNS)
         width = max(1, self.size.width)
         wait = f"{timings.wait_ms / 1000:.2f}s"
         total = f"total {timings.total_ms / 1000:.2f}s" if timings.total_ms is not None else ""
@@ -534,11 +536,9 @@ class VoiceApp(App[int]):
         self._session = session
         self._info = info
         self._view = SessionView()
-        self._exit_code = 0
         self._wake_pending = threading.Event()
         # Subscribed now, so nothing the session says before the screen is up is lost.
         self._queue = EventQueue(bus, wake=self._wake)
-        self._ended = False
 
     @property
     def view(self) -> SessionView:
@@ -643,11 +643,16 @@ class VoiceApp(App[int]):
             case _:
                 return
 
-    def _on_bye(self, code: int) -> None:
-        self._ended = True
-        self._exit_code = code
-        if code == 0:
-            self.exit(0)
+    def _on_bye(self, code: ExitCode) -> None:
+        if code == ExitCode.OK:
+            self.exit(ExitCode.OK)
+
+    @property
+    def _ended(self) -> bool:
+        return self._view.exit_code is not None
+
+    def _exit_code(self) -> ExitCode:
+        return ExitCode.OK if self._view.exit_code is None else self._view.exit_code
 
     def _render_view(self) -> None:
         view = self._view
@@ -656,7 +661,7 @@ class VoiceApp(App[int]):
         if self._live.muted:
             label += " · muted"
         if self._ended:
-            label = f"ended (code {self._exit_code})"
+            label = f"ended (code {self._exit_code()})"
         status.update(Content(label))
         status.set_classes("ended" if self._ended else f"state-{view.state.value}")
         self.query_one(Waveform).set_mood(self._wave_mood(view))
@@ -701,21 +706,20 @@ class VoiceApp(App[int]):
     def action_quit_session(self) -> None:
         """Ask the session to end, then leave when it has, or after a short grace period."""
         if self._ended:
-            self.exit(self._exit_code)
+            self.exit(self._exit_code())
             return
         self._session.request_quit()
         # The session answers with Bye and the app exits. If it does not, leave anyway.
-        self.set_timer(_QUIT_GRACE_S, lambda: self.exit(self._exit_code))
+        self.set_timer(_QUIT_GRACE_S, lambda: self.exit(self._exit_code()))
 
     def on_worker_state_changed(self, event: Worker.StateChanged) -> None:
         """Show a session that stopped with an error, or leave when it ended normally."""
         if event.state is WorkerState.ERROR:
-            self._ended = True
-            self._exit_code = 1
+            self._view = replace(self._view, exit_code=ExitCode.CRASH)
             self.query_one(Conversation).add_note(f"the session stopped: {event.worker.error!r}")
             self._render_view()
         elif event.state is WorkerState.SUCCESS and not self._ended:
-            self.exit(int(event.worker.result or 0))
+            self.exit(int(event.worker.result or ExitCode.OK))
 
     def on_unmount(self) -> None:
         """Stop collecting events."""

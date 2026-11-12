@@ -7,20 +7,13 @@ survives several turns.
 
 from __future__ import annotations
 
-from typing import Final
+from dataclasses import dataclass
+from typing import Final, Self
 
-from fish_audio_suite_kit import (
-    DEFAULT_SEED_EXCHANGE,
-    DEFAULT_SYSTEM_PROMPT,
-    ChatMessage,
-    is_same_utterance,
-)
+from fish_audio_suite_kit import DEFAULT_SEED_EXCHANGE, ChatMessage, is_same_utterance
 
 __all__ = [
-    "KEEP_SYSTEM",
-    "opening_history",
-    "remember_user",
-    "trim_history",
+    "History",
     "with_tone_hint",
 ]
 
@@ -33,34 +26,121 @@ _UNANSWERED_LINES: Final = 4
 _TRIM_BLOCK: Final = 4
 
 
-def opening_history(
-    system_prompt: str, *, seed: bool | None = None
-) -> tuple[list[ChatMessage], int]:
-    """Build the starting history and say how many leading messages stay pinned.
+@dataclass(slots=True)
+class History:
+    """The chat so far, the messages trimming never drops, and the cap on turns.
 
-    Parameters
+    Attributes
     ----------
-    system_prompt : str
-        The system prompt for this session.
-    seed : bool or None, optional
-        Whether to pin the opening exchange. None pins it only for the default
-        prompt. A character file keeps the voice rules, so it passes True.
-
-    Returns
-    -------
-    tuple of list and int
-        The history and the count of messages that trimming never drops. With
-        the default prompt, one opening exchange with cues is pinned
-        after the system message, because the model copies the pattern of the
-        replies it sees. A custom prompt gets no seed, so it stays in control
-        of how the model replies.
+    messages : list of ChatMessage
+        The system prompt, the pinned opening exchange if any, then the turns.
+    turns : int
+        User and assistant pairs kept (``FISH_VOICE_HISTORY_TURNS``).
+    pinned : int
+        How many leading messages trimming never drops.
     """
-    history: list[ChatMessage] = [{"role": "system", "content": system_prompt}]
-    if system_prompt == DEFAULT_SYSTEM_PROMPT if seed is None else seed:
-        for user, assistant in DEFAULT_SEED_EXCHANGE:
-            history.append({"role": "user", "content": user})
-            history.append({"role": "assistant", "content": assistant})
-    return history, len(history)
+
+    messages: list[ChatMessage]
+    turns: int
+    pinned: int = KEEP_SYSTEM
+
+    @classmethod
+    def opening(cls, system_prompt: str, *, seed: bool, turns: int) -> Self:
+        """Start a session's history.
+
+        Parameters
+        ----------
+        system_prompt : str
+            The system prompt for this session.
+        seed : bool
+            Pin one opening exchange with cues after the system message, because the model
+            copies the pattern of the replies it sees. ``config.SystemPrompt.pin_seed`` decides
+            it: the default prompt and a character file (which keeps the voice rules) get
+            it, and a prompt written out in full does not, so it stays in control of how
+            the model replies.
+        turns : int
+            User and assistant pairs to keep.
+
+        Returns
+        -------
+        History
+            The system message and the seed, all pinned.
+        """
+        messages: list[ChatMessage] = [{"role": "system", "content": system_prompt}]
+        if seed:
+            for user, assistant in DEFAULT_SEED_EXCHANGE:
+                messages.append({"role": "user", "content": user})
+                messages.append({"role": "assistant", "content": assistant})
+        return cls(messages, turns, len(messages))
+
+    def copy(self) -> History:
+        """Return a copy whose messages can change without touching this one.
+
+        Returns
+        -------
+        History
+            Each message is copied too: adding a line merges it into an unanswered user
+            line in place.
+        """
+        return History([message.copy() for message in self.messages], self.turns, self.pinned)
+
+    def last_user(self) -> str:
+        """Return the last message when it is the user's, which the reply answers, else ``""``."""
+        if self.messages and self.messages[-1]["role"] == "user":
+            return self.messages[-1]["content"]
+        return ""
+
+    def remember_user(self, text: str) -> None:
+        """Append a user line and trim to the cap.
+
+        Parameters
+        ----------
+        text : str
+            What the user said or typed.
+
+        Notes
+        -----
+        A previous user line that got no reply (the model failed, or a barge-in cut it
+        off before any audio) is still the last message. The new line joins it instead
+        of following it, so roles keep alternating, and a repeat of it is kept once.
+        At most the last four unanswered lines are kept.
+        """
+        messages = self.messages
+        last = messages[-1] if len(messages) > self.pinned else None
+        if last is not None and last["role"] == "user":
+            if is_same_utterance(text, last["content"]):
+                last["content"] = text
+            else:
+                lines = [*last["content"].split("\n"), text]
+                last["content"] = "\n".join(lines[-_UNANSWERED_LINES:])
+        else:
+            messages.append({"role": "user", "content": text})
+        trim_history(messages, self.turns, self.pinned)
+
+    def remember_assistant(self, spoken: str, *, resumes: bool = False) -> None:
+        """Record what the user heard of a reply.
+
+        Parameters
+        ----------
+        spoken : str
+            The part of the reply that was heard. Empty records nothing.
+        resumes : bool, optional
+            The rest of a reply a false barge-in cut off: it joins the last assistant
+            message instead of starting a new one.
+
+        Notes
+        -----
+        A reply that only repeats the line it answers is not recorded: saved, it would teach
+        the next turn to repeat the user again. Nothing is trimmed here; the next user line
+        trims.
+        """
+        if not spoken or is_same_utterance(spoken, self.last_user()):
+            return
+        messages = self.messages
+        if resumes and messages and messages[-1]["role"] == "assistant":
+            messages[-1]["content"] = f"{messages[-1]['content']} {spoken}"
+        else:
+            messages.append({"role": "assistant", "content": spoken})
 
 
 def with_tone_hint(history: list[ChatMessage], tone: tuple[str, ...]) -> list[ChatMessage]:
@@ -128,28 +208,3 @@ def trim_history(
             del history[pinned : pinned + _ROLES_PER_TURN]
             continue
         del history[pinned]
-
-
-def remember_user(
-    history: list[ChatMessage],
-    text: str,
-    turns: int,
-    pinned: int = KEEP_SYSTEM,
-) -> None:
-    """Append a user line and trim the history to its cap.
-
-    A previous user line that got no reply (the model failed, or a barge-in cut it
-    off before any audio) is still the last message. The new line joins it instead
-    of following it, so roles keep alternating, and a repeat of it is kept once.
-    At most the last four unanswered lines are kept.
-    """
-    last = history[-1] if len(history) > pinned else None
-    if last is not None and last["role"] == "user":
-        if is_same_utterance(text, last["content"]):
-            last["content"] = text
-        else:
-            lines = [*last["content"].split("\n"), text]
-            last["content"] = "\n".join(lines[-_UNANSWERED_LINES:])
-    else:
-        history.append({"role": "user", "content": text})
-    trim_history(history, turns, pinned)

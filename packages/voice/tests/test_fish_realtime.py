@@ -9,7 +9,6 @@ from typing import Any
 import ormsgpack
 import pytest
 
-from fish_audio_suite_voice import fish_realtime
 from fish_audio_suite_voice.fish_realtime import (
     FishRealtimeStream,
     parse_realtime_message,
@@ -228,6 +227,11 @@ def test_a_stream_ends_when_the_connection_closes_and_raises_on_anything_else() 
         asyncio.run(read(Broken([])))
 
 
+def _default_stream(url: str, key: str) -> FishRealtimeStream:
+    """A stream on the real connection code, whose websocket library a test replaces."""
+    return FishRealtimeStream(url, key, sample_rate=16000)
+
+
 def test_the_key_and_the_model_go_in_headers_and_a_refusal_names_fish(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -237,12 +241,12 @@ def test_the_key_and_the_model_go_in_headers_and_a_refusal_names_fish(
 
     seen: dict[str, Any] = {}
 
-    async def connect(url: str, **kwargs: Any) -> object:
+    async def connect(url: str, **kwargs: Any) -> _FakeSocket:
         seen.update(url=url, **kwargs)
-        return object()
+        return _FakeSocket([])
 
     monkeypatch.setattr("websockets.asyncio.client.connect", connect)
-    asyncio.run(fish_realtime._websockets_connect("wss://x/v1/asr/realtime", key="sekrit"))
+    asyncio.run(_default_stream("wss://x/v1/asr/realtime", "sekrit").open())
     assert seen["url"] == "wss://x/v1/asr/realtime"  # the key is never in the address
     assert seen["additional_headers"] == {
         "Authorization": "Bearer sekrit",
@@ -258,5 +262,5 @@ def test_the_key_and_the_model_go_in_headers_and_a_refusal_names_fish(
     for status, fatal in ((401, True), (402, True), (429, False), (503, False)):
         monkeypatch.setattr("websockets.asyncio.client.connect", refuse(status))
         with pytest.raises(SttStreamError, match="Fish realtime speech to text") as raised:
-            asyncio.run(fish_realtime._websockets_connect("wss://x/y", key="k"))
+            asyncio.run(_default_stream("wss://x/y", "k").open())
         assert raised.value.fatal is fatal

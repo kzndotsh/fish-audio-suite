@@ -8,47 +8,39 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field, replace
 from typing import Final
 
-from fish_audio_suite_kit import LatencySnapshot
 from fish_audio_suite_voice.events import (
     Bye,
     Event,
+    ExitCode,
     Heard,
-    MicLevel,
-    Notice,
-    OutputLevel,
     ReplyEnd,
     ReplyToken,
     SessionState,
     TurnEnded,
     next_state,
 )
+from fish_audio_suite_voice.latency import LatencySnapshot, percentile
+from fish_audio_suite_voice.pcm import FULL_SCALE
 
 __all__ = [
-    "METER_LOUDEST_DB",
-    "METER_QUIETEST_DB",
     "Ballistics",
     "SessionView",
     "SpeechScale",
-    "TurnTimings",
-    "level_fraction",
+    "noise_floor_db",
     "processing_level",
     "reduce_view",
+    "speech_level_db",
     "split_cells",
     "turn_timings",
     "wave_dots",
 ]
 
-_FULL_SCALE: Final = 32768.0  # the peak of 16-bit audio
-_QUIETEST_DB: Final = -60.0  # the floor for measuring a level at all (silence reads as this)
-# The window of the plain level meter, `SessionView.mic_fraction`. The waveform does not use it:
-# it scales to the signal itself, with SpeechScale.
-METER_QUIETEST_DB: Final = -54.0  # at or below this, a meter shows empty
-METER_LOUDEST_DB: Final = -9.0  # at or above this, it shows full
-_METER_SPAN_DB: Final = METER_LOUDEST_DB - METER_QUIETEST_DB
-# How a level bar moves. The scale is the meter's own: 0 to 1 spans the meter's window.
+# Silence, and anything quieter, reads as this many dB below full scale.
+_SILENCE_DB: Final = -90.0
+# How a level bar moves, on the bar's own scale of 0 to 1.
 BODY_RELEASE_PER_S: Final = 6.0  # a bar falls from full to empty in about a sixth of a second
 PEAK_HOLD_S: Final = 0.3  # the cap above a bar stays put this long after a peak
-PEAK_RELEASE_PER_S: Final = 60.0 / _METER_SPAN_DB  # then falls at 60 dB per second
+PEAK_RELEASE_PER_S: Final = 60.0 / 45.0  # then falls one and a third bars per second
 # How a waveform is scaled to the signal it shows, see SpeechScale.
 SCALE_WINDOW_S: Final = 6.0  # how much recent audio the noise floor and the speech level come from
 SCALE_NOISE_FLOOR_DB: Final = -70.0  # a floor is never taken to be quieter than this
@@ -67,89 +59,27 @@ _DOT_BITS: Final = ((0x01, 0x08), (0x02, 0x10), (0x04, 0x20), (0x40, 0x80))
 
 @dataclass(frozen=True, slots=True)
 class SessionView:
-    """Everything a display shows about a session, as one immutable value.
+    """What a display shows about a session, folded from its events, as one immutable value.
+
+    The level strips are not in it: a display draws each ``MicLevel`` and ``OutputLevel`` as
+    it arrives, because a strip shows every block, not only the latest.
 
     Attributes
     ----------
     state : SessionState
         What the session is doing.
-    heard : str
-        The last line that will be, or was, answered. Empty before the first.
     reply : str
         The model's reply so far, growing token by token, then the whole reply.
     last_turn : LatencySnapshot or None
         The timings of the last finished turn.
-    turns : int
-        How many turns have finished.
-    mic_rms : float
-        The latest mic level, after mic cleanup.
-    mic_need : float
-        The level that counts as speech.
-    last_notice : str
-        The latest status line, such as a retry.
-    exit_code : int or None
+    exit_code : ExitCode or None
         Set when the session has ended. None while it runs.
-    out_rms : float
-        The latest level of the reply being played.
     """
 
     state: SessionState = SessionState.IDLE
-    heard: str = ""
     reply: str = ""
     last_turn: LatencySnapshot | None = None
-    turns: int = 0
-    mic_rms: float = 0.0
-    mic_need: float = 0.0
-    last_notice: str = ""
-    exit_code: int | None = None
-    out_rms: float = 0.0
-
-    @property
-    def out_fraction(self) -> float:
-        """How full the speaker meter is, from 0 to 1."""
-        return level_fraction(self.out_rms)
-
-    @property
-    def mic_fraction(self) -> float:
-        """How full the mic meter is, from 0 to 1."""
-        return level_fraction(self.mic_rms)
-
-    @property
-    def mic_need_fraction(self) -> float:
-        """Where the speech threshold sits on the meter, from 0 to 1."""
-        return level_fraction(self.mic_need)
-
-
-def level_fraction(rms: float) -> float:
-    """Map an RMS level, from the mic or the speaker, to how full a meter should be, from 0 to 1.
-
-    Parameters
-    ----------
-    rms : float
-        An RMS level of 16-bit audio, such as ``MicLevel.rms``.
-
-    Returns
-    -------
-    float
-        0 at ``METER_QUIETEST_DB`` (54 dB below full scale) or quieter, 1 at
-        ``METER_LOUDEST_DB`` (9 dB below) or louder, in between on a decibel scale, which is
-        how loudness is heard. A raw linear bar would look empty for ordinary speech,
-        which sits at a few hundred out of 32768.
-
-    Examples
-    --------
-    >>> level_fraction(0.0), level_fraction(32768.0)
-    (0.0, 1.0)
-    >>> round(level_fraction(1000.0), 2)  # -30 dB, a normal speaking level into a mic
-    0.53
-    >>> round(level_fraction(6000.0), 2)  # a loud syllable on a hot mic
-    0.87
-    """
-    ratio = rms / _FULL_SCALE  # a tiny rms can underflow to zero here, so test the ratio
-    if not ratio > 0:
-        return 0.0
-    decibels = 20 * math.log10(ratio)
-    return min(1.0, max(0.0, (decibels - METER_QUIETEST_DB) / _METER_SPAN_DB))
+    exit_code: ExitCode | None = None
 
 
 def wave_dots(
@@ -160,7 +90,7 @@ def wave_dots(
     Parameters
     ----------
     levels : Sequence[float]
-        How loud each bar is, from 0 to 1, as ``level_fraction`` gives it, left to right.
+        How loud each bar is, from 0 to 1, as ``SpeechScale`` gives it, left to right.
         Even silence draws one dot above and one below the middle, so a quiet mic still
         shows a thin dotted line.
     rows : int
@@ -215,32 +145,25 @@ def reduce_view(view: SessionView, event: Event) -> SessionView:
     Returns
     -------
     SessionView
-        A new view, or ``view`` itself when the event changes nothing. A display
-        assigns the result to one reactive attribute, which refreshes only when the
-        value changed.
+        A new view, or an equal one when the event changes nothing.
 
     Notes
     -----
     Call it from one thread, in event order, such as the thread that drains an
-    ``EventQueue``. ``StateChanged`` and ``LogLine`` events do not change the view:
-    the state is worked out from the other events here, and log lines belong in a log.
+    ``EventQueue``. Only the state, the reply, the last turn's timings and the exit code
+    are folded: the conversation, notes, levels and log lines are each drawn as their
+    event arrives.
     """
     moved = replace(view, state=next_state(view.state, event))
     match event:
-        case Heard(text=text):
-            return replace(moved, heard=text, reply="")
+        case Heard():
+            return replace(moved, reply="")
         case ReplyToken(text=text):
             return replace(moved, reply=view.reply + text)
         case ReplyEnd(text=text):
             return replace(moved, reply=text)
-        case MicLevel(rms=rms, need=need):
-            return replace(moved, mic_rms=rms, mic_need=need)
-        case OutputLevel(rms=rms):
-            return replace(moved, out_rms=rms)
-        case Notice(text=text):
-            return replace(moved, last_notice=text)
         case TurnEnded(snapshot=snapshot):
-            return replace(moved, last_turn=snapshot, turns=view.turns + 1)
+            return replace(moved, last_turn=snapshot)
         case Bye(code=code):
             return replace(moved, exit_code=code)
         case _:
@@ -471,11 +394,6 @@ class SpeechScale:
         self._speech_db = self.start_speech_db
         self._noise_db = self.start_noise_db
 
-    @property
-    def speech_db(self) -> float:
-        """The speech level now, in dB below full scale."""
-        return self._speech_db
-
     def update(self, rms: float, now: float) -> float:
         """Measure one block of audio.
 
@@ -499,18 +417,18 @@ class SpeechScale:
         >>> scale.update(0.0, 0.1)
         0.0
         """
-        ratio = rms / _FULL_SCALE  # a tiny rms can underflow to zero here, so test the ratio
-        db = max(_QUIETEST_DB - 30.0, 20 * math.log10(ratio)) if ratio > 0 else _QUIETEST_DB - 30.0
+        ratio = rms / FULL_SCALE  # a tiny rms can underflow to zero here, so test the ratio
+        db = max(_SILENCE_DB, 20 * math.log10(ratio)) if ratio > 0 else _SILENCE_DB
         self._history.append((now, db))
         while self._history and self._history[0][0] < now - SCALE_WINDOW_S:
             self._history.popleft()
         levels = [level for _, level in self._history]
         if len(levels) >= SCALE_MIN_BLOCKS:
-            self._noise_db = max(_percentile(levels, 0.1), SCALE_NOISE_FLOOR_DB)
+            self._noise_db = noise_floor_db(levels)
         noise = self._noise_db  # kept through a gap, so a turn that starts afresh keeps the room
-        speech = [level for level in levels if level > noise + SCALE_SPEECH_MARGIN_DB]
-        if len(speech) >= SCALE_MIN_SPEECH_BLOCKS:
-            self._speech_db = _percentile(speech, SCALE_SPEECH_PERCENTILE)
+        speech = speech_level_db(levels, noise)
+        if speech is not None:
+            self._speech_db = speech
         top = self._speech_db + SCALE_HEADROOM_DB
         bottom = min(
             max(noise + SCALE_FLOOR_GAP_DB, top - SCALE_MAX_SPAN_DB), top - SCALE_MIN_SPAN_DB
@@ -518,6 +436,45 @@ class SpeechScale:
         return min(1.0, max(0.0, (db - bottom) / (top - bottom)))
 
 
-def _percentile(values: Sequence[float], fraction: float) -> float:
-    ordered = sorted(values)
-    return ordered[min(len(ordered) - 1, max(0, round(fraction * (len(ordered) - 1))))]
+def noise_floor_db(levels_db: Sequence[float]) -> float:
+    """Return the noise floor ``SpeechScale`` reads from some levels: their quiet end.
+
+    Parameters
+    ----------
+    levels_db : Sequence[float]
+        Block levels in dB below full scale. Must not be empty.
+
+    Returns
+    -------
+    float
+        The 10th percentile, but never below ``SCALE_NOISE_FLOOR_DB``.
+
+    Examples
+    --------
+    >>> noise_floor_db([-80.0, -50.0, -30.0])
+    -70.0
+    """
+    return max(percentile(levels_db, 0.1), SCALE_NOISE_FLOOR_DB)
+
+
+def speech_level_db(levels_db: Sequence[float], noise_db: float) -> float | None:
+    """Return the speech level ``SpeechScale`` reads from some levels, above a noise floor.
+
+    Parameters
+    ----------
+    levels_db : Sequence[float]
+        Block levels in dB below full scale.
+    noise_db : float
+        The noise floor, from ``noise_floor_db``.
+
+    Returns
+    -------
+    float or None
+        The ``SCALE_SPEECH_PERCENTILE`` (90th) percentile of the blocks more than
+        ``SCALE_SPEECH_MARGIN_DB`` above the floor. None with fewer than
+        ``SCALE_MIN_SPEECH_BLOCKS`` such blocks, too few to tell.
+    """
+    speech = [level for level in levels_db if level > noise_db + SCALE_SPEECH_MARGIN_DB]
+    if len(speech) < SCALE_MIN_SPEECH_BLOCKS:
+        return None
+    return percentile(speech, SCALE_SPEECH_PERCENTILE)

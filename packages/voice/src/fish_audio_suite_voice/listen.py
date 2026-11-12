@@ -7,33 +7,41 @@ import io
 from collections.abc import Callable, Sequence
 from typing import Final
 
-from fish_audio_suite_voice.aec import pcm_rms
-from fish_audio_suite_voice.barge import (
-    DEFAULT_BARGE_RMS,
+from fish_audio_suite_kit import MS_PER_S
+from fish_audio_suite_voice.cancel import StopFlag
+from fish_audio_suite_voice.debug import debug, heartbeat_due, trace, warn
+from fish_audio_suite_voice.mic import Mic
+from fish_audio_suite_voice.pcm import (
+    FRAME_MS,
     LISTEN_HEARTBEAT_FRAMES,
-    MIC_LEVEL_EVERY_FRAMES,
+    SAMPLE_RATE,
+    pcm_rms,
+    write_mono_wav,
 )
-from fish_audio_suite_voice.debug import debug, heartbeat_due, trace
-from fish_audio_suite_voice.events import EVENTS, MicLevel
-from fish_audio_suite_voice.floor import AdaptiveFloor
-from fish_audio_suite_voice.mic import FRAME_BYTES, FRAME_MS, SAMPLE_RATE, Mic, StopFlag
-from fish_audio_suite_voice.playback import write_mono_wav
+from fish_audio_suite_voice.portaudio import PortAudioMissingError
+from fish_audio_suite_voice.recognised import BargeIn, CarriedClip, NoTurn, StreamFallback
+from fish_audio_suite_voice.scorer import FrameScorer
 from fish_audio_suite_voice.tune import (
+    IMPULSE_EXTRA_VOICED,
+    IMPULSE_NOW_RATIO,
+    IMPULSE_PEAK_RATIO,
     IMPULSE_START_EXTRA,
     MAX_UTTERANCE_FRAMES,
     ListenTune,
 )
-from fish_audio_suite_voice.vad import Vad, frame_is_speech, open_vad
+from fish_audio_suite_voice.vad import Vad, open_vad
 
 __all__ = [
     "cooldown_report",
     "listen_reject_reason",
+    "mic_failure",
     "record_utterance",
     "spike_start_allowed",
     "start_frames_needed",
     "start_hit",
     "stream_utterance",
     "trailing_start_hits",
+    "voice_needed",
 ]
 
 # Once speech has started, a voiced frame at 55% of the floor still counts as
@@ -44,13 +52,6 @@ MIN_UTTERANCE_FRAMES: Final = 4
 # One quiet frame is 30 ms, a normal dip inside a word. Ending on that dip
 # after the cap sends a cut-off sentence to ASR.
 _CAP_QUIET_FRAMES: Final = 4
-# A peak this many times the floor is a bang (a door, a desk knock) until
-# proven otherwise. Such a clip is dropped unless it holds this many voiced
-# frames beyond the minimum, and it cannot start while the current frame is
-# under this share of the peak.
-IMPULSE_PEAK_RATIO: Final = 8.0
-IMPULSE_EXTRA_VOICED: Final = 12
-IMPULSE_NOW_RATIO: Final = 0.5
 
 
 def start_hit(rms: float, min_rms: float, *, vad_speech: bool) -> bool:
@@ -73,8 +74,8 @@ def start_hit(rms: float, min_rms: float, *, vad_speech: bool) -> bool:
     Notes
     -----
     The hold ratio is only for staying in an utterance after it has already
-    started, so it does not apply here. The caller scores each frame with the
-    detector once, as it arrives, because a detector keeps state between frames.
+    started, so it does not apply here. ``vad_speech`` comes from the gate's
+    ``FrameScorer``, which feeds the detector every frame once, as it arrives.
     """
     if not vad_speech:
         return False
@@ -83,6 +84,32 @@ def start_hit(rms: float, min_rms: float, *, vad_speech: bool) -> bool:
 
 def _impulse(peak_rms: float, min_rms: float) -> bool:
     return peak_rms >= min_rms * IMPULSE_PEAK_RATIO
+
+
+def voice_needed(min_voiced_frames: int, credited_hits: int) -> int:
+    """Return how many voiced frames make a clip speech, given the frames a barge-in credited.
+
+    Parameters
+    ----------
+    min_voiced_frames : int
+        What a fresh utterance needs (``ListenTune.min_voiced_frames``).
+    credited_hits : int
+        The voiced frames of a barge-in clip the listen started from. 0 for none.
+
+    Returns
+    -------
+    int
+        ``min_voiced_frames``, or fewer when a barge-in clip credited fewer: the interrupt
+        gate already judged that clip to be speech, so the voice in it is enough.
+
+    Notes
+    -----
+    The batch path applies this when the clip ends (``listen_reject_reason``), and the
+    streaming path before anything is connected, so the two drop the same clips.
+    """
+    if credited_hits > 0:
+        return min(min_voiced_frames, credited_hits)
+    return min_voiced_frames
 
 
 def listen_reject_reason(
@@ -100,8 +127,7 @@ def listen_reject_reason(
     # A barge-in trips on fewer voiced frames than a listen needs (10 and 12 by
     # default). The frames it credited are enough, or the words that stopped the
     # reply would be thrown away when the user stops talking.
-    need_voice = min(min_voiced_frames, credited_hits) if credited_hits > 0 else min_voiced_frames
-    if speech_hits < need_voice:
+    if speech_hits < voice_needed(min_voiced_frames, credited_hits):
         return "too_little_voice"
     # A barge run is already several loud frames. The impulse gate is for a
     # short spike that never passed that gate, so it must not drop the interrupt.
@@ -147,7 +173,6 @@ def _encode_wav(pcm: bytes) -> bytes:
 class _Listen:
     def __init__(self, tune: ListenTune, vad: Vad) -> None:
         self.tune: ListenTune = tune
-        self.vad: Vad = vad
         self.clip_frames: list[bytes] = []
         self.ring: collections.deque[tuple[bytes, bool]] = collections.deque(
             maxlen=tune.pre_pad_frames
@@ -159,22 +184,19 @@ class _Listen:
         self.speech_hits: int = 0
         self.speech_flags: list[bool] = []
         self.primed_hits: int = 0
-        self.floor: AdaptiveFloor = AdaptiveFloor(tune.min_speech_rms)
+        self.scorer: FrameScorer = FrameScorer(vad, tune.min_speech_rms, "listen")
         self.min_speech_now: float = tune.min_speech_rms
 
     def take(self, frame: bytes, idle_frames: int) -> bool:
-        rms = pcm_rms(frame)
-        vad_speech = frame_is_speech(self.vad, frame)
-        self.min_speech_now = self.floor.value()
+        # Once speech has started the floor stops learning, so the voice cannot raise it.
+        heard = self.scorer.score(frame, learn=not self.triggered)
+        rms, vad_speech = heard.rms, heard.voiced
+        self.min_speech_now = heard.floor
         self.window_peak = max(self.window_peak, rms)
         self.clip_peak = max(self.clip_peak, rms)
-        if idle_frames % MIC_LEVEL_EVERY_FRAMES == 0:
-            EVENTS.emit(MicLevel(rms, self.min_speech_now, "listen"))
+        self.scorer.meter(rms, self.min_speech_now)
         self._heartbeat(idle_frames, rms, vad_speech)
         if not self.triggered:
-            # A frame already at the floor is not room hiss. Counting it raises
-            # the floor until the same voice can never start the clip.
-            self.floor.observe(rms, quiet=rms < self.min_speech_now)
             return self._arm(frame, rms, vad_speech)
         is_speech = rms >= self.min_speech_now * HOLD_RMS_RATIO and vad_speech
         return self._hold(frame, is_speech, vad_speech=vad_speech)
@@ -295,21 +317,16 @@ def cooldown_report(frames: Sequence[bytes], tune: ListenTune, vad: Vad) -> str:
     """
     if not frames:
         return "frames=0"
-    levels = [pcm_rms(frame) for frame in frames]
-    voiced = [frame_is_speech(vad, frame) for frame in frames]
-    # The same adaptive floor a listen opened at the end of the reply would use.
-    room = AdaptiveFloor(tune.min_speech_rms)
-    over: list[bool] = []
-    for level in levels:
-        need = room.value()
-        over.append(level >= need)
-        room.observe(level, quiet=level < need)
-    floor = room.value()
-    speech_like = sum(1 for loud, said in zip(over, voiced, strict=True) if loud and said)
+    # Scored as a listen opened at the end of the reply would score them.
+    scorer = FrameScorer(vad, tune.min_speech_rms)
+    scores = [scorer.score(frame) for frame in frames]
+    over = [heard.rms >= heard.floor for heard in scores]
+    voiced = sum(heard.voiced for heard in scores)
+    speech_like = sum(loud and heard.voiced for loud, heard in zip(over, scores, strict=True))
     return (
-        f"frames={len(frames)} peak_rms={max(levels):.0f} floor={floor:.0f} "
-        f"voiced={sum(voiced)} over_floor={sum(over)} speech_like={speech_like} "
-        f"start_needs={tune.start_speech_frames}"
+        f"frames={len(frames)} peak_rms={max(heard.rms for heard in scores):.0f} "
+        f"floor={scorer.floor:.0f} voiced={voiced} over_floor={sum(over)} "
+        f"speech_like={speech_like} start_needs={tune.start_speech_frames}"
     )
 
 
@@ -335,26 +352,43 @@ def _clip_wav(heard: _Listen, tune: ListenTune) -> bytes | None:
     pcm = b"".join(heard.clip_frames)
     debug(
         "listen.end {:.2f}s clip, {} voiced frames, peak rms {}",
-        len(heard.clip_frames) * FRAME_MS / 1000,
+        len(heard.clip_frames) * FRAME_MS / MS_PER_S,
         heard.speech_hits,
         round(heard.clip_peak),
     )
     return _encode_wav(pcm)
 
 
-def _prime_listen(heard: _Listen, pcm: bytes) -> None:
-    """Start a listen from barge audio. Those frames already passed the interrupt gate."""
-    frames = [pcm[i : i + FRAME_BYTES] for i in range(0, len(pcm) - FRAME_BYTES + 1, FRAME_BYTES)]
-    if not frames:
-        return
+def _prime_listen(heard: _Listen, clip: CarriedClip | None) -> None:
+    """Start a listen from speech it did not record itself, in the way its origin calls for."""
+    match clip:
+        case None:
+            return
+        case BargeIn():
+            frames = clip.frames()
+            if not frames:
+                return
+            # The interrupt gate already accepted this clip. Scored against a listen
+            # floor above the gate's own, every frame would be silence and the
+            # utterance would never reach ASR.
+            floor = min(heard.min_speech_now, clip.gate_rms)
+            for frame in frames:
+                heard.remember(frame, pcm_rms(frame) >= floor)
+            heard.primed_hits = heard.speech_hits
+        case StreamFallback():
+            frames = [frame for frame, _speech in clip.frames]
+            if not frames:
+                return
+            # The listen gate already judged each frame as it was captured, so the clip
+            # goes on as if this listen had recorded it. Only a barge-in it began with
+            # earns credit.
+            for frame, speech in clip.frames:
+                heard.remember(frame, speech)
+            credited = len(clip.barge.frames()) if clip.barge is not None else 0
+            heard.primed_hits = min(
+                heard.speech_hits, sum(speech for _frame, speech in clip.frames[:credited])
+            )
     heard.triggered = True
-    # The interrupt gate already accepted this clip. Scored against a listen
-    # floor above the barge floor, every frame would be silence and the
-    # utterance would never reach ASR.
-    floor = min(heard.min_speech_now, DEFAULT_BARGE_RMS)
-    for frame in frames:
-        heard.remember(frame, pcm_rms(frame) >= floor)
-    heard.primed_hits = heard.speech_hits
     heard.clip_peak = max(pcm_rms(frame) for frame in frames)
     heard.silence = 0
 
@@ -363,10 +397,9 @@ def record_utterance(
     mic: Mic,
     quit_requested: StopFlag | None = None,
     *,
-    prefix: bytes = b"",
+    carried: CarriedClip | None = None,
     tune: ListenTune | None = None,
     give_up_frames: int | None = None,
-    since: int | None = None,
 ) -> bytes | None:
     """Block until one VAD utterance.
 
@@ -376,17 +409,15 @@ def record_utterance(
         Where the frames come from, already cleaned of echo.
     quit_requested : StopFlag or None, optional
         Ends the listen when set, such as the session's quit flag (Ctrl+C). Returns None.
-    prefix : bytes, optional
-        PCM kept from the barge-in that interrupted the previous reply.
-        The next listen starts from this clip instead of a cooldown.
+    carried : BargeIn or StreamFallback or None, optional
+        Speech the listen starts from: the barge-in clip that interrupted the previous
+        reply, or what a streaming recogniser caught before it failed. The listen reads on
+        from the mic position just after it. None starts fresh and reads from now.
     tune : ListenTune or None, optional
         VAD and utterance limits. None uses the defaults.
     give_up_frames : int or None, optional
         Stop and return None when speech has not started after this many 30 ms frames. None
         waits as long as it takes.
-    since : int or None, optional
-        The mic position to read from, such as just after a barge-in clip. None reads
-        from now.
 
     Returns
     -------
@@ -406,7 +437,7 @@ def record_utterance(
     """
     tune = tune or ListenTune()
     heard = _Listen(tune, open_vad(tune.vad_engine, tune.vad_aggressiveness))
-    _prime_listen(heard, prefix)
+    _prime_listen(heard, carried)
     trace(
         "listen.open vad={} start_speech_frames={} min_rms={} min_voiced_frames={} "
         "pre_pad_frames={} end_silence_frames={} prefix_frames={}",
@@ -419,6 +450,7 @@ def record_utterance(
         len(heard.clip_frames),
     )
 
+    since = carried.since if carried is not None else None
     for idle_frames, frame in enumerate(mic.frames(quit_requested, since=since), start=1):
         if heard.take(frame, idle_frames):
             break
@@ -455,9 +487,8 @@ def stream_utterance(
     quit_requested: StopFlag | None,
     sink: Callable[[bytes, bool], None],
     *,
-    prefix: bytes = b"",
+    carried: BargeIn | None = None,
     tune: ListenTune | None = None,
-    vad: Vad | None = None,
     since: int | None = None,
 ) -> bool:
     """Block until one utterance ends, passing its frames to ``sink`` as they come.
@@ -470,15 +501,14 @@ def stream_utterance(
         Ends the listen when set.
     sink : Callable
         Called with ``(frame, voiced)`` for every frame of the utterance, in order: first
-        any ``prefix`` and the pre-pad, then each frame as it is captured. It runs on this
+        any ``carried`` clip and the pre-pad, then each frame as it is captured. It runs on this
         thread and has to return quickly. Nothing is passed while the mic is waiting for
         speech to start, so only the speech leaves the machine.
-    prefix : bytes, optional
-        PCM kept from the barge-in that interrupted the previous reply.
+    carried : BargeIn or None, optional
+        The barge-in clip that interrupted the previous reply. Its frames are passed on
+        first, as speech wherever its gate's level says so.
     tune : ListenTune or None, optional
         VAD and utterance limits. None uses the defaults.
-    vad : Vad or None, optional
-        A fresh voice-activity detector. None opens the one ``tune`` names.
     since : int or None, optional
         The mic position to read from. None reads from now.
 
@@ -495,11 +525,26 @@ def stream_utterance(
     judge, with this silence as the limit.
     """
     tune = tune or ListenTune()
-    if vad is None:
-        vad = open_vad(tune.vad_engine, tune.vad_aggressiveness)
-    heard = _StreamListen(tune, vad, sink)
-    _prime_listen(heard, prefix)
+    heard = _StreamListen(tune, open_vad(tune.vad_engine, tune.vad_aggressiveness), sink)
+    _prime_listen(heard, carried)
     for idle_frames, frame in enumerate(mic.frames(quit_requested, since=since), start=1):
         if heard.take(frame, idle_frames):
             return True
     return False
+
+
+def mic_failure(error: PortAudioMissingError) -> NoTurn:
+    """Report that the mic cannot open, and end the session.
+
+    Parameters
+    ----------
+    error : PortAudioMissingError
+        What the device loader raised when a listen opened the mic, with its install hints.
+
+    Returns
+    -------
+    NoTurn
+        ``fatal``: without PortAudio no listen can work.
+    """
+    warn(str(error))
+    return NoTurn("fatal")

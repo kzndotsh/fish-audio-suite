@@ -12,7 +12,6 @@ import pytest
 
 from fish_audio_suite_voice.deepgram import (
     FluxStream,
-    _websockets_connect,
     flux_base,
     flux_url,
     parse_flux_message,
@@ -22,6 +21,7 @@ from fish_audio_suite_voice.turn_stream import (
     StreamError,
     StreamWarning,
     SttStreamError,
+    TurnDropped,
     TurnEnded,
     TurnResumed,
     TurnStarted,
@@ -36,7 +36,7 @@ def _turn(event: str, text: str = "", **extra: Any) -> str:
 
 
 def test_the_address_asks_for_16_bit_mono_pcm_and_no_retention() -> None:
-    url = flux_url("flux-general-en", sample_rate=16000, eot_threshold=0.7, eot_timeout_ms=4000)
+    url = flux_url("flux-general-en", sample_rate=16000, eot_threshold=0.7)
     parts = urlsplit(url)
     assert f"{parts.scheme}://{parts.netloc}{parts.path}" == "wss://api.deepgram.com/v2/listen"
     query = {key: value[0] for key, value in parse_qs(parts.query).items()}
@@ -45,7 +45,7 @@ def test_the_address_asks_for_16_bit_mono_pcm_and_no_retention() -> None:
         "encoding": "linear16",
         "sample_rate": "16000",
         "eot_threshold": "0.7",
-        "eot_timeout_ms": "4000",
+        "eot_timeout_ms": "5000",
         "mip_opt_out": "true",  # Deepgram keeps neither the audio nor the text
     }
     assert "key" not in parts.query.lower()  # the key goes in a header, never the address
@@ -229,7 +229,7 @@ def test_a_refused_connection_says_whether_trying_again_could_help(
     for status, fatal in ((401, True), (402, True), (403, True), (500, False), (503, False)):
         monkeypatch.setattr("websockets.asyncio.client.connect", refuse(status))
         with pytest.raises(SttStreamError) as raised:
-            asyncio.run(_websockets_connect("wss://x/y", key="k"))
+            asyncio.run(FluxStream("wss://x/y", "k").open())
         assert raised.value.fatal is fatal, status
         assert str(status) in str(raised.value)
 
@@ -242,7 +242,7 @@ def test_an_unreachable_server_is_a_retryable_error_not_a_fatal_one(
 
     monkeypatch.setattr("websockets.asyncio.client.connect", connect)
     with pytest.raises(SttStreamError, match="no route") as raised:
-        asyncio.run(_websockets_connect("wss://x/y", key="k"))
+        asyncio.run(FluxStream("wss://x/y", "k").open())
     assert not raised.value.fatal
 
 
@@ -257,7 +257,7 @@ def test_the_real_connection_sends_the_key_as_a_header_and_never_in_the_address(
         return object()
 
     monkeypatch.setattr("websockets.asyncio.client.connect", connect)
-    asyncio.run(_websockets_connect("wss://x/y?model=m", key="sekrit"))
+    asyncio.run(FluxStream("wss://x/y?model=m", "sekrit").open())
     assert seen["additional_headers"] == {"Authorization": "Token sekrit"}
     assert "sekrit" not in seen["url"]
     assert seen["open_timeout"] > 0
@@ -266,6 +266,13 @@ def test_the_real_connection_sends_the_key_as_a_header_and_never_in_the_address(
 def test_a_warning_is_read_so_it_can_be_logged() -> None:
     raw = json.dumps({"type": "Warning", "code": "SOME_CODE", "description": "heads up"})
     assert parse_flux_message(raw) == StreamWarning("SOME_CODE", "heads up")
+
+
+def test_the_warning_that_there_was_no_turn_to_end_is_a_dropped_turn() -> None:
+    raw = json.dumps(
+        {"type": "Warning", "code": "FORCE_END_TURN_NO_ACTIVE_TURN", "description": "no turn"}
+    )
+    assert parse_flux_message(raw) == TurnDropped()
 
 
 def test_a_full_turn_info_message_as_the_schema_describes_it_is_read() -> None:

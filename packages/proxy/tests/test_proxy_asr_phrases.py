@@ -10,9 +10,12 @@ from fastapi.testclient import TestClient
 from proxy_helpers import WAV_UPLOAD, AsrJson, capture_upstream
 
 from fish_audio_suite_kit import AsrBody, CaptionCue
-from fish_audio_suite_proxy.phrases import caption_cues
+from fish_audio_suite_proxy.phrases import AsrScrub, caption_cues
 from fish_audio_suite_proxy.server import app
 from fish_audio_suite_proxy.transcribe import transcription_body
+
+_KEEP = AsrScrub(speakers=False, cues=False)
+_SPEAKERS = AsrScrub(speakers=True, cues=False)
 
 
 def _words(*timed: tuple[str, float, float]) -> list[dict[str, Any]]:
@@ -24,7 +27,7 @@ def _body(data: dict[str, Any]) -> AsrBody:
 
 
 def _cues(data: dict[str, Any], text: str) -> list[CaptionCue]:
-    return caption_cues(_body(data), text, strip_speakers=False)
+    return caption_cues(_body(data), text, _KEEP)
 
 
 def test_words_are_grouped_and_take_punctuation_from_the_transcript() -> None:
@@ -96,7 +99,13 @@ def test_verbose_json_words_come_from_the_word_segments() -> None:
     data = {"duration": 0.9, "segments": _words(("hello", 0.0, 0.4), ("there", 0.4, 0.9))}
     cues = _cues(data, "Hello there.")
     body = transcription_body(
-        "verbose_json", "Hello there.", cues, _body(data), language="en", granularities=["word"]
+        "verbose_json",
+        "Hello there.",
+        cues,
+        _body(data),
+        language="en",
+        granularities=["word"],
+        scrub=_KEEP,
     )
     assert isinstance(body, dict)
     assert body["segments"] == [{"id": 0, "text": "Hello there.", "start": 0.0, "end": 0.9}]
@@ -105,7 +114,13 @@ def test_verbose_json_words_come_from_the_word_segments() -> None:
         {"word": "there", "start": 0.4, "end": 0.9},
     ]
     without = transcription_body(
-        "verbose_json", "Hello there.", cues, _body(data), language="en", granularities=["segment"]
+        "verbose_json",
+        "Hello there.",
+        cues,
+        _body(data),
+        language="en",
+        granularities=["segment"],
+        scrub=_KEEP,
     )
     assert isinstance(without, dict)
     assert "words" not in without
@@ -123,6 +138,7 @@ def test_a_words_array_in_the_body_still_wins() -> None:
         _body(data),
         language=None,
         granularities=["word"],
+        scrub=_KEEP,
     )
     assert isinstance(body, dict)
     assert body["words"] == [{"word": "hullo", "start": 0.0, "end": 0.9}]
@@ -134,7 +150,7 @@ def test_srt_has_one_cue_per_phrase_not_per_word() -> None:
     }
     cues = _cues(data, "One two. Three.")
     srt = transcription_body(
-        "srt", "One two. Three.", cues, _body(data), language=None, granularities=[]
+        "srt", "One two. Three.", cues, _body(data), language=None, granularities=[], scrub=_KEEP
     )
     assert not isinstance(srt, dict)
     text = bytes(srt.body).decode()
@@ -144,7 +160,7 @@ def test_srt_has_one_cue_per_phrase_not_per_word() -> None:
 
 
 def _texts(data: dict[str, Any], text: str, *, strip_cues: bool = False) -> list[str]:
-    cues = caption_cues(_body(data), text, strip_speakers=True, strip_cues=strip_cues)
+    cues = caption_cues(_body(data), text, AsrScrub(speakers=True, cues=strip_cues))
     return [cue.text for cue in cues]
 
 
@@ -180,7 +196,7 @@ def test_the_documented_chinese_example_makes_one_cue_per_sentence() -> None:
     # The cue stays, as in Fish's own speaker_turns text, unless cues are stripped.
     assert _texts(_DOC_BODY, _DOC_TEXT) == ["你好。", "[高兴]很开心认识你。", "我也是。"]
     assert _texts(_DOC_BODY, _DOC_TEXT, strip_cues=True) == ["你好。", "很开心认识你。", "我也是。"]
-    cues = caption_cues(_body(_DOC_BODY), _DOC_TEXT, strip_speakers=True)
+    cues = caption_cues(_body(_DOC_BODY), _DOC_TEXT, _SPEAKERS)
     assert [(cue.start, cue.end) for cue in cues] == [(0.32, 0.88), (1.84, 3.2), (4.56, 5.36)]
 
 
@@ -202,9 +218,7 @@ def test_a_normalized_number_shows_as_the_transcript_wrote_it() -> None:
 def test_a_word_equal_to_its_neighbour_start_and_end_is_kept() -> None:
     # Fish can send start == end for a short word.
     data = {"segments": _words(("a", 1.0, 1.0), ("cat", 1.0, 1.3))}
-    assert caption_cues(_body(data), "A cat.", strip_speakers=True) == [
-        CaptionCue(1.0, 1.3, "A cat.")
-    ]
+    assert caption_cues(_body(data), "A cat.", _SPEAKERS) == [CaptionCue(1.0, 1.3, "A cat.")]
 
 
 def test_inline_speaker_markers_and_cues_are_skipped() -> None:
@@ -250,7 +264,7 @@ def _align_seconds(size: int) -> float:
     # Every Fish word misses, so each one searches its whole window.
     words = _words(*(("wordy", i * 0.1, i * 0.1 + 0.1) for i in range(size // 10)))
     started = time.perf_counter()
-    caption_cues(_body({"segments": words}), text, strip_speakers=True)
+    caption_cues(_body({"segments": words}), text, _SPEAKERS)
     return time.perf_counter() - started
 
 

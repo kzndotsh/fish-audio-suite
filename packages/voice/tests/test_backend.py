@@ -11,7 +11,6 @@ from fish_audio_suite_voice.asr import asr_client
 from fish_audio_suite_voice.llm import ChatBackend, open_chat_backend
 from fish_audio_suite_voice.llm_tune import LlmTune
 from fish_audio_suite_voice.transports import chat_completions_url, http_client
-from fish_audio_suite_voice.tune import HTTP_KEEPALIVE_S
 
 SSE = (
     'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n'
@@ -22,7 +21,6 @@ SSE = (
 
 def _http_tune(**kw: Any) -> LlmTune:
     fields: dict[str, Any] = {
-        "backend": "openai",
         "base": "https://llm.example.test/v1",
         "api_key": "sk-test",
         "model": "some/model",
@@ -162,7 +160,7 @@ def test_openrouter_backend_checks_the_model_once_and_passes_the_session_id(
             return None
 
     monkeypatch.setattr("openrouter.OpenRouter", _Client)
-    tune = LlmTune(backend="openrouter", api_key="sk", model="org/model")
+    tune = LlmTune(api_key="sk", model="org/model")
 
     async def run() -> str:
         async with open_chat_backend(tune, session_id="sess-1") as backend:
@@ -178,16 +176,26 @@ def test_openrouter_backend_checks_the_model_once_and_passes_the_session_id(
     assert sent[1]["session_id"] == "sess-1"
 
 
-def _keepalive_s(client: httpx.AsyncClient) -> float | None:
-    pool = getattr(getattr(client, "_transport", None), "_pool", None)
-    return getattr(pool, "_keepalive_expiry", None)
+def test_session_clients_keep_idle_connections_between_turns(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # httpx closes an idle connection after 5 s by default, shorter than the gap
+    # between two turns, so each turn would pay a new TLS handshake.
+    built: list[httpx.Limits] = []
+    real = httpx.AsyncClient
 
+    def recording(**kwargs: Any) -> httpx.AsyncClient:
+        built.append(kwargs["limits"])
+        return real(**kwargs)
 
-def test_session_clients_keep_idle_connections_between_turns() -> None:
+    monkeypatch.setattr(httpx, "AsyncClient", recording)
+
     async def check() -> None:
-        async with asr_client() as asr:
-            assert _keepalive_s(asr) == HTTP_KEEPALIVE_S
-        async with http_client(LlmTune()) as llm:
-            assert _keepalive_s(llm) == HTTP_KEEPALIVE_S
+        async with asr_client(), http_client(LlmTune()):
+            pass
 
     asyncio.run(check())
+    assert len(built) == 2
+    assert all(
+        limits.keepalive_expiry is not None and limits.keepalive_expiry > 60 for limits in built
+    )

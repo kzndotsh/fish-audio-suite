@@ -7,19 +7,28 @@ import sys
 
 import pytest
 
-from fish_audio_suite_voice.console import write_reply_token
+from fish_audio_suite_voice.console_sink import ConsoleSink
 from fish_audio_suite_voice.debug import (
-    configure_voice_logging,
-    conversation,
     debug,
     debug_enabled,
     debug_level,
     heartbeat_due,
     mark_turn,
-    short_model,
     trace,
 )
-from fish_audio_suite_voice.ws_tap import header_meta, public_meta, ws_event_view
+from fish_audio_suite_voice.events import EventBus, Heard, ReplyEnd, ReplyToken
+from fish_audio_suite_voice.log_setup import configure_voice_logging
+
+
+def conversation(role: str, text: str) -> None:
+    """Print one line of the conversation through the plain display, as a session does."""
+    bus = EventBus()
+    with ConsoleSink(bus):
+        if role == "you":
+            bus.emit(Heard(text, 0.0))
+        else:
+            bus.emit(ReplyToken(text))
+            bus.emit(ReplyEnd(text))
 
 
 def test_configure_voice_logging_replaces_library_handlers() -> None:
@@ -58,11 +67,14 @@ def test_debug_follows_a_replaced_stderr(
 def test_debug_closes_reply_before_the_log(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    bus = EventBus()
+    display = ConsoleSink(bus)
+    bus.emit(ReplyToken("[calm] hey"))  # streamed while debug is off
     configure_voice_logging(debug=True)
-    write_reply_token("[calm] hey")
     debug("llm.stream_end finish=stop")
+    display.close()
     captured = capsys.readouterr()
-    assert captured.out == "[calm] hey\n"
+    assert captured.out == "llm \u25b8 [calm] hey\n"
     assert "llm" in captured.err
     assert "stream_end finish=stop" in captured.err
     assert not captured.err.startswith("[calm]")
@@ -118,47 +130,6 @@ def test_debug_lines_are_tagged_and_offset_from_the_turn(
     assert "asr" in later
 
 
-def test_ws_event_view_strips_audio() -> None:
-    view = ws_event_view({"event": "audio", "audio": b"\x00" * 12, "time": 1.5})
-    assert view == {"event": "audio", "audio_bytes": 12, "time": 1.5}
-
-
-def test_public_meta_drops_text_and_secrets() -> None:
-    meta = public_meta(
-        {
-            "text": "hello there friend",
-            "duration": 1.2,
-            "language": "en",
-            "Authorization": "Bearer secret",
-            "segments": [{}, {}],
-        }
-    )
-    assert meta["text_chars"] == 18
-    assert meta["duration"] == 1.2
-    assert meta["language"] == "en"
-    assert meta["segments_len"] == 2
-    assert "Authorization" not in meta
-
-
-def test_header_meta_keeps_x_headers() -> None:
-    got = header_meta(
-        {
-            "Authorization": "Bearer x",
-            "x-request-id": "abc",
-            "Content-Type": "application/json",
-        }
-    )
-    assert got["x-request-id"] == "abc"
-    assert "Authorization" not in got
-    assert got["Content-Type"] == "application/json"
-    hidden = header_meta({"x-api-key": "sk-secret", "x-request-id": "abc"})
-    assert "x-api-key" not in hidden
-    assert hidden["x-request-id"] == "abc"
-    body = public_meta({"api_key": "sk-secret", "language": "en"})
-    assert "api_key" not in body
-    assert body["language"] == "en"
-
-
 def test_debug_flag_does_not_write_the_process_environment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -184,7 +155,8 @@ def test_conversation_on_a_terminal_with_debug_has_the_time_columns_on_stdout(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     configure_voice_logging(debug=1)
-    monkeypatch.setattr("fish_audio_suite_voice.debug._stdout_tty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
+    monkeypatch.setenv("NO_COLOR", "1")  # so the columns can be read by position
     mark_turn()
     capsys.readouterr()
     conversation("you", "Hey there")
@@ -205,20 +177,11 @@ def test_piped_conversation_stays_plain_on_stdout_even_with_debug(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     configure_voice_logging(debug=1)
-    monkeypatch.setattr("fish_audio_suite_voice.debug._stdout_tty", lambda: False)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
     conversation("you", "Hey there")
     captured = capsys.readouterr()
     assert captured.out == "you \u25b8 Hey there\n"
     assert "Hey there" not in captured.err
-
-
-def test_short_model_drops_only_the_vendor_prefix() -> None:
-    assert short_model("cognitivecomputations/dolphin-mistral-24b-venice-edition") == (
-        "dolphin-mistral-24b-venice-edition"
-    )
-    assert short_model("openai/gpt-4o:nitro") == "gpt-4o:nitro"
-    assert short_model("local-model") == "local-model"
-    assert short_model(None) == ""
 
 
 def test_debug_level_is_fixed_when_logging_is_configured(
@@ -237,10 +200,17 @@ def test_debug_level_never_reads_the_environment_after_configuring(
     monkeypatch.delenv("FISH_VOICE_DEBUG", raising=False)
     configure_voice_logging(debug=2)
 
-    def forbidden() -> int:
-        raise AssertionError("the environment was read")
+    class Forbidden(dict[str, str]):
+        def get(self, *_args: object, **_kwargs: object) -> str:
+            raise AssertionError("the environment was read")
 
-    monkeypatch.setattr("fish_audio_suite_voice.debug._env_level", forbidden)
+        def __getitem__(self, _key: str) -> str:
+            raise AssertionError("the environment was read")
+
+        def __contains__(self, _key: object) -> bool:
+            raise AssertionError("the environment was read")
+
+    monkeypatch.setattr(os, "environ", Forbidden())
     for _ in range(100):
         assert debug_level() == 2
         assert heartbeat_due(20, 20)
@@ -263,3 +233,18 @@ def test_debug_level_reads_the_environment_until_logging_is_configured(
     assert debug_level() == 1
     monkeypatch.setenv("FISH_VOICE_DEBUG", "2")
     assert debug_level() == 2
+
+
+def test_a_library_warning_closes_the_open_reply_line_first(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    configure_voice_logging(debug=False)
+    try:
+        bus = EventBus()
+        with ConsoleSink(bus):
+            bus.emit(ReplyToken("Hello there"))
+            logging.getLogger("httpx").warning("connection reset")
+            out = capsys.readouterr().out
+        assert out == "llm ▸ Hello there\n"  # closed before the warning reached stderr
+    finally:
+        configure_voice_logging(debug=False)

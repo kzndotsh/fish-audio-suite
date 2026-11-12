@@ -10,11 +10,11 @@ from hypothesis import given
 from hypothesis import strategies as st
 from real_mic import BLOCK_S, QUIET_BELOW, RMS, SPEECH_FROM
 
-from fish_audio_suite_kit import LatencySnapshot
 from fish_audio_suite_voice.events import (
     BargedIn,
     Bye,
     Event,
+    ExitCode,
     Heard,
     Listening,
     LogLine,
@@ -24,13 +24,12 @@ from fish_audio_suite_voice.events import (
     ReplyToken,
     SessionState,
     Speaking,
-    StateChanged,
     TurnEnded,
 )
+from fish_audio_suite_voice.latency import LatencySnapshot
 from fish_audio_suite_voice.session_view import (
     SessionView,
     SpeechScale,
-    level_fraction,
     reduce_view,
     turn_timings,
     wave_dots,
@@ -55,12 +54,8 @@ def test_a_whole_turn_folds_into_the_view_a_screen_shows() -> None:
     )
     assert view == SessionView(
         state=SessionState.IDLE,
-        heard="tell me a story",
         reply="Once upon a time.",
         last_turn=snapshot,
-        turns=1,
-        mic_rms=300.0,
-        mic_need=200.0,
     )
 
 
@@ -93,20 +88,16 @@ def test_the_end_of_the_reply_replaces_what_was_streamed() -> None:
     assert view.reply == "[calm] Hi there"
 
 
-def test_notices_and_the_end_of_the_session_are_kept() -> None:
-    view = _fold(Notice("[llm 429, retrying in 4s]"), Bye(2))
-    assert view.last_notice == "[llm 429, retrying in 4s]"
+def test_the_end_of_the_session_is_kept() -> None:
+    view = _fold(Notice("[llm 429, retrying in 4s]"), Bye(ExitCode.FATAL))
     assert view.exit_code == 2
     assert view.state is SessionState.IDLE
     assert SessionView().exit_code is None
 
 
-@pytest.mark.parametrize(
-    "event", [LogLine("DEBUG", "tts", "start"), StateChanged(SessionState.IDLE)]
-)
-def test_log_lines_and_announced_state_changes_do_not_change_the_view(event: Event) -> None:
+def test_log_lines_do_not_change_the_view() -> None:
     view = _fold(Listening())
-    assert reduce_view(view, event) == view
+    assert reduce_view(view, LogLine("DEBUG", "tts", "start")) == view
 
 
 def test_reducing_never_changes_the_view_it_was_given() -> None:
@@ -121,35 +112,6 @@ def test_reducing_never_changes_the_view_it_was_given() -> None:
 def test_the_same_mic_level_twice_gives_an_equal_view_so_a_screen_need_not_refresh() -> None:
     first = _fold(MicLevel(250.0, 200.0, "listen"))
     assert _fold(MicLevel(250.0, 200.0, "listen"), start=first) == first
-
-
-def test_the_meter_is_empty_when_silent_full_at_the_peak_and_never_outside_zero_to_one() -> None:
-    assert level_fraction(0.0) == 0.0
-    assert level_fraction(-5.0) == 0.0
-    assert level_fraction(5e-324) == 0.0  # too small to divide: still empty, not an error
-    assert level_fraction(float("nan")) == 0.0
-    assert level_fraction(0.5) == 0.0  # far below the quietest level shown
-    assert level_fraction(32768.0) == 1.0
-    assert level_fraction(1e9) == 1.0
-
-
-def test_the_meter_rises_with_loudness_and_shows_speech_well_above_empty() -> None:
-    levels = [level_fraction(r) for r in (60, 150, 400, 1500, 4000, 40000)]
-    assert levels == sorted(levels)
-    assert len(set(levels)) == len(levels)
-    # Ordinary speech, a few hundred out of 32768, would be invisible on a linear bar.
-    assert level_fraction(300.0) > 0.25  # quiet speech is a quarter of the bar
-    assert level_fraction(1000.0) > 0.5  # a normal speaking level is over half
-    assert level_fraction(9000.0) < 1.0  # and a loud syllable on a hot mic keeps its shape
-    assert level_fraction(300.0) > 30 * (300.0 / 32768.0)  # a linear bar would show under 1%
-
-
-def test_a_view_gives_the_meter_and_its_threshold_marker() -> None:
-    view = _fold(MicLevel(1000.0, 200.0, "listen"))
-    assert view.mic_fraction == pytest.approx(level_fraction(1000.0))
-    assert view.mic_need_fraction == pytest.approx(level_fraction(200.0))
-    assert view.mic_fraction > view.mic_need_fraction
-    assert SessionView().mic_fraction == 0.0
 
 
 def _dots(char: str) -> int:
@@ -316,16 +278,13 @@ def test_a_scale_keeps_the_noise_floor_it_measured_through_a_gap_in_the_audio() 
     # Twenty seconds with no audio at all (the model thinking and speaking), then the room again.
     first_blocks = [scale.update(room, 40.0 + step * BLOCK_S) for step in range(3)]
     assert max(first_blocks) < 0.15  # not a blip while it relearns the room
-    fresh = SpeechScale()
-    for step in range(130):
-        fresh.update(speech if step % 8 < 4 else room, step * BLOCK_S)
     forgetful = SpeechScale()  # the same, but it was started again after the gap
     assert forgetful.update(room, 40.0) > max(first_blocks)  # what it did before this fix
 
 
 def test_the_turn_summary_leads_with_the_wait_since_the_last_word() -> None:
-    from fish_audio_suite_voice.reply import turn_summary
+    from fish_audio_suite_voice.latency import turn_summary
 
     line = turn_summary(LatencySnapshot(first_audio_ms=900.0, end_wait_ms=360.0))
-    assert line.startswith("  ↳ since you stopped 1.26s · first audio 0.90s")
+    assert line.startswith("since you stopped 1.26s · first audio 0.90s")
     assert "since you stopped" not in turn_summary(LatencySnapshot(first_audio_ms=900.0))

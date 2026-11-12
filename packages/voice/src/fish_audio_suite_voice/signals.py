@@ -16,8 +16,6 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from types import FrameType
 
-from fish_audio_suite_voice.aec import EchoCanceller
-
 __all__ = [
     "DuplexSession",
     "TurnSignals",
@@ -31,13 +29,18 @@ class TurnSignals:
     -----
     ``fire`` may run on a signal-handler thread. The asyncio event is set
     through ``call_soon_threadsafe`` on the loop that bound it, because
-    ``asyncio.Event.set`` is not thread-safe.
+    ``asyncio.Event.set`` is not thread-safe. After ``end``, every turn bound
+    later starts cancelled, so a quit that lands before a turn binds its handles
+    still stops it.
     """
 
     def __init__(self) -> None:
         self.cancel: threading.Event | None = None
         self.llm_cancel: asyncio.Event | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
+        # Re-entrant: ``request_quit`` may run in a signal handler on a thread that holds it.
+        self._lock = threading.RLock()
+        self._ended = False
 
     def bind(
         self,
@@ -45,7 +48,7 @@ class TurnSignals:
         llm_cancel: asyncio.Event,
         loop: asyncio.AbstractEventLoop | None = None,
     ) -> None:
-        """Remember the handles for this turn.
+        """Remember the handles for this turn, and set them at once after ``end``.
 
         Parameters
         ----------
@@ -57,21 +60,25 @@ class TurnSignals:
             Loop that owns ``llm_cancel``. Defaults to the running loop, or
             None when called outside one.
         """
-        self.cancel = cancel
-        self.llm_cancel = llm_cancel
         if loop is None:
             with suppress(RuntimeError):
                 loop = asyncio.get_running_loop()
-        self._loop = loop
+        with self._lock:
+            self.cancel = cancel
+            self.llm_cancel = llm_cancel
+            self._loop = loop
+            ended = self._ended
+        if ended:
+            self.fire()
 
     def fire(self) -> None:
         """Cancel the bound turn from any thread."""
-        if self.cancel is not None:
-            self.cancel.set()
-        event = self.llm_cancel
+        with self._lock:
+            cancel, event, loop = self.cancel, self.llm_cancel, self._loop
+        if cancel is not None:
+            cancel.set()
         if event is None:
             return
-        loop = self._loop
         if loop is not None and not loop.is_closed():
             # Also right for a stopped loop: the call is queued and runs when
             # it resumes, instead of touching the event from this thread.
@@ -83,16 +90,23 @@ class TurnSignals:
         with suppress(RuntimeError):
             event.set()
 
+    def end(self) -> None:
+        """Cancel the bound turn and every turn bound after it, for quit."""
+        with self._lock:
+            self._ended = True
+        self.fire()
+
     def clear(self) -> None:
         """Forget the bound handles."""
-        self.cancel = None
-        self.llm_cancel = None
-        self._loop = None
+        with self._lock:
+            self.cancel = None
+            self.llm_cancel = None
+            self._loop = None
 
 
 @dataclass
 class DuplexSession:
-    """Cancel flags and the mic processor for one duplex run.
+    """Cancel flags for one duplex run.
 
     Attributes
     ----------
@@ -100,19 +114,29 @@ class DuplexSession:
         Set on quit. Sticky for the session.
     turn : TurnSignals
         Handles for the reply in flight.
-    aec : EchoCanceller
-        Far-end tap and processor. The mic cleans every frame with it, the sink feeds
-        it what plays, and the barge gate asks it whether the speaker is on.
     """
 
-    aec: EchoCanceller = field(default_factory=EchoCanceller)
     quit_requested: threading.Event = field(default_factory=threading.Event)
     turn: TurnSignals = field(default_factory=TurnSignals)
+    _on_quit: list[Callable[[], None]] = field(default_factory=list, init=False, repr=False)
 
     def request_quit(self) -> None:
         """Stop listening and cancel the LLM and TTS in flight. Safe from a signal handler."""
         self.quit_requested.set()
-        self.turn.fire()
+        self.turn.end()
+        for wake in tuple(self._on_quit):
+            wake()
+
+    def on_quit(self, wake: Callable[[], None]) -> None:
+        """Call ``wake`` when quit is requested, so a wait that is not on the quit flag ends.
+
+        Parameters
+        ----------
+        wake : Callable
+            Called on the thread that requests quit, which can be a signal handler, so
+            it may only call thread-safe things.
+        """
+        self._on_quit.append(wake)
 
     def install_sigint(
         self,

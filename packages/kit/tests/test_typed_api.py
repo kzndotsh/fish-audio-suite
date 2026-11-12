@@ -10,12 +10,13 @@ import pytest
 
 import fish_audio_suite_kit as kit
 from fish_audio_suite_kit import (
-    FISH_LATENCIES,
+    FISH_ASR_MODEL_IDS,
     FISH_TTS_MODEL_IDS,
-    AsrFormat,
+    PRO_ASR_MODEL,
+    TTS_RANGES,
+    AsrModel,
     AudioFormat,
     ChatMessage,
-    FishAudioSuiteError,
     FishAuthError,
     FishErrorBody,
     FishHttpError,
@@ -23,14 +24,11 @@ from fish_audio_suite_kit import (
     FishRateLimitError,
     FishTimeoutError,
     FishUpstreamError,
-    LatencySnapshot,
     SuiteDefaults,
-    TtsModel,
-    catalog_tts_model,
+    chunk_length_hi,
     env_bool,
-    known_asr_format,
-    known_audio_format,
     known_latency,
+    normalize_tts_model,
     parse_asr_body,
     retry_after_s,
 )
@@ -40,37 +38,14 @@ from fish_audio_suite_kit._version import read_version
 
 
 @pytest.mark.parametrize(
-    ("status", "kind"),
-    [
-        (401, FishAuthError),
-        (402, FishAuthError),
-        (403, FishAuthError),
-        (429, FishRateLimitError),
-        (500, FishUpstreamError),
-        (502, FishUpstreamError),
-        (503, FishUpstreamError),
-        (504, FishTimeoutError),
-        (400, FishHttpError),
-        (404, FishHttpError),
-        (422, FishHttpError),
-    ],
-)
-def test_from_status_picks_the_matching_class(status: int, kind: type[FishHttpError]) -> None:
-    error = FishHttpError.from_status(status, "boom")
-    assert type(error) is kind
-    assert error.status == status
-    assert error.message == "boom"
-
-
-@pytest.mark.parametrize(
     ("status", "retryable"),
     [(401, False), (402, False), (404, False), (429, True), (500, True), (504, True)],
 )
 def test_only_429_and_5xx_are_retryable(status: int, retryable: bool) -> None:
-    assert FishHttpError.from_status(status, "x").retryable is retryable
+    assert FishHttpError(status, "x").retryable is retryable
 
 
-def test_every_fish_error_is_a_suite_error_and_an_exception() -> None:
+def test_every_fish_error_is_an_exception() -> None:
     for kind in (
         FishHttpError,
         FishAuthError,
@@ -79,9 +54,7 @@ def test_every_fish_error_is_a_suite_error_and_an_exception() -> None:
         FishTimeoutError,
     ):
         assert issubclass(kind, FishHttpError)
-        assert issubclass(kind, FishAudioSuiteError)
         assert issubclass(kind, Exception)
-    assert not issubclass(FishAudioSuiteError, FishHttpError)
 
 
 def test_the_error_keeps_its_old_shape_and_gains_retry_after() -> None:
@@ -95,31 +68,22 @@ def test_the_error_keeps_its_old_shape_and_gains_retry_after() -> None:
 @pytest.mark.parametrize("bad", [-1.0, float("nan"), float("inf"), float("-inf")])
 def test_an_unusable_retry_after_is_stored_as_none(bad: float) -> None:
     assert FishHttpError(429, "x", retry_after=bad).retry_after is None
-    assert FishHttpError.from_status(429, "x", retry_after=bad).retry_after is None
 
 
 def test_a_rate_limit_error_carries_the_hint_and_catches_by_type() -> None:
-    error = FishHttpError.from_status(429, "slow", retry_after=7)
+    error = FishHttpError(429, "slow", retry_after=7)
     assert isinstance(error, FishRateLimitError)
     assert error.retry_after == 7.0
     with pytest.raises(FishRateLimitError):
         raise error
-    with pytest.raises(FishAudioSuiteError):
-        raise FishHttpError.from_status(401, "no key")
 
 
-def test_the_factories_return_the_right_subclass_with_the_old_message() -> None:
+def test_the_factories_return_the_subclass_for_their_status() -> None:
+    # The status and message of each are in test_http_errors.
     assert type(FishHttpError.for_unreachable()) is FishUpstreamError
     assert type(FishHttpError.for_non_json()) is FishUpstreamError
     assert type(FishHttpError.for_non_object()) is FishUpstreamError
     assert type(FishHttpError.for_timeout()) is FishTimeoutError
-    assert (FishHttpError.for_unreachable().status, FishHttpError.for_unreachable().message) == (
-        502,
-        "Fish upstream unreachable",
-    )
-    assert FishHttpError.for_timeout().status == 504
-    assert FishHttpError.for_non_json().message == "Fish returned a non-JSON body"
-    assert FishHttpError.for_non_object().message == "Fish returned a non-object body"
     # Calling a factory on a subclass still gives the fixed class.
     assert type(FishAuthError.for_unreachable()) is FishUpstreamError
 
@@ -134,21 +98,12 @@ def test_parse_asr_body_raises_the_typed_non_object_error() -> None:
 # --- error body and JSON shapes --------------------------------------------------
 
 
-def test_fish_error_body_is_frozen_and_converts_to_the_wire_dict() -> None:
+def test_fish_error_body_is_frozen_and_cleans_its_message() -> None:
     body = FishErrorBody.of(cast(Any, "402"), "no \ud800 credits")
     assert body.status == 402
     assert "\ud800" not in body.message
-    assert body.as_dict() == {"message": body.message, "status": 402}
     with pytest.raises(dataclasses.FrozenInstanceError):
         body.status = 500  # type: ignore[misc]
-
-
-def test_fish_error_body_still_reads_like_the_old_dict() -> None:
-    body = FishErrorBody(401, "Invalid Token")
-    assert body["status"] == 401
-    assert body["message"] == "Invalid Token"
-    with pytest.raises(KeyError):
-        cast(Any, body)["other"]
 
 
 def test_parse_asr_body_returns_the_typed_body_and_text() -> None:
@@ -162,41 +117,34 @@ def test_parse_asr_body_returns_the_typed_body_and_text() -> None:
 # --- literals and narrowing -----------------------------------------------------
 
 
-def test_the_literal_types_list_the_closed_value_sets() -> None:
-    assert set(get_args(FishLatency)) == FISH_LATENCIES == {"low", "balanced", "normal"}
-    assert set(get_args(AudioFormat)) == {"wav", "pcm", "mp3", "opus"}
-    assert set(get_args(AsrFormat)) == {"json", "text", "verbose_json", "srt", "vtt"}
-    # Every catalog model is a TtsModel, the preview ones included.
-    assert set(get_args(TtsModel)) == set(FISH_TTS_MODEL_IDS)
-    assert get_type_hints(ChatMessage) == {
-        "role": get_type_hints(ChatMessage)["role"],
-        "content": str,
-    }
-    assert set(get_args(get_type_hints(ChatMessage)["role"])) == {"system", "user", "assistant"}
+def test_every_latency_mode_reads_back_from_its_name() -> None:
+    modes = get_args(FishLatency)
+    for mode in modes:
+        fallback = next(other for other in modes if other != mode)
+        assert known_latency(f" {mode.upper()} ", fallback) == mode
 
 
-@pytest.mark.parametrize("name", get_args(AudioFormat))
-def test_known_audio_format_accepts_each_format_in_any_case(name: str) -> None:
-    assert known_audio_format(f" {name.upper()} ", "mp3") == name
+def test_every_catalog_model_is_recognised_whatever_its_case() -> None:
+    assert FISH_TTS_MODEL_IDS
+    for model in FISH_TTS_MODEL_IDS:
+        assert normalize_tts_model(f" {model.upper()} ") == model
 
 
-def test_known_audio_format_and_asr_format_fall_back_to_the_default() -> None:
-    assert known_audio_format("flac", "wav") == "wav"
-    assert known_audio_format("", "pcm") == "pcm"
-    assert known_asr_format("VTT", "json") == "vtt"
-    assert known_asr_format("xml", "text") == "text"
+def test_the_asr_models_come_from_their_literal_and_the_default_is_the_pro_model() -> None:
+    assert get_args(AsrModel) == FISH_ASR_MODEL_IDS
+    assert PRO_ASR_MODEL in FISH_ASR_MODEL_IDS
+    assert SuiteDefaults().asr_model == PRO_ASR_MODEL
 
 
-def test_known_latency_returns_a_literal() -> None:
-    assert known_latency("LOW", "normal") == "low"
-    assert known_latency("turbo", "balanced") == "balanced"
+def test_the_cloud_chunk_length_range_is_the_one_the_cloud_base_takes() -> None:
+    assert chunk_length_hi("https://api.fish.audio") == TTS_RANGES.chunk_length[1]
+    assert chunk_length_hi("http://localhost:8080") > TTS_RANGES.chunk_length[1]
 
 
-def test_catalog_tts_model_narrows_only_the_catalog() -> None:
-    assert catalog_tts_model(" S2.1-Pro ") == "s2.1-pro"
-    assert catalog_tts_model("s1") == "s1"
-    assert catalog_tts_model(" Drama-3 ") == "drama-3"
-    assert catalog_tts_model("mystery") is None
+def test_a_chat_message_has_only_a_role_and_content() -> None:
+    hints = get_type_hints(ChatMessage)
+    assert set(hints) == {"role", "content"}
+    assert hints["content"] is str
 
 
 def test_the_defaults_use_the_literal_values_and_stay_light() -> None:
@@ -204,17 +152,6 @@ def test_the_defaults_use_the_literal_values_and_stay_light() -> None:
     assert defaults.latency in get_args(FishLatency)
     assert defaults.audio_format in get_args(AudioFormat)
     assert not hasattr(defaults, "__dict__")
-
-
-def test_a_latency_snapshot_is_still_built_by_position() -> None:
-    snapshot = LatencySnapshot(1.0, 2.0, 3.0, 4.0, 5.0, "trace-1")
-    assert (snapshot.asr_ms, snapshot.voice_to_voice_ms, snapshot.trace_id) == (
-        1.0,
-        5.0,
-        "trace-1",
-    )
-    assert snapshot.first_audio_ms is None
-    assert dataclasses.replace(snapshot, first_audio_ms=9.0).first_audio_ms == 9.0
 
 
 # --- retry_after_s ----------------------------------------------------------
@@ -314,7 +251,6 @@ def test_a_plain_fish_http_error_becomes_the_subclass_for_its_status(
 def test_other_statuses_stay_plain_and_subclass_calls_are_unchanged() -> None:
     assert type(FishHttpError(404, "missing")) is FishHttpError
     assert type(FishAuthError(404, "odd")) is FishAuthError
-    assert type(FishHttpError.from_status(401, "k")) is FishAuthError
 
 
 def test_a_fish_error_survives_copy_and_pickle_with_its_class_and_retry_hint() -> None:

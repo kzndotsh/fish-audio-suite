@@ -1,8 +1,13 @@
-"""Duplex chat transports: OpenRouter SDK, or httpx SSE for any OpenAI-compatible server."""
+"""Duplex chat transports: OpenRouter SDK, or httpx SSE for any OpenAI-compatible server.
+
+Everything one provider needs lives here: the two wire formats, the refusals no later turn
+could pass, and OpenRouter's ``:nitro`` routing, model check and usage report.
+"""
 
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -19,25 +24,40 @@ from fish_audio_suite_kit import (
     utf8_text,
 )
 from fish_audio_suite_voice.debug import debug, debug_enabled, trace, warn
+from fish_audio_suite_voice.events import notice
 from fish_audio_suite_voice.llm_tune import LlmTune
-from fish_audio_suite_voice.tune import HTTP_KEEPALIVE_S
+from fish_audio_suite_voice.wording import short_model
 
 __all__ = [
     "ChatCall",
     "ChatChunk",
     "ChatHttpError",
+    "ChatUnusableError",
     "chat_completions_url",
     "chat_events",
+    "check_openrouter_model",
     "describe_http_error",
     "http_client",
     "openrouter_client",
+    "provider_brief",
+    "routed_model",
+    "unusable",
+    "unusable_reason",
+    "usage_brief",
 ]
+
+# Idle seconds an LLM connection stays open. httpx's default of 5 s is shorter than the gap
+# between two turns, so each turn would pay a new TLS handshake.
+_KEEPALIVE_S: Final = 120.0
 
 _ABORT_CHARS: Final = 800
 _EVENT_TRACE_CHARS: Final = 600
 # One warning line stays short enough to read. The whole body is in the debug log.
 _ERROR_LINE_CHARS: Final = 220
 _SSE_DATA: Final = "data:"
+_MODEL_LOOKUP_S: Final = 15
+_MODEL_LOOKUP_MS: Final = _MODEL_LOOKUP_S * MS_PER_S
+_LOOKUP_BODY_CHARS: Final = 200
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,9 +77,7 @@ class ChatChunk:
     message: str = ""
     message_refusal: str = ""
     finish: str | None = None
-    native_finish: str = ""
     usage: dict[str, Any] | None = None
-    id: str = ""
     model: str = ""
     provider: str = ""
     provider_summary: str = ""
@@ -87,6 +105,213 @@ class ChatHttpError(Exception):
         self.status = status
         self.retry_after_s = retry_after_s
         self.quota_exhausted = quota_exhausted
+
+
+class ChatUnusableError(Exception):
+    """The chat model cannot answer any turn until a setting changes.
+
+    The message says what to fix. It has already been reported with ``warn``.
+    """
+
+
+def unusable(reason: str) -> ChatUnusableError:
+    """Report ``reason`` once and return the error that ends the session.
+
+    Parameters
+    ----------
+    reason : str
+        What to change, such as ``the account is out of credits``.
+
+    Returns
+    -------
+    ChatUnusableError
+        For the caller to raise.
+    """
+    warn(f"[llm] stopping: {reason}")
+    return ChatUnusableError(reason)
+
+
+# A refusal that every later turn would get too. Each says what to change.
+_UNUSABLE_STATUS: Final = {
+    401: "the key was refused: check FISH_LLM_API_KEY",
+    402: "the account is out of credits",
+    404: "no provider serves model {model}: choose another FISH_LLM_MODEL",
+}
+
+
+def unusable_reason(status: int | None, model: str) -> str | None:
+    """Say what to change when a refusal with ``status`` would refuse every later turn too.
+
+    Parameters
+    ----------
+    status : int or None
+        HTTP status of the refusal.
+    model : str
+        The model that was asked, named in the 404 reason.
+
+    Returns
+    -------
+    str or None
+        The reason for a 401, 402 or 404. None for any other status, which a later turn
+        may pass.
+    """
+    reason = _UNUSABLE_STATUS.get(status or 0)
+    return None if reason is None else reason.format(model=model)
+
+
+def _route_suffix(model: str) -> str:
+    return model.rsplit("/", maxsplit=1)[-1]
+
+
+def _want_nitro(model: str, tune: LlmTune) -> bool:
+    if not tune.uses_openrouter_sdk or not tune.nitro:
+        return False
+    return ":" not in _route_suffix(model)
+
+
+def routed_model(tune: LlmTune) -> str:
+    """Return the model id sent with each request: OpenRouter's ``:nitro`` route when asked.
+
+    Parameters
+    ----------
+    tune : LlmTune
+        Supplies the model, the backend and whether ``nitro`` is on.
+
+    Returns
+    -------
+    str
+        ``model:nitro`` on the OpenRouter backend with ``nitro`` on, unless the model already
+        names a variant (``:free``). The model as configured otherwise.
+    """
+    if _want_nitro(tune.model, tune):
+        return f"{tune.model}:nitro"
+    return tune.model
+
+
+def _model_author_slug(model: str) -> tuple[str, str] | None:
+    if "/" not in model:
+        return None
+    author, slug = model.split("/", maxsplit=1)
+    if not author or not slug:
+        return None
+    return author, slug
+
+
+async def check_openrouter_model(client: Any, tune: LlmTune) -> None:
+    """Check that the configured model exists and that a provider serves it.
+
+    Parameters
+    ----------
+    client : Any
+        An open OpenRouter SDK client.
+    tune : LlmTune
+        Supplies the model id and whether ``:nitro`` is added.
+
+    Raises
+    ------
+    ChatUnusableError
+        OpenRouter does not know the model, or no provider serves it, so every
+        turn would fail. A lookup that fails for any other reason only warns.
+    """
+    route = routed_model(tune)
+    parts = _model_author_slug(route)
+    if parts is None:
+        return
+    from openrouter.errors import OpenRouterError
+
+    author, slug = parts
+    try:
+        res = await client.models.get_async(author=author, slug=slug, timeout_ms=_MODEL_LOOKUP_MS)
+    except OpenRouterError as e:
+        if e.status_code == 404:
+            raise unusable(f"unknown model {route}: choose another FISH_LLM_MODEL") from e
+        warn(f"[llm] models.get HTTP {e.status_code}: {e.body[:_LOOKUP_BODY_CHARS]}")
+        return
+    except Exception as e:  # noqa: BLE001 - best-effort lookup must never stop the session
+        warn(f"[llm] models.get {e}")
+        return
+    data = _field(res, "data")
+    if data is None:
+        data = res
+    mid = _field(data, "id")
+    name = _field(data, "name")
+    ctx = _field(data, "context_length")
+    routed = f", routed from {route}" if isinstance(mid, str) and mid and mid != route else ""
+    # The ready line already names the model. A remap is announced below.
+    trace("llm.model {} ({} token context){}", name or short_model(mid or route), ctx, routed)
+    if isinstance(mid, str) and mid and mid != route:
+        notice(f"  [llm model {route} → {mid}]")
+    await _check_providers(client, tune.model)
+
+
+async def _check_providers(client: Any, model: str) -> None:
+    # A retired model keeps its page, so models.get still answers. Only the
+    # endpoints list shows that nothing serves it. :nitro is a way of routing,
+    # not a model, so the model is asked about as it was configured.
+    parts = _model_author_slug(model)
+    if parts is None:
+        return
+    author, slug = parts
+    try:
+        res = await client.endpoints.list_async(
+            author=author, slug=slug, timeout_ms=_MODEL_LOOKUP_MS
+        )
+    except Exception as e:  # noqa: BLE001 - best-effort lookup must never stop the session
+        debug("llm.endpoints lookup failed: {}", e)
+        return
+    endpoints = _field(_field(res, "data"), "endpoints")
+    if isinstance(endpoints, list) and not endpoints:
+        raise unusable(_UNUSABLE_STATUS[404].format(model=model))
+
+
+_SELECTED_PROVIDER: Final = re.compile(r"selected=([^,]+)")
+
+
+def provider_brief(provider: object) -> str:
+    """Return the provider that served the reply, from OpenRouter's routing text.
+
+    Parameters
+    ----------
+    provider : object
+        The provider name, or OpenRouter's routing summary (``selected=OpenAI, ...``).
+
+    Returns
+    -------
+    str
+        The selected provider, or the text as given when it names no selection.
+    """
+    text = str(provider or "")
+    found = _SELECTED_PROVIDER.search(text)
+    return found.group(1).strip() if found else text
+
+
+def usage_brief(usage: object) -> str:
+    """Render token counts, and OpenRouter's cost when it sends one, for the debug log.
+
+    Parameters
+    ----------
+    usage : object
+        The ``usage`` dict from the last stream event.
+
+    Returns
+    -------
+    str
+        ``in=… cached=… out=… cost=$…`` with the fields the dict has, or ``usage=?``.
+    """
+    if not isinstance(usage, dict):
+        return "usage=?"
+    fields = cast(dict[str, Any], usage)
+    parts = [f"in={fields.get('prompt_tokens')}"]
+    details = fields.get("prompt_tokens_details")
+    if isinstance(details, dict):
+        cached = cast(dict[str, Any], details).get("cached_tokens")
+        if isinstance(cached, int):
+            parts.append(f"cached={cached}")
+    parts.append(f"out={fields.get('completion_tokens')}")
+    cost = fields.get("cost")
+    if isinstance(cost, (int, float)):
+        parts.append(f"cost=${cost:.5f}")
+    return " ".join(parts)
 
 
 @dataclass(slots=True)
@@ -123,7 +348,7 @@ def http_client(tune: LlmTune) -> httpx.AsyncClient:
         Reused for every reply in a session. The caller closes it.
     """
     return httpx.AsyncClient(
-        timeout=tune.timeout_s, limits=httpx.Limits(keepalive_expiry=HTTP_KEEPALIVE_S)
+        timeout=tune.timeout_s, limits=httpx.Limits(keepalive_expiry=_KEEPALIVE_S)
     )
 
 
@@ -155,7 +380,7 @@ async def openrouter_client(tune: LlmTune) -> AsyncGenerator[Any, None]:
     # key with a newline, which would raise before the request is sent.
     async with (
         httpx.AsyncClient(
-            follow_redirects=True, limits=httpx.Limits(keepalive_expiry=HTTP_KEEPALIVE_S)
+            follow_redirects=True, limits=httpx.Limits(keepalive_expiry=_KEEPALIVE_S)
         ) as http,
         OpenRouter(
             api_key=bearer(tune.api_key).removeprefix("Bearer "),
@@ -325,11 +550,16 @@ def _abort_http(
     code = status if isinstance(status, int) else None
     if code != 429:
         return ChatHttpError(code, None, quota_exhausted=False)
-    # A spent quota (Experiential's insufficient_quota, a daily free limit) is
-    # also a 429, but waiting a second does not refill it.
     return ChatHttpError(
-        code, _retry_after_seconds(headers, body), quota_exhausted="quota" in body.lower()
+        code, _retry_after_seconds(headers, body), quota_exhausted=_says_quota_spent(body)
     )
+
+
+def _says_quota_spent(body: str) -> bool:
+    # A spent quota (Experiential's insufficient_quota, a daily free limit) is also a 429,
+    # but waiting a second does not refill it. Providers word it differently, and every
+    # wording seen so far says "quota", so the body is matched on that word.
+    return "quota" in body.lower()
 
 
 def _retry_after_seconds(headers: httpx.Headers | None, body: str) -> float | None:
@@ -552,9 +782,7 @@ def _chunk_of(event: object) -> ChatChunk:
         message=_content_text(_field(message, "content")),
         message_refusal=_text_field(message, "refusal"),
         finish=_finish_text(_field(choice, "finish_reason")),
-        native_finish=_text_field(choice, "native_finish_reason"),
         usage=_usage_dict(_field(event, "usage")),
-        id=_text_field(event, "id"),
         model=_text_field(event, "model"),
         provider=_text_field(event, "provider"),
         provider_summary=_text_field(_field(event, "openrouter_metadata"), "summary"),

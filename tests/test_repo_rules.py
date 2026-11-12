@@ -26,9 +26,16 @@ def _modules(base: Path) -> list[Path]:
     return sorted(p for p in base.rglob("*.py") if "__pycache__" not in p.parts)
 
 
+# The packages whose ``from pkg import name`` is expanded to ``pkg.name`` by ``_imports``.
+_EXPANDED_ROOTS: dict[str, Path] = {
+    "fish_audio_suite_kit": KIT_PACKAGE,
+    "fish_audio_suite_voice": VOICE_SRC,
+}
+
+
 @cache
-def _kit_root_exports() -> frozenset[str]:
-    tree = ast.parse((KIT_PACKAGE / "__init__.py").read_text(encoding="utf-8"))
+def _root_exports(package: Path) -> frozenset[str]:
+    tree = ast.parse((package / "__init__.py").read_text(encoding="utf-8"))
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(
             isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets
@@ -40,10 +47,10 @@ def _kit_root_exports() -> frozenset[str]:
 def _imports(path: Path) -> list[tuple[str, int]]:
     """Return ``(module, line)`` for every import in a file, absolute imports only.
 
-    ``from pkg import name`` also reports ``pkg.name`` when that is a module on
-    disk and the root does not export something of that name, because it then
-    loads the submodule just as ``import pkg.name`` does. ``scrub_tts`` is both a
-    module and a root function, and the root function wins.
+    For kit and voice, ``from pkg import name`` also reports ``pkg.name`` when that
+    is a module on disk and the root does not export something of that name, because
+    it then loads the submodule just as ``import pkg.name`` does. ``scrub_tts`` is
+    both a module and a root function, and the root function wins.
     """
     found: list[tuple[str, int]] = []
     for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
@@ -51,12 +58,13 @@ def _imports(path: Path) -> list[tuple[str, int]]:
             found.extend((alias.name, node.lineno) for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             found.append((node.module, node.lineno))
-            if node.module == "fish_audio_suite_kit":
+            package = _EXPANDED_ROOTS.get(node.module)
+            if package is not None:
                 found.extend(
-                    (f"fish_audio_suite_kit.{alias.name}", node.lineno)
+                    (f"{node.module}.{alias.name}", node.lineno)
                     for alias in node.names
-                    if (KIT_PACKAGE / f"{alias.name}.py").exists()
-                    and alias.name not in _kit_root_exports()
+                    if (package / f"{alias.name}.py").exists()
+                    and alias.name not in _root_exports(package)
                 )
     return found
 
@@ -146,6 +154,48 @@ def test_proxy_and_voice_import_kit_only_through_its_root() -> None:
     )
 
 
+_CUE_FLAG_CALLS = frozenset({"scrub_tts", "normalize_cues", "tts_hold_at"})
+_CUE_FLAGS = frozenset({"lead", "official", "directed"})
+
+
+def _called_name(call: ast.Call) -> str:
+    if isinstance(call.func, ast.Name):
+        return call.func.id
+    if isinstance(call.func, ast.Attribute):
+        return call.func.attr
+    return ""
+
+
+def _loose_cue_flags(path: Path) -> list[str]:
+    """Return each call that hands kit a cue flag by hand or asks whether a model is directed."""
+    found: list[str] = []
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if not isinstance(node, ast.Call):
+            continue
+        name = _called_name(node)
+        if name == "takes_directions":
+            found.append(f"{node.lineno} calls takes_directions")
+        elif name in _CUE_FLAG_CALLS:
+            flags = sorted(k.arg for k in node.keywords if k.arg in _CUE_FLAGS)
+            if flags:
+                found.append(f"{node.lineno} passes {', '.join(flags)} to {name}")
+    return found
+
+
+def test_proxy_and_voice_shape_cues_through_one_cue_style() -> None:
+    """Shape with ``CueStyle``, so the flags and the step order cannot differ between callers."""
+    offenders = [
+        f"{path.relative_to(ROOT)}:{where}"
+        for package in ("proxy", "voice")
+        for path in _modules(ROOT / "packages" / package / "src")
+        for where in _loose_cue_flags(path)
+    ]
+    assert not offenders, (
+        "build one CueStyle (CueStyle.for_model) and call its shape or hold_at:\n"
+        + "\n".join(offenders)
+    )
+
+
 def test_the_nixos_module_default_matches_the_proxy_graceful_shutdown() -> None:
     """The module's drain time must equal ``DEFAULT_GRACEFUL_S``; its timeouts add 10 s to it."""
     nix = (ROOT / "nix" / "module.nix").read_text(encoding="utf-8")
@@ -156,17 +206,41 @@ def test_the_nixos_module_default_matches_the_proxy_graceful_shutdown() -> None:
 
 
 def test_voice_reads_the_environment_only_in_its_settings_layer() -> None:
-    """Settings come from ``config`` and the ``*.from_env`` tunes; the rest take arguments."""
-    allowed = {"config.py", "tune.py", "llm_tune.py", "debug.py", "envfile.py"}
+    """Settings are read through ``env_read``, and only by ``config`` and the tune modules.
+
+    The rest take arguments. ``debug``, ``log_format`` and ``envfile`` are the documented
+    exceptions: the debug level, ``NO_COLOR``, and writing a dotenv file into the environment.
+    """
+    allowed = {"env_read.py", "debug.py", "log_format.py", "envfile.py"}
     offenders = [
         f"{path.relative_to(ROOT)}:{line}"
         for path in _modules(VOICE_SRC)
         if path.name not in allowed
         for line in _reads_environment(path)
     ]
-    assert not offenders, "read settings in config/tune and pass them down:\n" + "\n".join(
+    assert not offenders, "read settings through env_read and pass them down:\n" + "\n".join(
         offenders
     )
+    readers = {"config.py", "tune.py", "llm_tune.py", "tts_tune.py"}
+    callers = [
+        f"{path.relative_to(ROOT)}:{line}"
+        for path in _modules(VOICE_SRC)
+        if path.name not in readers
+        for module, line in _imports(path)
+        if module == "fish_audio_suite_voice.env_read"
+    ]
+    assert not callers, "only config and the *_tune modules read settings:\n" + "\n".join(callers)
+
+
+def test_imports_reports_a_voice_module_loaded_from_the_root(tmp_path: Path) -> None:
+    """``from fish_audio_suite_voice import env_read`` counts as importing ``env_read``."""
+    source = tmp_path / "caller.py"
+    source.write_text(
+        "from fish_audio_suite_voice import FishSpeaker, env_read\n", encoding="utf-8"
+    )
+    modules = [module for module, _ in _imports(source)]
+    assert "fish_audio_suite_voice.env_read" in modules
+    assert "fish_audio_suite_voice.FishSpeaker" not in modules
 
 
 def _is_terminal_write(node: ast.Call | ast.Attribute) -> bool:
@@ -192,10 +266,18 @@ def _writes_to_the_terminal(path: Path) -> list[int]:
 def test_the_voice_session_reports_through_events_and_never_writes_to_the_terminal() -> None:
     """A full-screen display owns the terminal, so session code reports through ``events``.
 
-    Only the modules that make up the plain display, the startup in ``cli`` and the raw
+    Only the plain display, the logging modules, the startup in ``cli`` and the raw
     stdout audio sink may write to a stream.
     """
-    allowed = {"console.py", "console_sink.py", "debug.py", "cli.py", "playback.py"}
+    allowed = {
+        "console_sink.py",
+        "debug.py",
+        "log_format.py",
+        "log_file.py",
+        "log_setup.py",
+        "cli.py",
+        "playback.py",
+    }
     offenders = [
         f"{path.relative_to(ROOT)}:{line}"
         for path in _modules(VOICE_SRC)
@@ -230,3 +312,36 @@ def test_an_extras_version_bound_is_the_same_in_the_extra_and_the_test_group(
     assert bound(root["dependency-groups"]["test"]) == bound(
         voice["project"]["optional-dependencies"][extra]
     ), f"keep the {package} bound in packages/voice/pyproject.toml and the root test group equal"
+
+
+@cache
+def _layer_rows(contract_id: str) -> list[list[str]]:
+    config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    for contract in config["tool"]["importlinter"]["contracts"]:
+        if contract["id"] == contract_id:
+            return [[name.strip() for name in row.split(":")] for row in contract["layers"]]
+    pytest.fail(f"pyproject.toml has no import-linter contract {contract_id!r}")
+
+
+@pytest.mark.parametrize(
+    ("contract_id", "package"),
+    [("voice-direction", VOICE_SRC), ("kit-layers", KIT_PACKAGE)],
+)
+def test_every_module_sits_in_exactly_one_row_of_its_layers_contract(
+    contract_id: str, package: Path
+) -> None:
+    """import-linter checks only the modules a layers contract lists; an unlisted one is free."""
+    rows = _layer_rows(contract_id)
+    listed = [name for row in rows for name in row]
+    on_disk = sorted(p.stem for p in package.glob("*.py") if p.stem != "__init__")
+    missing = [name for name in on_disk if name not in listed]
+    twice = sorted({name for name in listed if listed.count(name) > 1})
+    gone = sorted(set(listed) - set(on_disk))
+    assert not missing, (
+        f"{', '.join(missing)} not in any row of {contract_id} in pyproject.toml: "
+        "put each in the lowest row it fits"
+    )
+    assert not twice, f"{', '.join(twice)} in more than one row of {contract_id}"
+    assert not gone, (
+        f"{contract_id} lists {', '.join(gone)}, which is not a module of {package.name}"
+    )

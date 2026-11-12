@@ -10,16 +10,27 @@ from session_fakes import FakeBackend, make_ctx
 
 from fish_audio_suite_kit import ChatMessage
 from fish_audio_suite_voice.duplex_state import DuplexContext
-from fish_audio_suite_voice.reply import collect_reply
-from fish_audio_suite_voice.speculate import Speculation, same_words
+from fish_audio_suite_voice.reply import collect_reply, start_speculation
+from fish_audio_suite_voice.speculate import Speculation
 
 ASKED: list[ChatMessage] = [{"role": "user", "content": "hello there"}]
 
 
 def test_transcripts_match_ignoring_case_and_spacing_but_not_words() -> None:
-    assert same_words("Hello  there.", "hello there.")
-    assert not same_words("hello there", "hello there you")
-    assert not same_words("", "")
+    async def run() -> tuple[bool, bool, bool]:
+        spoken = Speculation(FakeBackend(), ASKED, "Hello  there.")
+        blank = Speculation(FakeBackend(), ASKED, "")
+        try:
+            return (
+                spoken.matches("hello there."),
+                spoken.matches("hello there you"),
+                blank.matches(""),
+            )
+        finally:
+            spoken.cancel()
+            blank.cancel()
+
+    assert asyncio.run(run()) == (True, False, False)
 
 
 async def _read(spec: Speculation, cancel: asyncio.Event | None = None) -> list[str]:
@@ -103,17 +114,21 @@ def _ctx_with(reply: str, asked: str) -> tuple[DuplexContext, list[str]]:
         yield reply
 
     ctx = make_ctx(tokens)
-    ctx.history.append({"role": "user", "content": asked})
+    ctx.chat.history.messages.append({"role": "user", "content": asked})
     return ctx, calls
 
 
 def test_a_confirmed_turn_uses_the_reply_that_was_already_being_written() -> None:
     async def run() -> tuple[str, list[str]]:
         ctx, calls = _ctx_with("Hi back.", "hello there")
-        ctx.speculation = Speculation(ctx.backend, list(ctx.history), "Hello there.")
+        ctx.chat.speculation = Speculation(
+            ctx.chat.backend, list(ctx.chat.history.messages), "Hello there."
+        )
         await asyncio.sleep(0.01)
-        reply, _ = await collect_reply(ctx, llm_cancel=asyncio.Event(), trace_id=None, started=0.0)
-        assert ctx.speculation is None
+        reply, _ = await collect_reply(
+            ctx.chat, llm_cancel=asyncio.Event(), trace_id=None, started=0.0
+        )
+        assert ctx.chat.speculation is None
         return reply, calls
 
     reply, calls = asyncio.run(run())
@@ -124,11 +139,32 @@ def test_a_confirmed_turn_uses_the_reply_that_was_already_being_written() -> Non
 def test_when_the_words_changed_the_reply_is_asked_for_again() -> None:
     async def run() -> tuple[str, list[str]]:
         ctx, calls = _ctx_with("Fresh reply.", "hello there you")
-        ctx.speculation = Speculation(ctx.backend, list(ctx.history), "hello there")
+        ctx.chat.speculation = Speculation(
+            ctx.chat.backend, list(ctx.chat.history.messages), "hello there"
+        )
         await asyncio.sleep(0.01)
-        reply, _ = await collect_reply(ctx, llm_cancel=asyncio.Event(), trace_id=None, started=0.0)
+        reply, _ = await collect_reply(
+            ctx.chat, llm_cancel=asyncio.Event(), trace_id=None, started=0.0
+        )
         return reply, calls
 
     reply, calls = asyncio.run(run())
     assert reply == "Fresh reply."
     assert calls == ["model asked", "model asked"]  # the guess, then the real one
+
+
+def test_a_reply_written_after_an_unanswered_line_is_still_used() -> None:
+    async def run() -> tuple[str, list[str]]:
+        ctx, calls = _ctx_with("Nine in the evening.", "What time is it")
+        start_speculation(ctx.chat, "in Tokyo")
+        await asyncio.sleep(0.01)
+        ctx.chat.history.remember_user("in Tokyo.")  # the turn is confirmed and joins the line
+        assert ctx.chat.history.last_user() == "What time is it\nin Tokyo."
+        reply, _ = await collect_reply(
+            ctx.chat, llm_cancel=asyncio.Event(), trace_id=None, started=0.0
+        )
+        return reply, calls
+
+    reply, calls = asyncio.run(run())
+    assert reply == "Nine in the evening."
+    assert calls == ["model asked"]  # once: the one written ahead of time

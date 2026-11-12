@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+from itertools import pairwise
+
 import pytest
 from kit_helpers import assert_linear_time
 
 from fish_audio_suite_kit import (
     ends_sentence,
+    next_tts_cut,
     normalize_cues,
     scrub_tts,
+    sentence_cuts,
     split_tts_piece,
 )
-from fish_audio_suite_kit.cuts import next_tts_cut
 from fish_audio_suite_kit.stream_holds import sentence_closer_hold_at
 
 
@@ -35,7 +38,6 @@ def test_a_time_or_page_number_ends_the_sentence() -> None:
     assert "[excited]" in page
     assert ends_sentence("Meet at 10:30.")
     assert ends_sentence("See page 12.")
-    assert not ends_sentence("1. ")
 
 
 def test_ends_sentence_skips_abbreviations_and_list_numbers() -> None:
@@ -176,3 +178,25 @@ def test_many_short_sentences_are_cut_in_linear_time(text: str) -> None:
         ends_sentence(chunk)
 
     assert_linear_time(run, text)
+
+
+def test_sentence_cuts_split_only_at_real_sentence_ends() -> None:
+    text = "Dr. Smith is here. 1. Excited, yes! A long clause with no end at all yet"
+    cuts = list(sentence_cuts(text))
+    assert [text[a:b] for a, b in pairwise([0, *cuts])] == [
+        "Dr. Smith is here. ",
+        "1. Excited, yes! ",
+    ]
+    assert list(sentence_cuts("")) == []
+    assert list(sentence_cuts("no end")) == []
+    assert list(sentence_cuts("你好。再见。")) == [3, 6]
+
+
+def test_a_stop_inside_a_cue_or_an_aside_ends_no_sentence() -> None:
+    assert list(sentence_cuts("(he pauses. then) Hi. Ok.")) == [22, 25]
+    assert list(sentence_cuts("Well [laugh!] Excited, I said.")) == [30]
+    assert list(sentence_cuts("Some long opening words [laugh!] More.")) == [38]
+    # The aside's own closer ends it, so a whole parenthetical sentence still cuts.
+    assert list(sentence_cuts("He left. (He came back.) Then ok.")) == [9, 25, 33]
+    # An unclosed "(" holds stops only until the line ends.
+    assert list(sentence_cuts("Sad :( really. Next\nNew. Ok.")) == [25, 28]

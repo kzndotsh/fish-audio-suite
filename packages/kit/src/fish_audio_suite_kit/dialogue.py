@@ -3,18 +3,23 @@
 from __future__ import annotations
 
 import re
+from typing import Final
 
 from fish_audio_suite_kit._charsets import cjk_latin_counts
+from fish_audio_suite_kit._speech_floor import too_little_speech
+from fish_audio_suite_kit.cues import cue_pattern
 
 __all__ = [
-    "QUOTE_RE",
     "extract_quoted_speech",
 ]
 
 # A quote whose only content is a [cue] in this window is not speech.
 _CUE_LOOKAHEAD = 24
-# Optional [cue] glued to a quote, so dialogue extraction does not drop the cue.
-_LEAD_CUE = r"\[[^\]\n]{1,80}\]\s*"
+# Optional [cue] glued to a quote, so dialogue extraction does not drop the cue. It reads
+# cues up to 80 characters, where the rules in ``cues`` read 200, so a longer bracket
+# before a quote is not carried with it.
+_QUOTE_CUE_CHARS: Final = 80
+_LEAD_CUE = rf"{cue_pattern(_QUOTE_CUE_CHARS)}\s*"
 _LEAD_CUE_RE = re.compile(rf"({_LEAD_CUE})")
 
 # Straight, curly, guillemet, and corner quotes. French uses «…» and German
@@ -65,19 +70,11 @@ _OPEN_DIALOGUE_RE = re.compile(
 _CLOSE_QUOTES = '"”」』' + _ANGLE_QUOTES
 
 
-def _enough_speech(text: str) -> bool:
-    # A quoted one-letter line and "42" are too thin. Two CJK characters are a
-    # sentence, though a quoted Chinese line has no Latin letters at all.
-    cjk, letters = cjk_latin_counts(text)
-    if letters >= 2 or cjk >= 2:
-        return True
-    return sum(ch.isdigit() for ch in text) >= 3
-
-
 def _speakable_quote(inner: str) -> bool:
+    # A quoted one-letter line and "42" are too thin.
     if not inner or (inner.startswith("[") and inner.endswith("]")):
         return False
-    return _enough_speech(inner)
+    return not too_little_speech(inner)
 
 
 def _quote_body(match: re.Match[str]) -> str:
@@ -113,7 +110,7 @@ def _trailing_open_quote(text: str, start: int, *, anchored: bool = False) -> st
     inner = (m.group(1) or "").strip().rstrip(_CLOSE_QUOTES).strip()
     cjk, letters = cjk_latin_counts(inner)
     cue_only = inner.startswith("[") and "]" in inner[:_CUE_LOOKAHEAD] and letters < 3 and cjk < 2
-    if not inner or not _enough_speech(inner) or cue_only:
+    if not inner or too_little_speech(inner) or cue_only:
         return ""
     cm = _LEAD_CUE_RE.match(m.group(0))
     cue = cm.group(1) if cm else ""

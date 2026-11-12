@@ -5,7 +5,6 @@ from kit_helpers import assert_linear_time
 
 from fish_audio_suite_kit import (
     extract_quoted_speech,
-    is_empty_delta,
     is_tts_junk,
     scrub_tts,
 )
@@ -90,11 +89,6 @@ def test_extract_quoted_open_passthrough_and_empty() -> None:
     assert "你好朋友" in extract_quoted_speech('"你好朋友')
 
 
-def test_is_empty_delta() -> None:
-    assert is_empty_delta("  ")
-    assert not is_empty_delta("hi")
-
-
 @pytest.mark.parametrize(
     "line",
     [
@@ -125,11 +119,6 @@ def test_narration_dropping_is_opt_in(line: str) -> None:
 @pytest.mark.parametrize("line", ["", "   ", "a", "!!", "[warm]", "[ ]", "42"])
 def test_noise_is_still_junk(line: str) -> None:
     assert is_tts_junk(line)
-
-
-def test_the_letter_floor_is_a_parameter() -> None:
-    assert is_tts_junk("no", min_letters=9, short_words=frozenset())
-    assert not is_tts_junk("no", min_letters=9)
 
 
 def test_nested_quotes_of_another_style_stay_inside_the_speech() -> None:

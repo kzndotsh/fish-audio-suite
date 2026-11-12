@@ -37,8 +37,8 @@ from pathlib import Path
 from fishaudio import FishAudio
 from fishaudio.core import OMIT
 
-from fish_audio_suite_kit import SuiteDefaults, known_latency
-from fish_audio_suite_voice import FileSink, FishSpeaker
+from fish_audio_suite_kit import CueStyle, SuiteDefaults, known_latency
+from fish_audio_suite_voice import FileSink, FishSpeaker, TtsTune
 from fish_audio_suite_voice.envfile import load_dotenv
 
 # ---------------------------------------------------------------------------
@@ -180,9 +180,9 @@ def speak_clip(
         api_key=api_key,
         voice_id=voice,
         model=model,
-        latency=known_latency(latency, defaults.latency),
-        sample_rate=sample_rate,
-        official_cues=True,  # as fish-voice by default (FISH_TTS_CUES=official)
+        tune=TtsTune(latency=known_latency(latency, defaults.latency), sample_rate=sample_rate),
+        # As fish-voice shapes cues by default (FISH_TTS_CUES=official).
+        cue_style=CueStyle.for_model(model, official=True, lead=False),
     )
     sink = FileSink(path, sample_rate=sample_rate, wav=True)
     first: list[float] = []

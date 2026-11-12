@@ -13,14 +13,18 @@ voice package imports without the ``fish-realtime`` extra.
 
 from __future__ import annotations
 
-import contextlib
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import Awaitable, Callable
 from typing import Any, Final
 
 import ormsgpack
 
+from fish_audio_suite_kit import MS_PER_S
+from fish_audio_suite_voice.pcm import FRAME_MS, SAMPLE_RATE
 from fish_audio_suite_voice.turn_stream import (
     EagerTurnEnd,
+    Recogniser,
+    RecogniserSettings,
+    SocketStream,
     StreamError,
     StreamWarning,
     TurnDropped,
@@ -29,20 +33,24 @@ from fish_audio_suite_voice.turn_stream import (
     TurnResumed,
     TurnStarted,
     TurnUpdate,
-    is_closed,
     websockets_connect,
 )
 
 __all__ = [
-    "REALTIME_MODEL",
+    "FISH_REALTIME",
     "FishRealtimeStream",
     "parse_realtime_message",
     "realtime_config",
     "realtime_url",
 ]
 
-REALTIME_MODEL: Final = "transcribe-stream-1"
+_EXTRA: Final = "fish-realtime"
+_MODEL: Final = "transcribe-stream-1"
 _PATH: Final = "/v1/asr/realtime"
+# Fish ends a turn about 1.3 s after the speech does, and about 2 s after a speaker who stopped
+# mid-sentence. The local silence limit has to outlast both, or it ends every turn first and
+# Fish's own judgment is never used. Measured on the live API, 2026-11-11.
+_SILENCE_FLOOR_S: Final = 3
 # Fish's ``reason`` on a committed turn, as the trigger names the session logs.
 _TRIGGERS: Final = {"finalize": "manual", "audio_done": "manual", "silence_timeout": "timeout"}
 
@@ -165,13 +173,13 @@ async def _websockets_connect(url: str, *, key: str) -> Any:
     """Open a real connection to Fish, with the key and the model as headers."""
     return await websockets_connect(
         url,
-        {"Authorization": f"Bearer {key}", "model": REALTIME_MODEL},
+        {"Authorization": f"Bearer {key}", "model": _MODEL},
         service="Fish realtime speech to text",
-        extra="fish-realtime",
+        extra=_EXTRA,
     )
 
 
-class FishRealtimeStream:
+class FishRealtimeStream(SocketStream):
     """One realtime session: send audio up, read turn messages back.
 
     Parameters
@@ -186,6 +194,10 @@ class FishRealtimeStream:
         Ask for the early end of turn.
     connect : Callable, optional
         Opens the connection, given ``(url, key=...)``. A fake in tests.
+
+    Notes
+    -----
+    Closing ends the session and its billing.
     """
 
     def __init__(
@@ -197,11 +209,14 @@ class FishRealtimeStream:
         eager: bool = False,
         connect: Callable[..., Awaitable[Any]] | None = None,
     ) -> None:
-        self._url = url
-        self._key = key
+        super().__init__(
+            url,
+            key,
+            connect=connect or _websockets_connect,
+            parse=parse_realtime_message,
+            goodbye=ormsgpack.packb({"type": "audio_done"}),
+        )
         self._config = realtime_config(sample_rate=sample_rate, eager=eager)
-        self._connect = connect or _websockets_connect
-        self._socket: Any = None
 
     async def _send(self, message: dict[str, object]) -> None:
         if self._socket is not None:
@@ -212,7 +227,7 @@ class FishRealtimeStream:
 
         Audio may follow at once: Fish keeps what arrives before it confirms the settings.
         """
-        self._socket = await self._connect(self._url, key=self._key)
+        await super().open()
         await self._send(self._config)
 
     async def send_audio(self, pcm: bytes) -> None:
@@ -234,30 +249,18 @@ class FishRealtimeStream:
         """
         await self._send({"type": "audio_done"})
 
-    async def messages(self) -> AsyncIterator[TurnMessage]:
-        """Read messages until the connection closes.
 
-        Yields
-        ------
-        TurnStarted or TurnUpdate or TurnEnded or EagerTurnEnd or TurnResumed or TurnDropped \
-        or StreamError or StreamWarning
-            What Fish says, in order. Messages that need no action are skipped.
-        """
-        if self._socket is None:
-            return
-        try:
-            async for raw in self._socket:
-                if (message := parse_realtime_message(raw)) is not None:
-                    yield message
-        except Exception as exc:
-            if not is_closed(exc):
-                raise
+def _stream(url: str, key: str, settings: RecogniserSettings) -> FishRealtimeStream:
+    return FishRealtimeStream(url, key, sample_rate=SAMPLE_RATE, eager=settings.stt.eager)
 
-    async def close(self) -> None:
-        """Close, which ends the session and its billing. Safe to call twice."""
-        socket, self._socket = self._socket, None
-        if socket is None:
-            return
-        with contextlib.suppress(Exception):  # it may be closed already
-            await socket.send(ormsgpack.packb({"type": "audio_done"}))
-        await socket.close()
+
+FISH_REALTIME: Final = Recogniser(
+    name="fish-realtime",
+    label="Fish",
+    extra=_EXTRA,
+    key_name="FISH_API_KEY",
+    key=lambda settings: settings.fish_key,
+    url=lambda settings: realtime_url(settings.fish_base),
+    stream=_stream,
+    min_silence_frames=_SILENCE_FLOOR_S * MS_PER_S // FRAME_MS,
+)

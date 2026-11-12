@@ -2,32 +2,22 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import math
 import random
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Final, Literal, Self, cast
+from typing import Any, Final, Self, cast
 
-from fish_audio_suite_kit._charsets import utf8_text
-from fish_audio_suite_kit.env import parse_number
+from fish_audio_suite_kit._charsets import cut_at_control, is_header_safe, utf8_text
+from fish_audio_suite_kit._values import parse_number
 from fish_audio_suite_kit.payloads import AsrBody
 
 __all__ = [
     "FISH_ASR_PATH",
-    "FISH_BACKOFF_CAP_S",
-    "FISH_NON_JSON_MESSAGE",
-    "FISH_NON_OBJECT_MESSAGE",
-    "FISH_RETRY_AFTER_CAP_S",
     "FISH_RETRY_ATTEMPTS",
-    "FISH_TIMEOUT_MESSAGE",
-    "FISH_TIMEOUT_STATUS",
     "FISH_TTS_PATH",
-    "FISH_UNREACHABLE_MESSAGE",
-    "FISH_UNREACHABLE_STATUS",
-    "FishAudioSuiteError",
     "FishAuthError",
     "FishErrorBody",
     "FishHttpError",
@@ -35,12 +25,9 @@ __all__ = [
     "FishTimeoutError",
     "FishUpstreamError",
     "bearer",
-    "describe_request_error",
-    "describe_transport_error",
     "fish_attempt_exhausted",
     "fish_backoff_s",
-    "fish_error_body",
-    "fish_sleep_before_retry",
+    "fish_request_id",
     "parse_asr_body",
     "parse_fish_error",
     "retry_after_s",
@@ -66,11 +53,7 @@ _AUTH_STATUSES: Final = frozenset({401, 402, 403})
 _SECONDS_RE: Final = re.compile(r"[0-9]+(?:\.[0-9]+)?")
 
 
-class FishAudioSuiteError(Exception):
-    """Base class for the errors this toolkit raises on purpose."""
-
-
-class FishHttpError(FishAudioSuiteError):
+class FishHttpError(Exception):
     """A Fish failure after retries, or a status that should not be retried.
 
     Attributes
@@ -94,7 +77,10 @@ class FishHttpError(FishAudioSuiteError):
         ----------
         status : int
             HTTP status. ``FishHttpError(401, ...)`` is a ``FishAuthError``, so code
-            that catches by type sees the same class whichever way the error was built.
+            that catches by type sees the class that matches the status: ``FishAuthError``
+            for 401, 402 and 403, ``FishRateLimitError`` for 429, ``FishTimeoutError``
+            for 504, ``FishUpstreamError`` for any other 5xx, and ``FishHttpError`` for
+            the rest.
         message : str
             Not used here. Stored by ``__init__``.
         retry_after : float or None, optional
@@ -148,43 +134,6 @@ class FishHttpError(FishAudioSuiteError):
     def retryable(self) -> bool:
         """Whether the same request can be tried again (429 and 5xx)."""
         return should_retry_fish_status(self.status)
-
-    @classmethod
-    def from_status(
-        cls,
-        status: int,
-        message: str,
-        *,
-        retry_after: float | None = None,
-    ) -> FishHttpError:
-        """Build the error class that matches an HTTP status.
-
-        Parameters
-        ----------
-        status : int
-            HTTP status.
-        message : str
-            Human-readable message.
-        retry_after : float or None, optional
-            Seconds from a ``Retry-After`` header.
-
-        Returns
-        -------
-        FishHttpError
-            ``FishAuthError`` for 401, 402 and 403, ``FishRateLimitError`` for 429,
-            ``FishTimeoutError`` for 504, ``FishUpstreamError`` for any other
-            5xx, and a plain ``FishHttpError`` for the rest.
-
-        Examples
-        --------
-        >>> FishHttpError.from_status(429, "slow down", retry_after=3).retry_after
-        3.0
-        >>> type(FishHttpError.from_status(503, "down")).__name__
-        'FishUpstreamError'
-        >>> FishHttpError.from_status(404, "missing").retryable
-        False
-        """
-        return FishHttpError(int(status), message, retry_after=retry_after)
 
     @classmethod
     def for_unreachable(cls) -> FishUpstreamError:
@@ -305,35 +254,6 @@ def fish_backoff_s(
     return wait
 
 
-async def fish_sleep_before_retry(
-    attempt: int,
-    *,
-    retry_after: float | None = None,
-    rng: random.Random | None = None,
-) -> bool:
-    """Sleep with jitter before another try.
-
-    Parameters
-    ----------
-    attempt : int
-        Zero-based attempt that just failed.
-    retry_after : float or None, optional
-        Seconds from a ``Retry-After`` header. See ``fish_backoff_s``.
-    rng : random.Random or None, optional
-        Source of jitter.
-
-    Returns
-    -------
-    bool
-        True after sleeping, so the caller should try again. False when this
-        was the last attempt and nothing was slept.
-    """
-    if fish_attempt_exhausted(attempt):
-        return False
-    await asyncio.sleep(fish_backoff_s(attempt, retry_after=retry_after, rng=rng))
-    return True
-
-
 def bearer(key: str) -> str:
     """Build an ``Authorization`` header value.
 
@@ -350,9 +270,7 @@ def bearer(key: str) -> str:
     token = key.strip()
     # A newline would split the header, and a non-ASCII character cannot be
     # encoded into it. Send an empty token so the upstream answers 401.
-    if any(ord(ch) < 32 or ord(ch) >= 127 for ch in token):
-        token = ""
-    return f"Bearer {token}"
+    return f"Bearer {token if is_header_safe(token) else ''}"
 
 
 def parse_asr_body(body: object) -> tuple[AsrBody, str]:
@@ -436,53 +354,9 @@ def retry_after_s(headers: Mapping[str, str] | None) -> float | None:
     return seconds
 
 
-def describe_transport_error(exc: BaseException | None, *, timed_out: bool) -> tuple[int, str]:
-    """Map a transport failure to a status and message.
-
-    Parameters
-    ----------
-    exc : BaseException or None
-        The caught error. It is accepted so callers keep one call shape, and it is
-        never read: its text can name hosts, addresses or errno values, so it
-        must not reach a client. A caller that wants the detail logs ``exc``.
-    timed_out : bool
-        True when the caller already classified ``exc`` as its timeout type.
-
-    Returns
-    -------
-    tuple of int and str
-        ``(504, "Fish request timed out")`` on timeout, otherwise the pair
-        ``(502, "Fish upstream unreachable")``.
-    """
-    del exc
-    if timed_out:
-        return FISH_TIMEOUT_STATUS, FISH_TIMEOUT_MESSAGE
-    return FISH_UNREACHABLE_STATUS, FISH_UNREACHABLE_MESSAGE
-
-
-def describe_request_error(
-    exc: BaseException, timeout_type: type[BaseException]
-) -> tuple[int, str]:
-    """Classify ``exc`` using the caller's timeout class.
-
-    Parameters
-    ----------
-    exc : BaseException
-        ``httpx.RequestError`` or a subclass.
-    timeout_type : type of BaseException
-        Usually ``httpx.TimeoutException``. Passed in so kit does not import httpx.
-
-    Returns
-    -------
-    tuple of int and str
-        See ``describe_transport_error``.
-    """
-    return describe_transport_error(exc, timed_out=isinstance(exc, timeout_type))
-
-
 @dataclass(frozen=True, slots=True)
 class FishErrorBody:
-    """A Fish ``{message, status}`` error, with the text already made safe.
+    """A Fish ``{message, status, code, request_id}`` error, with the text already made safe.
 
     Attributes
     ----------
@@ -490,10 +364,18 @@ class FishErrorBody:
         HTTP status of the error.
     message : str
         Error text after a UTF-8 round trip.
+    code : str
+        Fish's own error code, such as ``audio_too_long`` (``transcribe-1-pro`` sends one),
+        cut like a request id. Empty when the body has none.
+    request_id : str
+        The id Fish support traces the request by, from the body or ``x-request-id``.
+        Empty when neither has one.
     """
 
     status: int
     message: str
+    code: str = ""
+    request_id: str = ""
 
     @classmethod
     def of(cls, status: int, message: str) -> FishErrorBody:
@@ -509,55 +391,9 @@ class FishErrorBody:
         Returns
         -------
         FishErrorBody
-            The normalized body.
+            The normalized body, with no code and no request id.
         """
         return cls(int(status), utf8_text(str(message)))
-
-    def as_dict(self) -> dict[str, str | int]:
-        """Return the Fish wire shape ``{"message": ..., "status": ...}``."""
-        return {"message": self.message, "status": self.status}
-
-    def __getitem__(self, key: Literal["status", "message"]) -> str | int:
-        """Read a field by name, for code that reads the body as a dict.
-
-        Parameters
-        ----------
-        key : str
-            ``"status"`` or ``"message"``.
-
-        Returns
-        -------
-        str or int
-            The field value.
-
-        Raises
-        ------
-        KeyError
-            For any other key.
-        """
-        if key == "status":
-            return self.status
-        if key == "message":
-            return self.message
-        raise KeyError(key)
-
-
-def fish_error_body(status: int, message: str) -> dict[str, str | int]:
-    """Fish-shaped error object.
-
-    Parameters
-    ----------
-    status : int
-        HTTP status stored under ``status``.
-    message : str
-        Stored under ``message`` after a UTF-8 round trip.
-
-    Returns
-    -------
-    dict
-        ``{"message": ..., "status": ...}``.
-    """
-    return FishErrorBody.of(status, message).as_dict()
 
 
 def _as_dict(value: Any) -> dict[str, Any] | None:
@@ -573,9 +409,16 @@ def _nested_message(value: Any) -> Any:
     return data.get("message")
 
 
-def _read_message(value: Any) -> tuple[str | None, bool]:
+# Fish nests "message" one or two levels. A body nested deeper is junk, and reading
+# it to the bottom would raise RecursionError.
+_MESSAGE_DEPTH: Final = 16
+
+
+def _read_message(value: Any, depth: int = 0) -> tuple[str | None, bool]:
     # A blank string or an object with no text carries no detail. Keep looking
     # in the other fields before falling back to "error" or "HTTP <status>".
+    if depth > _MESSAGE_DEPTH:
+        return None, True
     if value is None or (isinstance(value, str) and not value.strip()):
         return None, False
     if isinstance(value, str):
@@ -584,7 +427,7 @@ def _read_message(value: Any) -> tuple[str | None, bool]:
         inner = _nested_message(value)
         # A nested list is a 422 payload: report its messages, joined, not the dict.
         if inner is not None and inner is not value:
-            found, _saw = _read_message(inner)
+            found, _saw = _read_message(inner, depth + 1)
             if found:
                 return found, True
         # One validation object is a one-item list. Never str() a dict: the
@@ -653,8 +496,64 @@ def _validation_msgs(items: list[Any]) -> str | None:
     return "; ".join(parts)
 
 
-def parse_fish_error(status: int, raw: Any) -> FishErrorBody:
-    """Normalize a Fish error body into a status and a message.
+# Fish ids are short. A longer value is cut so it cannot fill a log line.
+_REQUEST_ID_MAX_CHARS: Final = 128
+
+
+def _short_id(value: object) -> str:
+    if isinstance(value, bool) or not isinstance(value, (str, int)):
+        return ""
+    text = cut_at_control(str(value).strip())
+    return utf8_text(text[:_REQUEST_ID_MAX_CHARS].strip())
+
+
+def fish_request_id(
+    body: object,
+    headers: Mapping[str, str] | None,
+    *,
+    header_first: bool = False,
+) -> str:
+    r"""Return the request id Fish sent, for a log line Fish support can trace.
+
+    Parameters
+    ----------
+    body : object
+        The decoded JSON body. ``transcribe-1-pro`` puts ``request_id`` in it, on
+        success and on errors. Anything but a JSON object has none.
+    headers : Mapping of str to str, or None
+        Response headers. Fish also sends the id as ``x-request-id``. The name is
+        looked up as written, so pass ``httpx.Headers`` (case-blind) or a lowercase dict.
+    header_first : bool, optional
+        Prefer the header when both carry an id. Default False, which prefers the body.
+
+    Returns
+    -------
+    str
+        The id, stripped, cut at its first control character and to 128 characters, or
+        ``""`` when neither place has a string or a number.
+
+    Examples
+    --------
+    >>> fish_request_id({"request_id": "req-1"}, {"x-request-id": "req-2"})
+    'req-1'
+    >>> fish_request_id(None, {"x-request-id": " req-2\nX-Evil: 1"})
+    'req-2'
+    """
+    data = _as_dict(body)
+    from_body = _short_id(data.get("request_id")) if data is not None else ""
+    from_header = _short_id(headers.get("x-request-id")) if headers else ""
+    first, second = (from_header, from_body) if header_first else (from_body, from_header)
+    return first or second
+
+
+def parse_fish_error(
+    status: int,
+    raw: Any,
+    headers: Mapping[str, str] | None = None,
+    *,
+    header_first: bool = False,
+) -> FishErrorBody:
+    """Normalize a Fish error body into a status, a message and Fish's ids.
 
     Parameters
     ----------
@@ -663,13 +562,17 @@ def parse_fish_error(status: int, raw: Any) -> FishErrorBody:
         outside 400-599.
     raw : Any
         The body: bytes, text, JSON, a decoded object or a validation list.
+    headers : Mapping of str to str, or None, optional
+        Response headers, read for ``x-request-id`` as ``fish_request_id`` reads them.
+    header_first : bool, optional
+        Prefer the header's request id when the body has one too. Default False.
 
     Returns
     -------
     FishErrorBody
-        The status and a readable message. Validation lists become their
-        messages joined, a plain-text body is used as is, and an empty one
-        becomes ``"HTTP <status>"``.
+        The status and a readable message, with the body's ``code`` and the request id
+        when Fish sent them. Validation lists become their messages joined, a
+        plain-text body is used as is, and an empty one becomes ``"HTTP <status>"``.
 
     Examples
     --------
@@ -677,7 +580,22 @@ def parse_fish_error(status: int, raw: Any) -> FishErrorBody:
     'Insufficient credits'
     >>> parse_fish_error(500, b"").message
     'HTTP 500'
+    >>> body = {"message": "too long", "code": "audio_too_long", "request_id": "req-1"}
+    >>> found = parse_fish_error(400, body)
+    >>> found.code, found.request_id
+    ('audio_too_long', 'req-1')
     """
+    detail, data = _error_detail(status, raw)
+    return FishErrorBody(
+        detail.status,
+        detail.message,
+        code=_short_id(data.get("code")) if data is not None else "",
+        request_id=fish_request_id(data, headers, header_first=header_first),
+    )
+
+
+def _error_detail(status: int, raw: Any) -> tuple[FishErrorBody, dict[str, Any] | None]:
+    # The decoded object is returned too, so the ids are read from the same parse.
     data = _as_dict(raw)
     if data is not None:
         msg = _message_of(data)
@@ -686,24 +604,25 @@ def parse_fish_error(status: int, raw: Any) -> FishErrorBody:
         # 200 or 0 in the body must not turn an HTTP 500 into a success.
         if code < 400 or code > 599:
             code = status
-        return FishErrorBody.of(code, _fallback_message(text, status))
+        return FishErrorBody.of(code, _fallback_message(text, status)), data
 
     if isinstance(raw, list):
         summary = _validation_msgs(cast(list[Any], raw))
         if summary:
-            return FishErrorBody.of(status, summary)
+            return FishErrorBody.of(status, summary), None
 
     stripped = _decoded(raw).strip()
     if stripped:
         try:
             loaded = json.loads(stripped)
-        # Deep nesting such as 20k "[" raises RecursionError, not a decode error.
-        except (json.JSONDecodeError, RecursionError):
-            return FishErrorBody.of(status, stripped)
+        # Deep nesting such as 20k "[" raises RecursionError. ValueError covers a
+        # decode error and an integer past Python's 4300-digit limit.
+        except (ValueError, RecursionError):
+            return FishErrorBody.of(status, stripped), None
         if isinstance(loaded, list):
             summary = _validation_msgs(cast(list[Any], loaded))
             if summary:
-                return FishErrorBody.of(status, summary)
+                return FishErrorBody.of(status, summary), None
         elif _as_dict(loaded) is not None:
-            return parse_fish_error(status, loaded)
-    return FishErrorBody.of(status, _fallback_message(stripped, status))
+            return _error_detail(status, loaded)
+    return FishErrorBody.of(status, _fallback_message(stripped, status)), None

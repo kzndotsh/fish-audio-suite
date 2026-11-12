@@ -1,51 +1,61 @@
-"""Fish ASR over httpx. Retries 429, 5xx and network errors."""
+"""Fish ASR over httpx, and the recogniser the batch path hears a clip with.
+
+``fish_asr`` is the request: it retries 429, 5xx and network errors and returns the cleaned
+text. ``transcribe_clip`` is the recogniser: it times the request, shares its trace id with the
+reply, and turns every failure into the reason there is no turn.
+"""
 
 from __future__ import annotations
 
 import json
 import threading
-from collections.abc import Mapping
+import time
+from collections.abc import Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
-from typing import Any, Final, cast
+from typing import Any, Final, NoReturn
 
 import httpx
 
 from fish_audio_suite_kit import (
     FISH_ASR_PATH,
-    FISH_RETRY_ATTEMPTS,
-    AsrBody,
+    FishAuthError,
     FishHttpError,
     SuiteDefaults,
     asr_language_hint,
     asr_tone,
     bearer,
-    describe_request_error,
-    fish_attempt_exhausted,
-    fish_backoff_s,
-    is_asr_hallucination,
-    is_caption_watermark,
+    clean_transcript,
+    cut_at_control,
+    elapsed_ms,
+    fish_request_id,
+    make_traceparent,
     parse_asr_body,
     parse_fish_error,
     retry_after_s,
-    scrub_asr,
     strip_base,
-    without_watermark_segments,
+    trace_id_of,
 )
-from fish_audio_suite_voice.debug import debug, with_detail
-from fish_audio_suite_voice.pause import sleep_unless
-from fish_audio_suite_voice.tune import HTTP_KEEPALIVE_S
-from fish_audio_suite_voice.ws_tap import public_meta
+from fish_audio_suite_voice.cancel import never
+from fish_audio_suite_voice.config import VoiceCliConfig
+from fish_audio_suite_voice.debug import debug, warn
+from fish_audio_suite_voice.log_meta import public_meta
+from fish_audio_suite_voice.pause import Retry, fish_retries
+from fish_audio_suite_voice.recognised import NoTurn, Transcript
+from fish_audio_suite_voice.wording import transport_failure
 
 __all__ = [
     "AsrResult",
     "asr_client",
     "fish_asr",
+    "transcribe_clip",
 ]
 
 _ASR_TIMEOUT_S: Final = 60.0
 _ASR_CONNECT_S: Final = 10.0
-_REQUEST_ID_MAX: Final = 128
+# Idle seconds the session's ASR connection stays open. httpx's default of 5 s is shorter
+# than the gap between two turns, so each turn would pay a new TLS handshake.
+_ASR_KEEPALIVE_S: Final = 120.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,46 +76,6 @@ class AsrResult:
     tone: tuple[str, ...] = ()
 
 
-def _request_id(headers: Mapping[str, str], body: object) -> str:
-    """Return Fish's request id from ``x-request-id`` or the body, or ``""``.
-
-    transcribe-1-pro sends it on success and on errors. Fish support asks for it.
-    """
-    from_body = body.get("request_id") if isinstance(body, dict) else None
-    for value in (headers.get("x-request-id"), from_body):
-        if isinstance(value, str) and (line := value.strip()):
-            return line.splitlines()[0][:_REQUEST_ID_MAX]
-    return ""
-
-
-def _json_or_none(text: str) -> object:
-    try:
-        return json.loads(text)
-    except (ValueError, RecursionError):
-        return None
-
-
-async def _pause_or_raise(
-    attempt: int,
-    error: FishHttpError,
-    cause: BaseException | None,
-    cancel: threading.Event | None,
-    retry_after: float | None = None,
-) -> bool:
-    """Return whether quit landed during the backoff and the next post must not run."""
-    if fish_attempt_exhausted(attempt):
-        if cause is None:
-            raise error
-        raise error from cause
-    wait = fish_backoff_s(attempt, retry_after=retry_after)
-    # Quit during the wait must not post the next try.
-    return await sleep_unless(wait, cancel.is_set if cancel is not None else _never)
-
-
-def _never() -> bool:
-    return False
-
-
 async def _post_fish(
     client: httpx.AsyncClient,
     url: str,
@@ -113,36 +83,43 @@ async def _post_fish(
     **kwargs: Any,
 ) -> httpx.Response | None:
     """Post once per attempt. None means the quit flag stopped the retries."""
-    last_error: FishHttpError | None = None
-    for attempt in range(FISH_RETRY_ATTEMPTS):
-        if cancel is not None and cancel.is_set():
-            return None
+
+    async def attempt(_number: int) -> httpx.Response | Retry[httpx.Response]:
         try:
             response = await client.post(url, **kwargs)
         except httpx.RequestError as exc:
-            status, message = describe_request_error(exc, httpx.TimeoutException)
-            last_error = FishHttpError.from_status(status, with_detail(message, exc))
-            if await _pause_or_raise(attempt, last_error, exc, cancel):
-                return None
-            continue
+            return Retry(_raises(transport_failure(exc), exc))
         if response.status_code >= 400:
-            detail = parse_fish_error(response.status_code, response.text)
-            request_id = _request_id(response.headers, _json_or_none(response.text))
-            message = (
-                f"{detail.message} (request_id {request_id})" if request_id else detail.message
+            detail = parse_fish_error(
+                response.status_code, response.text, response.headers, header_first=True
             )
-            last_error = FishHttpError.from_status(
+            message = (
+                f"{detail.message} (request_id {detail.request_id})"
+                if detail.request_id
+                else detail.message
+            )
+            error = FishHttpError(
                 detail.status,
                 message,
                 retry_after=retry_after_s(response.headers),
             )
-            if last_error.retryable:
-                if await _pause_or_raise(attempt, last_error, None, cancel, last_error.retry_after):
-                    return None
-                continue
-            raise last_error
+            if not error.retryable:
+                raise error
+            return Retry(_raises(error), error.retry_after)
         return response
-    raise last_error or FishHttpError.for_unreachable()
+
+    return await fish_retries(attempt, cancel.is_set if cancel is not None else never)
+
+
+def _raises(error: FishHttpError, cause: BaseException | None = None) -> Callable[[], NoReturn]:
+    """Return what raises ``error`` (from ``cause``) when no attempt is left."""
+
+    def give_up() -> NoReturn:
+        if cause is None:
+            raise error
+        raise error from cause
+
+    return give_up
 
 
 def asr_client() -> httpx.AsyncClient:
@@ -157,7 +134,7 @@ def asr_client() -> httpx.AsyncClient:
     """
     return httpx.AsyncClient(
         timeout=httpx.Timeout(_ASR_TIMEOUT_S, connect=_ASR_CONNECT_S),
-        limits=httpx.Limits(keepalive_expiry=HTTP_KEEPALIVE_S),
+        limits=httpx.Limits(keepalive_expiry=_ASR_KEEPALIVE_S),
     )
 
 
@@ -227,7 +204,7 @@ async def fish_asr(
     form: dict[str, str] = {}
     # A newline in the language value starts another multipart part, and Fish
     # may answer 400 to a hint that is not a two-letter code.
-    lang = asr_language_hint(_form_language(language))
+    lang = asr_language_hint(cut_at_control(language.strip()).strip())
     if lang:
         form["language"] = lang
     async with AsyncExitStack() as stack:
@@ -256,52 +233,85 @@ async def fish_asr(
             lang or "auto",
             meta.get("text_chars"),
             response.headers.get("x-fish-trace-id", "")[:12],
-            _request_id(response.headers, body) or "-",
+            fish_request_id(body, response.headers, header_first=True) or "-",
         )
     parsed, raw_text = parse_asr_body(body)
     tone = asr_tone(raw_text) if hear_tone else ()
-    return AsrResult(_clean_text(raw_text, parsed), tone)
+    # The loop answers only this text: it falls back to the segments when the
+    # transcript is blank or a watermark, and drops watermark segments beside speech.
+    clean = clean_transcript(
+        raw_text.strip(),
+        parsed,
+        strip_speakers=True,
+        strip_cues=True,
+    )
+    return AsrResult(clean.text, tone)
 
 
-def _clean_text(raw_text: str, parsed: AsrBody) -> str:
-    text = scrub_asr(raw_text.strip(), strip_cues=True)
-    # The loop answers only this string. When ``text`` is blank or a caption
-    # watermark, the segments may still hold the words, so use them instead.
-    if is_asr_hallucination(text):
-        alt = _segment_text(parsed)
-        if alt and not is_asr_hallucination(alt):
-            return alt
-    # Real speech plus a watermark sentence passes the hallucination check, so
-    # the watermark would be answered too. Drop the segments that are watermarks.
-    trimmed = without_watermark_segments(text, parsed.get("segments"), strip_cues=True)
-    if trimmed != text and trimmed and not is_asr_hallucination(trimmed):
-        return trimmed
-    return text
+async def transcribe_clip(
+    wav: bytes,
+    config: VoiceCliConfig,
+    *,
+    cancel: threading.Event,
+    client: httpx.AsyncClient,
+) -> Transcript | NoTurn:
+    """Hear one clip with Fish ASR.
 
+    Parameters
+    ----------
+    wav : bytes
+        One utterance.
+    config : VoiceCliConfig
+        The key, base, language hint, model and whether to keep the tone.
+    cancel : threading.Event
+        The session's quit flag. Once it is set the clip is ``stopped``, whatever the request
+        did, and no failure is reported.
+    client : httpx.AsyncClient
+        The session's ASR client.
 
-def _form_language(language: str) -> str:
-    text = language.strip()
-    cut = next((index for index, ch in enumerate(text) if ord(ch) < 32), None)
-    if cut is not None:
-        text = text[:cut].strip()
-    return text
+    Returns
+    -------
+    Transcript or NoTurn
+        The words, timed from the start of the request, with the trace id the reply's TTS
+        turn shares. Otherwise ``fatal`` when Fish refuses the key, ``again`` for any other
+        Fish or network failure, which is worth another listen, or ``stopped`` on quit.
 
-
-def _segment_text(body: AsrBody) -> str:
-    # Fish may send any shape. The kit only checks "text", so each piece is
-    # narrowed here before it is read.
-    segments: object = body.get("segments")
-    if not isinstance(segments, list):
-        return ""
-    parts: list[str] = []
-    for seg in cast(list[object], segments):
-        if not isinstance(seg, dict):
-            continue
-        raw = cast(dict[str, object], seg).get("text")
-        if not isinstance(raw, str):
-            continue
-        piece = scrub_asr(raw.strip(), strip_cues=True)
-        # A watermark segment beside real speech would be spoken with it.
-        if piece and not is_caption_watermark(piece):
-            parts.append(piece)
-    return " ".join(parts)
+    Raises
+    ------
+    Exception
+        Anything that is not a Fish or network failure is a bug and propagates, instead of
+        the loop listening again in silence.
+    """
+    started = time.perf_counter()
+    parent = make_traceparent()
+    try:
+        heard = await fish_asr(
+            wav,
+            config.fish_api_key,
+            base=config.fish_base,
+            language=config.fish_asr_language,
+            model=config.asr_model,
+            extra_headers={"traceparent": parent},
+            cancel=cancel,
+            client=client,
+            hear_tone=config.hear_tone,
+        )
+    except FishHttpError as e:
+        if cancel.is_set():
+            return NoTurn("stopped")
+        warn(f"[asr] {e.status} {e.message}")
+        return NoTurn("fatal" if isinstance(e, FishAuthError) else "again")
+    except (httpx.HTTPError, OSError) as e:
+        if cancel.is_set():
+            return NoTurn("stopped")
+        warn(f"[asr] {e}")
+        return NoTurn("again")
+    if cancel.is_set():
+        return NoTurn("stopped")
+    return Transcript(
+        heard.text,
+        tone=heard.tone,
+        asr_ms=elapsed_ms(started),
+        started=started,
+        trace_id=trace_id_of(parent),
+    )

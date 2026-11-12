@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import threading
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from dataclasses import replace
 from typing import Any, cast
 
@@ -16,28 +16,40 @@ from wire_helpers import (
     ScriptedSocket,
     collect_events,
     make_run,
+    play_stream,
+    spec_sent,
     stream_events,
     stream_text,
 )
 
 from fish_audio_suite_kit import (
-    FISH_RETRY_ATTEMPTS,
+    CueStyle,
     FishAuthError,
     FishLatency,
     SuiteDefaults,
 )
-from fish_audio_suite_voice.playback import PlaybackSink
+from fish_audio_suite_voice.playback import MpvSink, PlaybackSink
 from fish_audio_suite_voice.speaker import FishSpeaker
-from fish_audio_suite_voice.tts_turn import run_turn
+from fish_audio_suite_voice.tts_text import WholeText, text_events
+from fish_audio_suite_voice.tts_tune import TtsTune
+from fish_audio_suite_voice.tts_turn import run_turn, turn_failure
 from fish_audio_suite_voice.wire import (
     FlushEvent,
     TextEvent,
     TtsResult,
-    _pump_ws_audio,
-    text_events,
+    TurnSpec,
     tts_result,
-    turn_failure,
 )
+
+
+@pytest.fixture
+def spec_of(monkeypatch: pytest.MonkeyPatch) -> Callable[..., TurnSpec]:
+    """Speak with a ``FishSpeaker`` and return the ``TurnSpec`` its websocket opened with."""
+
+    def spec(tts: FishSpeaker, sink: PlaybackSink | None = None) -> TurnSpec:
+        return spec_sent(monkeypatch, tts, sink)
+
+    return spec
 
 
 def test_text_events_flush_only_after_text() -> None:
@@ -55,7 +67,7 @@ def test_text_events_cancel_drops_the_flush() -> None:
     cancel = threading.Event()
 
     async def collect() -> list[TextEvent | FlushEvent]:
-        stream = text_events("word " * 30, cancel, 20)
+        stream = text_events("word " * 30, cancel, 20, style=CueStyle())
         first = await anext(stream)
         cancel.set()
         rest = [event async for event in stream]
@@ -86,7 +98,7 @@ def test_split_strikethrough_is_not_spoken() -> None:
 def test_partial_cut_does_not_split_a_cue() -> None:
     # A 40-character hard cut used to send "[whi" and then "spering]".
     # A period inside the cue used to send "[hello." and then "there]".
-    tts = FishSpeaker(api_key="k", voice_id="v", partial_chars=40)
+    tts = FishSpeaker(api_key="k", voice_id="v", tune=TtsTune(partial_chars=40))
 
     async def pieces_of(sample: str) -> list[str]:
         events = [event async for event in stream_events(tts, [sample], threading.Event())]
@@ -102,23 +114,31 @@ def test_partial_cut_does_not_split_a_cue() -> None:
     assert any("[hello. there]" in piece for piece in noted)
 
 
-def test_sdk_limits_are_applied_before_the_socket() -> None:
+def test_sdk_limits_are_applied_before_the_socket(spec_of: Callable[..., TurnSpec]) -> None:
     tts = FishSpeaker(
         api_key="k",
         voice_id="v",
-        latency="low",
-        chunk_length=800,
-        volume=25,
-        speed=4,
-        temperature=1.5,
-        top_p=-0.2,
+        tune=TtsTune(
+            latency="low",
+            chunk_length=800,
+            volume=25,
+            speed=4,
+            temperature=1.5,
+            top_p=-0.2,
+        ),
     )
-    spec = tts._spec()
+    spec = spec_of(tts)
     assert spec.latency == "balanced"
     # Out-of-contract spellings that a caller reading an env var could pass.
-    loud = FishSpeaker(api_key="k", voice_id="v", latency=cast(FishLatency, " LOW "))._spec()
+    loud = spec_of(
+        FishSpeaker(api_key="k", voice_id="v", tune=TtsTune(latency=cast(FishLatency, " LOW ")))
+    )
     assert loud.latency == "balanced"
-    spaced = FishSpeaker(api_key="k", voice_id="v", latency=cast(FishLatency, " balanced "))._spec()
+    spaced = spec_of(
+        FishSpeaker(
+            api_key="k", voice_id="v", tune=TtsTune(latency=cast(FishLatency, " balanced "))
+        )
+    )
     assert spaced.latency == "balanced"
     assert spec.speed == 2.0
     assert spec.config.temperature == 1.0
@@ -126,75 +146,83 @@ def test_sdk_limits_are_applied_before_the_socket() -> None:
     assert spec.config.chunk_length == 300
     assert spec.config.prosody is not None
     assert spec.config.prosody.volume == 20.0
-    quiet = FishSpeaker(api_key="k", voice_id="v", volume=-40)
-    prosody = quiet._tts_config().prosody
+    quiet = FishSpeaker(api_key="k", voice_id="v", tune=TtsTune(volume=-40))
+    prosody = spec_of(quiet).config.prosody
     assert prosody is not None
     assert prosody.volume == -20.0
 
 
-def test_voice_id_and_model_survive_the_socket_start() -> None:
-    spec = FishSpeaker(
-        api_key="k",
-        voice_id="voice-\ud800",
-        model="s2.1-pro\nbad",
-    )._spec()
+def test_voice_id_and_model_survive_the_socket_start(spec_of: Callable[..., TurnSpec]) -> None:
+    spec = spec_of(
+        FishSpeaker(
+            api_key="k",
+            voice_id="voice-\ud800",
+            model="s2.1-pro\nbad",
+        )
+    )
     assert "\ud800" not in spec.voice_id
     assert spec.voice_id.startswith("voice-")
     assert spec.model == SuiteDefaults().tts_model
     assert "\n" not in spec.model
     ormsgpack.packb({"reference_id": spec.voice_id})
-    kept = FishSpeaker(api_key="k", voice_id="v", model="MyModel")._spec()
+    kept = spec_of(FishSpeaker(api_key="k", voice_id="v", model="MyModel"))
     assert kept.model == "MyModel"
 
 
-def test_zero_sample_rate_is_replaced_before_the_socket() -> None:
+def test_zero_sample_rate_is_replaced_before_the_socket(spec_of: Callable[..., TurnSpec]) -> None:
     for rate in (0, 2**32):
-        spec = FishSpeaker(api_key="k", voice_id="v", sample_rate=rate)._spec()
+        spec = spec_of(FishSpeaker(api_key="k", voice_id="v", tune=TtsTune(sample_rate=rate)))
         assert spec.sample_rate == SuiteDefaults().sample_rate
         assert spec.config.sample_rate == SuiteDefaults().sample_rate
 
 
-def test_pcm16_is_a_format_the_socket_accepts() -> None:
-    spec = FishSpeaker(api_key="k", voice_id="v", audio_format="pcm16")._spec()
+def test_fish_is_asked_for_the_format_the_sink_takes(spec_of: Callable[..., TurnSpec]) -> None:
+    tts = FishSpeaker(api_key="k", voice_id="v")
+    # A sink that does not say, such as one written before sinks declared a format, gets PCM.
+    spec = spec_of(tts, RecordingSink())
     assert spec.audio_format == "pcm"
     assert spec.config.format == "pcm"
-    mp3 = FishSpeaker(api_key="k", voice_id="v", audio_format="AAC")._spec()
+
+    # The class, not an instance: building an MpvSink needs mpv installed.
+    class Mp3Sink(RecordingSink):
+        audio_format = MpvSink.audio_format
+
+    mp3 = spec_of(tts, Mp3Sink())
     assert mp3.audio_format == "mp3"
     assert mp3.config.format == "mp3"
+
+    class OggSink(RecordingSink):
+        audio_format = "ogg"
+
+    with pytest.raises(ValueError, match="'ogg'"):
+        spec_of(tts, OggSink())
 
 
 def test_turn_failure_retries_only_before_audio(capsys: pytest.CaptureFixture[str]) -> None:
     slow = RateLimitError(429, "slow down", None)
     cancel = threading.Event()
-    retryable = turn_failure(slow, attempt=0, sent_text="hello", got_audio=False, cancel=cancel)
+    retryable = turn_failure(slow, sent_text="hello", got_audio=False, cancel=cancel)
     assert retryable.retry is True
-    heard = turn_failure(slow, attempt=0, sent_text="hello", got_audio=True, cancel=cancel)
+    heard = turn_failure(slow, sent_text="hello", got_audio=True, cancel=cancel)
     assert heard.retry is False
     assert heard.error_status == 429
-    empty = turn_failure(slow, attempt=0, sent_text="", got_audio=False, cancel=cancel)
+    empty = turn_failure(slow, sent_text="", got_audio=False, cancel=cancel)
     assert empty.retry is False
-    last = turn_failure(
-        slow,
-        attempt=FISH_RETRY_ATTEMPTS - 1,
-        sent_text="hello",
-        got_audio=False,
-        cancel=cancel,
-    )
+    # Out of attempts, fish_retries gives the retryable failure up.
+    last = retryable.give_up()
     assert last.retry is False
+    assert last.error_status == 429
     cancel.set()
-    barged = turn_failure(slow, attempt=0, sent_text="hello", got_audio=False, cancel=cancel)
+    barged = turn_failure(slow, sent_text="hello", got_audio=False, cancel=cancel)
     assert barged.retry is False
     assert barged.error_status is None
     assert "no audio" not in capsys.readouterr().err
 
 
-def test_turn_failure_classifies_socket_validation_and_groups(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
+def test_turn_failure_classifies_socket_validation_and_groups() -> None:
     cancel = threading.Event()
     socket = turn_failure(
         WebSocketError("dropped"),
-        attempt=0,
         sent_text="hello",
         got_audio=False,
         cancel=cancel,
@@ -202,7 +230,6 @@ def test_turn_failure_classifies_socket_validation_and_groups(
     assert socket.retry is True
     invalid = turn_failure(
         ValidationError("bad voice"),
-        attempt=0,
         sent_text="hello",
         got_audio=False,
         cancel=cancel,
@@ -211,7 +238,6 @@ def test_turn_failure_classifies_socket_validation_and_groups(
     assert invalid.error_status == 400
     grouped = turn_failure(
         BaseExceptionGroup("turn", [RateLimitError(503, "down", None)]),
-        attempt=0,
         sent_text="hello",
         got_audio=False,
         cancel=cancel,
@@ -222,7 +248,6 @@ def test_turn_failure_classifies_socket_validation_and_groups(
             "turn",
             [asyncio.CancelledError(), RateLimitError(503, "down", None)],
         ),
-        attempt=0,
         sent_text="hello",
         got_audio=False,
         cancel=cancel,
@@ -230,7 +255,6 @@ def test_turn_failure_classifies_socket_validation_and_groups(
     assert hidden.retry is True
     only_cancel = turn_failure(
         BaseExceptionGroup("turn", [asyncio.CancelledError()]),
-        attempt=0,
         sent_text="hello",
         got_audio=False,
         cancel=cancel,
@@ -238,40 +262,33 @@ def test_turn_failure_classifies_socket_validation_and_groups(
     assert only_cancel.retry is False
     refused = turn_failure(
         httpx.ConnectError("refused"),
-        attempt=0,
         sent_text="hello",
         got_audio=False,
         cancel=cancel,
     )
     assert refused.retry is True
-    assert "status=502" in capsys.readouterr().err
+    assert refused.error_status == 502
 
 
 def test_pump_does_not_play_audio_that_arrives_after_cancel(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    run, sink = make_run()
-    closed = 0
+    sink = RecordingSink()
+    cancel = threading.Event()
 
-    async def close_client() -> None:
-        nonlocal closed
-        closed += 1
-
-    async def chunks():
+    async def chunks() -> AsyncIterator[bytes]:
         yield b"\x01\x02"
         await asyncio.sleep(0.05)
-        run.cancel.set()
+        cancel.set()
         yield b"\x03\x04"
         yield b""
 
-    async def pump() -> None:
-        await _pump_ws_audio(chunks(), run, close_client)
-
-    asyncio.run(pump())
+    result, socket = asyncio.run(play_stream(chunks(), sink, cancel))
     assert sink.chunks == [b"\x01\x02"]
-    assert run.audio.got_audio is True
-    assert run.audio.tts_first_audio_ms is not None
-    assert closed == 1
+    assert result.got_audio is True
+    assert result.tts_first_audio_ms is not None
+    assert result.cancelled is True
+    assert socket.closed >= 1
     assert "[tts first audio ttfa]" not in capsys.readouterr().out
 
 
@@ -288,17 +305,12 @@ def test_cancel_scope_after_audio_keeps_only_the_played_words(
     )
     run, sink = make_run()
 
-    async def no_events():
-        if False:
-            yield ""
-
     result = asyncio.run(
         run_turn(
             run.spec,
-            no_events(),
+            WholeText("hello there friend", 40, CueStyle()),
             sink,
             threading.Event(),
-            sent_text="hello there friend",
             socket=socket,
         )
     )
@@ -310,7 +322,7 @@ def test_cancel_scope_after_audio_keeps_only_the_played_words(
 
 def test_cancelled_encoded_turn_leaves_history_empty() -> None:
     run, sink = make_run()
-    run.spec = replace(run.spec, audio_format="mp3")
+    run.spec = replace(run.spec, config=run.spec.config.model_copy(update={"format": "mp3"}))
     run.sent_text = "hello there friend"
     run.audio.got_audio = True
     run.cancel.set()
@@ -334,83 +346,75 @@ def test_spoken_estimate_uses_speed_and_the_sinks_output_latency() -> None:
     assert tts_result(run).spoken_so_far == ""
 
 
-def test_tts_spec_warns_once_when_it_swaps_a_format_or_latency(
-    capsys: pytest.CaptureFixture[str],
+def test_tts_spec_warns_once_when_it_swaps_a_latency(
+    spec_of: Callable[..., TurnSpec], capsys: pytest.CaptureFixture[str]
 ) -> None:
-    FishSpeaker(api_key="k", voice_id="v", audio_format="flac")._spec()
-    FishSpeaker(api_key="k", voice_id="v", audio_format="flac")._spec()
-    FishSpeaker(api_key="k", voice_id="v", audio_format="ogg")._spec()
-    FishSpeaker(api_key="k", voice_id="v", latency="low")._spec()
+    spec_of(
+        FishSpeaker(api_key="k", voice_id="v", tune=TtsTune(latency=cast(FishLatency, "turbo")))
+    )
+    spec_of(
+        FishSpeaker(api_key="k", voice_id="v", tune=TtsTune(latency=cast(FishLatency, "turbo")))
+    )
+    spec_of(FishSpeaker(api_key="k", voice_id="v", tune=TtsTune(latency="low")))
     err = capsys.readouterr().err
-    assert err.count("'flac'") == 1
-    assert "'ogg'" in err
+    assert err.count("'turbo'") == 1
     assert "'low'" in err
 
 
-def test_pump_does_not_let_the_reader_run_far_ahead_of_playback(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    run, sink = make_run()
+def test_pump_does_not_let_the_reader_run_far_ahead_of_playback() -> None:
     produced = 0
     lead: list[int] = []
 
-    async def close_client() -> None:
-        return None
+    class SlowSink(RecordingSink):
+        def write(self, chunk: bytes) -> None:
+            lead.append(produced - len(self.chunks))
+            time.sleep(0.01)  # a device write blocks while the reader is free to run on
+            super().write(chunk)
 
-    async def chunks():
+    async def chunks() -> AsyncIterator[bytes]:
         nonlocal produced
         for index in range(12):
             produced += 1
             yield bytes([index + 1]) * 4
 
-    original_write = sink.write
-
-    def slow_write(chunk: bytes) -> None:
-        lead.append(produced - len(sink.chunks))
-        time.sleep(0.01)
-        original_write(chunk)
-
-    monkeypatch.setattr(sink, "write", slow_write)
-    asyncio.run(_pump_ws_audio(chunks(), run, close_client))
+    sink = SlowSink()
+    asyncio.run(play_stream(chunks(), sink, threading.Event()))
     assert len(sink.chunks) == 12
     # One queued chunk plus the one being written plus one held by the reader.
     assert max(lead) <= 4
 
 
 def test_pump_waits_for_the_cancelled_reader_to_unwind() -> None:
-    run, sink = make_run()
     cleaned: list[str] = []
-    original_write = sink.write
+    cancel = threading.Event()
 
-    def write_then_cancel(chunk: bytes) -> None:
-        original_write(chunk)
-        run.cancel.set()
-
-    sink.write = write_then_cancel
-
-    async def close_client() -> None:
-        return None
+    class CancellingSink(RecordingSink):
+        def write(self, chunk: bytes) -> None:
+            super().write(chunk)
+            cancel.set()
 
     async def chunks() -> AsyncIterator[bytes]:
         try:
             yield b"\x01\x02"
             await asyncio.sleep(30)
         finally:
-            # A slow teardown. The pump must not return before it ends.
+            # A slow teardown. The turn must not return before it ends.
             await asyncio.sleep(0.05)
             cleaned.append("done")
 
-    async def pump() -> None:
-        await _pump_ws_audio(chunks(), run, close_client)
+    async def turn() -> None:
+        await play_stream(chunks(), CancellingSink(), cancel)
         assert cleaned == ["done"]
 
-    asyncio.run(pump())
+    asyncio.run(turn())
 
 
-def test_a_turn_spec_copies_and_freezes_its_trace_headers() -> None:
-    tts = FishSpeaker(api_key="k", voice_id="v", trace_headers={"traceparent": "00-a"})
-    spec = tts._spec()
-    tts.trace_headers["traceparent"] = "00-changed"
+def test_a_turn_spec_copies_and_freezes_its_trace_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    headers = {"traceparent": "00-a"}
+    spec = spec_sent(monkeypatch, FishSpeaker(api_key="k", voice_id="v"), trace_headers=headers)
+    headers["traceparent"] = "00-changed"
     assert spec.trace_headers["traceparent"] == "00-a"
     with pytest.raises(TypeError):
         cast(Any, spec.trace_headers)["x"] = "y"
@@ -425,8 +429,8 @@ def test_speak_takes_cancel_by_keyword_only() -> None:
 
 
 def test_a_sink_without_output_latency_still_finishes_the_turn() -> None:
-    class OldSink:
-        """Written against the protocol before output_latency_s existed."""
+    class PlainSink:
+        """Leaves out the optional ``output_latency_s``."""
 
         def start(self) -> None:
             return None
@@ -441,10 +445,29 @@ def test_a_sink_without_output_latency_still_finishes_the_turn() -> None:
             return 0
 
     run, _sink = make_run()
-    # The cast is the point: this sink deliberately lacks a member of the protocol.
-    run.sink = cast("PlaybackSink", OldSink())
+    run.sink = PlainSink()
     result = tts_result(run)
     assert result.bytes_played == 0
+
+
+@pytest.mark.parametrize(
+    ("status", "message", "failed", "fatal"),
+    [
+        (None, None, False, False),
+        (None, "socket dropped", True, False),
+        (503, "busy", True, False),
+        (429, "slow", True, False),
+        (401, "bad key", True, True),
+        (402, "no credit", True, True),
+        (403, "forbidden", True, True),
+    ],
+)
+def test_a_result_says_whether_fish_failed_and_whether_that_ends_the_session(
+    status: int | None, message: str | None, failed: bool, fatal: bool
+) -> None:
+    result = TtsResult("", 0, False, False, None, None, error_status=status, error_message=message)
+    assert result.failed is failed
+    assert result.fatal is fatal
 
 
 def test_a_result_built_from_a_status_gets_the_matching_error() -> None:
@@ -456,100 +479,92 @@ def test_a_result_built_from_a_status_gets_the_matching_error() -> None:
 
 
 def test_pump_runs_the_whole_stream_in_one_task() -> None:
-    run, sink = make_run()
+    sink = RecordingSink()
     tasks: set[asyncio.Task[object] | None] = set()
 
-    async def close_client() -> None:
-        return None
-
-    async def chunks():
+    async def chunks() -> AsyncIterator[bytes]:
         for piece in (b"\x01\x02", b"\x03\x04"):
             tasks.add(asyncio.current_task())
             yield piece
         tasks.add(asyncio.current_task())
 
-    asyncio.run(_pump_ws_audio(chunks(), run, close_client))
+    asyncio.run(play_stream(chunks(), sink, threading.Event()))
     assert sink.chunks == [b"\x01\x02", b"\x03\x04"]
     assert len(tasks) == 1
 
 
-def test_pump_stops_when_the_stream_itself_is_cancelled() -> None:
-    run, sink = make_run()
+def test_a_cancel_raised_by_the_stream_itself_is_passed_on() -> None:
+    sink = RecordingSink()
 
-    async def close_client() -> None:
-        return None
-
-    async def chunks():
+    async def chunks() -> AsyncIterator[bytes]:
         yield b"\x01\x02"
         raise asyncio.CancelledError
 
-    async def pump() -> None:
-        await asyncio.wait_for(_pump_ws_audio(chunks(), run, close_client), timeout=5.0)
+    async def turn() -> None:
+        # The turn's cancel flag is not set, so the cancel is not its own: it goes up rather
+        # than ending the turn quietly. The timeout only keeps a hang from stalling the suite.
+        await asyncio.wait_for(play_stream(chunks(), sink, threading.Event()), timeout=5.0)
 
     with pytest.raises(asyncio.CancelledError):
-        asyncio.run(pump())
+        asyncio.run(turn())
     assert sink.chunks == [b"\x01\x02"]
 
 
-def test_a_slow_device_write_does_not_stall_the_turn_loop(monkeypatch: pytest.MonkeyPatch) -> None:
-    run, sink = make_run()
-    ticks: list[float] = []
+def test_a_slow_device_write_does_not_stall_the_turn_loop() -> None:
+    # Each write waits until the turn's event loop has run something else. A write made
+    # on the loop itself could never see that, and would give up after the timeout.
+    writing = threading.Event()
+    loop_ran = threading.Event()
+    released: list[bool] = []
 
-    async def close_client() -> None:
-        return None
+    class BlockingSink(RecordingSink):
+        def write(self, chunk: bytes) -> None:
+            loop_ran.clear()
+            writing.set()
+            released.append(loop_ran.wait(timeout=5))
+            writing.clear()
+            super().write(chunk)
 
-    async def chunks():
+    async def chunks() -> AsyncIterator[bytes]:
         yield b"\x01\x00" * 4
         yield b"\x02\x00" * 4
 
-    original_write = sink.write
-
-    def slow_write(chunk: bytes) -> None:
-        time.sleep(0.2)
-        original_write(chunk)
-
-    monkeypatch.setattr(sink, "write", slow_write)
-
     async def main() -> None:
-        async def ticker() -> None:
+        async def loop_side() -> None:
             while True:
-                ticks.append(time.perf_counter())
-                await asyncio.sleep(0.01)
+                if writing.is_set():
+                    loop_ran.set()
+                await asyncio.sleep(0.001)
 
-        tick = asyncio.create_task(ticker())
-        await _pump_ws_audio(chunks(), run, close_client)
-        tick.cancel()
-        await asyncio.gather(tick, return_exceptions=True)
+        watcher = asyncio.create_task(loop_side())
+        sink = BlockingSink()
+        await play_stream(chunks(), sink, threading.Event())
+        watcher.cancel()
+        await asyncio.gather(watcher, return_exceptions=True)
+        assert len(sink.chunks) == 2
 
     asyncio.run(main())
-    assert len(sink.chunks) == 2
-    # The loop kept running while the two 0.2 s writes played: a 10 ms ticker
-    # gets about 40 turns. A blocked loop gets two or three. The bound is loose
-    # so a slow runner cannot fail it.
-    assert len(ticks) >= 12
+    assert released == [True, True]
 
 
 @pytest.mark.perf
 def test_cancel_while_waiting_for_audio_stops_the_pump_at_once() -> None:
-    run, sink = make_run()
-    closed: list[float] = []
+    sink = RecordingSink()
+    cancel = threading.Event()
 
-    async def close_client() -> None:
-        closed.append(time.perf_counter())
-
-    async def silent():
+    async def silent() -> AsyncIterator[bytes]:
         await asyncio.sleep(10)
         yield b"\x01\x00"
 
     async def main() -> float:
         loop = asyncio.get_running_loop()
         started = time.perf_counter()
-        loop.call_later(0.05, run.cancel.set)
-        await _pump_ws_audio(silent(), run, close_client)
+        loop.call_later(0.05, cancel.set)
+        _result, socket = await play_stream(silent(), sink, cancel)
+        assert socket.closed
         return time.perf_counter() - started
 
     elapsed = asyncio.run(main())
-    assert closed
     assert not sink.chunks
     # Polling waited up to 0.25 s after the cancel. Now it takes one loop turn.
     assert elapsed < 0.2
@@ -560,8 +575,44 @@ def test_a_whole_reply_for_a_directed_model_carries_no_mood_between_sentences() 
     cancel = threading.Event()
 
     async def run(*, directed: bool) -> str:
-        events = text_events(text, cancel, 30, directed=directed)
+        style = CueStyle("directed" if directed else "free")
+        events = text_events(text, cancel, 30, style=style)
         return "".join([event.text async for event in events if isinstance(event, TextEvent)])
 
     assert asyncio.run(run(directed=True)).count("[happy]") == 1
     assert asyncio.run(run(directed=False)).count("[happy]") > 1
+
+
+class _Websocket:
+    """An audio iterator like the SDK's, which must never be closed with ``aclose()``."""
+
+    def __init__(self) -> None:
+        self.sent = 0
+        self.aclosed = False
+
+    def __aiter__(self) -> _Websocket:
+        return self
+
+    async def __anext__(self) -> bytes:
+        if self.sent:
+            await asyncio.sleep(30)  # Fish has more to say
+        self.sent += 1
+        return b"\x01\x02"
+
+    async def aclose(self) -> None:
+        self.aclosed = True
+
+
+def test_a_cancelled_turn_closes_the_client_and_never_acloses_the_websocket_iterator() -> None:
+    cancel = threading.Event()
+
+    class BargedSink(RecordingSink):
+        def write(self, chunk: bytes) -> None:
+            super().write(chunk)
+            cancel.set()  # the user talks over the first chunk
+
+    websocket = _Websocket()
+    result, socket = asyncio.run(play_stream(websocket, BargedSink(), cancel))
+    assert result.cancelled
+    assert socket.closed >= 1
+    assert websocket.aclosed is False

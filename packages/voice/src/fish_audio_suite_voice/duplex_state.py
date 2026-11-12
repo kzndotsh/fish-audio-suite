@@ -1,46 +1,31 @@
-"""State shared by the duplex loop and its listen and reply steps."""
+"""State shared by the duplex loop and its listen and reply steps, grouped by who uses it."""
 
 from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Final, NamedTuple
 
 import httpx
 
-from fish_audio_suite_kit import ChatMessage
-from fish_audio_suite_voice.config import VoiceCliConfig
-from fish_audio_suite_voice.history import KEEP_SYSTEM
+from fish_audio_suite_voice.aec import EchoCanceller
+from fish_audio_suite_voice.cancel import never
+from fish_audio_suite_voice.config import SinkLatency, VoiceCliConfig, sink_latency
+from fish_audio_suite_voice.history import History
 from fish_audio_suite_voice.llm import ChatBackend
 from fish_audio_suite_voice.mic import Mic
+from fish_audio_suite_voice.recognised import BargeIn
 from fish_audio_suite_voice.signals import DuplexSession
 from fish_audio_suite_voice.speaker import FishSpeaker
 from fish_audio_suite_voice.speculate import Speculation
 
 __all__ = [
-    "EXIT_CRASH",
-    "EXIT_FATAL",
-    "EXIT_OK",
-    "CarriedClip",
     "CarryOver",
+    "Chat",
     "DuplexContext",
+    "TurnInput",
+    "session_context",
+    "session_speaker",
 ]
-
-EXIT_OK: Final = 0
-EXIT_FATAL: Final = 2
-# What Python itself exits with after an uncaught exception.
-EXIT_CRASH: Final = 1
-
-
-def _never_muted() -> bool:
-    return False
-
-
-class CarriedClip(NamedTuple):
-    """The clip a barge-in kept, and the mic position the next listen reads on from."""
-
-    pcm: bytes
-    since: int | None
 
 
 @dataclass(slots=True)
@@ -49,49 +34,38 @@ class CarryOver:
 
     Notes
     -----
-    ``prefix`` is the speech that tripped the barge-in. The next listen starts from
-    it instead of waiting out the cooldown, and takes it. ``since`` is the mic
-    position just after it, so that listen reads on from there and loses none of
-    the words said while the reply stopped. ``resume`` is the part of
-    the cut reply that was not heard. It is spoken again if the interrupt turns out
-    to be noise, and dropped once real speech is heard.
+    ``clip`` is the speech that tripped the barge-in. The next listen starts from it
+    instead of waiting out the cooldown, and takes it. ``resume`` is the part of the cut
+    reply that was not heard. It is spoken again if the interrupt turns out to be noise,
+    and dropped once real speech is heard.
     """
 
-    prefix: bytes = b""
+    clip: BargeIn | None = None
     resume: str = ""
-    since: int | None = None
 
     @property
     def barged(self) -> bool:
         """Whether a barge-in left speech for the next listen."""
-        return bool(self.prefix)
+        return self.clip is not None
 
-    def keep(self, prefix: bytes, resume: str, since: int | None = None) -> None:
+    def keep(self, clip: BargeIn, resume: str) -> None:
         """Hold the clip that cut a reply off, and what of the reply was not heard.
 
         Parameters
         ----------
-        prefix : bytes
-            The PCM that tripped the barge-in.
+        clip : BargeIn
+            The speech that tripped the barge-in, where the mic was after it, and the
+            level the gate admitted it at.
         resume : str
             The unheard rest of the reply. Empty when none of it played.
-        since : int or None, optional
-            The mic position just after ``prefix``. None when it is not known.
         """
-        self.prefix = prefix
+        self.clip = clip
         self.resume = resume
-        self.since = since
 
-    def take_prefix(self) -> CarriedClip:
+    def take_clip(self) -> BargeIn | None:
         """Return the barge-in clip for the next listen and forget it."""
-        clip = CarriedClip(self.prefix, self.since)
-        self.prefix, self.since = b"", None
+        clip, self.clip = self.clip, None
         return clip
-
-    def hand_back(self, prefix: bytes) -> None:
-        """Keep ``prefix`` for the next listen, such as speech a failed stream already caught."""
-        self.prefix = prefix
-        self.since = None
 
     def take_resume(self) -> str:
         """Return the unheard rest of the cut reply and forget it."""
@@ -99,21 +73,161 @@ class CarryOver:
         return resume
 
 
+@dataclass(frozen=True, slots=True)
+class TurnInput:
+    """What a turn source works with: the mic side of the session.
+
+    Attributes
+    ----------
+    session : DuplexSession
+        Quit, and the handles of the reply in flight.
+    mic : Mic
+        The session's one input stream.
+    carry : CarryOver
+        What the last barge-in left for the next listen.
+    muted : Callable
+        Says whether the user has muted the mic. A source with a mute switch supplies it.
+    """
+
+    session: DuplexSession
+    mic: Mic
+    carry: CarryOver = field(default_factory=CarryOver)
+    muted: Callable[[], bool] = never
+
+
 @dataclass(slots=True)
+class Chat:
+    """The conversation with the model: the backend, the history, and a reply written ahead.
+
+    Attributes
+    ----------
+    backend : ChatBackend
+        Streams the model's replies.
+    history : History
+        What was said so far.
+    speculation : Speculation or None
+        A reply being written for a turn the recogniser thinks is probably over. Hearing
+        starts it, and the reply uses it if the same words are confirmed.
+    """
+
+    backend: ChatBackend
+    history: History
+    speculation: Speculation | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class DuplexContext:
-    """Everything one duplex session shares between the listen, reply and history steps."""
+    """One duplex session, as hearing and the reply see it.
+
+    Attributes
+    ----------
+    config : VoiceCliConfig
+        The session's settings.
+    device : str or int or None
+        The PortAudio device for the speaker. The mic is the one ``open_mic`` opened.
+    turn_input : TurnInput
+        The mic side: quit, the mic, the carried clip and the mute switch.
+    chat : Chat
+        The model, the history and a reply written ahead.
+    tts : FishSpeaker
+        Speaks each reply. Only the reply uses it.
+    asr_http : httpx.AsyncClient
+        The client Fish ASR requests share. Only hearing uses it.
+    sink_latency : {"low", "high"}
+        The playback buffer each reply's sink asks for, ``config.output_latency`` with
+        ``auto`` decided for this run by ``config.sink_latency``.
+    """
 
     config: VoiceCliConfig
-    tts: FishSpeaker
     device: str | int | None
-    mic: Mic
-    backend: ChatBackend
-    session: DuplexSession
+    turn_input: TurnInput
+    chat: Chat
+    tts: FishSpeaker
     asr_http: httpx.AsyncClient
-    history: list[ChatMessage]
-    carry: CarryOver = field(default_factory=CarryOver)
-    # Says whether the user has muted the mic. A source with a mute switch sets it.
-    muted: Callable[[], bool] = _never_muted
-    # A reply being written for a turn Flux thinks is probably over. Used if it is confirmed.
-    speculation: Speculation | None = None
-    pinned: int = KEEP_SYSTEM
+    sink_latency: SinkLatency
+
+
+def session_speaker(config: VoiceCliConfig) -> FishSpeaker:
+    """Build the speaker a session replies with, from its settings.
+
+    Parameters
+    ----------
+    config : VoiceCliConfig
+        The Fish key, voice, model, base URL, speech settings and cue style.
+
+    Returns
+    -------
+    FishSpeaker
+        The speaker ``fish-voice`` uses for its session and its smoke test.
+    """
+    return FishSpeaker(
+        api_key=config.fish_api_key,
+        voice_id=config.fish_voice_id,
+        model=config.tts_model,
+        tune=config.tts,
+        cue_style=config.cue_style,
+        base_url=config.fish_base,
+    )
+
+
+def session_context(
+    config: VoiceCliConfig,
+    *,
+    session: DuplexSession,
+    open_mic: Callable[[EchoCanceller], Mic],
+    backend: ChatBackend,
+    tts: FishSpeaker,
+    asr_http: httpx.AsyncClient,
+    device: str | int | None = None,
+    muted: Callable[[], bool] = never,
+    full_screen: bool = False,
+) -> DuplexContext:
+    """Assemble one session's context from its settings and what it holds open.
+
+    Parameters
+    ----------
+    config : VoiceCliConfig
+        The session's settings.
+    session : DuplexSession
+        Quit, and the handles of the reply in flight.
+    open_mic : Callable
+        Opens the session's one input stream around the echo canceller built here from
+        ``config.aec``.
+    backend : ChatBackend
+        The open chat backend.
+    tts : FishSpeaker
+        Speaks each reply.
+    asr_http : httpx.AsyncClient
+        The client Fish ASR requests share.
+    device : str or int or None, optional
+        The PortAudio device for the speaker. The host default when None. The mic is
+        chosen by ``open_mic``.
+    muted : Callable, optional
+        The mute switch of the session's turn source. Never muted when omitted.
+    full_screen : bool, optional
+        Whether the session runs in the full-screen app, which decides an ``auto``
+        ``output_latency``.
+
+    Returns
+    -------
+    DuplexContext
+        The context with the opening history: the system prompt, and the pinned seed
+        exchange when the prompt asks for one.
+    """
+    # One input for the whole session, so nothing is lost between listens. The echo
+    # canceller lives with it: the mic cleans every frame and the speaker feeds it.
+    mic = open_mic(EchoCanceller(config.aec))
+    return DuplexContext(
+        config=config,
+        device=device,
+        turn_input=TurnInput(session=session, mic=mic, muted=muted),
+        chat=Chat(
+            backend,
+            History.opening(
+                config.prompt.text, seed=config.prompt.pin_seed, turns=config.history_turns
+            ),
+        ),
+        tts=tts,
+        asr_http=asr_http,
+        sink_latency=sink_latency(config.output_latency, full_screen=full_screen),
+    )

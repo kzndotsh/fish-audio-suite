@@ -3,13 +3,14 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 from pathlib import Path
+from typing import BinaryIO
 
 import pytest
 
 from fish_audio_suite_kit import DEFAULT_SYSTEM_PROMPT
 from fish_audio_suite_voice.cli import main
 from fish_audio_suite_voice.config import VoiceCliConfig, load_config, system_prompt_from_file
-from fish_audio_suite_voice.history import opening_history
+from fish_audio_suite_voice.history import History
 
 CARD = "You are Mira, a dry-witted ship's engineer. Stay in character."
 
@@ -31,14 +32,14 @@ def test_a_character_file_comes_first_and_keeps_the_voice_rules(
 ) -> None:
     monkeypatch.setenv("FISH_VOICE_SYSTEM_PROMPT_FILE", str(_card(tmp_path, f"\n{CARD}\n\n")))
     config = load_config()
-    assert config.system_prompt == f"{CARD}\n\n{DEFAULT_SYSTEM_PROMPT}"
-    assert config.pin_seed
+    assert config.prompt.text == f"{CARD}\n\n{DEFAULT_SYSTEM_PROMPT}"
+    assert config.prompt.pin_seed
 
 
 def test_a_character_file_still_pins_the_cue_example() -> None:
-    history, pinned = opening_history(f"{CARD}\n\n{DEFAULT_SYSTEM_PROMPT}", seed=True)
-    assert pinned == 3
-    assert history[1]["role"] == "user"
+    opened = History.opening(f"{CARD}\n\n{DEFAULT_SYSTEM_PROMPT}", seed=True, turns=1)
+    assert opened.pinned == 3
+    assert opened.messages[1]["role"] == "user"
 
 
 def test_an_inline_prompt_is_used_whole_and_gets_no_cue_example(
@@ -46,16 +47,16 @@ def test_an_inline_prompt_is_used_whole_and_gets_no_cue_example(
 ) -> None:
     monkeypatch.setenv("FISH_VOICE_SYSTEM_PROMPT", "Answer in one word.")
     config = load_config()
-    assert config.system_prompt == "Answer in one word."
-    assert not config.pin_seed
-    assert opening_history(config.system_prompt, seed=config.pin_seed)[1] == 1
+    assert config.prompt.text == "Answer in one word."
+    assert not config.prompt.pin_seed
+    assert History.opening(config.prompt.text, seed=config.prompt.pin_seed, turns=1).pinned == 1
 
 
 def test_a_blank_inline_prompt_still_means_no_system_prompt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("FISH_VOICE_SYSTEM_PROMPT", "")
-    assert load_config().system_prompt == ""
+    assert load_config().prompt.text == ""
 
 
 def test_the_file_wins_over_the_inline_prompt_and_says_so(
@@ -63,7 +64,7 @@ def test_the_file_wins_over_the_inline_prompt_and_says_so(
 ) -> None:
     monkeypatch.setenv("FISH_VOICE_SYSTEM_PROMPT_FILE", str(_card(tmp_path)))
     monkeypatch.setenv("FISH_VOICE_SYSTEM_PROMPT", "ignored")
-    assert load_config().system_prompt.startswith(CARD)
+    assert load_config().prompt.text.startswith(CARD)
     assert "FISH_VOICE_SYSTEM_PROMPT is ignored" in capsys.readouterr().err
 
 
@@ -85,7 +86,7 @@ def test_an_unusable_file_warns_and_the_default_prompt_is_used(
 ) -> None:
     path = make(tmp_path)
     monkeypatch.setenv("FISH_VOICE_SYSTEM_PROMPT_FILE", str(path))
-    assert load_config().system_prompt == DEFAULT_SYSTEM_PROMPT
+    assert load_config().prompt.text == DEFAULT_SYSTEM_PROMPT
     assert message in capsys.readouterr().err
 
 
@@ -107,7 +108,7 @@ def test_the_cli_flag_loads_the_file_and_a_bad_path_exits_2(
     seen: list[str] = []
 
     async def fake_loop(config: VoiceCliConfig) -> int:
-        seen.append(config.system_prompt)
+        seen.append(config.prompt.text)
         return 0
 
     monkeypatch.setattr("fish_audio_suite_voice.cli.run_loop", fake_loop)
@@ -132,10 +133,43 @@ def test_a_directory_or_a_fifo_is_refused_without_reading_it(
     assert capsys.readouterr().err.count("is not a regular file") == 2
 
 
-def test_only_one_byte_past_the_limit_is_read(tmp_path: Path) -> None:
+class _CountingFile:
+    """A binary file that counts the bytes read from it."""
+
+    def __init__(self, handle: BinaryIO) -> None:
+        self._handle = handle
+        self.bytes_read = 0
+
+    def __enter__(self) -> _CountingFile:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self._handle.close()
+
+    def read(self, size: int = -1) -> bytes:
+        data = self._handle.read(size)
+        self.bytes_read += len(data)
+        return data
+
+
+def test_only_one_byte_past_the_limit_is_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     big = tmp_path / "big.md"
     big.write_bytes(b"a" * (10 * 1024 * 1024))
+    opened: list[_CountingFile] = []
+    original = Path.open
+
+    def counting_open(self: Path, mode: str = "r") -> _CountingFile:
+        assert mode == "rb"
+        counted = _CountingFile(original(self, "rb"))
+        opened.append(counted)
+        return counted
+
+    monkeypatch.setattr(Path, "open", counting_open)
     assert system_prompt_from_file(str(big), "RULES") is None
+    assert [file.bytes_read for file in opened] == [64 * 1024 + 1]
+    assert "is over 64 KiB" in capsys.readouterr().err
 
 
 def test_a_slot_in_the_file_puts_the_voice_rules_where_the_file_says(tmp_path: Path) -> None:
@@ -169,5 +203,5 @@ def test_the_slot_works_through_the_environment_variable(
         "FISH_VOICE_SYSTEM_PROMPT_FILE", str(_card(tmp_path, "{{default_prompt}}\n\n" + CARD))
     )
     config = load_config()
-    assert config.system_prompt == f"{DEFAULT_SYSTEM_PROMPT}\n\n{CARD}"
-    assert config.pin_seed
+    assert config.prompt.text == f"{DEFAULT_SYSTEM_PROMPT}\n\n{CARD}"
+    assert config.prompt.pin_seed

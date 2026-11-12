@@ -5,13 +5,9 @@ import base64
 import ormsgpack
 import pytest
 from fastapi.testclient import TestClient
-from proxy_helpers import AsrJson, capture_upstream, post_speech
+from proxy_helpers import AsrJson, AudioStream, capture_upstream, post_speech
 
 from fish_audio_suite_proxy.server import app
-from fish_audio_suite_proxy.speech import (
-    _scrub_pronunciation_dictionary,
-    _seed,
-)
 
 
 def test_data_uri_scheme_is_case_insensitive(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -190,7 +186,8 @@ def test_reference_text_must_be_a_string(monkeypatch: pytest.MonkeyPatch) -> Non
         },
     )
     assert response.status_code == 400
-    assert response.json()["error"]["message"] == "reference text must be a string"
+    assert response.json()["error"]["type"] == "invalid_request_error"
+    assert "reference text" in response.json()["error"]["message"]
     only_bad, _captured_bad = post_speech(
         monkeypatch,
         {
@@ -202,7 +199,7 @@ def test_reference_text_must_be_a_string(monkeypatch: pytest.MonkeyPatch) -> Non
         },
     )
     assert only_bad.status_code == 400
-    assert only_bad.json()["error"]["message"] == "reference text must be a string"
+    assert "reference text" in only_bad.json()["error"]["message"]
 
 
 def test_null_reference_does_not_drop_a_real_clip(
@@ -232,7 +229,8 @@ def test_reference_string_is_400(monkeypatch: pytest.MonkeyPatch) -> None:
         {"input": "Hello there friend", "references": "not-a-clip"},
     )
     assert response.status_code == 400
-    assert response.json()["error"]["message"] == "references must be clips"
+    assert response.json()["error"]["type"] == "invalid_request_error"
+    assert "references" in response.json()["error"]["message"]
     assert "content" not in captured
 
 
@@ -294,13 +292,29 @@ def test_seed_keeps_a_padded_integer(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "seed" not in captured["json"]
 
 
-def test_seed_infinity_is_omitted() -> None:
-    assert _seed(float("inf")) is None
-    assert _seed(float("-inf")) is None
-    assert _seed(2**64 - 1) == 2**64 - 1
-    assert _seed(-(2**63)) == -(2**63)
-    assert _seed(2**64) is None
-    assert _seed(-(2**63) - 1) is None
+@pytest.mark.parametrize(
+    ("raw_seed", "sent"),
+    [
+        (b"Infinity", None),
+        (b"-Infinity", None),
+        (str(2**64 - 1).encode(), 2**64 - 1),
+        (str(-(2**63)).encode(), -(2**63)),
+        (str(2**64).encode(), None),
+        (str(-(2**63) - 1).encode(), None),
+    ],
+)
+def test_a_seed_outside_what_fish_can_take_is_omitted(
+    monkeypatch: pytest.MonkeyPatch, raw_seed: bytes, sent: int | None
+) -> None:
+    captured = capture_upstream(monkeypatch, AudioStream())
+    # Python's JSON reader takes Infinity, so a client can send one.
+    body = b'{"input": "Hello there friend", "seed": ' + raw_seed + b"}"
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/audio/speech", content=body, headers={"content-type": "application/json"}
+        )
+    assert response.status_code == 200
+    assert captured["json"].get("seed") == sent
 
 
 def test_huge_token_and_rate_with_a_clip_keep_defaults(
@@ -374,15 +388,31 @@ def test_pronunciation_huge_int_with_a_clip_is_400(
         },
     )
     assert response.status_code == 400
+    assert response.json()["error"]["type"] == "invalid_request_error"
     assert "encoded" in response.json()["error"]["message"]
 
 
-def test_pronunciation_scrub_keeps_non_strings() -> None:
-    cleaned = _scrub_pronunciation_dictionary(
-        [{"items": [{"value": "<|phoneme_start|>ah<|phoneme_end|>"}, {"value": ["nope"]}]}]
+def test_pronunciation_scrub_keeps_non_strings(monkeypatch: pytest.MonkeyPatch) -> None:
+    response, captured = post_speech(
+        monkeypatch,
+        {
+            "input": "Hello there friend",
+            "pronunciation_dictionary": [
+                {
+                    "items": [
+                        {"value": "<|phoneme_start|>ah<|phoneme_end|>"},
+                        {"value": ["nope"]},
+                    ]
+                },
+                "not-an-entry",
+                {"items": "not-a-list"},
+            ],
+        },
     )
-    assert cleaned[0]["items"][0]["value"] == "ah"
-    assert cleaned[0]["items"][1]["value"] == ["nope"]
+    assert response.status_code == 200
+    sent = captured["json"]["pronunciation_dictionary"]
+    assert sent[0]["items"] == [{"value": "ah"}, {"value": ["nope"]}]
+    assert sent[1:] == ["not-an-entry", {"items": "not-a-list"}]
 
 
 def test_json_asr_format_is_stripped(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -459,4 +489,6 @@ def test_bad_reference_audio_is_400(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     assert response.status_code == 400
     assert response.json()["error"]["type"] == "invalid_request_error"
-    assert response.json()["error"]["message"] == "reference audio is not valid base64"
+    message = response.json()["error"]["message"]
+    assert "reference audio" in message
+    assert "base64" in message

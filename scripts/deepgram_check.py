@@ -25,13 +25,18 @@ import asyncio
 import sys
 import threading
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 
 from fish_audio_suite_voice.envfile import apply_cli_env_files
 from fish_audio_suite_voice.events import EVENTS, Event, Interim
 from fish_audio_suite_voice.mic import SessionMic
-from fish_audio_suite_voice.streaming import StreamedTurn, StreamFallback, stream_turn
+from fish_audio_suite_voice.portaudio import parse_device
+from fish_audio_suite_voice.recognised import NoTurn, StreamFallback, Transcript
+from fish_audio_suite_voice.recognisers import recogniser_problem
+from fish_audio_suite_voice.streaming import stream_turn
 from fish_audio_suite_voice.tune import ListenTune, SttTune
+from fish_audio_suite_voice.turn_stream import RecogniserSettings
 
 
 async def run(turns: int, device: str | int | None) -> int:
@@ -49,9 +54,13 @@ async def run(turns: int, device: str | int | None) -> int:
     int
         0 when it ran, 2 when Deepgram could not be used.
     """
-    stt = SttTune.from_env()
-    if not stt.deepgram_key:
-        print("DEEPGRAM_API_KEY is not set (put it in .env or the environment)", file=sys.stderr)
+    # Whatever FISH_VOICE_STT says, this script checks Deepgram.
+    stt = replace(SttTune.from_env(), provider="deepgram")
+    settings = RecogniserSettings(stt)
+    # The app's own start-up check: the key, then the extra that installs websockets.
+    problem = recogniser_problem(settings)
+    if problem is not None:
+        print(problem, file=sys.stderr)
         return 2
     quit_requested = threading.Event()
 
@@ -65,21 +74,23 @@ async def run(turns: int, device: str | int | None) -> int:
         for number in range(1, turns + 1):
             print(f"\nturn {number}: say a sentence, then stop")
             outcome = await stream_turn(
-                stt=stt,
+                settings=settings,
                 listen=ListenTune.from_env(),
                 mic=mic,
                 quit_requested=quit_requested,
                 stop=quit_requested,
             )
-            if isinstance(outcome, StreamedTurn):
-                print(f"  final: {outcome.text}")
-                print(f"  {outcome.asr_ms:.0f} ms from your last speech to the final text")
-            else:
-                print(
-                    f"  no turn: {'could not reach Deepgram' if isinstance(outcome, StreamFallback) else outcome}"
-                )
-                if isinstance(outcome, StreamFallback) or outcome == "fatal":
+            match outcome:
+                case Transcript():
+                    print(f"  final: {outcome.text}")
+                    print(f"  {outcome.asr_ms:.0f} ms from your last speech to the final text")
+                case StreamFallback():
+                    print("  no turn: could not reach Deepgram")
                     return 2
+                case NoTurn(reason=reason):
+                    print(f"  no turn: {reason}")
+                    if reason == "fatal":
+                        return 2
     finally:
         mic.close()
         stop_showing()
@@ -103,9 +114,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--turns", type=int, default=3, help="how many turns to try")
     parser.add_argument("--device", default=None, help="a PortAudio device name or number")
     args = parser.parse_args(argv)
-    device: str | int | None = args.device
-    if isinstance(device, str) and device.isdigit():
-        device = int(device)
+    device = parse_device(args.device)
     apply_cli_env_files([Path(".env")], required=False)
     try:
         return asyncio.run(run(max(1, args.turns), device))

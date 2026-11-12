@@ -11,22 +11,31 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Final
+from typing import Final, Literal
 
-from fish_audio_suite_kit.literals import TurnReason
+from fish_audio_suite_kit._charsets import CLAUSE_MARKS, TURN_CLOSER_CHARS, TURN_TERMINALS
 
 __all__ = [
     "TurnJudgement",
+    "TurnReason",
     "judge_turn",
+]
+
+# What decided that a transcript looks finished or not.
+TurnReason = Literal[
+    "empty",
+    "open_punctuation",
+    "dangling_word",
+    "number_list",
+    "terminal_punctuation",
+    "short_answer",
+    "complete",
 ]
 
 # Only the end of the text matters, and a bound keeps hostile input linear.
 _TAIL_CHARS: Final = 160
-# Quotes and brackets that close after the last real character.
-_CLOSERS: Final = "\"')]}\u201d\u2019\u300d\u300f\uff09"
 # Punctuation that leaves a thought open: a comma, a colon, a dash, a trailing-off ellipsis.
-_OPEN_ENDS: Final = (*",;:-\u2013\u2014\u2026\u3001\uff0c\uff1b\uff1a", "...")
-_TERMINALS: Final = ".?!\u3002\uff1f\uff01"
+_OPEN_ENDS: Final = (*CLAUSE_MARKS, *"-\u2013\u2014\u2026\u3001", "...")
 _WORD_RE: Final = re.compile(r"[^\W_]+(?:['\u2019][^\W_]+)*")
 _SHORT_ANSWER_WORDS: Final = 2
 
@@ -113,7 +122,7 @@ def judge_turn(text: str) -> TurnJudgement:
     True
     """
     tail = text.rstrip()[-_TAIL_CHARS:]
-    core = tail.rstrip(_CLOSERS)
+    core = tail.rstrip(TURN_CLOSER_CHARS)
     if not core.strip():
         return TurnJudgement(finished=True, reason="empty")
     if core.endswith(_OPEN_ENDS):
@@ -122,7 +131,7 @@ def judge_turn(text: str) -> TurnJudgement:
     if not words:
         return TurnJudgement(finished=True, reason="complete")
     last = words[-1]
-    closed = core[-1] in _TERMINALS
+    closed = core[-1] in TURN_TERMINALS
     short = len(words) <= _SHORT_ANSWER_WORDS and len(text) <= _TAIL_CHARS
     if closed:
         if last in _NEVER_LAST and not short:

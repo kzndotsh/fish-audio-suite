@@ -6,81 +6,78 @@ import asyncio
 import sys
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from dataclasses import replace
 from typing import Any
 
 import httpx
 import pytest
-from session_fakes import make_ctx
+from session_fakes import AsrReply, ScriptedAsr, ScriptedRecordings, barge_clip, make_ctx
+from voice_fakes import ScriptedMic, install_vad
 
-from fish_audio_suite_kit import FishHttpError
-from fish_audio_suite_voice import barge, console, mic
-from fish_audio_suite_voice.asr import AsrResult
-from fish_audio_suite_voice.console import console_print, end_reply_line, write_reply_token
-from fish_audio_suite_voice.debug import configure_voice_logging
-from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexContext
-from fish_audio_suite_voice.hearing import hear_line, recognize
-from fish_audio_suite_voice.mic import FRAME_BYTES, SessionMic
-from fish_audio_suite_voice.playback import PortAudioMissingError
-
-
-def _asr_returns(monkeypatch: pytest.MonkeyPatch, outcome: str | BaseException) -> None:
-    async def asr(*_args: object, **_kwargs: object) -> AsrResult:
-        if isinstance(outcome, BaseException):
-            raise outcome
-        return AsrResult(outcome)
-
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", asr)
+from fish_audio_suite_voice import mic, pcm
+from fish_audio_suite_voice.barge import (
+    BargeGate,
+)
+from fish_audio_suite_voice.console_sink import ConsoleSink, console_print
+from fish_audio_suite_voice.duplex_state import DuplexContext
+from fish_audio_suite_voice.events import EventBus, ExitCode, ReplyToken
+from fish_audio_suite_voice.heard import HeardLine
+from fish_audio_suite_voice.hearing import hear_line
+from fish_audio_suite_voice.log_setup import configure_voice_logging
+from fish_audio_suite_voice.mic import SessionMic
+from fish_audio_suite_voice.pcm import FRAME_BYTES, take_frames
+from fish_audio_suite_voice.portaudio import PortAudioMissingError
 
 
-def _recognize(ctx: DuplexContext, last_user: str = "") -> str:
-    return asyncio.run(recognize(ctx, b"wav", last_user)).kind
+def _heard(
+    monkeypatch: pytest.MonkeyPatch,
+    reply: AsrReply | Callable[[], AsrReply],
+    last_user: str = "",
+    ctx: DuplexContext | None = None,
+) -> str:
+    """Hear one recorded clip that Fish ASR answers with ``reply``, and return its kind."""
+    ScriptedRecordings(monkeypatch, b"wav")
+    asr = ScriptedAsr(monkeypatch, reply)
+    ctx = replace(ctx or make_ctx(), asr_http=asr.client())
+    return asyncio.run(hear_line(ctx, last_user)).kind
 
 
 @pytest.mark.parametrize(
     ("error", "kind"),
-    [
-        (FishHttpError.from_status(401, "bad key"), "fatal"),
-        (FishHttpError.from_status(503, "down"), "again"),
-        (httpx.ConnectError("no route"), "again"),
-    ],
+    [(401, "fatal"), (503, "again"), (httpx.ConnectError("no route"), "again")],
 )
 def test_an_asr_failure_is_fatal_only_for_a_bad_key(
-    monkeypatch: pytest.MonkeyPatch, error: BaseException, kind: str
+    monkeypatch: pytest.MonkeyPatch, error: AsrReply, kind: str
 ) -> None:
-    _asr_returns(monkeypatch, error)
-    assert _recognize(make_ctx()) == kind
+    assert _heard(monkeypatch, error) == kind
 
 
-@pytest.mark.parametrize(
-    "error", [FishHttpError.from_status(503, "down"), httpx.ConnectError("cancelled")]
-)
+@pytest.mark.parametrize("error", [503, httpx.ConnectError("cancelled")])
 def test_a_failure_after_quit_is_just_a_bye(
-    monkeypatch: pytest.MonkeyPatch, error: BaseException
+    monkeypatch: pytest.MonkeyPatch, error: AsrReply
 ) -> None:
     ctx = make_ctx()
-    ctx.session.quit_requested.set()
-    _asr_returns(monkeypatch, error)
-    assert _recognize(ctx) == "bye"
+
+    def quit_then_fail() -> AsrReply:
+        ctx.turn_input.session.quit_requested.set()  # Ctrl+C while the request was out
+        return error
+
+    assert _heard(monkeypatch, quit_then_fail, ctx=ctx) == "bye"
 
 
 def test_a_transcript_that_says_goodbye_ends_the_session(monkeypatch: pytest.MonkeyPatch) -> None:
-    _asr_returns(monkeypatch, "goodbye")
-    assert _recognize(make_ctx()) == "bye"
+    assert _heard(monkeypatch, "goodbye") == "bye"
 
 
 def test_a_transcript_that_repeats_the_last_line_is_noise(monkeypatch: pytest.MonkeyPatch) -> None:
-    _asr_returns(monkeypatch, "Tell me a story")
-    assert _recognize(make_ctx(), "tell me a story") == "noise"
+    assert _heard(monkeypatch, "Tell me a story", "tell me a story") == "noise"
 
 
 def test_hear_line_exits_when_the_mic_cannot_open(monkeypatch: pytest.MonkeyPatch) -> None:
-    def no_audio(*_args: object, **_kwargs: object) -> bytes:
-        raise PortAudioMissingError("missing")
-
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", no_audio)
+    ScriptedRecordings(monkeypatch, PortAudioMissingError("missing"))
     heard = asyncio.run(hear_line(make_ctx(), ""))
-    assert (heard.kind, heard.code) == ("fatal", EXIT_FATAL)
+    assert (heard.kind, heard.code) == ("fatal", ExitCode.FATAL)
 
 
 @pytest.mark.parametrize(("clip", "quit_set", "kind"), [(b"", False, "noise"), (b"x", True, "bye")])
@@ -89,47 +86,32 @@ def test_hear_line_reports_a_dropped_clip_and_quit(
 ) -> None:
     ctx = make_ctx()
 
-    def record(*_args: object, **_kwargs: object) -> bytes:
+    def record(_stop: object) -> bytes:
         if quit_set:
-            ctx.session.quit_requested.set()
+            ctx.turn_input.session.quit_requested.set()
         return clip
 
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", record)
+    ScriptedRecordings(monkeypatch, record)
     assert asyncio.run(hear_line(ctx, "")).kind == kind
 
 
 def test_a_batch_turn_reports_the_silence_it_waited_out(monkeypatch: pytest.MonkeyPatch) -> None:
-    ctx = make_ctx()
-    _asr_returns(monkeypatch, "what time is it")
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", lambda *_a, **_k: b"wav")
+    ctx = make_ctx(asr=ScriptedAsr(monkeypatch, "what time is it"))
+    ScriptedRecordings(monkeypatch, b"wav")
     heard = asyncio.run(hear_line(ctx, ""))
-    assert heard.end_wait_ms == ctx.config.listen.end_silence_frames * mic.FRAME_MS
+    assert heard.end_wait_ms == ctx.config.listen.end_silence_frames * pcm.FRAME_MS
 
 
 def test_a_barge_in_clip_is_never_a_stale_copy(monkeypatch: pytest.MonkeyPatch) -> None:
-    ctx = make_ctx()
-    ctx.carry.keep(b"clip", "", since=42)
-    seen: dict[str, Any] = {}
-
-    def record(*_args: object, **kwargs: object) -> bytes:
-        seen["prefix"] = kwargs["prefix"]
-        seen["since"] = kwargs["since"]
-        return b"wav"
-
-    async def fake_recognize(*_args: object, **kwargs: object) -> Any:
-        seen.update(kwargs)
-        from fish_audio_suite_voice.hearing import HeardLine
-
-        return HeardLine("line", text="hello there friend")
-
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", record)
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.recognize", fake_recognize)
-    asyncio.run(hear_line(ctx, "hello there friend"))
-    assert seen["prefix"] == b"clip"
-    assert seen["since"] == 42
-    assert seen["stale"] is False
-    assert seen["over_reply"] is True
-    assert ctx.carry.prefix == b""
+    ctx = make_ctx(asr=ScriptedAsr(monkeypatch, "hello there friend"))
+    clip = barge_clip(b"clip", since=42)
+    ctx.turn_input.carry.keep(clip, "")
+    recordings = ScriptedRecordings(monkeypatch, b"wav")
+    heard = asyncio.run(hear_line(ctx, "hello there friend"))
+    # The listen starts from the clip and reads on after it.
+    assert recordings.calls[0]["carried"] == clip
+    assert heard.kind == "line"  # the same words as the last line, but said fresh over the reply
+    assert ctx.turn_input.carry.clip is None
 
 
 class _FakeStream:
@@ -264,7 +246,7 @@ def test_a_reader_that_falls_behind_keeps_only_the_newest_audio(
             got = list(source.frames(stop, since=0))
         finally:
             timer.cancel()
-    assert 0 < len(got) <= 2_000 // mic.FRAME_MS  # at most about two seconds
+    assert 0 < len(got) <= 2_000 // pcm.FRAME_MS  # at most about two seconds
     assert got == buffers[-len(got) :]  # the newest frames, in order, with no gap
 
 
@@ -282,19 +264,30 @@ def test_a_failure_in_the_mic_thread_reaches_the_reader(monkeypatch: pytest.Monk
 
 
 def test_the_barge_heartbeat_only_logs_at_trace_level(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    lines: list[str] = []
-    monkeypatch.setattr(barge, "trace", lambda message, **_kw: lines.append(message))
-    configure_voice_logging(debug=1)
+    class Quiet:
+        def __init__(self, mode: int) -> None:
+            del mode
+
+        def is_speech(self, frame: bytes, rate: int) -> bool:
+            del frame, rate
+            return False
+
+    install_vad(monkeypatch, Quiet)
+    quiet = b"\x01\x00" * (pcm.FRAME_BYTES // 2)
+
+    def heartbeats(level: int, frames: int) -> int:
+        configure_voice_logging(debug=level)
+        capsys.readouterr()
+        BargeGate(mic=ScriptedMic([quiet] * frames)).watch(threading.Event())
+        err = capsys.readouterr().err
+        return sum("far=" in line and "aec=" in line for line in err.splitlines())
+
     try:
-        barge._barge_heartbeat(idle_frames=20, rms=10.0, need=220.0, far=True, hit=0, aec_on=True)  # pyright: ignore[reportPrivateUsage]
-        assert lines == []
-        configure_voice_logging(debug=2)
-        barge._barge_heartbeat(idle_frames=7, rms=10.0, need=220.0, far=True, hit=0, aec_on=True)  # pyright: ignore[reportPrivateUsage]
-        assert lines == []
-        barge._barge_heartbeat(idle_frames=20, rms=10.0, need=220.0, far=True, hit=0, aec_on=True)  # pyright: ignore[reportPrivateUsage]
-        assert len(lines) == 1
+        assert heartbeats(1, pcm.LISTEN_HEARTBEAT_FRAMES) == 0  # events only: no heartbeat
+        assert heartbeats(2, pcm.LISTEN_HEARTBEAT_FRAMES - 1) == 0  # not due yet
+        assert heartbeats(2, pcm.LISTEN_HEARTBEAT_FRAMES) == 1
     finally:
         configure_voice_logging(debug=False)
 
@@ -310,27 +303,29 @@ class _BrokenPipe:
 def test_a_closed_stdout_never_raises_from_the_console_helpers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(sys, "stdout", _BrokenPipe())
-    console_print("status")
-    write_reply_token("hello")
-    console._REPLY.open = True  # pyright: ignore[reportPrivateUsage]
-    end_reply_line()
-    assert console._REPLY.open is False  # pyright: ignore[reportPrivateUsage]
+    bus = EventBus()
+    with ConsoleSink(bus) as display:
+        bus.emit(ReplyToken("hello"))  # the reply line is open
+        monkeypatch.setattr(sys, "stdout", _BrokenPipe())  # and then the reader goes away
+        console_print("status")
+        bus.emit(ReplyToken(" there"))
+        display.end_reply_line()
+        display.end_reply_line()
 
 
 def test_a_buffer_shorter_than_a_frame_waits_and_a_zero_frame_size_yields_nothing() -> None:
     pending = bytearray()
-    assert mic._take_full_frames(pending, b"ab", 4) == []  # pyright: ignore[reportPrivateUsage]
-    assert mic._take_full_frames(pending, b"cdef", 4) == [b"abcd"]  # pyright: ignore[reportPrivateUsage]
+    assert pcm.take_frames(pending, b"ab", 4) == []
+    assert pcm.take_frames(pending, b"cdef", 4) == [b"abcd"]
     assert bytes(pending) == b"ef"
-    assert mic._take_full_frames(pending, b"gh", 0) == []  # pyright: ignore[reportPrivateUsage]
+    assert pcm.take_frames(pending, b"gh", 0) == []
 
 
 def test_hear_line_logs_instead_of_printing_listening_in_debug_mode(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     monkeypatch.setattr("fish_audio_suite_voice.hearing.debug_enabled", lambda: True)
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", lambda *_a, **_k: b"")
+    ScriptedRecordings(monkeypatch)  # hears nothing
     assert asyncio.run(hear_line(make_ctx(), "")).kind == "noise"
     assert "listening" not in capsys.readouterr().out
 
@@ -383,3 +378,73 @@ def test_a_reader_that_is_already_stopped_does_not_open_the_device(
     with SessionMic() as source:
         assert list(source.frames(stopped)) == []
     assert _FakeStream.opened == 0
+
+
+def test_a_stop_flag_ends_the_recording_and_quit_still_does_too(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The stop flag used to replace the quit flag, so a caller that forgot to fold quit into
+    # it left Ctrl+C unable to stop the mic.
+    recordings = ScriptedRecordings(monkeypatch)
+    typed = threading.Event()
+    ctx = make_ctx()
+    asyncio.run(hear_line(ctx, "", stop=typed))
+    stop = recordings.calls[0]["stop"]
+    assert not stop.is_set()
+    typed.set()
+    assert stop.is_set()
+    typed.clear()
+    ctx.turn_input.session.quit_requested.set()
+    assert stop.is_set()
+
+
+def _heard_line(monkeypatch: pytest.MonkeyPatch, reply: AsrReply) -> HeardLine:
+    """Record one clip and hear it with Fish ASR answering ``reply``."""
+    ScriptedRecordings(monkeypatch, b"wav")
+    return asyncio.run(hear_line(make_ctx(asr=ScriptedAsr(monkeypatch, reply)), ""))
+
+
+def test_recognize_fatal_again_and_quit(monkeypatch: pytest.MonkeyPatch) -> None:
+    fatal = _heard_line(monkeypatch, 401)
+    assert fatal.kind == "fatal"
+    assert fatal.code == 2
+    assert _heard_line(monkeypatch, TimeoutError("late")).kind == "again"
+    assert _heard_line(monkeypatch, "goodbye").kind == "bye"
+
+
+def test_recognize_listens_again_after_a_network_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert _heard_line(monkeypatch, httpx.ConnectError("down")).kind == "again"
+
+
+@pytest.mark.parametrize("bug", [RuntimeError("bug"), ValueError("bad"), KeyError("k")])
+def test_recognize_does_not_hide_a_programming_error(
+    monkeypatch: pytest.MonkeyPatch, bug: Exception
+) -> None:
+    with pytest.raises(type(bug)):
+        _heard_line(monkeypatch, bug)
+
+
+@pytest.mark.parametrize(("barge_prefix", "kind"), [(b"", "line"), (b"clip", "noise")])
+def test_hear_line_answers_a_yeah_unless_it_was_said_over_the_reply(
+    monkeypatch: pytest.MonkeyPatch, barge_prefix: bytes, kind: str
+) -> None:
+    ctx = make_ctx(asr=ScriptedAsr(monkeypatch, "Yeah."))
+    if barge_prefix:
+        ctx.turn_input.carry.keep(barge_clip(barge_prefix), "")
+    ScriptedRecordings(monkeypatch, b"RIFFwav")
+    assert asyncio.run(hear_line(ctx, "")).kind == kind
+
+
+def test_mic_chunks_join_when_short_and_split_when_long() -> None:
+    pending = bytearray()
+    half = b"\x01" * (FRAME_BYTES // 2)
+    assert take_frames(pending, half, FRAME_BYTES) == []
+    assert take_frames(pending, half, FRAME_BYTES) == [b"\x01" * FRAME_BYTES]
+    assert pending == bytearray()
+    long = b"\x02" * (FRAME_BYTES * 2 + 3)
+    frames = take_frames(pending, long, FRAME_BYTES)
+    assert frames == [b"\x02" * FRAME_BYTES, b"\x02" * FRAME_BYTES]
+    rest = b"\x03" * (FRAME_BYTES - 3)
+    done = take_frames(pending, rest, FRAME_BYTES)
+    assert done == [b"\x02" * 3 + rest]
+    assert pending == bytearray()

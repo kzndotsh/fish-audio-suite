@@ -12,7 +12,6 @@ from unittest.mock import AsyncMock
 import httpx
 import ormsgpack
 import pytest
-from fastapi.responses import JSONResponse
 from fastapi.testclient import TestClient
 from proxy_helpers import (
     AsrJson,
@@ -23,13 +22,16 @@ from proxy_helpers import (
     post_speech,
     run_fish_send,
 )
+from starlette.types import Message, Receive, Scope, Send
 
 from fish_audio_suite_proxy.audio import (
     SILENT_MP3,
 )
-from fish_audio_suite_proxy.body_limit import _declared_too_large
+from fish_audio_suite_proxy.body_limit import BodyLimitMiddleware
+from fish_audio_suite_proxy.errors import ProxyError
 from fish_audio_suite_proxy.models import catalog_ids, resolve_tts_model
-from fish_audio_suite_proxy.server import _uvicorn_run_kwargs, app
+from fish_audio_suite_proxy.phrases import AsrScrub
+from fish_audio_suite_proxy.server import app
 from fish_audio_suite_proxy.settings import ProxySettings, SettingsError, load_settings
 from fish_audio_suite_proxy.transcribe import transcription_body
 from fish_audio_suite_proxy.upstream import FishHttp, RetryPolicy, fish_send
@@ -37,7 +39,7 @@ from fish_audio_suite_proxy.upstream import FishHttp, RetryPolicy, fish_send
 
 def test_proxy_listens_on_loopback_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("FISH_PROXY_HOST", raising=False)
-    assert _uvicorn_run_kwargs()["host"] == "127.0.0.1"
+    assert load_settings().uvicorn_kwargs()["host"] == "127.0.0.1"
     assert load_settings().exposed is False
     monkeypatch.setenv("FISH_PROXY_HOST", "0.0.0.0")
     assert load_settings().exposed is True
@@ -72,7 +74,8 @@ def test_a_missing_server_key_is_a_503_not_the_callers_401(
         r = client.post("/v1/audio/speech", json={"input": "hello there friend"})
     assert r.status_code == 503
     assert r.json()["error"]["type"] == "api_error"
-    assert "FISH_API_KEY" in r.json()["error"]["message"]
+    # Quoted in docs/TROUBLESHOOTING.md.
+    assert r.json()["error"]["message"] == "proxy has no FISH_API_KEY configured"
 
 
 def test_an_oversized_body_is_a_413(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -81,6 +84,8 @@ def test_an_oversized_body_is_a_413(monkeypatch: pytest.MonkeyPatch) -> None:
     with TestClient(app) as client:
         declared = client.post("/v1/audio/speech", json=big)
         assert declared.status_code == 413
+        # Quoted in docs/TROUBLESHOOTING.md.
+        assert declared.json()["error"]["message"] == "request body exceeds 200 bytes"
 
         def chunks() -> Any:
             yield b'{"input": "'
@@ -102,7 +107,8 @@ def test_input_longer_than_the_cap_is_a_400(monkeypatch: pytest.MonkeyPatch) -> 
     with TestClient(app) as client:
         r = client.post("/v1/audio/speech", json={"input": "this is far too long"})
     assert r.status_code == 400
-    assert "10" in r.json()["error"]["message"]
+    # Quoted in docs/TROUBLESHOOTING.md.
+    assert r.json()["error"]["message"] == "input is longer than 10 characters"
 
 
 def test_an_unsupported_response_format_is_a_400(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -213,7 +219,7 @@ def test_each_env_name_changes_its_setting(monkeypatch: pytest.MonkeyPatch, case
 
 def test_a_model_env_name_feeds_the_default_aliases(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FISH_TTS_MODEL", "s1")
-    assert load_settings().tts_aliases["tts-1"] == "s1"
+    assert load_settings().model_aliases["tts-1"] == "s1"
 
 
 def test_health_shows_the_tts_keys(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -404,8 +410,9 @@ def test_the_deadline_cuts_off_a_stalled_request() -> None:
         )
 
     started = time.monotonic()
-    out = asyncio.run(run())
-    assert out.status_code == 504
+    with pytest.raises(ProxyError) as caught:
+        asyncio.run(run())
+    assert caught.value.status == 504
     assert client.sends == 1
     assert time.monotonic() - started < 2
 
@@ -440,14 +447,45 @@ def test_a_failed_error_body_read_still_retries_a_503(monkeypatch: pytest.Monkey
     assert out.status_code == 200
 
 
+def _limited(content_length: bytes) -> int:
+    """Send an empty body declaring ``content_length`` through a 1000-byte cap.
+
+    Returns the status the client gets; 200 means the request reached the app.
+    """
+    sent: list[Message] = []
+
+    async def inner(scope: Scope, receive: Receive, send: Send) -> None:
+        del scope, receive
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    async def receive() -> Message:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: Message) -> None:
+        sent.append(message)
+
+    scope: Scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/v1/audio/speech",
+        "headers": [(b"content-length", content_length)],
+    }
+    middleware = BodyLimitMiddleware(inner, limit=lambda: 1000)
+    asyncio.run(middleware(scope, receive, send))
+    return next(m["status"] for m in sent if m["type"] == "http.response.start")
+
+
 def test_a_huge_content_length_is_too_large_not_an_error() -> None:
-    assert _declared_too_large("9" * 5000, 1000) is True
-    assert _declared_too_large("1001", 1000) is True
-    assert _declared_too_large("1000", 1000) is False
-    assert _declared_too_large("0" * 5000 + "5", 1000) is False
-    assert _declared_too_large("\u00b2", 1000) is False
-    assert _declared_too_large("", 1000) is False
-    assert _declared_too_large("abc", 1000) is False
+    # Too many digits for int() is still a 413, not a crash.
+    assert _limited(b"9" * 5000) == 413
+    assert _limited(b"1001") == 413
+    assert _limited(b"1000") == 200
+    assert _limited(b"0" * 5000 + b"5") == 200
+    # Not a plain ASCII number: the declared length is ignored and bytes are counted.
+    assert _limited("\u00b2".encode("latin-1")) == 200
+    assert _limited(b"") == 200
+    assert _limited(b"abc") == 200
 
 
 def test_an_unsupported_transcription_format_is_a_400_and_never_calls_fish(
@@ -490,11 +528,16 @@ def test_word_rows_are_scrubbed_like_the_transcript_and_empty_ones_dropped() -> 
         data,
         language="en",
         granularities=["word"],
-        strip_speakers=True,
-        strip_cues=True,
+        scrub=AsrScrub(speakers=True, cues=True),
     )
     kept = transcription_body(
-        "verbose_json", "Hello ok", [], data, language="en", granularities=["word"]
+        "verbose_json",
+        "Hello ok",
+        [],
+        data,
+        language="en",
+        granularities=["word"],
+        scrub=AsrScrub(speakers=False, cues=False),
     )
     assert isinstance(stripped, dict)
     assert isinstance(kept, dict)
@@ -623,14 +666,15 @@ def test_an_unreadable_error_body_keeps_the_status_fish_sent(
 
     async def run() -> tuple[int, bytes]:
         async with client:
-            out = await fish_send(
-                client,
-                stream=True,
-                method="POST",
-                url="https://fish.test/v1/tts",
-                policy=RetryPolicy(attempts=3),
-            )
-            assert isinstance(out, JSONResponse)
+            with pytest.raises(ProxyError) as caught:
+                await fish_send(
+                    client,
+                    stream=True,
+                    method="POST",
+                    url="https://fish.test/v1/tts",
+                    policy=RetryPolicy(attempts=3),
+                )
+            out = caught.value.response()
             return out.status_code, bytes(out.body)
 
     code, body = asyncio.run(run())

@@ -1,24 +1,21 @@
 from __future__ import annotations
 
 import asyncio
-import threading
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from voice_fakes import make_result
 
-from fish_audio_suite_voice.cli import (
-    _parse_device,
-    apply_cli_env_files,
-    load_config,
-    main,
-    run_loop,
-    smoke_test,
-)
-from fish_audio_suite_voice.config import OPENROUTER_API_BASE
-from fish_audio_suite_voice.duplex import EXIT_FATAL
+from fish_audio_suite_voice.cli import main, run_loop, smoke_test
+from fish_audio_suite_voice.config import load_config
+from fish_audio_suite_voice.envfile import apply_cli_env_files
+from fish_audio_suite_voice.events import ExitCode
+from fish_audio_suite_voice.llm_tune import OPENROUTER_API_BASE
 from fish_audio_suite_voice.playback import PlaybackSink
-from fish_audio_suite_voice.signals import DuplexSession, TurnSignals
+from fish_audio_suite_voice.portaudio import parse_device
+from fish_audio_suite_voice.speaker import FishSpeaker
+from fish_audio_suite_voice.wire import TtsResult
 
 
 def test_env_file_fills_missing_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -28,10 +25,8 @@ def test_env_file_fills_missing_keys(tmp_path: Path, monkeypatch: pytest.MonkeyP
     path.write_text(
         "FISH_VOICE_ID=vid-from-file\nexport FISH_API_KEY='key-from-file'\n", encoding="utf-8"
     )
-    missing = tmp_path / "missing.env"
     loaded = apply_cli_env_files([path], required=True)
-    assert path in loaded
-    assert not missing.exists()
+    assert loaded == [path]
     assert load_config().fish_voice_id == "vid-from-file"
     assert load_config().fish_api_key == "key-from-file"
 
@@ -87,7 +82,7 @@ def test_quoted_prompt_keeps_the_following_line(
         encoding="utf-8",
     )
     apply_cli_env_files([path], required=True)
-    assert load_config().system_prompt == "You are helpful.\nBe brief."
+    assert load_config().prompt.text == "You are helpful.\nBe brief."
     assert load_config().fish_voice_id == "vid"
 
 
@@ -102,7 +97,7 @@ def test_single_quoted_backslash_does_not_swallow_the_next_key(
     )
     apply_cli_env_files([path], required=True)
     assert load_config().fish_voice_id == "vid"
-    assert load_config().system_prompt == "C:\\\\temp\\\\"
+    assert load_config().prompt.text == "C:\\\\temp\\\\"
 
 
 def test_escaped_quote_and_newline_stay_in_the_prompt(
@@ -116,7 +111,7 @@ def test_escaped_quote_and_newline_stay_in_the_prompt(
         encoding="utf-8",
     )
     apply_cli_env_files([path], required=True)
-    assert load_config().system_prompt == 'Say "hi"\nthere.'
+    assert load_config().prompt.text == 'Say "hi"\nthere.'
     assert load_config().fish_voice_id == "vid"
     monkeypatch.delenv("FISH_VOICE_SYSTEM_PROMPT", raising=False)
     monkeypatch.delenv("FISH_VOICE_ID", raising=False)
@@ -126,7 +121,7 @@ def test_escaped_quote_and_newline_stay_in_the_prompt(
         encoding="utf-8",
     )
     apply_cli_env_files([split], required=True)
-    assert load_config().system_prompt == 'Say "hi\nthere.'
+    assert load_config().prompt.text == 'Say "hi\nthere.'
     assert load_config().fish_voice_id == "vid"
 
 
@@ -206,8 +201,8 @@ def test_temperature_and_top_p_stay_in_unit_interval(monkeypatch: pytest.MonkeyP
     monkeypatch.setenv("FISH_TEMPERATURE", "5")
     monkeypatch.setenv("FISH_TOP_P", "-1")
     settings = load_config()
-    assert settings.temperature == 1.0
-    assert settings.top_p == 0.0
+    assert settings.tts.temperature == 1.0
+    assert settings.tts.top_p == 0.0
 
 
 def test_speed_and_chunk_stay_in_range(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -215,25 +210,27 @@ def test_speed_and_chunk_stay_in_range(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FISH_CHUNK_LENGTH", "900")
     monkeypatch.setenv("FISH_MIN_CHUNK_LENGTH", "250")
     settings = load_config()
-    assert settings.speed == 2.0
-    assert settings.chunk_length == 300
-    assert settings.min_chunk_length == 100
+    assert settings.tts.speed == 2.0
+    assert settings.tts.chunk_length == 300
+    assert settings.tts.min_chunk_length == 100
+    # A self-hosted HTTP API takes up to 1000, but this websocket goes through the SDK,
+    # which refuses more than 300 for any base, so 300 is what is sent.
     monkeypatch.setenv("FISH_BASE", "http://127.0.0.1:8080")
     monkeypatch.setenv("FISH_CHUNK_LENGTH", "800")
-    assert load_config().chunk_length == 800
+    assert load_config().tts.chunk_length == 300
 
 
 def test_sample_rate_must_be_positive(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FISH_SAMPLE_RATE", "0")
-    assert load_config().sample_rate == 44100
+    assert load_config().tts.sample_rate == 44100
     monkeypatch.setenv("FISH_SAMPLE_RATE", "-1")
-    assert load_config().sample_rate == 44100
+    assert load_config().tts.sample_rate == 44100
     monkeypatch.setenv("FISH_SAMPLE_RATE", "16000")
-    assert load_config().sample_rate == 16000
+    assert load_config().tts.sample_rate == 16000
     monkeypatch.setenv("FISH_SAMPLE_RATE", "16000.0")
-    assert load_config().sample_rate == 16000
+    assert load_config().tts.sample_rate == 16000
     monkeypatch.setenv("FISH_SAMPLE_RATE", "16,000")
-    assert load_config().sample_rate == 44100
+    assert load_config().tts.sample_rate == 44100
 
 
 def test_run_loop_rejects_bad_playback(
@@ -244,7 +241,7 @@ def test_run_loop_rejects_bad_playback(
     monkeypatch.setenv("FISH_LLM_API_KEY", "k")
     monkeypatch.setenv("FISH_LLM_MODEL", "m")
     c = replace(load_config(), playback="nope")
-    assert asyncio.run(run_loop(c)) == EXIT_FATAL
+    assert asyncio.run(run_loop(c)) == ExitCode.FATAL
     assert "unknown playback sink" in capsys.readouterr().err
 
 
@@ -258,61 +255,45 @@ def test_catalog_model_and_latency_are_canonical(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setenv("FISH_LATENCY", " Normal ")
     settings = load_config()
     assert settings.tts_model == "s2.1-pro"
-    assert settings.latency == "normal"
+    assert settings.tts.latency == "normal"
     monkeypatch.setenv("FISH_LATENCY", "turbo")
     monkeypatch.setenv("FISH_TTS_MODEL", "MyModel")
     settings = load_config()
     assert settings.tts_model == "MyModel"
-    assert settings.latency == "normal"
+    assert settings.tts.latency == "normal"
 
 
 def test_parse_device_strips_index_and_blank() -> None:
-    assert _parse_device(None) is None
-    assert _parse_device("") is None
-    assert _parse_device("  ") is None
-    assert _parse_device(" 3 ") == 3
-    assert _parse_device("1.0") == 1
-    assert _parse_device("0.0") == 0
-    assert _parse_device("1.5") == "1.5"
-    assert _parse_device(" hw:0 ") == "hw:0"
-    assert _parse_device("3\nbad") == 3
-    assert _parse_device("hw:0\nbad") == "hw:0"
-
-
-def test_cleared_turn_does_not_cancel_the_old_events() -> None:
-    turn = threading.Event()
-    llm = asyncio.Event()
-    signals_ = TurnSignals()
-    signals_.fire()
-    signals_.bind(turn, llm)
-    signals_.clear()
-    signals_.fire()
-    assert not turn.is_set()
-    assert not llm.is_set()
-
-
-def _no_env(*_args: object, **_kwargs: object) -> list[Path]:
-    return []
+    assert parse_device(None) is None
+    assert parse_device("") is None
+    assert parse_device("  ") is None
+    assert parse_device(" 3 ") == 3
+    assert parse_device("1.0") == 1
+    assert parse_device("0.0") == 0
+    assert parse_device("1.5") == "1.5"
+    assert parse_device(" hw:0 ") == "hw:0"
+    assert parse_device("3\nbad") == 3
+    assert parse_device("hw:0\nbad") == "hw:0"
 
 
 def _no_log(**_kwargs: object) -> None:
     return None
 
 
-def _fake_cfg() -> object:
-    return object()
+def _stub_main(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, run: object) -> list[str]:
+    """Run ``main`` with an empty env file, no logging set-up and ``run`` as the session.
 
-
-def _stub_main(monkeypatch: pytest.MonkeyPatch, run: object) -> None:
-    monkeypatch.setattr("fish_audio_suite_voice.cli.apply_cli_env_files", _no_env)
+    Returns the arguments to pass, so ``./.env`` is never read.
+    """
+    empty = tmp_path / "empty.env"
+    empty.write_text("", encoding="utf-8")
     monkeypatch.setattr("fish_audio_suite_voice.cli.configure_voice_logging", _no_log)
-    monkeypatch.setattr("fish_audio_suite_voice.cli.load_config", _fake_cfg)
-    monkeypatch.setattr("fish_audio_suite_voice.cli.warn_if_insecure_base", lambda _c: False)
     monkeypatch.setattr("fish_audio_suite_voice.cli.run_loop", run)
+    return ["--env-file", str(empty)]
 
 
 def test_main_exits_2_on_an_unexpected_cancel_without_restarting(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     calls = {"n": 0}
 
@@ -320,51 +301,21 @@ def test_main_exits_2_on_an_unexpected_cancel_without_restarting(
         calls["n"] += 1
         raise asyncio.CancelledError
 
-    _stub_main(monkeypatch, run)
-    assert main([]) == EXIT_FATAL
+    argv = _stub_main(monkeypatch, tmp_path, run)
+    assert main(argv) == ExitCode.FATAL
     assert calls["n"] == 1
     assert "cancelled unexpectedly" in capsys.readouterr().err
 
 
-def test_main_says_bye_on_ctrl_c(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_main_says_bye_on_ctrl_c(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     async def run(_config: object) -> int:
         raise KeyboardInterrupt
 
-    _stub_main(monkeypatch, run)
-    assert main([]) == 0
-
-
-def test_request_quit_sets_mic_and_turn_cancel() -> None:
-    session = DuplexSession()
-    turn = threading.Event()
-    llm = asyncio.Event()
-    session.turn.bind(turn, llm)
-    session.request_quit()
-    assert session.quit_requested.is_set()
-    assert turn.is_set()
-    assert llm.is_set()
-
-
-def test_request_quit_from_a_thread_sets_the_llm_event_on_its_loop() -> None:
-    async def scenario() -> bool:
-        session = DuplexSession()
-        llm = asyncio.Event()
-        session.turn.bind(threading.Event(), llm)
-        worker = threading.Thread(target=session.request_quit)
-        worker.start()
-        await asyncio.wait_for(llm.wait(), timeout=1)
-        worker.join()
-        return session.quit_requested.is_set()
-
-    assert asyncio.run(scenario())
-
-
-def test_sessions_do_not_share_quit_state() -> None:
-    first = DuplexSession()
-    second = DuplexSession()
-    first.request_quit()
-    assert first.quit_requested.is_set()
-    assert not second.quit_requested.is_set()
+    argv = _stub_main(monkeypatch, tmp_path, run)
+    assert main(argv) == ExitCode.OK
+    assert capsys.readouterr().out.endswith("\nbye\n")
 
 
 def test_llm_keys_never_cross_providers(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -442,18 +393,22 @@ def test_asr_model_env_accepts_only_native_ids(monkeypatch: pytest.MonkeyPatch) 
     assert load_config().asr_model == "transcribe-1-pro"
 
 
-class _SmokeTts:
-    def speak(self, text: str, sink: PlaybackSink) -> object:
+def _fish_says_hello(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Stand in for the Fish websocket: write 4000 bytes of audio to the sink."""
+
+    def speak(_self: FishSpeaker, text: str, sink: PlaybackSink, **_kw: object) -> TtsResult:
         sink.start()
         sink.write(b"\x00\x01" * 2000)
         sink.finish()
-        return type("R", (), {"error_status": None, "error_message": None, "bytes_played": 4000})()
+        return make_result(text, bytes_played=4000, got_audio=True)
+
+    monkeypatch.setattr(FishSpeaker, "speak", speak)
 
 
 def test_smoke_writes_to_the_requested_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr("fish_audio_suite_voice.cli._fish_tts", lambda *_a: _SmokeTts())
+    _fish_says_hello(monkeypatch)
     c = replace(load_config(), fish_api_key="k", fish_voice_id="v")
     out = tmp_path / "hello.wav"
     assert asyncio.run(smoke_test(c, out)) == 0
@@ -463,7 +418,7 @@ def test_smoke_writes_to_the_requested_path(
 def test_smoke_default_path_is_unique_and_not_a_shared_name(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr("fish_audio_suite_voice.cli._fish_tts", lambda *_a: _SmokeTts())
+    _fish_says_hello(monkeypatch)
     monkeypatch.setattr("tempfile.tempdir", str(tmp_path))
     c = replace(load_config(), fish_api_key="k", fish_voice_id="v")
     assert asyncio.run(smoke_test(c)) == 0
@@ -514,17 +469,18 @@ def test_a_malformed_llm_base_warns_and_falls_back(
     assert is_openrouter_host("http://[::1") is False
 
 
-def test_main_checks_the_fish_and_llm_base_urls_once(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_main_warns_once_for_each_key_sent_over_plain_http(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     async def run(_config: object) -> int:
         raise KeyboardInterrupt
 
-    _stub_main(monkeypatch, run)
-    seen: list[object] = []
-
-    def record(config: object) -> bool:
-        seen.append(config)
-        return False
-
-    monkeypatch.setattr("fish_audio_suite_voice.cli.warn_if_insecure_base", record)
-    assert main([]) == 0
-    assert len(seen) == 1
+    monkeypatch.setenv("FISH_API_KEY", "fish-key")
+    monkeypatch.setenv("FISH_BASE", "http://10.0.0.5:8080")
+    monkeypatch.setenv("FISH_LLM_API_KEY", "llm-key")
+    monkeypatch.setenv("FISH_LLM_BASE", "http://10.0.0.6/v1")
+    argv = _stub_main(monkeypatch, tmp_path, run)
+    assert main(argv) == ExitCode.OK
+    err = capsys.readouterr().err
+    assert err.count("10.0.0.5 is plain http") == 1
+    assert err.count("10.0.0.6 is plain http") == 1

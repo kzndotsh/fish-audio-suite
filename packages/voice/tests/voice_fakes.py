@@ -1,7 +1,7 @@
 """Typed stand-ins shared by the voice tests.
 
-One barge gate, one sink, one ``TtsResult`` factory and the helpers that
-install them, so a test patches objects instead of repeating small fake classes.
+One mic, one barge gate, one ``TtsResult`` factory and the helpers that install them,
+so a test patches objects instead of repeating small fake classes.
 """
 
 from __future__ import annotations
@@ -14,12 +14,13 @@ from typing import Any
 
 import pytest
 
-from fish_audio_suite_kit import FishHttpError
 from fish_audio_suite_voice import reply
 from fish_audio_suite_voice.aec import EchoCanceller
-from fish_audio_suite_voice.mic import StopFlag
+from fish_audio_suite_voice.barge import BargeGate
+from fish_audio_suite_voice.cancel import StopFlag
+from fish_audio_suite_voice.pcm import FRAME_BYTES
 from fish_audio_suite_voice.speaker import FishSpeaker
-from fish_audio_suite_voice.tune import AecTune
+from fish_audio_suite_voice.tune import DEFAULT_BARGE_RMS, AecTune, BargeTune
 from fish_audio_suite_voice.wire import TtsResult
 
 
@@ -79,27 +80,41 @@ class ScriptedMic:
             yield frame
 
 
-class FakeGate:
-    """``BargeGate`` stand-in. Counts how often it was armed and can hold the mic.
+class FakeGate(BargeGate):
+    """A ``BargeGate`` that never watches the mic: it counts how often it was armed.
+
+    The gate's state is set as a trip would leave it, and ``clip`` is the real method.
 
     Parameters
     ----------
     captured : bytes, optional
-        What ``BargeGate.captured`` would hold after a barge-in.
+        The speech a trip kept. Empty when the gate did not trip.
+    resume_at : int or None, optional
+        The mic position after that speech.
+    min_rms : float, optional
+        The level the gate admits speech at, as ``BargeTune.min_rms``.
     hold : bool, optional
         When True the thread waits for ``cancel`` like the real watcher, so a
         test can check that the caller releases it.
     """
 
-    def __init__(self, captured: bytes = b"", *, hold: bool = False) -> None:
+    def __init__(
+        self,
+        captured: bytes = b"",
+        *,
+        resume_at: int | None = None,
+        min_rms: float = DEFAULT_BARGE_RMS,
+        hold: bool = False,
+    ) -> None:
+        super().__init__(mic=ScriptedMic(), tune=BargeTune(min_rms=min_rms))
         self.captured = captured
-        self.resume_at: int | None = None
+        self.resume_at = resume_at
         self.hold = hold
         self.armed = 0
         self.thread: threading.Thread | None = None
-        self.failure: Exception | None = None
 
     def start_after_bleed(self, cancel: threading.Event) -> threading.Thread:
+        """Count the arming and start a thread that holds until ``cancel`` when asked to."""
         self.armed += 1
 
         def run() -> None:
@@ -112,53 +127,15 @@ class FakeGate:
         return thread
 
 
-class FakeSink:
-    """``PlaybackSink`` stand-in that discards audio and reports ``played`` bytes."""
+def install_gate(monkeypatch: pytest.MonkeyPatch, gate: FakeGate | None = None) -> FakeGate:
+    """Make every reply watch for barge-in with ``gate``, a fresh ``FakeGate`` when omitted.
 
-    def __init__(self, played: int = 0) -> None:
-        self.played = played
-        self.output_latency_s = 0.0
-
-    def start(self) -> None:
-        return None
-
-    def write(self, chunk: bytes) -> None:
-        del chunk
-
-    def finish(self, *, kill: bool = False) -> None:
-        del kill
-
-    def bytes_played(self) -> int:
-        return self.played
-
-
-def install_audio(
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    gate: FakeGate | None = None,
-    sink: FakeSink | None = None,
-) -> tuple[FakeGate, FakeSink]:
-    """Replace the barge gate and the sink factory used by ``reply``.
-
-    Parameters
-    ----------
-    monkeypatch : pytest.MonkeyPatch
-        The test's patcher, so the change is undone afterwards.
-    gate : FakeGate or None, optional
-        Used for every ``BargeGate(...)``. A fresh one when omitted.
-    sink : FakeSink or None, optional
-        Returned by every ``make_sink(...)``. A fresh one when omitted.
-
-    Returns
-    -------
-    tuple of FakeGate and FakeSink
-        The objects now in use.
+    The reply's sink needs no stand-in: the test configs play to ``stdout``, and the fake
+    speakers never write to it.
     """
     use_gate = gate or FakeGate()
-    use_sink = sink or FakeSink()
     monkeypatch.setattr(reply, "BargeGate", lambda **_kwargs: use_gate)
-    monkeypatch.setattr(reply, "make_sink", lambda *_args, **_kwargs: use_sink)
-    return use_gate, use_sink
+    return use_gate
 
 
 def set_tts(
@@ -177,12 +154,12 @@ def set_tts(
     tts : FishSpeaker
         The object to patch.
     speak : Callable or None, optional
-        Replaces ``speak``.
+        Replaces ``speak_shaped``, the call the loop makes for a whole reply.
     speak_stream : Callable or None, optional
         Replaces ``speak_stream``.
     """
     if speak is not None:
-        monkeypatch.setattr(tts, "speak", speak)
+        monkeypatch.setattr(tts, "speak_shaped", speak)
     if speak_stream is not None:
         monkeypatch.setattr(tts, "speak_stream", speak_stream)
 
@@ -198,7 +175,10 @@ def make_result(
     error_status: int | None = None,
     error_message: str | None = None,
 ) -> TtsResult:
-    """Build an ``TtsResult`` by keyword, so reordering its fields cannot change a test."""
+    """Build a ``TtsResult`` by keyword, so reordering its fields cannot change a test.
+
+    ``TtsResult`` derives its ``error`` from ``error_status`` itself.
+    """
     return TtsResult(
         spoken_so_far=spoken,
         bytes_played=bytes_played,
@@ -208,12 +188,26 @@ def make_result(
         tts_first_text_ms=tts_first_text_ms,
         error_status=error_status,
         error_message=error_message,
-        error=(
-            None
-            if error_status is None
-            else FishHttpError.from_status(error_status, error_message or "")
-        ),
     )
+
+
+def level_frame(level: int) -> bytes:
+    """Return one mic frame whose every sample is ``level``, so its RMS is ``level``."""
+    return level.to_bytes(2, "little", signed=True) * (FRAME_BYTES // 2)
+
+
+def install_detector(monkeypatch: pytest.MonkeyPatch, is_speech: Callable[[bytes], bool]) -> None:
+    """Make the default voice detector call a frame speech when ``is_speech`` says so."""
+
+    class Vad:
+        def __init__(self, mode: int) -> None:
+            del mode
+
+        def is_speech(self, frame: bytes, rate: int) -> bool:
+            del rate
+            return is_speech(frame)
+
+    install_vad(monkeypatch, Vad)
 
 
 def install_vad(monkeypatch: pytest.MonkeyPatch, vad_class: type[Any]) -> None:

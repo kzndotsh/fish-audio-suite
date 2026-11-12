@@ -3,9 +3,9 @@ from __future__ import annotations
 import asyncio
 import gc
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from types import SimpleNamespace
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 import httpx
 import openrouter
@@ -13,25 +13,17 @@ import pytest
 from openrouter.errors import OpenRouterError
 
 from fish_audio_suite_voice.events import EVENTS, Event, Notice
-from fish_audio_suite_voice.llm import (
-    ChatUnusableError,
-    _ChatStats,
-    _consume_chat_events,
-    _model_author_slug,
-    _want_nitro,
-    check_openrouter_model,
-    llm_token_stream,
-)
+from fish_audio_suite_voice.llm import llm_token_stream
 from fish_audio_suite_voice.llm_tune import LlmTune, is_openrouter_host
+from fish_audio_suite_voice.log_setup import configure_voice_logging
 from fish_audio_suite_voice.transports import (
-    ChatCall,
     ChatChunk,
     ChatHttpError,
-    _abort_http,
-    _chat_body,
-    _feed_sse,
+    ChatUnusableError,
+    check_openrouter_model,
     describe_http_error,
     openrouter_client,
+    routed_model,
 )
 
 OR_BASE = "https://openrouter.ai/api/v1"
@@ -39,7 +31,6 @@ OR_BASE = "https://openrouter.ai/api/v1"
 
 def _tune(**kw: Any) -> LlmTune:
     fields: dict[str, Any] = {
-        "backend": "openrouter",
         "base": OR_BASE,
         "api_key": "sk-test",
         "model": "org/model",
@@ -48,6 +39,67 @@ def _tune(**kw: Any) -> LlmTune:
     }
     fields.update(kw)
     return LlmTune(**fields)
+
+
+def _openai_tune(**kw: Any) -> LlmTune:
+    fields: dict[str, Any] = {
+        "base": "https://api.example.com/v1",
+        "api_key": "sk-test",
+        "model": "org/model",
+    }
+    fields.update(kw)
+    return LlmTune(**fields)
+
+
+Handler = Callable[[httpx.Request], httpx.Response]
+
+
+def _over_http(
+    handler: Handler,
+    *,
+    messages: list[Any] | None = None,
+    cancel_after_first: bool = False,
+) -> list[str]:
+    """Stream one reply from the OpenAI-compatible path through a fake HTTP server."""
+
+    async def run() -> list[str]:
+        cancel = asyncio.Event()
+        pieces: list[str] = []
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            async for tok in llm_token_stream(
+                messages or [{"role": "user", "content": "hi"}],
+                tune=_openai_tune(),
+                cancel=cancel,
+                http=http,
+            ):
+                pieces.append(tok)
+                if cancel_after_first:
+                    cancel.set()
+        return pieces
+
+    return asyncio.run(asyncio.wait_for(run(), 5))
+
+
+def _sse_reply(text: str, *, status: int = 200, headers: dict[str, str] | None = None) -> Handler:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, text=text, headers=headers)
+
+    return handler
+
+
+class _Stalls(httpx.AsyncByteStream):
+    """A body that sends ``first`` and then either never ends or fails the next read."""
+
+    def __init__(self, first: bytes, *, then_fail: bool) -> None:
+        self._first = first
+        self._then_fail = then_fail
+
+    async def __aiter__(self) -> AsyncIterator[bytes]:
+        yield self._first
+        if self._then_fail:
+            await asyncio.sleep(0)
+            raise httpx.ReadError("connection dropped")
+        await asyncio.Event().wait()
 
 
 def test_openrouter_client_drops_a_key_that_breaks_the_header(
@@ -78,48 +130,35 @@ def test_openrouter_client_drops_a_key_that_breaks_the_header(
 
 
 def test_surrogate_in_chat_messages_still_encodes() -> None:
-    call = ChatCall(
-        messages=[{"role": "system", "content": "Be brief. \ud800 Answer plainly."}],
-        tune=_tune(max_tokens=100),
-        route_model="model",
-        client=None,
-        http=None,
-        session_id=None,
-        trace_id=None,
-    )
-    body = _chat_body(call, "max_tokens")
-    request = httpx.Request(
-        "POST",
-        "https://example.com/v1/chat/completions",
-        json=body,
-    )
-    request.read()
-    text = body["messages"][0]["content"]
+    sent: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, text='data: {"choices":[{"delta":{"content":"ok"}}]}\n\n')
+
+    messages = [{"role": "system", "content": "Be brief. \ud800 Answer plainly."}]
+    assert _over_http(handler, messages=messages) == ["ok"]
+    text = sent[0]["messages"][0]["content"]
     assert "\ud800" not in text
     assert "Be brief." in text
     assert "Answer plainly." in text
 
 
 def test_sse_bom_does_not_drop_the_first_token() -> None:
-    buf, event, stop = _feed_sse(
-        "",
-        '\ufeffdata: {"choices":[{"delta":{"content":"Hello there"}}]}',
+    first = '\ufeffdata: {"choices":[{"delta":{"content":"Hello there"}}]}\n\n'
+    assert _over_http(_sse_reply(first)) == ["Hello there"]
+    # A BOM before [DONE] still ends the reply.
+    done = (
+        'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n'
+        "\ufeffdata: [DONE]\n\n"
+        'data: {"choices":[{"delta":{"content":" dropped"}}]}\n\n'
     )
-    assert stop is False
-    assert buf == ""
-    assert event is not None
-    assert event["choices"][0]["delta"]["content"] == "Hello there"
-    _, done, stopped = _feed_sse("", "\ufeffdata: [DONE]")
-    assert done is None
-    assert stopped is True
+    assert _over_http(_sse_reply(done)) == ["Hello"]
 
 
-def test_a_provider_error_group_is_reported(monkeypatch: pytest.MonkeyPatch) -> None:
-    notes: list[str] = []
-    monkeypatch.setattr(
-        "fish_audio_suite_voice.llm.warn", lambda message: notes.append(str(message))
-    )
-
+def test_a_provider_error_group_is_reported(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     async def events() -> Any:
         yield ChatChunk(text="Hello there")
         raise ExceptionGroup("llm", [RuntimeError("provider down")])
@@ -131,22 +170,21 @@ def test_a_provider_error_group_is_reported(monkeypatch: pytest.MonkeyPatch) -> 
             tok
             async for tok in llm_token_stream(
                 [{"role": "user", "content": "hi"}],
-                base="https://api.example.com/v1",
-                key="sk-test",
-                model="org/model",
+                tune=LlmTune(
+                    base="https://api.example.com/v1",
+                    api_key="sk-test",
+                    model="org/model",
+                ),
             )
         ]
 
     assert asyncio.run(collect()) == ["Hello there"]
-    assert any("provider down" in note for note in notes)
+    assert "provider down" in capsys.readouterr().err
 
 
-def test_a_cancel_group_does_not_warn(monkeypatch: pytest.MonkeyPatch) -> None:
-    notes: list[str] = []
-    monkeypatch.setattr(
-        "fish_audio_suite_voice.llm.warn", lambda message: notes.append(str(message))
-    )
-
+def test_a_cancel_group_does_not_warn(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     async def events() -> Any:
         yield ChatChunk(text="Hello there")
         raise BaseExceptionGroup("cancel", [asyncio.CancelledError()])
@@ -158,14 +196,16 @@ def test_a_cancel_group_does_not_warn(monkeypatch: pytest.MonkeyPatch) -> None:
             tok
             async for tok in llm_token_stream(
                 [{"role": "user", "content": "hi"}],
-                base="https://api.example.com/v1",
-                key="sk-test",
-                model="org/model",
+                tune=LlmTune(
+                    base="https://api.example.com/v1",
+                    api_key="sk-test",
+                    model="org/model",
+                ),
             )
         ]
 
     assert asyncio.run(collect()) == ["Hello there"]
-    assert notes == []
+    assert capsys.readouterr().err == ""
 
 
 def test_split_sse_data_lines_stay_one_event() -> None:
@@ -177,18 +217,7 @@ def test_split_sse_data_lines_stay_one_event() -> None:
         "data: [DONE]",
         'data: {"choices":[{"delta":{"content":"dropped"}}]}',
     ]
-    events: list[dict[str, Any]] = []
-    buf = ""
-    for line in lines:
-        buf, event, stop = _feed_sse(buf, line)
-        if event is not None:
-            events.append(event)
-        if stop:
-            break
-    assert [event["choices"][0]["delta"]["content"] for event in events] == [
-        "Hello",
-        " there",
-    ]
+    assert _over_http(_sse_reply("\n".join(lines) + "\n")) == ["Hello", " there"]
 
 
 def _tokens(**extra: Any):
@@ -196,22 +225,23 @@ def _tokens(**extra: Any):
     return llm_token_stream([{"role": "user", "content": "hi"}], tune=tune, **extra)
 
 
-def test_want_nitro_slash_model_on_openrouter() -> None:
-    assert _want_nitro("org/model", _tune())
+def test_nitro_routes_a_slash_model_on_openrouter() -> None:
+    assert routed_model(_tune()) == "org/model:nitro"
 
 
-def test_want_nitro_false_when_suffix_present() -> None:
-    assert not _want_nitro("org/model:nitro", _tune())
+def test_nitro_keeps_a_model_that_already_names_a_variant() -> None:
+    assert routed_model(_tune(model="org/model:nitro")) == "org/model:nitro"
+    assert routed_model(_tune(model="org/model:free")) == "org/model:free"
 
 
-def test_want_nitro_is_off_unless_asked() -> None:
-    assert not _want_nitro("org/model", _tune(nitro=False))
+def test_nitro_is_off_unless_asked() -> None:
+    assert routed_model(_tune(nitro=False)) == "org/model"
     assert not LlmTune().nitro
 
 
-def test_want_nitro_false_for_non_openrouter_backend() -> None:
-    other = _tune(backend="openai", base="https://api.example.com/v1")
-    assert not _want_nitro("org/model", other)
+def test_nitro_is_never_added_off_openrouter() -> None:
+    other = _tune(base="https://api.example.com/v1")
+    assert routed_model(other) == "org/model"
 
 
 def test_openrouter_host_checks_the_hostname_not_the_text() -> None:
@@ -220,12 +250,6 @@ def test_openrouter_host_checks_the_hostname_not_the_text() -> None:
     assert not is_openrouter_host("https://api.example.com/v1?via=openrouter.ai")
     assert not is_openrouter_host("https://notopenrouter.ai/v1")
     assert not is_openrouter_host("http://localhost:11434/v1")
-
-
-def test_model_author_slug_splits_variant() -> None:
-    assert _model_author_slug("openai/gpt-4") == ("openai", "gpt-4")
-    assert _model_author_slug("openai/gpt-4:nitro") == ("openai", "gpt-4:nitro")
-    assert _model_author_slug("gpt-4") is None
 
 
 def _chunk(text: str) -> SimpleNamespace:
@@ -709,21 +733,13 @@ def test_continuation_stops_at_the_first_sentence(
 
 
 def test_cancel_returns_while_the_next_token_is_still_pending() -> None:
-    # The next chunk never arrives. Cancel has to end the turn anyway.
-    cancel = asyncio.Event()
+    # The server sends one token and then nothing. Cancel has to end the turn anyway.
+    first = b'data: {"choices":[{"delta":{"content":"one"}}]}\n\n'
 
-    async def stalled() -> AsyncIterator[ChatChunk]:
-        yield ChatChunk(text="one")
-        await asyncio.Event().wait()
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=_Stalls(first, then_fail=False))
 
-    async def run() -> list[str]:
-        pieces: list[str] = []
-        async for piece in _consume_chat_events(stalled(), cancel, _ChatStats()):
-            pieces.append(piece)
-            cancel.set()
-        return pieces
-
-    assert asyncio.run(asyncio.wait_for(run(), 1)) == ["one"]
+    assert _over_http(handler, cancel_after_first=True) == ["one"]
 
 
 def test_openrouter_cancel_stops_after_chunk(
@@ -807,23 +823,33 @@ def test_check_openrouter_model_reads_a_dict_reply() -> None:
 
 
 def test_a_failed_read_after_the_consumer_stops_is_not_logged() -> None:
-    async def events() -> AsyncIterator[ChatChunk]:
-        yield ChatChunk(text="one")
-        raise ChatHttpError(500, None, quota_exhausted=False)
+    first = b'data: {"choices":[{"delta":{"content":"one"}}]}\n\n'
 
-    async def run() -> list[dict[str, Any]]:
-        reported: list[dict[str, Any]] = []
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=_Stalls(first, then_fail=True))
+
+    reported: list[dict[str, Any]] = []
+
+    async def run() -> None:
         asyncio.get_running_loop().set_exception_handler(lambda _loop, ctx: reported.append(ctx))
-        stream = _consume_chat_events(events(), None, _ChatStats())
-        assert await anext(stream) == "one"
-        await asyncio.sleep(0.01)
-        await stream.aclose()
-        del stream
-        gc.collect()
-        await asyncio.sleep(0)
-        return reported
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            stream = cast(
+                AsyncGenerator[str, None],
+                llm_token_stream(
+                    [{"role": "user", "content": "hi"}], tune=_openai_tune(), http=http
+                ),
+            )
+            assert await anext(stream) == "one"
+            # The read already in flight fails while nobody is waiting for it.
+            await asyncio.sleep(0.01)
+            await stream.aclose()
+            del stream
+            gc.collect()
+            for _ in range(5):
+                await asyncio.sleep(0)
 
-    assert asyncio.run(run()) == []
+    asyncio.run(run())
+    assert reported == []
 
 
 def test_check_openrouter_model_skips_unsplit_slug() -> None:
@@ -854,12 +880,12 @@ def test_429_within_cap_retries_once(monkeypatch: pytest.MonkeyPatch) -> None:
     calls, events = _events_once_429(4.0, ["back"])
     waits: list[float] = []
 
-    async def pause(_cancel: asyncio.Event | None, seconds: float) -> bool:
+    async def pause(seconds: float, _stopped: Callable[[], bool]) -> bool:
         waits.append(seconds)
         return False
 
     monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", events)
-    monkeypatch.setattr("fish_audio_suite_voice.llm._pause_for_retry", pause)
+    monkeypatch.setattr("fish_audio_suite_voice.llm.sleep_unless", pause)
 
     seen: list[Event] = []
     unsubscribe = EVENTS.subscribe(seen.append)
@@ -869,9 +895,11 @@ def test_429_within_cap_retries_once(monkeypatch: pytest.MonkeyPatch) -> None:
             tok
             async for tok in llm_token_stream(
                 [{"role": "user", "content": "hi"}],
-                base="https://api.example.com/v1",
-                key="sk-test",
-                model="org/model",
+                tune=LlmTune(
+                    base="https://api.example.com/v1",
+                    api_key="sk-test",
+                    model="org/model",
+                ),
             )
         ]
 
@@ -893,9 +921,11 @@ def test_429_over_cap_returns_to_listening(monkeypatch: pytest.MonkeyPatch) -> N
             tok
             async for tok in llm_token_stream(
                 [{"role": "user", "content": "hi"}],
-                base="https://api.example.com/v1",
-                key="sk-test",
-                model="org/model",
+                tune=LlmTune(
+                    base="https://api.example.com/v1",
+                    api_key="sk-test",
+                    model="org/model",
+                ),
             )
         ]
 
@@ -911,20 +941,22 @@ def test_429_without_retry_after_retries_once_after_a_short_pause(
     monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", events)
     waits: list[float] = []
 
-    async def no_sleep(_cancel: object, seconds: float) -> bool:
+    async def no_sleep(seconds: float, _stopped: Callable[[], bool]) -> bool:
         waits.append(seconds)
         return False
 
-    monkeypatch.setattr("fish_audio_suite_voice.llm._pause_for_retry", no_sleep)
+    monkeypatch.setattr("fish_audio_suite_voice.llm.sleep_unless", no_sleep)
 
     async def collect() -> list[str]:
         return [
             tok
             async for tok in llm_token_stream(
                 [{"role": "user", "content": "hi"}],
-                base="https://api.example.com/v1",
-                key="sk-test",
-                model="org/model",
+                tune=LlmTune(
+                    base="https://api.example.com/v1",
+                    api_key="sk-test",
+                    model="org/model",
+                ),
             )
         ]
 
@@ -945,16 +977,17 @@ def test_a_quota_429_is_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
         return gen()
 
     monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", events)
-    monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", events)
 
     async def collect() -> list[str]:
         return [
             tok
             async for tok in llm_token_stream(
                 [{"role": "user", "content": "hi"}],
-                base="https://api.example.com/v1",
-                key="sk-test",
-                model="org/model",
+                tune=LlmTune(
+                    base="https://api.example.com/v1",
+                    api_key="sk-test",
+                    model="org/model",
+                ),
             )
         ]
 
@@ -962,31 +995,52 @@ def test_a_quota_429_is_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
     assert calls["n"] == 1
 
 
-def test_cancel_during_429_wait_does_not_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_429_wait_cut_short_does_not_retry(monkeypatch: pytest.MonkeyPatch) -> None:
     calls, events = _events_once_429(4.0, ["back"])
 
-    async def pause(cancel: asyncio.Event | None, _seconds: float) -> bool:
-        if cancel is not None:
-            cancel.set()
-        return True
+    async def pause(_seconds: float, _stopped: Callable[[], bool]) -> bool:
+        return True  # the wait reports it was stopped
 
     monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", events)
-    monkeypatch.setattr("fish_audio_suite_voice.llm._pause_for_retry", pause)
+    monkeypatch.setattr("fish_audio_suite_voice.llm.sleep_unless", pause)
 
     async def collect() -> list[str]:
         return [
             tok
             async for tok in llm_token_stream(
-                [{"role": "user", "content": "hi"}],
-                base="https://api.example.com/v1",
-                key="sk-test",
-                model="org/model",
-                cancel=asyncio.Event(),
+                [{"role": "user", "content": "hi"}], tune=_openai_tune(), cancel=asyncio.Event()
             )
         ]
 
     assert asyncio.run(collect()) == []
     assert calls["n"] == 1
+
+
+def test_cancel_wakes_the_429_wait(monkeypatch: pytest.MonkeyPatch) -> None:
+    _calls, events = _events_once_429(4.0, ["back"])
+    cancel = asyncio.Event()
+    woken: list[bool] = []
+
+    async def pause(_seconds: float, stopped: Callable[[], bool]) -> bool:
+        # Ctrl+C lands during the wait: the wait's stop check has to see it.
+        woken.append(stopped())
+        cancel.set()
+        woken.append(stopped())
+        return stopped()
+
+    monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", events)
+    monkeypatch.setattr("fish_audio_suite_voice.llm.sleep_unless", pause)
+
+    async def collect() -> list[str]:
+        return [
+            tok
+            async for tok in llm_token_stream(
+                [{"role": "user", "content": "hi"}], tune=_openai_tune(), cancel=cancel
+            )
+        ]
+
+    assert asyncio.run(collect()) == []
+    assert woken == [False, True]
 
 
 def test_429_after_a_token_does_not_retry(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1007,9 +1061,11 @@ def test_429_after_a_token_does_not_retry(monkeypatch: pytest.MonkeyPatch) -> No
             tok
             async for tok in llm_token_stream(
                 [{"role": "user", "content": "hi"}],
-                base="https://api.example.com/v1",
-                key="sk-test",
-                model="org/model",
+                tune=LlmTune(
+                    base="https://api.example.com/v1",
+                    api_key="sk-test",
+                    model="org/model",
+                ),
             )
         ]
 
@@ -1017,18 +1073,65 @@ def test_429_after_a_token_does_not_retry(monkeypatch: pytest.MonkeyPatch) -> No
     assert calls["n"] == 1
 
 
-def test_abort_http_reads_retry_after_header() -> None:
-    req = httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions")
-    headers = httpx.Response(429, headers={"Retry-After": "12"}, request=req).headers
+_OK_SSE = 'data: {"choices":[{"delta":{"content":"back"}}]}\n\n'
+
+
+def _refused_then_ok(
+    status: int, body: str, headers: dict[str, str] | None = None
+) -> tuple[list[httpx.Request], Handler]:
+    """A server that refuses the first request and answers the next."""
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if len(seen) == 1:
+            return httpx.Response(status, text=body, headers=headers)
+        return httpx.Response(200, text=_OK_SSE)
+
+    return seen, handler
+
+
+@pytest.fixture
+def waits(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Record each retry wait instead of sleeping."""
+    asked: list[float] = []
+
+    async def pause(seconds: float, _stopped: Callable[[], bool]) -> bool:
+        asked.append(seconds)
+        return False
+
+    monkeypatch.setattr("fish_audio_suite_voice.llm.sleep_unless", pause)
+    return asked
+
+
+def test_a_429_waits_for_its_retry_after_header_before_the_body(waits: list[float]) -> None:
     body = '{"error":{"metadata":{"retry_after_seconds":2}}}'
-    refused = _abort_http(429, "org/model", body, headers)
-    assert refused.status == 429
-    assert refused.retry_after_s == 12.0
+    seen, handler = _refused_then_ok(429, body, {"Retry-After": "12"})
+    assert _over_http(handler) == ["back"]
+    assert len(seen) == 2
+    assert waits == [12.0]
 
 
-def test_abort_http_reads_retry_after_from_body() -> None:
-    body = '{"error":{"metadata":{"retry_after_seconds":8}}}'
-    assert _abort_http(429, "org/model", body, None).retry_after_s == 8.0
+@pytest.mark.parametrize(
+    ("value", "wait"),
+    [
+        (8, 8.0),
+        ("1.5", 1.5),
+        # An unusable wait in the body is ignored, so the bare-429 pause applies.
+        (-3, 1.0),
+        (10**400, 1.0),
+        (True, 1.0),
+        ("soon", 1.0),
+    ],
+)
+def test_a_retry_wait_in_the_error_body_is_read_the_way_a_header_is(
+    waits: list[float], value: object, wait: float
+) -> None:
+    body = json.dumps({"error": {"metadata": {"retry_after_seconds": value}}})
+    seen, handler = _refused_then_ok(429, body)
+    assert _over_http(handler) == ["back"]
+    assert len(seen) == 2
+    assert waits == [wait]
 
 
 def test_openrouter_429_header_retries_once(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1057,12 +1160,12 @@ def test_openrouter_429_header_retries_once(monkeypatch: pytest.MonkeyPatch) -> 
         async def __aexit__(self, *_args: object) -> None:
             return None
 
-    async def pause(_cancel: asyncio.Event | None, seconds: float) -> bool:
+    async def pause(seconds: float, _stopped: Callable[[], bool]) -> bool:
         assert seconds == 3.0
         return False
 
     monkeypatch.setattr(openrouter, "OpenRouter", _Client)
-    monkeypatch.setattr("fish_audio_suite_voice.llm._pause_for_retry", pause)
+    monkeypatch.setattr("fish_audio_suite_voice.llm.sleep_unless", pause)
 
     async def collect() -> list[str]:
         return [tok async for tok in _tokens()]
@@ -1071,54 +1174,40 @@ def test_openrouter_429_header_retries_once(monkeypatch: pytest.MonkeyPatch) -> 
     assert calls["n"] == 2
 
 
-def test_abort_http_ignores_retry_after_on_other_status() -> None:
-    refused = _abort_http(500, "org/model", '{"retry_after_seconds":2}', None)
-    assert refused.status == 500
-    assert refused.retry_after_s is None
+def test_a_retry_wait_on_another_status_is_not_honoured(waits: list[float]) -> None:
+    seen, handler = _refused_then_ok(500, '{"retry_after_seconds":2}', {"Retry-After": "2"})
+    assert _over_http(handler) == []
+    assert len(seen) == 1
+    assert waits == []
 
 
 def test_log_briefs_show_the_provider_and_the_token_counts() -> None:
-    from fish_audio_suite_voice.llm import _provider_brief, _usage_brief
+    from fish_audio_suite_voice.transports import provider_brief, usage_brief
 
-    assert _provider_brief("available=1, selected=Venice") == "Venice"
-    assert _provider_brief("Venice") == "Venice"
-    assert _provider_brief(None) == ""
+    assert provider_brief("available=1, selected=Venice") == "Venice"
+    assert provider_brief("Venice") == "Venice"
+    assert provider_brief(None) == ""
     usage = {"prompt_tokens": 203, "completion_tokens": 20, "cost": 5.86e-05}
-    assert _usage_brief(usage) == "in=203 out=20 cost=$0.00006"
-    assert _usage_brief(None) == "usage=?"
+    assert usage_brief(usage) == "in=203 out=20 cost=$0.00006"
+    assert usage_brief(None) == "usage=?"
     # A cache hit shows how much of the prompt the provider read back, so a change
     # that breaks the cache can be seen.
     cached = {**usage, "prompt_tokens_details": {"cached_tokens": 180}}
-    assert _usage_brief(cached) == "in=203 cached=180 out=20 cost=$0.00006"
+    assert usage_brief(cached) == "in=203 cached=180 out=20 cost=$0.00006"
     no_hit = {**usage, "prompt_tokens_details": {"cached_tokens": 0}}
-    assert _usage_brief(no_hit) == "in=203 cached=0 out=20 cost=$0.00006"
+    assert usage_brief(no_hit) == "in=203 cached=0 out=20 cost=$0.00006"
 
 
-def test_a_retry_wait_in_the_error_body_is_read_the_way_a_header_is() -> None:
-    from fish_audio_suite_voice.transports import _retry_after_seconds
-
-    def body(value: object) -> str:
-        return json.dumps({"error": {"metadata": {"retry_after_seconds": value}}})
-
-    assert _retry_after_seconds(None, body(8)) == 8.0
-    assert _retry_after_seconds(None, body("1.5")) == 1.5
-    assert _retry_after_seconds(None, body(-3)) is None
-    assert _retry_after_seconds(None, body(10**400)) is None
-    assert _retry_after_seconds(None, body(True)) is None
-    assert _retry_after_seconds(None, body("soon")) is None
-    headers = httpx.Headers({"Retry-After": "12"})
-    assert _retry_after_seconds(headers, body(8)) == 12.0
-
-
-def test_abort_http_marks_a_quota_429() -> None:
-    quota = _abort_http(
-        429, "m", '{"error":{"code":"insufficient_quota","message":"free_limit_reached"}}', None
-    )
-    assert quota.quota_exhausted
-    limited = _abort_http(
-        429, "m", '{"error":{"message":"temporarily rate-limited upstream"}}', None
-    )
-    assert not limited.quota_exhausted
+def test_a_429_that_says_the_quota_is_spent_is_not_retried(waits: list[float]) -> None:
+    quota = '{"error":{"code":"insufficient_quota","message":"free_limit_reached"}}'
+    seen, handler = _refused_then_ok(429, quota)
+    assert _over_http(handler) == []
+    assert len(seen) == 1
+    assert waits == []
+    limited = '{"error":{"message":"temporarily rate-limited upstream"}}'
+    seen, handler = _refused_then_ok(429, limited)
+    assert _over_http(handler) == ["back"]
+    assert len(seen) == 2
 
 
 def test_a_wrapped_provider_429_becomes_one_readable_line() -> None:
@@ -1245,9 +1334,7 @@ async def _drain(stream: AsyncIterator[str]) -> list[str]:
 def _hi() -> AsyncIterator[str]:
     return llm_token_stream(
         [{"role": "user", "content": "hi"}],
-        base="https://api.example.com/v1",
-        key="sk-test",
-        model="org/gone",
+        tune=LlmTune(base="https://api.example.com/v1", api_key="sk-test", model="org/gone"),
     )
 
 
@@ -1340,21 +1427,20 @@ def test_a_service_tier_is_sent_only_when_one_is_chosen(
 
 
 def test_the_tier_that_served_the_reply_is_logged(
-    fake_openrouter: type[_FakeOpenRouter], monkeypatch: pytest.MonkeyPatch
+    fake_openrouter: type[_FakeOpenRouter], capsys: pytest.CaptureFixture[str]
 ) -> None:
     served = _chunk("Hi.")
     served.service_tier = "priority"  # ultrafast was asked for and fell back
     fake_openrouter.chunks = [served]
-    lines: list[str] = []
-
-    def record(message: str, *args: object, **_kw: object) -> None:
-        lines.append(message.format(*args))
-
-    monkeypatch.setattr("fish_audio_suite_voice.llm.debug", record)
+    configure_voice_logging(debug=1)
 
     async def run() -> None:
         async for _tok in _tokens(tune=_tune(service_tier="ultrafast")):
             pass
 
-    asyncio.run(run())
-    assert any(line.startswith("llm.stream_end") and "tier=priority" in line for line in lines)
+    try:
+        asyncio.run(run())
+        lines = capsys.readouterr().err.splitlines()
+    finally:
+        configure_voice_logging(debug=False)
+    assert any("stream_end" in line and "tier=priority" in line for line in lines)

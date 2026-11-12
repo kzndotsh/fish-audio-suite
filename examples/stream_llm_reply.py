@@ -28,8 +28,7 @@ from collections.abc import Iterator
 from pathlib import Path
 
 from fish_audio_suite_kit import strip_cue_tags
-from fish_audio_suite_voice import FileSink, FishSpeaker
-from fish_audio_suite_voice.envfile import load_dotenv
+from fish_audio_suite_voice import FileSink, FishSpeaker, load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
 REPLY = (

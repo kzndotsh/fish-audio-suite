@@ -83,7 +83,7 @@ In normal use, scrubbing costs about 50 µs per token. Per-frame mic work stays 
 | `FISH_SAMPLE_RATE` | `44100` | `24000` | About 45% less audio over the wire. Fish documents no difference in time to first audio |
 
 > [!NOTE]
-> `FISH_LATENCY=low` is a real, faster mode: Fish's compatible APIs default to it ("streaming-optimized") and say to set `normal` for maximum quality. The Python SDK (1.3.0) rejects it, so the app uses `balanced` and warns. Nothing here has tried it, and Fish gives no figure for it. See the future considerations in [ARCHITECTURE](ARCHITECTURE.md#10-future-considerations).
+> `FISH_LATENCY=low` is a real, faster mode: Fish's compatible APIs default to it ("streaming-optimized") and say to set `normal` for maximum quality. The Python SDK (1.4.0) rejects it, so the app uses `balanced` and warns. Nothing here has tried it, and Fish gives no figure for it. See the future considerations in [ARCHITECTURE](ARCHITECTURE.md#10-future-considerations).
 
 ### Fish speech-to-text
 

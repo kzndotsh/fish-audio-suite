@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from fish_audio_suite_voice.cancel import is_cancel_noise, quiet_shutdown
+from fish_audio_suite_voice.log_setup import configure_voice_logging
 
 
 def test_quiet_shutdown_cancels_leftover_tasks() -> None:
@@ -30,10 +31,12 @@ def test_cancel_noise_checks_types_and_the_cancel_flag_before_message_text(
 
 
 def test_cancel_noise_falls_back_to_the_message_and_logs_it(
-    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
 ) -> None:
-    seen: list[str] = []
-    monkeypatch.setattr("fish_audio_suite_voice.cancel.debug", lambda msg, *a: seen.append(msg))
-    assert is_cancel_noise(RuntimeError("Attempted to exit cancel scope in a different task"))
-    assert seen
-    assert "message" in seen[0]
+    configure_voice_logging(debug=1)
+    try:
+        assert is_cancel_noise(RuntimeError("Attempted to exit cancel scope in a different task"))
+        # A match on the wording is logged, so a reworded SDK message shows up.
+        assert "matched by message" in capsys.readouterr().err
+    finally:
+        configure_voice_logging(debug=False)

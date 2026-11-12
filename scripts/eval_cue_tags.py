@@ -28,7 +28,6 @@ import argparse
 import asyncio
 import json
 import math
-import re
 import sys
 from collections import Counter
 from collections.abc import Callable, Sequence
@@ -39,12 +38,13 @@ import eval_models
 
 from fish_audio_suite_kit import (
     DEFAULT_SYSTEM_PROMPT,
+    CueStyle,
     last_emotion,
-    normalize_cues,
     official_cue,
-    scrub_tts,
+    sentence_cuts,
     split_cues,
 )
+from fish_audio_suite_voice.config import SystemPrompt
 from fish_audio_suite_voice.envfile import load_dotenv
 from fish_audio_suite_voice.llm_tune import LlmTune
 
@@ -69,7 +69,6 @@ LINES: tuple[str, ...] = (
 )
 
 DEFAULT_NAME = "default"
-_SENTENCE_END = re.compile(r"[.!?]+(?:\s|$)")
 _TOP_CUES = 12
 
 
@@ -160,7 +159,7 @@ def cues_in(text: str, *, official: bool = False) -> list[str]:
     >>> cues_in("[Happy] Hi! [soft chuckle] Ha. [in a storytelling voice] So.", official=True)
     ['happy', 'chuckling']
     """
-    shaped = normalize_cues(scrub_tts(text), official=official)
+    shaped = CueStyle("official" if official else "free").shape(text)
     return [piece.strip()[1:-1].strip() for piece, is_cue in split_cues(shaped) if is_cue]
 
 
@@ -174,9 +173,10 @@ def _evenness(counts: Counter[str]) -> float:
 
 def _bare_sentences(text: str) -> tuple[int, int]:
     """Count a reply's sentences, and how many of them carry no cue."""
-    pieces = [
-        piece for piece in _SENTENCE_END.split(normalize_cues(scrub_tts(text))) if piece.strip()
-    ]
+    shaped = CueStyle().shape(text)
+    starts = [0, *sentence_cuts(shaped)]
+    ends = [*starts[1:], len(shaped)]
+    pieces = [shaped[a:b] for a, b in zip(starts, ends, strict=True) if shaped[a:b].strip()]
     bare = sum(1 for piece in pieces if not any(is_cue for _, is_cue in split_cues(piece)))
     return len(pieces), bare
 
@@ -278,7 +278,7 @@ async def evaluate(
     lines: Sequence[str],
     *,
     runs: int,
-    seed: bool | None = None,
+    seed: bool = False,
     show: bool = False,
 ) -> tuple[list[CueStats], dict[str, list[eval_models.Run]]]:
     """Send every user line under every system prompt and count the cues.
@@ -293,9 +293,9 @@ async def evaluate(
         The user lines.
     runs : int
         Repeats of each line under each prompt.
-    seed : bool or None, optional
-        True pins the app's opening example under every prompt. None pins it under the
-        built-in prompt only, as the app does.
+    seed : bool, optional
+        True pins the app's opening example under every prompt. False pins it as the app
+        would for a prompt written out in full: under the built-in prompt only.
     show : bool, optional
         Print each reply as it arrives.
 
@@ -321,7 +321,7 @@ async def evaluate(
             lines,
             system_prompt,
             runs=runs,
-            seed=seed,
+            seed=seed or SystemPrompt.written(system_prompt).pin_seed,
             warmup=False,
             on_run=printer(name) if show else None,
         )
@@ -501,9 +501,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     eval_models.listen_for_usage()
     stats, raw = asyncio.run(
-        evaluate(
-            tune, prompts, lines, runs=args.runs, seed=True if args.seed else None, show=args.show
-        )
+        evaluate(tune, prompts, lines, runs=args.runs, seed=args.seed, show=args.show)
     )
     report = [*table(stats), "", *cue_lists(stats)]
     if args.show:

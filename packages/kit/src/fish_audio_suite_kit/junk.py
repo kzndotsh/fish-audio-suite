@@ -1,25 +1,22 @@
 """The TTS junk gate: text with too little speech to send to Fish, or to answer.
 
-The gate drops only noise. The floor is ``min_letters=2``, and a ``short_words``
-allowlist (``no``, ``ok``, ``hi``) keeps real one-word answers, so those short
-replies are not judged junk. A single letter is judged junk.
+The gate drops only noise: a cue with no words, an unmatched ``[``, or text under the
+speech floor (fewer than two letters, unless it is a short answer such as ``no``,
+``ok`` or ``hi``). A single letter is judged junk.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Set
 from typing import Final
 
-from fish_audio_suite_kit._charsets import cjk_latin_counts
-from fish_audio_suite_kit.cuts import next_tts_cut
+from fish_audio_suite_kit._speech_floor import too_little_speech
+from fish_audio_suite_kit.cues import cue_pattern
+from fish_audio_suite_kit.cuts import sentence_cuts
 from fish_audio_suite_kit.dialogue import QUOTE_RE
 
 __all__ = [
-    "DEFAULT_MIN_LETTERS",
-    "DEFAULT_SHORT_WORDS",
     "is_tts_junk",
-    "too_thin",
 ]
 
 
@@ -35,70 +32,15 @@ _NARRATION_VERB_RE = re.compile(
 )
 
 
-# Default floor for "enough speech" and the words kept below it. A one-letter
-# reply is noise. "no", "ok", and "hi" are answers.
-DEFAULT_MIN_LETTERS: Final = 2
-
-
-DEFAULT_SHORT_WORDS: Final = frozenset({"no", "ok", "hi", "yo", "go", "yes", "yep", "nope"})
-
-
-def _short_word(text: str, short_words: Set[str]) -> bool:
-    folded = "".join(ch for ch in text.lower() if ch.isalnum())
-    return folded in short_words
-
-
-def too_thin(
-    text: str,
-    *,
-    min_letters: int = DEFAULT_MIN_LETTERS,
-    short_words: Set[str] | None = None,
-) -> bool:
-    """Return whether text has too little speech to send or answer.
-
-    Parameters
-    ----------
-    text : str
-        Scrubbed text.
-    min_letters : int, optional
-        Fewest letters that count as speech. Default 2.
-    short_words : AbstractSet of str or None, optional
-        Lowercase words kept even when under ``min_letters`` (or when a caller
-        raises the floor). Default ``DEFAULT_SHORT_WORDS``.
-
-    Returns
-    -------
-    bool
-        True for empty text, a lone CJK character, or fewer than
-        ``min_letters`` letters. Two CJK characters, or three digits, are
-        enough: ``100`` is an answer.
-    """
-    stripped = text.strip()
-    if not stripped:
-        return True
-    cjk, letters = cjk_latin_counts(stripped)
-    if cjk >= 2:
-        return False
-    if sum(ch.isdigit() for ch in stripped) >= 3:
-        return False
-    if _short_word(stripped, DEFAULT_SHORT_WORDS if short_words is None else short_words):
-        return False
-    return letters < min_letters
-
-
 def _stage_pieces(text: str) -> list[str]:
+    # Each line is split on its own, so a direction never runs across a line break.
     pieces: list[str] = []
-    rest = text
-    while rest:
-        cut = next_tts_cut(rest, partial_chars=len(rest) + 1)
-        newline = rest.find("\n")
-        if newline >= 0 and (cut < 0 or newline + 1 < cut):
-            cut = newline + 1
-        if cut <= 0:
-            pieces.append(rest)
-            break
-        pieces.append(rest[:cut])
-        rest = rest[cut:]
+    for line in text.split("\n"):
+        start = 0
+        for end in sentence_cuts(line):
+            pieces.append(line[start:end])
+            start = end
+        pieces.append(line[start:])
     return [piece.strip() for piece in pieces if piece.strip()]
 
 
@@ -116,8 +58,11 @@ def _looks_like_narration(text: str) -> bool:
     return bool(pieces) and all(_one_stage_direction(piece) for piece in pieces)
 
 
-# A cue with an empty body counts as a cue too, so "[ ]" alone is no speech.
-_EMPTY_CUE_RE = re.compile(r"\[[^\]\n]{0,80}\]")
+# A cue with an empty body counts as a cue too, so "[ ]" alone is no speech. This gate
+# reads cues up to 80 characters, where the rules in ``cues`` read 200, so a longer
+# bracket is judged as words.
+_JUNK_CUE_CHARS: Final = 80
+_EMPTY_CUE_RE: Final = re.compile(cue_pattern(_JUNK_CUE_CHARS, min_chars=0))
 
 
 _SPACE_RE = re.compile(r"\s+")
@@ -127,8 +72,6 @@ def is_tts_junk(
     text: str,
     *,
     drop_narration: bool = False,
-    min_letters: int = DEFAULT_MIN_LETTERS,
-    short_words: Set[str] | None = None,
 ) -> bool:
     """Return whether scrubbed text should not be sent to Fish TTS.
 
@@ -141,16 +84,12 @@ def is_tts_junk(
         Default False. This is a roleplay heuristic that matches ordinary
         English ("The weather looks great"), so enable it only next to
         ``extract_quoted_speech``.
-    min_letters : int, optional
-        Fewest letters that count as speech. Default 2.
-    short_words : AbstractSet of str or None, optional
-        Words kept below the floor. Default ``DEFAULT_SHORT_WORDS``.
 
     Returns
     -------
     bool
         True for cue-only text, an unmatched ``[``, or text with too little
-        speech (see ``too_thin``). ``Été`` and a Russian sentence are speech,
+        speech: fewer than two letters, unless it is a short answer such as ``no``. ``Été`` and a Russian sentence are speech,
         and three digits are a number. A lead cue is not speech: ``[clear] hi``
         is judged on ``hi``.
     """
@@ -162,6 +101,6 @@ def is_tts_junk(
     bare = _SPACE_RE.sub(" ", QUOTE_RE.sub(" ", spoken)).strip()
     if not bare:
         return True
-    if too_thin(spoken, min_letters=min_letters, short_words=short_words):
+    if too_little_speech(spoken):
         return True
     return drop_narration and _looks_like_narration(spoken)

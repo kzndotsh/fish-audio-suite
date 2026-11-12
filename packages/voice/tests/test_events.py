@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import collections.abc
 import dataclasses
 import threading
@@ -15,7 +16,9 @@ import pytest
 from loguru import logger
 from session_fakes import (
     FakeBackend,
-    ScriptedHearing,
+    ScriptedAsr,
+    ScriptedRecordings,
+    ScriptedTurns,
     heard_line,
     hello_tokens,
     make_ctx,
@@ -23,15 +26,14 @@ from session_fakes import (
     run_session,
     speak_with_fakes,
 )
-from voice_fakes import ScriptedMic, install_audio, install_vad, make_result, set_tts
+from voice_fakes import ScriptedMic, install_gate, install_vad, make_result, set_tts
 
-from fish_audio_suite_kit import LatencySnapshot
 from fish_audio_suite_voice import events as events_module
-from fish_audio_suite_voice.asr import AsrResult
-from fish_audio_suite_voice.barge import MIC_LEVEL_EVERY_FRAMES, BargeGate
-from fish_audio_suite_voice.cli import _quit_line  # pyright: ignore[reportPrivateUsage]
-from fish_audio_suite_voice.debug import configure_voice_logging
+from fish_audio_suite_voice.barge import BargeGate
+from fish_audio_suite_voice.cancel import StopFlag
+from fish_audio_suite_voice.console_sink import ConsoleSink
 from fish_audio_suite_voice.duplex import duplex_turns
+from fish_audio_suite_voice.duplex_state import TurnInput
 from fish_audio_suite_voice.events import (
     DEFAULT_KEYS,
     EVENTS,
@@ -40,7 +42,9 @@ from fish_audio_suite_voice.events import (
     Event,
     EventBus,
     EventQueue,
+    ExitCode,
     Heard,
+    Interim,
     Listening,
     LogLine,
     MicLevel,
@@ -51,19 +55,18 @@ from fish_audio_suite_voice.events import (
     SessionAction,
     SessionState,
     Speaking,
-    StateChanged,
-    StateTracker,
     TurnEnded,
     available_actions,
-    forward_logs,
     next_state,
     notice,
 )
 from fish_audio_suite_voice.hearing import HeardLine, hear_line
-from fish_audio_suite_voice.listen import _Listen  # pyright: ignore[reportPrivateUsage]
-from fish_audio_suite_voice.mic import FRAME_BYTES, StopFlag
+from fish_audio_suite_voice.latency import LatencySnapshot
+from fish_audio_suite_voice.listen import record_utterance
+from fish_audio_suite_voice.log_setup import configure_voice_logging, forward_logs
+from fish_audio_suite_voice.pcm import FRAME_BYTES, MIC_LEVEL_EVERY_FRAMES
 from fish_audio_suite_voice.speaker import FishSpeaker
-from fish_audio_suite_voice.tune import ListenTune
+from fish_audio_suite_voice.tune import BargeTune
 
 
 @pytest.fixture
@@ -131,12 +134,9 @@ def test_a_notice_is_reported_trimmed_and_printed_by_nothing_itself(
 def test_hear_line_reports_listening_and_the_transcript(
     monkeypatch: pytest.MonkeyPatch, seen: list[Event]
 ) -> None:
-    async def asr(*_args: object, **_kwargs: object) -> AsrResult:
-        return AsrResult("tell me something fun")
-
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", lambda *_a, **_k: b"w")
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.fish_asr", asr)
-    heard = asyncio.run(hear_line(make_ctx(), ""))
+    ScriptedRecordings(monkeypatch, b"w")
+    ctx = make_ctx(asr=ScriptedAsr(monkeypatch, "tell me something fun"))
+    heard = asyncio.run(hear_line(ctx, ""))
     assert heard.kind == "line"
     assert seen[0] == Listening()
     assert isinstance(seen[1], Heard)
@@ -148,10 +148,10 @@ def test_a_turn_reports_the_reply_as_it_streams_then_the_timings_then_bye(
     monkeypatch: pytest.MonkeyPatch, seen: list[Event]
 ) -> None:
     tts = FishSpeaker(api_key="k", voice_id="voice")
-    install_audio(monkeypatch)
+    install_gate(monkeypatch)
     speak_with_fakes(monkeypatch, tts)
-    ScriptedHearing(monkeypatch, heard_line("hi there"))
-    assert run_session(quick_config(), tts, hello_tokens) == 0
+    source = ScriptedTurns(heard_line("hi there"))
+    assert run_session(quick_config(), tts, hello_tokens, source=source) == 0
     assert [type(e) for e in seen] == [ReplyToken, ReplyToken, ReplyEnd, TurnEnded, Bye]
     assert [e.text for e in seen if isinstance(e, ReplyToken)] == ["Hello ", "there friend."]
     assert ReplyEnd("Hello there friend.") in seen
@@ -188,27 +188,6 @@ def test_the_session_state_follows_the_events(
     assert next_state(state, event) is expected
 
 
-def test_a_state_tracker_announces_each_change_once() -> None:
-    bus = EventBus()
-    got: list[Event] = []
-    tracker = StateTracker(bus)
-    bus.subscribe(got.append)
-    for event in (
-        Listening(),
-        MicLevel(1.0, 2.0, "listen"),
-        Listening(),
-        Heard("hi", 1.0),
-        Speaking(),
-    ):
-        bus.emit(event)
-    changes = [e.state for e in got if isinstance(e, StateChanged)]
-    assert changes == [SessionState.LISTENING, SessionState.THINKING, SessionState.SPEAKING]
-    assert tracker.state is SessionState.SPEAKING
-    tracker.close()
-    bus.emit(TurnEnded(LatencySnapshot()))
-    assert tracker.state is SessionState.SPEAKING
-
-
 def test_a_queue_keeps_every_conversation_event_and_drops_old_mic_levels() -> None:
     bus = EventBus()
     queue = EventQueue(bus, max_droppable=3)
@@ -222,35 +201,22 @@ def test_a_queue_keeps_every_conversation_event_and_drops_old_mic_levels() -> No
     assert [e.text for e in events if isinstance(e, ReplyToken)] == [str(n) for n in range(10)]
     assert Heard("hi", 1.0) in events
     assert queue.dropped == 7
-    assert queue.get(timeout=0) is None
-
-
-def test_a_queue_hands_events_to_a_waiting_thread_and_wakes_its_loop() -> None:
-    bus = EventBus()
-    woken: list[int] = []
-    queue = EventQueue(bus, wake=lambda: woken.append(1))
-    got: list[Event | None] = []
-    reader = threading.Thread(target=lambda: got.append(queue.get(timeout=5)))
-    reader.start()
-    bus.emit(Listening())
-    reader.join(timeout=5)
-    assert got == [Listening()]
-    assert woken == [1]
-    queue.close()
-    assert queue.get(timeout=5) is None  # closed, so it does not wait
-    bus.emit(Listening())
     assert queue.drain() == []
 
 
-def test_closing_a_queue_wakes_a_blocked_reader() -> None:
-    queue = EventQueue(EventBus())
-    got: list[Event | None] = []
-    reader = threading.Thread(target=lambda: got.append(queue.get()))
-    reader.start()
-    time.sleep(0.05)
+def test_a_queue_wakes_its_consumer_from_the_emitting_thread_until_closed() -> None:
+    bus = EventBus()
+    woken: list[str] = []
+    queue = EventQueue(bus, wake=lambda: woken.append(threading.current_thread().name))
+    emitter = threading.Thread(target=lambda: bus.emit(Listening()), name="emitter")
+    emitter.start()
+    emitter.join(timeout=5)
+    assert woken == ["emitter"]
+    assert queue.drain() == [Listening()]
     queue.close()
-    reader.join(timeout=5)
-    assert got == [None]
+    bus.emit(Listening())
+    assert queue.drain() == []
+    assert woken == ["emitter"]
 
 
 def test_forwarded_logs_become_events_and_stay_off_stderr(
@@ -321,7 +287,8 @@ def test_the_barge_gate_reports_the_mic_level_and_the_interruption(
 
     install_vad(monkeypatch, _SpeechVad)
     gate = BargeGate(
-        mic=ScriptedMic(frames), hit_frames=MIC_LEVEL_EVERY_FRAMES + 2, min_rms=1.0, bleed_delay_s=0
+        mic=ScriptedMic(frames),
+        tune=BargeTune(hit_frames=MIC_LEVEL_EVERY_FRAMES + 2, min_rms=1.0, bleed_delay_s=0),
     )
     cancel = threading.Event()
     gate.watch(cancel)
@@ -333,10 +300,13 @@ def test_the_barge_gate_reports_the_mic_level_and_the_interruption(
     assert (level.source, level.rms > level.need) == ("barge", True)
 
 
-def test_listening_reports_the_mic_level_every_few_frames(seen: list[Event]) -> None:
-    heard = _Listen(ListenTune(), _SpeechVad())
-    for idle in range(1, MIC_LEVEL_EVERY_FRAMES * 2 + 1):
-        heard.take(_loud(100), idle)
+def test_listening_reports_the_mic_level_every_few_frames(
+    monkeypatch: pytest.MonkeyPatch, seen: list[Event]
+) -> None:
+    install_vad(monkeypatch, _SpeechVad)
+    room = ScriptedMic([bytes(FRAME_BYTES)] * (MIC_LEVEL_EVERY_FRAMES * 3))
+    clip = record_utterance(room, give_up_frames=MIC_LEVEL_EVERY_FRAMES * 2)
+    assert clip is None
     levels = [e for e in seen if isinstance(e, MicLevel)]
     assert len(levels) == 2
     assert all(e.source == "listen" for e in levels)
@@ -346,15 +316,21 @@ def test_the_first_audio_of_a_reply_is_reported_as_speaking(
     monkeypatch: pytest.MonkeyPatch, seen: list[Event]
 ) -> None:
     tts = FishSpeaker(api_key="k", voice_id="voice")
-    install_audio(monkeypatch)
+    install_gate(monkeypatch)
 
-    def speak(text: str, sink: object, cancel: object = None, on_first_audio: Any = None) -> Any:
+    def speak(
+        text: str,
+        sink: object,
+        cancel: object = None,
+        on_first_audio: Any = None,
+        trace_headers: object = None,
+    ) -> Any:
         on_first_audio()
         return make_result(text, bytes_played=4, got_audio=True, tts_first_audio_ms=3.0)
 
     set_tts(monkeypatch, tts, speak=speak)
-    ScriptedHearing(monkeypatch, heard_line("hi there"))
-    assert run_session(quick_config(), tts, hello_tokens) == 0
+    source = ScriptedTurns(heard_line("hi there"))
+    assert run_session(quick_config(), tts, hello_tokens, source=source) == 0
     kinds = [type(e) for e in seen]
     assert kinds.index(Speaking) > kinds.index(ReplyEnd)
     assert kinds.index(Speaking) < kinds.index(TurnEnded)
@@ -374,18 +350,18 @@ def test_the_same_callback_can_subscribe_twice_and_each_unsubscribes_alone() -> 
 
 
 @pytest.mark.parametrize(
-    ("heard", "code"), [(HeardLine("fatal", code=2), 2), (HeardLine("bye"), 0)]
+    ("heard", "code"),
+    [(HeardLine("fatal", code=ExitCode.FATAL), ExitCode.FATAL), (HeardLine("bye"), ExitCode.OK)],
 )
 def test_bye_is_sent_once_with_the_exit_code_however_the_session_ends(
     monkeypatch: pytest.MonkeyPatch,
     seen: list[Event],
     capsys: pytest.CaptureFixture[str],
     heard: HeardLine,
-    code: int,
+    code: ExitCode,
 ) -> None:
     tts = FishSpeaker(api_key="k", voice_id="voice")
-    ScriptedHearing(monkeypatch, heard)
-    assert run_session(quick_config(), tts, hello_tokens) == code
+    assert run_session(quick_config(), tts, hello_tokens, source=ScriptedTurns(heard)) == code
     assert [e for e in seen if isinstance(e, Bye)] == [Bye(code)]
     assert next(e for e in seen if isinstance(e, Bye)).code == code
     assert ("bye" in capsys.readouterr().out) is (code == 0)
@@ -394,18 +370,13 @@ def test_bye_is_sent_once_with_the_exit_code_however_the_session_ends(
 def test_bye_is_sent_when_the_session_crashes(
     monkeypatch: pytest.MonkeyPatch, seen: list[Event]
 ) -> None:
-    async def broken(_ctx: object, _last: str) -> HeardLine:
+    def broken(_turn: TurnInput) -> HeardLine:
         raise RuntimeError("boom")
 
-    monkeypatch.setattr("fish_audio_suite_voice.duplex.hear_line", broken)
+    tts = FishSpeaker(api_key="k", voice_id="voice")
     with pytest.raises(RuntimeError, match="boom"):
-        run_session(quick_config(), FishSpeaker(api_key="k", voice_id="voice"), hello_tokens)
-    assert [e for e in seen if isinstance(e, Bye)] == [Bye(1)]
-
-
-def test_a_second_ctrl_c_still_prints_the_quit_line(capsys: pytest.CaptureFixture[str]) -> None:
-    assert _quit_line() == 0
-    assert capsys.readouterr().out == "\nbye\n"
+        run_session(quick_config(), tts, hello_tokens, source=ScriptedTurns(broken))
+    assert [e for e in seen if isinstance(e, Bye)] == [Bye(ExitCode.CRASH)]
 
 
 def _event_classes() -> tuple[type, ...]:
@@ -427,12 +398,33 @@ def test_every_event_is_an_immutable_timestamped_record_that_is_exported() -> No
         assert name in events_module.__all__, f"export {name} from events"
 
 
-def test_the_events_that_may_be_dropped_are_real_event_names() -> None:
-    names = {c.__name__ for c in _event_classes()}
-    dropped = set(events_module._DROPPABLE)  # pyright: ignore[reportPrivateUsage]
-    assert dropped <= names, f"unknown event names in _DROPPABLE: {dropped - names}"
-    assert "ReplyToken" not in dropped
-    assert "Heard" not in dropped
+_ONE_OF_EACH: tuple[Event, ...] = (
+    Listening(),
+    Heard("hi", 1.0),
+    Interim("hi"),
+    ReplyToken("x"),
+    ReplyEnd("x"),
+    Speaking(),
+    BargedIn(),
+    MicLevel(1.0, 2.0, "listen"),
+    OutputLevel(1.0),
+    LogLine("DEBUG", "tts", "x"),
+    Notice("x"),
+    TurnEnded(LatencySnapshot()),
+    Bye(),
+)
+
+
+def test_a_queue_that_falls_behind_drops_only_levels_interim_words_and_log_lines() -> None:
+    assert {type(e) for e in _ONE_OF_EACH} == set(_event_classes()), "add the new event here"
+    bus = EventBus()
+    queue = EventQueue(bus, max_droppable=1)
+    for event in _ONE_OF_EACH:
+        for _ in range(3):
+            bus.emit(event)
+    kept = collections.Counter(type(e) for e in queue.drain())
+    dropped = {type(e) for e in _ONE_OF_EACH if kept[type(e)] < 3}
+    assert dropped == {MicLevel, OutputLevel, Interim, LogLine}
 
 
 def test_an_event_cannot_be_changed_after_it_is_sent() -> None:
@@ -444,11 +436,11 @@ def test_an_event_cannot_be_changed_after_it_is_sent() -> None:
 @pytest.mark.parametrize(
     ("state", "muted", "expected"),
     [
-        (SessionState.IDLE, False, {"send", "quit", "mute"}),
-        (SessionState.LISTENING, False, {"send", "quit", "mute"}),
-        (SessionState.LISTENING, True, {"send", "quit", "unmute"}),
-        (SessionState.THINKING, False, {"send", "quit", "mute", "interrupt"}),
-        (SessionState.SPEAKING, True, {"send", "quit", "unmute", "interrupt"}),
+        (SessionState.IDLE, False, {"mute"}),
+        (SessionState.LISTENING, False, {"mute"}),
+        (SessionState.LISTENING, True, {"unmute"}),
+        (SessionState.THINKING, False, {"mute", "interrupt"}),
+        (SessionState.SPEAKING, True, {"unmute", "interrupt"}),
     ],
 )
 def test_only_the_actions_that_make_sense_now_are_offered(
@@ -463,29 +455,30 @@ def test_a_cancelled_session_still_sends_bye_and_stops_the_console(
     """A UI runs the session as a worker, and a worker is cancelled when the app exits."""
     listening = asyncio.Event()
 
-    async def wait_forever(_ctx: object, _last: str) -> HeardLine:
+    async def wait_forever(_turn: TurnInput) -> HeardLine:
         listening.set()
         await asyncio.sleep(3600)
         return HeardLine("bye")
 
-    monkeypatch.setattr("fish_audio_suite_voice.duplex.hear_line", wait_forever)
-
-    async def scenario() -> None:
-        task = asyncio.ensure_future(
-            duplex_turns(
+    async def printed_session() -> int:
+        with ConsoleSink(EVENTS):  # as ``fish-voice`` runs it
+            return await duplex_turns(
                 quick_config(),
                 FishSpeaker(api_key="k", voice_id="voice"),
                 None,
                 FakeBackend(hello_tokens),
+                source=ScriptedTurns(wait_forever),
             )
-        )
+
+    async def scenario() -> None:
+        task = asyncio.ensure_future(printed_session())
         await listening.wait()
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
 
     asyncio.run(scenario())
-    assert [e for e in seen if isinstance(e, Bye)] == [Bye(1)]
+    assert [e for e in seen if isinstance(e, Bye)] == [Bye(ExitCode.CRASH)]
     capsys.readouterr()  # drop what the session itself printed
     # The console subscriber was removed with the session, so later events print nothing.
     EVENTS.emit(Listening())

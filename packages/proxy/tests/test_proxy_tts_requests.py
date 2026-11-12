@@ -11,49 +11,47 @@ from proxy_helpers import (
     AudioStream,
     capture_upstream,
     content_part,
+    fresh_app_env,
     json_part,
-    not_response,
+    post_speech,
 )
 
-from fish_audio_suite_kit import (
-    SuiteDefaults,
-    chunk_length_hi,
-    is_tts_junk,
-)
+from fish_audio_suite_kit import SuiteDefaults
 from fish_audio_suite_proxy.audio import pcm_sample_rate
-from fish_audio_suite_proxy.errors import ProxyError
-from fish_audio_suite_proxy.request_fields import (
-    prepare_tts_text,
-    read_flag,
-    read_format,
-    read_reference_id,
-)
+from fish_audio_suite_proxy.request_body import read_flag
 from fish_audio_suite_proxy.server import app
-from fish_audio_suite_proxy.settings import load_settings, runtime_defaults
+from fish_audio_suite_proxy.settings import ProxySettings, load_settings
 from fish_audio_suite_proxy.speech import (
+    PackedTts,
     SpeechControls,
-    _fish_tts_payload,
-    pack_tts,
-    speech_controls,
+    read_speech,
 )
 
 
-def test_prepare_tts_normalizes_cues() -> None:
-    spoken = prepare_tts_text("Excited, hello there friend", dialogue_only=False, mood_lead=True)
+def _controls(body: dict[str, Any], defaults: SuiteDefaults | None = None) -> SpeechControls:
+    settings = ProxySettings(defaults=defaults or SuiteDefaults())
+    return read_speech({"input": "Hello there friend", **body}, settings).controls
+
+
+def _pack(body: dict[str, Any]) -> PackedTts:
+    return read_speech(body, ProxySettings()).fish_tts({})
+
+
+def _spoken(monkeypatch: pytest.MonkeyPatch, text: str) -> str:
+    """The text the speech route sends Fish for ``text``."""
+    response, captured = post_speech(monkeypatch, {"input": text})
+    assert response.status_code == 200
+    return captured["json"]["text"]
+
+
+def test_a_mood_word_leads_only_when_the_mood_lead_is_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    fresh_app_env(monkeypatch)
+    monkeypatch.delenv("FISH_TTS_MOOD_LEAD", raising=False)
+    assert _spoken(monkeypatch, "Curious, isn't it?") == "Curious, isn't it?"
+    monkeypatch.setenv("FISH_TTS_MOOD_LEAD", "1")
+    spoken = _spoken(monkeypatch, "Excited, hello there friend")
     assert spoken.startswith("[excited]")
     assert "hello" in spoken
-
-
-def test_a_mood_word_is_spoken_as_written_unless_the_lead_is_on() -> None:
-    assert prepare_tts_text("Curious, isn't it?", dialogue_only=False) == "Curious, isn't it?"
-
-
-def test_dialogue_only_drops_the_stage_note() -> None:
-    raw = 'She smiles. "Hello there friend."'
-    spoken = prepare_tts_text(raw, dialogue_only=True)
-    assert "Hello there friend" in spoken
-    assert "smiles" not in spoken
-    assert "smiles" in prepare_tts_text(raw, dialogue_only=False)
 
 
 def test_read_flag_keeps_false_and_uses_the_default_when_absent() -> None:
@@ -66,19 +64,47 @@ def test_read_flag_keeps_false_and_uses_the_default_when_absent() -> None:
     assert read_flag({"dialogue_only": "maybe"}, "dialogue_only", default=True) is True
 
 
-def test_no_format_uses_the_default_and_an_unknown_format_name_is_a_400() -> None:
-    assert read_format({}, "opus") == "opus"
-    assert read_format({"format": "WAV "}, "mp3") == "wav"
-    with pytest.raises(ProxyError, match="unsupported response_format"):
-        read_format({"format": "not-a-format"}, "mp3")
+def test_no_format_uses_the_default_and_format_beats_response_format(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fresh_app_env(monkeypatch, FISH_TTS_FORMAT="opus")
+    default, captured = post_speech(monkeypatch, {"input": "Hello there friend"})
+    assert default.headers["content-type"].startswith("audio/opus")
+    assert captured["json"]["format"] == "opus"
+    named, captured = post_speech(
+        monkeypatch,
+        {"input": "Hello there friend", "format": "WAV ", "response_format": "mp3"},
+    )
+    assert named.headers["content-type"].startswith("audio/wav")
+    assert captured["json"]["format"] == "wav"
+    pcm16, captured = post_speech(
+        monkeypatch, {"input": "Hello there friend", "response_format": "pcm16"}
+    )
+    assert pcm16.headers["content-type"].startswith("audio/pcm")
+    assert (captured["json"]["format"], captured["json"]["sample_rate"]) == ("pcm", 24000)
 
 
-@pytest.mark.parametrize("name", ["nope", "aac", "flac"])
-def test_an_unsupported_format_is_a_400_not_other_bytes(name: str) -> None:
-    with pytest.raises(ProxyError) as caught:
-        read_format({"response_format": name}, "mp3")
-    assert caught.value.status == 400
-    assert name in caught.value.message
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"response_format": "nope"},
+        {"response_format": "aac"},
+        {"response_format": "flac"},
+        {"format": "flac", "response_format": "mp3"},
+    ],
+)
+def test_an_unsupported_format_is_a_400_not_other_bytes(
+    monkeypatch: pytest.MonkeyPatch, body: dict[str, str]
+) -> None:
+    response, captured = post_speech(monkeypatch, {"input": "Hello there friend", **body})
+    assert response.status_code == 400
+    error = response.json()["error"]
+    assert error["type"] == "invalid_request_error"
+    # Quoted in docs/TROUBLESHOOTING.md.
+    assert error["message"].startswith("unsupported response_format")
+    named = body.get("format", body["response_format"])
+    assert repr(named) in error["message"]
+    assert captured == {}
 
 
 def test_junk_pcm_and_wav_are_silence() -> None:
@@ -124,21 +150,23 @@ def test_junk_pcm_and_wav_are_silence() -> None:
     assert not opus.content.startswith(b"\xff\xfb")
 
 
-def test_junk_unclosed_cue() -> None:
-    spoken = prepare_tts_text("[warm,", dialogue_only=False)
-    assert is_tts_junk(spoken)
+def test_an_unclosed_cue_alone_is_silence_without_calling_fish(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("FISH_TTS_FORMAT", raising=False)
+    response, captured = post_speech(monkeypatch, {"input": "[warm,"})
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("audio/mpeg")
+    assert response.content.startswith(b"\xff\xfb")
+    assert captured == {}
 
 
-def test_whisper_alias_on_speech_path() -> None:
-    spoken = prepare_tts_text("[whispers] keep this quiet now", dialogue_only=False)
-    assert "[whispering]" in spoken
+def test_whisper_alias_on_speech_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert "[whispering]" in _spoken(monkeypatch, "[whispers] keep this quiet now")
 
 
-def test_prepare_keeps_stacked_cues_and_speaker_token() -> None:
-    spoken = prepare_tts_text(
-        "<|speaker:0|> [sad][whispering] I miss you so much",
-        dialogue_only=False,
-    )
+def test_stacked_cues_and_the_speaker_token_reach_fish(monkeypatch: pytest.MonkeyPatch) -> None:
+    spoken = _spoken(monkeypatch, "<|speaker:0|> [sad][whispering] I miss you so much")
     assert "<|speaker:0|>" in spoken
     assert "[sad]" in spoken
     assert "[whispering]" in spoken
@@ -146,30 +174,28 @@ def test_prepare_keeps_stacked_cues_and_speaker_token() -> None:
 
 def test_mp3_bitrate_env_snaps(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FISH_MP3_BITRATE", "96")
-    assert runtime_defaults().mp3_bitrate == 128
+    assert load_settings().defaults.mp3_bitrate == 128
     monkeypatch.setenv("FISH_MP3_BITRATE", "192")
-    assert runtime_defaults().mp3_bitrate == 192
+    assert load_settings().defaults.mp3_bitrate == 192
 
 
 def test_format_env_uses_the_request_alias(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FISH_TTS_FORMAT", " AAC ")
-    assert runtime_defaults().audio_format == "mp3"
+    assert load_settings().defaults.audio_format == "mp3"
     assert load_settings().tts_format == "mp3"
     monkeypatch.setenv("FISH_TTS_FORMAT", "PCM16")
     # Fish only knows "pcm". The client-facing default stays "pcm16" (24 kHz).
-    assert runtime_defaults().audio_format == "pcm"
+    assert load_settings().defaults.audio_format == "pcm"
     settings = load_settings()
     assert settings.tts_format == "pcm16"
-    controls = speech_controls({}, settings.defaults, default_format=settings.tts_format)
-    assert controls.fmt == "pcm16"
+    assert read_speech({"input": "Hello there friend"}, settings).controls.fmt == "pcm16"
     monkeypatch.setenv("FISH_ASR_MODEL", " fish-audio/Transcribe-1 ")
-    assert runtime_defaults().asr_model == "transcribe-1"
+    assert load_settings().defaults.asr_model == "transcribe-1"
     monkeypatch.delenv("FISH_ASR_MODEL")
-    assert runtime_defaults().asr_model == "transcribe-1-pro"
+    assert load_settings().defaults.asr_model == "transcribe-1-pro"
 
 
 def test_pcm16_format_and_rate() -> None:
-    assert read_format({"response_format": "pcm16"}, "mp3") == "pcm16"
     assert pcm_sample_rate("pcm16", {}, 44100) == 24000
     assert pcm_sample_rate("pcm16", {"sample_rate": 16000}, 44100) == 16000
     assert pcm_sample_rate("pcm16", {"sample_rate": "16000.0"}, 44100) == 16000
@@ -180,61 +206,67 @@ def test_pcm16_format_and_rate() -> None:
     assert pcm_sample_rate("opus", {"sample_rate": 0}, 48000) == 48000
 
 
-def test_chunk_length_hi_cloud_vs_self_host() -> None:
-    assert chunk_length_hi("https://api.fish.audio") == 300
-    assert chunk_length_hi("http://127.0.0.1:8080") == 1000
-
-
-def test_payload_snaps_bitrate_and_unit_interval() -> None:
-    defaults = SuiteDefaults()
-    mp3 = _fish_tts_payload(
-        {"mp3_bitrate": 96, "temperature": 5},
-        defaults,
-        SpeechControls("s2.1-pro", 1.0, "mp3", "normal", 200, 50),
-        "hi",
+def test_payload_snaps_bitrate_and_unit_interval(monkeypatch: pytest.MonkeyPatch) -> None:
+    _, captured = post_speech(
+        monkeypatch,
+        {"input": "Hello there friend", "format": "mp3", "mp3_bitrate": 96, "temperature": 5},
     )
-    assert mp3["mp3_bitrate"] == 128
-    assert mp3["temperature"] == 1.0
-    opus = _fish_tts_payload(
-        {"opus_bitrate": 1, "top_p": -3, "early_stop_threshold": 4},
-        defaults,
-        SpeechControls("s2.1-pro", 1.0, "opus", "normal", 200, 50),
-        "hi",
+    assert captured["json"]["mp3_bitrate"] == 128
+    assert captured["json"]["temperature"] == 1.0
+    _, captured = post_speech(
+        monkeypatch,
+        {
+            "input": "Hello there friend",
+            "format": "opus",
+            "opus_bitrate": 1,
+            "top_p": -3,
+            "early_stop_threshold": 4,
+        },
     )
-    assert opus["opus_bitrate"] == -1000
-    assert opus["top_p"] == 0.0
-    assert opus["early_stop_threshold"] == 1.0
+    assert captured["json"]["opus_bitrate"] == -1000
+    assert captured["json"]["top_p"] == 0.0
+    assert captured["json"]["early_stop_threshold"] == 1.0
 
 
 def test_omitted_chunk_length_clamps_the_default() -> None:
     cloud = SuiteDefaults(
         chunk_length=900, min_chunk_length=250, fish_base="https://api.fish.audio"
     )
-    controls = speech_controls({}, cloud)
+    controls = _controls({}, cloud)
     assert controls.chunk_length == 300
     assert controls.min_chunk_length == 100
     local = SuiteDefaults(chunk_length=800, fish_base="http://127.0.0.1:8080")
-    assert speech_controls({}, local).chunk_length == 800
+    assert _controls({}, local).chunk_length == 800
 
 
-def test_read_reference_id_list() -> None:
-    assert read_reference_id({"reference_id": ["a", "b"]}) == ["a", "b"]
-    assert read_reference_id({"voice": "solo"}) == "solo"
-    assert read_reference_id({"reference_id": ["  a  ", None, ""]}) == ["a"]
-    assert read_reference_id({"voice": "  solo  "}) == "solo"
-    assert read_reference_id({"reference_id": [None]}) is None
-    assert read_reference_id({"reference_id": [{"id": "x"}, " a ", 1]}) == ["a"]
-    assert read_reference_id({"reference_id": [1]}) is None
-    assert read_reference_id({"reference_id": [None, ""], "voice": "kept"}) == "kept"
-    assert read_reference_id({"reference_id": "", "voice": "kept"}) == "kept"
-    assert read_reference_id({"reference_id": ["a"], "voice": "ignored"}) == ["a"]
+@pytest.mark.parametrize(
+    ("voice_fields", "sent"),
+    [
+        ({"reference_id": ["a", "b"]}, ["a", "b"]),
+        ({"voice": "solo"}, "solo"),
+        ({"reference_id": ["  a  ", None, ""]}, ["a"]),
+        ({"voice": "  solo  "}, "solo"),
+        ({"reference_id": [None]}, None),
+        ({"reference_id": [{"id": "x"}, " a ", 1]}, ["a"]),
+        ({"reference_id": [1]}, None),
+        ({"reference_id": [None, ""], "voice": "kept"}, "kept"),
+        ({"reference_id": "", "voice": "kept"}, "kept"),
+        ({"reference_id": ["a"], "voice": "ignored"}, ["a"]),
+    ],
+)
+def test_the_voice_sent_to_fish(
+    monkeypatch: pytest.MonkeyPatch, voice_fields: dict[str, Any], sent: object
+) -> None:
+    response, captured = post_speech(monkeypatch, {"input": "Hello there friend", **voice_fields})
+    assert response.status_code == 200
+    assert captured["json"].get("reference_id") == sent
 
 
 def test_speech_input_must_be_a_string() -> None:
     with TestClient(app) as client:
         response = client.post("/v1/audio/speech", json={"input": ["hello"]})
     assert response.status_code == 400
-    assert response.json()["error"]["message"] == "input must be a string"
+    assert "input" in response.json()["error"]["message"]
     assert response.json()["error"]["type"] == "invalid_request_error"
 
 
@@ -261,9 +293,18 @@ def test_speech_bad_json_is_400() -> None:
         )
         assert deep.status_code == 400
         assert deep.json()["error"]["message"] == "invalid JSON body"
+        # Past Python's 4300-digit limit, int() raises a plain ValueError.
+        huge = client.post(
+            "/v1/audio/speech",
+            content=b'{"input": "hi", "speed": ' + b"1" * 5000 + b"}",
+            headers={"content-type": "application/json"},
+        )
+        assert huge.status_code == 400
+        assert huge.json()["error"]["message"] == "invalid JSON body"
         array = client.post("/v1/audio/speech", json=["nope"])
         assert array.status_code == 400
-        assert array.json()["error"]["message"] == "JSON body must be an object"
+        assert array.json()["error"]["type"] == "invalid_request_error"
+        assert "object" in array.json()["error"]["message"]
 
 
 def test_normalize_loudness_false_reaches_fish(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -316,32 +357,30 @@ def test_guillemet_dialogue_is_spoken(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_null_chunk_length_means_the_default_and_zero_is_a_real_value() -> None:
     defaults = SuiteDefaults()
-    nulls = speech_controls({"chunk_length": None, "min_chunk_length": None}, defaults)
+    nulls = _controls({"chunk_length": None, "min_chunk_length": None})
     assert nulls.chunk_length == defaults.chunk_length
     assert nulls.min_chunk_length == defaults.min_chunk_length
-    given = speech_controls({"chunk_length": 120, "min_chunk_length": 0}, defaults)
+    given = _controls({"chunk_length": 120, "min_chunk_length": 0})
     assert given.chunk_length == 120
     assert given.min_chunk_length == 0
 
 
 def test_the_old_request_field_spellings_are_ignored() -> None:
     defaults = SuiteDefaults()
-    controls = speech_controls(
-        {"fish_chunk_length": 180, "fish_min_chunk_length": 40, "fish_latency": "low"}, defaults
+    controls = _controls(
+        {"fish_chunk_length": 180, "fish_min_chunk_length": 40, "fish_latency": "low"}
     )
     assert controls.chunk_length == defaults.chunk_length
     assert controls.min_chunk_length == defaults.min_chunk_length
     assert controls.latency == defaults.latency
-    assert speech_controls({"fish_format": "wav"}, defaults).fmt == defaults.audio_format
+    assert _controls({"fish_format": "wav"}).fmt == ProxySettings().tts_format
 
 
 def test_quality_guard_reads_the_flag_then_the_features_list() -> None:
-    defaults = SuiteDefaults()
     spoken = "Hello there friend"
 
     def features(body: dict[str, Any]) -> object:
-        packed = not_response(pack_tts(body, defaults, {}, speech_controls(body, defaults), spoken))
-        return json_part(packed).get("features")
+        return json_part(_pack(body)).get("features")
 
     assert features({"input": spoken, "quality_guard": True}) == ["quality-guard"]
     assert features({"input": spoken, "quality_guard": False}) is None
@@ -352,7 +391,6 @@ def test_quality_guard_reads_the_flag_then_the_features_list() -> None:
 
 
 def test_surrogate_in_pronunciation_still_encodes() -> None:
-    defaults = SuiteDefaults()
     body = {
         "input": "Hello there friend",
         "voice": "voice-\ud800",
@@ -360,15 +398,7 @@ def test_surrogate_in_pronunciation_still_encodes() -> None:
             {"items": [{"value": "<|phoneme_start|>\ud800ah<|phoneme_end|>"}]}
         ],
     }
-    packed = not_response(
-        pack_tts(
-            body,
-            defaults,
-            {},
-            speech_controls(body, defaults),
-            "Hello there friend",
-        )
-    )
+    packed = _pack(body)
     request = httpx.Request("POST", "https://api.fish.audio/v1/tts", **packed.request_kw)
     request.read()
     payload = json_part(packed)
@@ -380,14 +410,11 @@ def test_surrogate_in_pronunciation_still_encodes() -> None:
 
 
 def test_surrogate_in_speech_text_still_encodes() -> None:
-    raw = "Hello \ud800 there friend"
-    spoken = prepare_tts_text(raw, dialogue_only=False)
+    packed = _pack({"input": "Hello \ud800 there friend"})
+    spoken = json_part(packed)["text"]
     assert "\ud800" not in spoken
     assert "Hello" in spoken
     assert "there friend" in spoken
-    defaults = SuiteDefaults()
-    body = {"input": raw}
-    packed = not_response(pack_tts(body, defaults, {}, speech_controls(body, defaults), spoken))
     request = httpx.Request("POST", "https://api.fish.audio/v1/tts", **packed.request_kw)
     request.read()
     sample = base64.b64encode(b"RIFF").decode()
@@ -395,15 +422,7 @@ def test_surrogate_in_speech_text_still_encodes() -> None:
         "input": "Hello there friend",
         "references": [{"audio": sample, "text": "sample \ud800 line"}],
     }
-    clip_packed = not_response(
-        pack_tts(
-            clip_body,
-            defaults,
-            {},
-            speech_controls(clip_body, defaults),
-            "Hello there friend",
-        )
-    )
+    clip_packed = _pack(clip_body)
     unpacked = ormsgpack.unpackb(content_part(clip_packed))
     clip_text = unpacked["references"][0]["text"]
     assert "\ud800" not in clip_text
