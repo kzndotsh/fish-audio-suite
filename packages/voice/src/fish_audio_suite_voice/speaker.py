@@ -31,6 +31,7 @@ from fish_audio_suite_kit import (
 )
 from fish_audio_suite_voice.cancel import is_cancel_noise
 from fish_audio_suite_voice.debug import warn
+from fish_audio_suite_voice.pcm import wav_rate
 from fish_audio_suite_voice.playback import PlaybackSink
 from fish_audio_suite_voice.tts_text import WholeText, delta_events
 from fish_audio_suite_voice.tts_turn import run_isolated, run_turn
@@ -100,14 +101,6 @@ def _sdk_latency(latency: str) -> LatencyMode:
 def _sdk_chunk_length(chunk_length: int) -> int:
     # Self-hosted HTTP allows 1000. The SDK model rejects anything above 300.
     return min(CHUNK_LENGTH_CLOUD_HI, max(CHUNK_LENGTH_LO, chunk_length))
-
-
-def _sdk_sample_rate(sample_rate: int) -> int:
-    # The SDK accepts 0 and rates past the WAV header. The writer then raises
-    # and the collected audio is lost.
-    if sample_rate < 1 or sample_rate > 2**32 - 1:
-        return _STOCK.sample_rate
-    return sample_rate
 
 
 def _sdk_speed(speed: float) -> float:
@@ -445,7 +438,7 @@ class FishSpeaker:
             audio_format=_sdk_format(self.audio_format),
             latency=_sdk_latency(self.latency),
             speed=_sdk_speed(self.speed),
-            sample_rate=_sdk_sample_rate(self.sample_rate),
+            sample_rate=wav_rate(self.sample_rate),
             trace_headers=MappingProxyType(dict(self.trace_headers)),
             config=self._tts_config(),
             fade_ms=self.fade_ms,
@@ -456,7 +449,7 @@ class FishSpeaker:
         return TTSConfig(
             format=_sdk_format(self.audio_format),
             mp3_bitrate=known_mp3_bitrate(_STOCK.mp3_bitrate),
-            sample_rate=_sdk_sample_rate(self.sample_rate),
+            sample_rate=wav_rate(self.sample_rate),
             latency=_sdk_latency(self.latency),
             normalize=_STOCK.normalize,
             chunk_length=_sdk_chunk_length(self.chunk_length),

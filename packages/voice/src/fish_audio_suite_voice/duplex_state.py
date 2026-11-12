@@ -9,6 +9,7 @@ from typing import Final, NamedTuple
 import httpx
 
 from fish_audio_suite_kit import ChatMessage
+from fish_audio_suite_voice.cancel import never
 from fish_audio_suite_voice.config import VoiceCliConfig
 from fish_audio_suite_voice.history import KEEP_SYSTEM
 from fish_audio_suite_voice.llm import ChatBackend
@@ -30,10 +31,6 @@ EXIT_OK: Final = 0
 EXIT_FATAL: Final = 2
 # What Python itself exits with after an uncaught exception.
 EXIT_CRASH: Final = 1
-
-
-def _never_muted() -> bool:
-    return False
 
 
 class CarriedClip(NamedTuple):
@@ -113,7 +110,7 @@ class DuplexContext:
     history: list[ChatMessage]
     carry: CarryOver = field(default_factory=CarryOver)
     # Says whether the user has muted the mic. A source with a mute switch sets it.
-    muted: Callable[[], bool] = _never_muted
+    muted: Callable[[], bool] = never
     # A reply being written for a turn Flux thinks is probably over. Used if it is confirmed.
     speculation: Speculation | None = None
     pinned: int = KEEP_SYSTEM

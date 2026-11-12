@@ -30,7 +30,8 @@ from fish_audio_suite_voice.events import EVENTS, ReplyEnd, ReplyToken, Speaking
 from fish_audio_suite_voice.hearing import HeardLine
 from fish_audio_suite_voice.history import with_tone_hint
 from fish_audio_suite_voice.llm import ChatUnusableError
-from fish_audio_suite_voice.playback import PortAudioMissingError, make_sink
+from fish_audio_suite_voice.playback import make_sink
+from fish_audio_suite_voice.portaudio import PortAudioMissingError
 from fish_audio_suite_voice.spoken import unspoken_text
 from fish_audio_suite_voice.wire import TtsResult
 

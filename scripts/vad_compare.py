@@ -32,7 +32,15 @@ from pathlib import Path
 
 from fish_audio_suite_voice.aec import EchoCanceller
 from fish_audio_suite_voice.barge import BargeGate
-from fish_audio_suite_voice.mic import FRAME_BYTES, FRAME_MS, SAMPLE_RATE, SessionMic, StopFlag
+from fish_audio_suite_voice.cancel import StopFlag
+from fish_audio_suite_voice.mic import SessionMic
+from fish_audio_suite_voice.pcm import (
+    FRAME_MS,
+    SAMPLE_BYTES,
+    SAMPLE_RATE,
+    take_frames,
+    write_mono_wav,
+)
 from fish_audio_suite_voice.tune import AecTune, ListenTune
 from fish_audio_suite_voice.vad import frame_is_speech, open_vad, vad_problem
 
@@ -106,14 +114,18 @@ def ruler(n_frames: int) -> str:
 def read_wav(path: Path) -> list[bytes]:
     """Return a 16 kHz mono 16-bit WAV as 30 ms frames."""
     with wave.open(str(path), "rb") as wav:
-        if (wav.getframerate(), wav.getnchannels(), wav.getsampwidth()) != (SAMPLE_RATE, 1, 2):
+        if (wav.getframerate(), wav.getnchannels(), wav.getsampwidth()) != (
+            SAMPLE_RATE,
+            1,
+            SAMPLE_BYTES,
+        ):
             msg = (
                 f"{path} must be 16 kHz mono 16-bit, not {wav.getframerate()} Hz, "
                 f"{wav.getnchannels()} channels, {wav.getsampwidth() * 8}-bit"
             )
             raise SystemExit(msg)
         pcm = wav.readframes(wav.getnframes())
-    return [pcm[i : i + FRAME_BYTES] for i in range(0, len(pcm) - FRAME_BYTES + 1, FRAME_BYTES)]
+    return take_frames(bytearray(), pcm)
 
 
 def record(path: Path, seconds: float, device: int | None) -> None:
@@ -130,11 +142,7 @@ def record(path: Path, seconds: float, device: int | None) -> None:
             frames.extend(mic.frames(stop))
     finally:
         timer.cancel()
-    with wave.open(str(path), "wb") as wav:
-        wav.setnchannels(1)
-        wav.setsampwidth(2)
-        wav.setframerate(SAMPLE_RATE)
-        wav.writeframes(b"".join(frames))
+    write_mono_wav(path, b"".join(frames), SAMPLE_RATE)
     print(f"saved {time.monotonic() - started:.1f} s to {path}", file=sys.stderr)
 
 

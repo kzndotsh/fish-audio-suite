@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from operator import attrgetter
+
 import pytest
 
+from fish_audio_suite_voice.recognisers import RECOGNISERS
 from fish_audio_suite_voice.tune import (
     DEFAULT_DEEPGRAM_MODEL,
     DEFAULT_EOT_THRESHOLD,
+    STREAMING_STT_PROVIDERS,
     STT_PROVIDERS,
     SttTune,
 )
@@ -32,10 +36,10 @@ def test_the_defaults_keep_fish_asr_and_need_no_deepgram_setting() -> None:
     tune = SttTune.from_env()
     assert tune == SttTune()
     assert tune.provider == "fish"
-    assert tune.deepgram_key == ""
-    assert tune.deepgram_model == DEFAULT_DEEPGRAM_MODEL == "flux-general-en"
-    assert tune.eot_threshold == DEFAULT_EOT_THRESHOLD == 0.7
-    assert tune.deepgram_region == "global"
+    assert tune.deepgram.key == ""
+    assert tune.deepgram.model == DEFAULT_DEEPGRAM_MODEL == "flux-general-en"
+    assert tune.deepgram.eot_threshold == DEFAULT_EOT_THRESHOLD == 0.7
+    assert tune.deepgram.region == "global"
     assert STT_PROVIDERS == ("fish", "deepgram", "fish-realtime")
 
 
@@ -45,7 +49,7 @@ def test_fish_realtime_is_chosen_by_name_and_needs_no_key_of_its_own(
     monkeypatch.setenv("FISH_VOICE_STT", " Fish-Realtime ")
     tune = SttTune.from_env()
     assert tune.provider == "fish-realtime"
-    assert tune.deepgram_key == ""
+    assert tune.deepgram.key == ""
 
 
 def test_deepgram_is_chosen_by_name_in_any_case_with_its_key_and_settings(
@@ -59,10 +63,10 @@ def test_deepgram_is_chosen_by_name_in_any_case_with_its_key_and_settings(
     monkeypatch.setenv("FISH_VOICE_STT_SAVE_DIR", " tmp/stt ")
     tune = SttTune.from_env()
     assert tune.provider == "deepgram"
-    assert tune.deepgram_key == "dg-secret"
-    assert tune.deepgram_model == "flux-general-multi"
-    assert tune.eot_threshold == 0.85
-    assert tune.deepgram_region == "eu"
+    assert tune.deepgram.key == "dg-secret"
+    assert tune.deepgram.model == "flux-general-multi"
+    assert tune.deepgram.eot_threshold == 0.85
+    assert tune.deepgram.region == "eu"
     assert tune.save_dir == "tmp/stt"
 
 
@@ -77,11 +81,11 @@ def test_the_key_is_never_shown_when_the_settings_are_printed(
     ("name", "value", "field", "fallback"),
     [
         ("FISH_VOICE_STT", "whisper", "provider", "fish"),
-        ("FISH_VOICE_DEEPGRAM_MODEL", "nova-3", "deepgram_model", DEFAULT_DEEPGRAM_MODEL),
-        ("FISH_VOICE_EOT_THRESHOLD", "0.2", "eot_threshold", DEFAULT_EOT_THRESHOLD),
-        ("FISH_VOICE_EOT_THRESHOLD", "1.5", "eot_threshold", DEFAULT_EOT_THRESHOLD),
-        ("FISH_VOICE_EOT_THRESHOLD", "high", "eot_threshold", DEFAULT_EOT_THRESHOLD),
-        ("FISH_VOICE_DEEPGRAM_REGION", "mars", "deepgram_region", "global"),
+        ("FISH_VOICE_DEEPGRAM_MODEL", "nova-3", "deepgram.model", DEFAULT_DEEPGRAM_MODEL),
+        ("FISH_VOICE_EOT_THRESHOLD", "0.2", "deepgram.eot_threshold", DEFAULT_EOT_THRESHOLD),
+        ("FISH_VOICE_EOT_THRESHOLD", "1.5", "deepgram.eot_threshold", DEFAULT_EOT_THRESHOLD),
+        ("FISH_VOICE_EOT_THRESHOLD", "high", "deepgram.eot_threshold", DEFAULT_EOT_THRESHOLD),
+        ("FISH_VOICE_DEEPGRAM_REGION", "mars", "deepgram.region", "global"),
         ("FISH_VOICE_EAGER_EOT_THRESHOLD", "1.4", "eager_eot_threshold", 0.0),
         ("FISH_VOICE_EAGER_EOT_THRESHOLD", "soon", "eager_eot_threshold", 0.0),
     ],
@@ -96,7 +100,7 @@ def test_an_unusable_value_is_ignored_with_a_warning_and_the_default_is_used(
     fallback: object,
 ) -> None:
     monkeypatch.setenv(name, value)
-    assert getattr(SttTune.from_env(), field) == fallback
+    assert attrgetter(field)(SttTune.from_env()) == fallback
     assert name in capsys.readouterr().err  # the user is told which setting was ignored
 
 
@@ -108,8 +112,8 @@ def test_a_blank_provider_means_the_default(monkeypatch: pytest.MonkeyPatch) -> 
 @pytest.mark.parametrize(
     ("name", "field", "default"),
     [
-        ("FISH_VOICE_DEEPGRAM_MODEL", "deepgram_model", DEFAULT_DEEPGRAM_MODEL),
-        ("FISH_VOICE_DEEPGRAM_REGION", "deepgram_region", "global"),
+        ("FISH_VOICE_DEEPGRAM_MODEL", "deepgram.model", DEFAULT_DEEPGRAM_MODEL),
+        ("FISH_VOICE_DEEPGRAM_REGION", "deepgram.region", "global"),
     ],
 )
 def test_a_blank_deepgram_setting_means_the_default_without_a_warning(
@@ -121,7 +125,7 @@ def test_a_blank_deepgram_setting_means_the_default_without_a_warning(
     default: str,
 ) -> None:
     monkeypatch.setenv(name, "  ")  # an uncommented line from .env.example
-    assert getattr(SttTune.from_env(), field) == default
+    assert attrgetter(field)(SttTune.from_env()) == default
     assert name not in capsys.readouterr().err
 
 
@@ -139,3 +143,9 @@ def test_the_early_end_of_turn_is_off_unless_set_and_is_kept_within_flux_limits(
     monkeypatch.setenv("FISH_VOICE_EOT_THRESHOLD", "0.9")
     assert SttTune.from_env().eager_eot_threshold == 0.85
     assert "FISH_VOICE_EAGER_EOT_THRESHOLD" in capsys.readouterr().err
+
+
+def test_every_streaming_provider_setting_names_a_registered_recogniser() -> None:
+    assert tuple(RECOGNISERS) == STREAMING_STT_PROVIDERS
+    for name, spec in RECOGNISERS.items():
+        assert spec.name == name

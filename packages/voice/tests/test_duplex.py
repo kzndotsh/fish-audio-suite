@@ -21,7 +21,7 @@ from fish_audio_suite_voice.events import EVENTS
 from fish_audio_suite_voice.hearing import HeardLine, classify_transcript, hear_line, recognize
 from fish_audio_suite_voice.history import opening_history, remember_user, trim_history
 from fish_audio_suite_voice.llm_tune import DEFAULT_HISTORY_TURNS
-from fish_audio_suite_voice.playback import PortAudioMissingError
+from fish_audio_suite_voice.portaudio import PortAudioMissingError
 from fish_audio_suite_voice.reply import (
     _TokenPipe,
     after_speech,

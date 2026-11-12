@@ -17,7 +17,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Final
 
-from fish_audio_suite_kit import DEFAULT_SYSTEM_PROMPT
+from fish_audio_suite_kit import DEFAULT_SYSTEM_PROMPT, cut_at_control
 from fish_audio_suite_voice.aec import EchoCanceller
 from fish_audio_suite_voice.config import (
     VoiceCliConfig,
@@ -40,15 +40,12 @@ from fish_audio_suite_voice.events import forward_logs, mirror_conversation
 from fish_audio_suite_voice.inputs import LiveInput
 from fish_audio_suite_voice.llm import ChatUnusableError, open_chat_backend
 from fish_audio_suite_voice.llm_tune import LlmTune, provider_for_base
-from fish_audio_suite_voice.playback import (
-    FileSink,
-    audio_format_for,
-    duplex_playback_problem,
-    playback_key,
-)
+from fish_audio_suite_voice.playback import FileSink, audio_format_for, duplex_playback_problem
+from fish_audio_suite_voice.playback_kind import playback_key
+from fish_audio_suite_voice.recognisers import recogniser
 from fish_audio_suite_voice.signals import DuplexSession
 from fish_audio_suite_voice.speaker import FishSpeaker
-from fish_audio_suite_voice.tune import STREAMING_STT_PROVIDERS
+from fish_audio_suite_voice.turn_stream import RecogniserSettings
 from fish_audio_suite_voice.vad import vad_problem
 from fish_audio_suite_voice.ws_tap import install_fish_ws_tap
 
@@ -75,12 +72,9 @@ _SMOKE_FAIL: Final = 1
 def _parse_device(raw: str | None) -> str | int | None:
     if raw is None:
         return None
-    text = raw.strip()
     # A control character, such as a newline left by an env file, is not part of a
     # PortAudio name. Kept, it would match no device and the mic would not open.
-    cut = next((index for index, ch in enumerate(text) if ord(ch) < 32), None)
-    if cut is not None:
-        text = text[:cut].strip()
+    text = cut_at_control(raw.strip()).strip()
     if not text:
         return None
     try:
@@ -201,16 +195,14 @@ def _preflight(c: VoiceCliConfig) -> int | None:
 
 def _require_streaming_stt(c: VoiceCliConfig) -> int | None:
     """Return an exit code when a streaming recogniser is chosen but cannot be used."""
-    provider = c.stt.provider
-    if provider not in STREAMING_STT_PROVIDERS:
+    spec = recogniser(c.stt.provider)
+    if spec is None:
         return None
-    if provider == "deepgram" and not c.stt.deepgram_key:
-        return _blocker("DEEPGRAM_API_KEY (FISH_VOICE_STT=deepgram)")
-    if importlib.util.find_spec("websockets") is None:
-        warn(
-            f"BLOCKER: FISH_VOICE_STT={provider} needs the {provider} extra: "
-            f"pip install 'fish-audio-suite-voice[{provider}]' (or uv sync --extra {provider})"
-        )
+    problem = spec.problem(
+        RecogniserSettings(c.stt, fish_key=c.fish_api_key, fish_base=c.fish_base)
+    )
+    if problem is not None:
+        warn(f"BLOCKER: {problem}")
         return EXIT_FATAL
     return None
 

@@ -19,6 +19,7 @@ from fish_audio_suite_kit import (
     asr_tone,
     bearer,
     clean_transcript,
+    cut_at_control,
     describe_request_error,
     fish_attempt_exhausted,
     fish_backoff_s,
@@ -28,6 +29,7 @@ from fish_audio_suite_kit import (
     retry_after_s,
     strip_base,
 )
+from fish_audio_suite_voice.cancel import never
 from fish_audio_suite_voice.debug import debug, with_detail
 from fish_audio_suite_voice.pause import sleep_unless
 from fish_audio_suite_voice.tune import HTTP_KEEPALIVE_S
@@ -82,11 +84,7 @@ async def _pause_or_raise(
         raise error from cause
     wait = fish_backoff_s(attempt, retry_after=retry_after)
     # Quit during the wait must not post the next try.
-    return await sleep_unless(wait, cancel.is_set if cancel is not None else _never)
-
-
-def _never() -> bool:
-    return False
+    return await sleep_unless(wait, cancel.is_set if cancel is not None else never)
 
 
 async def _post_fish(
@@ -212,7 +210,7 @@ async def fish_asr(
     form: dict[str, str] = {}
     # A newline in the language value starts another multipart part, and Fish
     # may answer 400 to a hint that is not a two-letter code.
-    lang = asr_language_hint(_form_language(language))
+    lang = asr_language_hint(cut_at_control(language.strip()).strip())
     if lang:
         form["language"] = lang
     async with AsyncExitStack() as stack:
@@ -255,11 +253,3 @@ async def fish_asr(
         trim_hallucination=True,
     )
     return AsrResult(clean.text, tone)
-
-
-def _form_language(language: str) -> str:
-    text = language.strip()
-    cut = next((index for index, ch in enumerate(text) if ord(ch) < 32), None)
-    if cut is not None:
-        text = text[:cut].strip()
-    return text

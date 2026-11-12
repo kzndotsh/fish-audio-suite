@@ -15,7 +15,7 @@ from typing import Final, Self
 from fish_audio_suite_voice.debug import warn
 
 __all__ = [
-    "DEEPGRAM_REGIONS",
+    "DEEPGRAM_HOSTS",
     "DEFAULT_AEC_BLEED_DELAY_S",
     "DEFAULT_BARGE_HIT_FRAMES",
     "DEFAULT_BARGE_PLAYING_GAIN",
@@ -34,8 +34,6 @@ __all__ = [
     "DEFAULT_TURN_SILENCE_FRAMES",
     "DEFAULT_VAD_AGGRESSIVENESS",
     "DEFAULT_VAD_ENGINE",
-    "EAGER_EOT_HI",
-    "EAGER_EOT_LO",
     "HTTP_KEEPALIVE_S",
     "IMPULSE_START_EXTRA",
     "MAX_UTTERANCE_FRAMES",
@@ -44,6 +42,7 @@ __all__ = [
     "TURN_EXTENSIONS_MAX",
     "AecTune",
     "BargeTune",
+    "DeepgramTune",
     "ListenTune",
     "SttTune",
     "TurnTune",
@@ -53,21 +52,28 @@ __all__ = [
     "read_raw",
 ]
 
-# Which speech recognition hears the user: Fish's, on a clip sent when they stop, or Deepgram's
-# Flux, streamed while they speak.
-STT_PROVIDERS: Final = ("fish", "deepgram", "fish-realtime")
-# The ones that hear a turn as it is spoken and end it themselves.
-STREAMING_STT_PROVIDERS: Final = ("deepgram", "fish-realtime")
 DEFAULT_STT: Final = "fish"
+# The recognisers that hear a turn as it is spoken and end it themselves. Each is an adapter
+# listed in ``recognisers.RECOGNISERS``, which a test keeps this in step with.
+STREAMING_STT_PROVIDERS: Final = ("deepgram", "fish-realtime")
+# Which speech recognition hears the user: Fish's, on a clip sent when they stop, or a
+# streaming one, while they speak.
+STT_PROVIDERS: Final = (DEFAULT_STT, *STREAMING_STT_PROVIDERS)
 DEFAULT_DEEPGRAM_MODEL: Final = "flux-general-en"
-# Where Deepgram processes the audio. The regional hosts never route outside their region.
-DEEPGRAM_REGIONS: Final = ("global", "eu", "au", "in")
+# Where Deepgram processes the audio, and the host that does it. The regional hosts never
+# route outside their region.
+DEEPGRAM_HOSTS: Final = {
+    "global": "api.deepgram.com",
+    "eu": "api.eu.deepgram.com",
+    "au": "api.au.deepgram.com",
+    "in": "api.in.deepgram.com",
+}
 DEFAULT_DEEPGRAM_REGION: Final = "global"
 DEFAULT_EOT_THRESHOLD: Final = 0.7
-EOT_THRESHOLD_LO: Final = 0.5
-EOT_THRESHOLD_HI: Final = 1.0
-EAGER_EOT_LO: Final = 0.3
-EAGER_EOT_HI: Final = 0.9
+_EOT_THRESHOLD_LO: Final = 0.5
+_EOT_THRESHOLD_HI: Final = 1.0
+_EAGER_EOT_LO: Final = 0.3
+_EAGER_EOT_HI: Final = 0.9
 
 DEFAULT_VAD_AGGRESSIVENESS: Final = 1
 DEFAULT_VAD_ENGINE: Final = "webrtc"
@@ -499,14 +505,84 @@ class AecTune:
         return cls(enabled=False, auto_gain=False, noise_suppression_db=0)
 
 
+@dataclass(frozen=True, slots=True)
+class DeepgramTune:
+    """How Deepgram's Flux is reached and how sure it must be that a turn is over.
+
+    Only the ``deepgram`` recogniser reads it.
+
+    Attributes
+    ----------
+    key : str
+        The Deepgram API key. Empty unless the environment sets it.
+    model : str
+        The Flux model: ``flux-general-en``, or ``flux-general-multi`` for ten languages.
+    region : str
+        ``"global"``, or ``"eu"``, ``"au"`` or ``"in"`` to have the audio processed within the
+        European Union, Australia or India. Deepgram fails a regional request rather than
+        send it elsewhere. One of ``DEEPGRAM_HOSTS``.
+    eot_threshold : float
+        How sure Flux must be that the user has finished, from 0.5 to 1. Higher waits a little
+        longer and cuts in less often.
+    """
+
+    key: str = field(default="", repr=False)
+    model: str = DEFAULT_DEEPGRAM_MODEL
+    region: str = DEFAULT_DEEPGRAM_REGION
+    eot_threshold: float = DEFAULT_EOT_THRESHOLD
+
+    @classmethod
+    def from_env(cls) -> Self:
+        """Build from ``FISH_VOICE_DEEPGRAM_*``, ``FISH_VOICE_EOT_THRESHOLD`` and ``DEEPGRAM_API_KEY``.
+
+        Returns
+        -------
+        DeepgramTune
+            Validated tune. A bad value is replaced by its default with a warning.
+        """
+        model = (
+            read_text("FISH_VOICE_DEEPGRAM_MODEL", DEFAULT_DEEPGRAM_MODEL) or DEFAULT_DEEPGRAM_MODEL
+        )
+        if not model.startswith("flux"):
+            warn(
+                f"fish-voice: ignoring FISH_VOICE_DEEPGRAM_MODEL={model!r}, "
+                f"using {DEFAULT_DEEPGRAM_MODEL} (only Flux models stream turns)"
+            )
+            model = DEFAULT_DEEPGRAM_MODEL
+        region = (
+            read_text("FISH_VOICE_DEEPGRAM_REGION", DEFAULT_DEEPGRAM_REGION).lower()
+            or DEFAULT_DEEPGRAM_REGION
+        )
+        if region not in DEEPGRAM_HOSTS:
+            warn(
+                f"fish-voice: ignoring FISH_VOICE_DEEPGRAM_REGION={region!r}, "
+                f"using {DEFAULT_DEEPGRAM_REGION} (one of {', '.join(DEEPGRAM_HOSTS)})"
+            )
+            region = DEFAULT_DEEPGRAM_REGION
+        return cls(
+            key=read_text("DEEPGRAM_API_KEY"),
+            model=model,
+            region=region,
+            eot_threshold=read_float(
+                "FISH_VOICE_EOT_THRESHOLD",
+                DEFAULT_EOT_THRESHOLD,
+                lo=_EOT_THRESHOLD_LO,
+                hi=_EOT_THRESHOLD_HI,
+            ),
+        )
+
+
 def _eager_threshold(eot: float) -> float:
     """Read ``FISH_VOICE_EAGER_EOT_THRESHOLD``: 0 for off, else 0.3 to 0.9 and at most ``eot``."""
-    value = read_float("FISH_VOICE_EAGER_EOT_THRESHOLD", 0.0, lo=0.0, hi=EAGER_EOT_HI)
+    value = read_float("FISH_VOICE_EAGER_EOT_THRESHOLD", 0.0, lo=0.0, hi=_EAGER_EOT_HI)
     if value == 0.0:
         return 0.0
-    if value < EAGER_EOT_LO:
-        warn(f"fish-voice: FISH_VOICE_EAGER_EOT_THRESHOLD needs 0.3 to 0.9, using {EAGER_EOT_LO}")
-        value = EAGER_EOT_LO
+    if value < _EAGER_EOT_LO:
+        warn(
+            f"fish-voice: FISH_VOICE_EAGER_EOT_THRESHOLD needs {_EAGER_EOT_LO} to {_EAGER_EOT_HI}, "
+            f"using {_EAGER_EOT_LO}"
+        )
+        value = _EAGER_EOT_LO
     if value > eot:
         warn(
             f"fish-voice: FISH_VOICE_EAGER_EOT_THRESHOLD is above FISH_VOICE_EOT_THRESHOLD, using {eot}"
@@ -517,7 +593,7 @@ def _eager_threshold(eot: float) -> float:
 
 @dataclass(frozen=True, slots=True)
 class SttTune:
-    """Which speech recognition hears the user, and how Deepgram's is set up.
+    """Which speech recognition hears the user, and the settings of the streaming ones.
 
     Attributes
     ----------
@@ -526,34 +602,28 @@ class SttTune:
         streams the speech to Deepgram's Flux while the user talks, which decides for itself
         when the turn is over. ``"fish-realtime"`` does the same with Fish's realtime speech
         to text (``transcribe-stream-1``, in preview), on the Fish key.
-    deepgram_key : str
-        The Deepgram API key. Empty unless the environment sets it.
-    deepgram_model : str
-        The Flux model: ``flux-general-en``, or ``flux-general-multi`` for ten languages.
-    eot_threshold : float
-        How sure Flux must be that the user has finished, from 0.5 to 1. Higher waits a little
-        longer and cuts in less often.
+    deepgram : DeepgramTune
+        Deepgram's key, model, region and end-of-turn threshold.
     eager_eot_threshold : float
-        0 (the default) is off. From 0.3 to 0.9, and no higher than ``eot_threshold``, it asks
-        Flux to say when a turn is probably over, a little before it is sure, so the reply can
-        start being written early. Costs 50 to 70 percent more model calls. Fish's realtime
-        recogniser has no threshold: any value above 0 turns its early end of turn on.
-    deepgram_region : str
-        ``"global"``, or ``"eu"``, ``"au"`` or ``"in"`` to have the audio processed within the
-        European Union, Australia or India. Deepgram fails a regional request rather than
-        send it elsewhere.
+        0 (the default) is off. From 0.3 to 0.9, and no higher than Deepgram's
+        ``eot_threshold``, it asks the streaming recogniser to say when a turn is probably
+        over, a little before it is sure, so the reply can start being written early. Costs
+        50 to 70 percent more model calls. Fish's realtime recogniser has no threshold: any
+        value above 0 turns its early end of turn on.
     save_dir : str
-        A folder to write each streamed turn's audio to, as a 16 kHz WAV, to hear what Deepgram
-        was sent. Empty (the default) saves nothing.
+        A folder to write each streamed turn's audio to, as a 16 kHz WAV, to hear what the
+        streaming recogniser was sent. Empty (the default) saves nothing.
     """
 
     provider: str = DEFAULT_STT
-    deepgram_key: str = field(default="", repr=False)
-    deepgram_model: str = DEFAULT_DEEPGRAM_MODEL
-    eot_threshold: float = DEFAULT_EOT_THRESHOLD
+    deepgram: DeepgramTune = field(default_factory=DeepgramTune)
     eager_eot_threshold: float = 0.0
-    deepgram_region: str = DEFAULT_DEEPGRAM_REGION
     save_dir: str = ""
+
+    @property
+    def eager(self) -> bool:
+        """Whether the early end of turn is asked for."""
+        return self.eager_eot_threshold > 0
 
     @classmethod
     def from_env(cls) -> Self:
@@ -568,37 +638,10 @@ class SttTune:
         if provider not in STT_PROVIDERS:
             warn(f"fish-voice: ignoring FISH_VOICE_STT={provider!r}, using {DEFAULT_STT}")
             provider = DEFAULT_STT
-        model = (
-            read_text("FISH_VOICE_DEEPGRAM_MODEL", DEFAULT_DEEPGRAM_MODEL) or DEFAULT_DEEPGRAM_MODEL
-        )
-        if not model.startswith("flux"):
-            warn(
-                f"fish-voice: ignoring FISH_VOICE_DEEPGRAM_MODEL={model!r}, "
-                f"using {DEFAULT_DEEPGRAM_MODEL} (only Flux models stream turns)"
-            )
-            model = DEFAULT_DEEPGRAM_MODEL
-        region = (
-            read_text("FISH_VOICE_DEEPGRAM_REGION", DEFAULT_DEEPGRAM_REGION).lower()
-            or DEFAULT_DEEPGRAM_REGION
-        )
-        if region not in DEEPGRAM_REGIONS:
-            warn(
-                f"fish-voice: ignoring FISH_VOICE_DEEPGRAM_REGION={region!r}, "
-                f"using {DEFAULT_DEEPGRAM_REGION} (one of {', '.join(DEEPGRAM_REGIONS)})"
-            )
-            region = DEFAULT_DEEPGRAM_REGION
-        eot = read_float(
-            "FISH_VOICE_EOT_THRESHOLD",
-            DEFAULT_EOT_THRESHOLD,
-            lo=EOT_THRESHOLD_LO,
-            hi=EOT_THRESHOLD_HI,
-        )
+        deepgram = DeepgramTune.from_env()
         return cls(
             provider=provider,
-            deepgram_key=read_text("DEEPGRAM_API_KEY"),
-            deepgram_model=model,
-            eot_threshold=eot,
-            eager_eot_threshold=_eager_threshold(eot),
-            deepgram_region=region,
+            deepgram=deepgram,
+            eager_eot_threshold=_eager_threshold(deepgram.eot_threshold),
             save_dir=read_text("FISH_VOICE_STT_SAVE_DIR"),
         )

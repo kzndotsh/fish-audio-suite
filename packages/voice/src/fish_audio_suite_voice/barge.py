@@ -13,39 +13,22 @@ from collections.abc import Callable
 from dataclasses import replace
 from typing import Final
 
-from fish_audio_suite_voice.aec import EchoCanceller, pcm_rms
+from fish_audio_suite_voice.aec import EchoCanceller
+from fish_audio_suite_voice.cancel import any_of, never
 from fish_audio_suite_voice.debug import debug, heartbeat_due, trace, warn
 from fish_audio_suite_voice.events import EVENTS, BargedIn, MicLevel
 from fish_audio_suite_voice.floor import AdaptiveFloor
 from fish_audio_suite_voice.mic import Mic
-from fish_audio_suite_voice.tune import (
-    DEFAULT_BARGE_HIT_FRAMES,
-    DEFAULT_BARGE_PLAYING_GAIN,
-    DEFAULT_BARGE_RMS,
-    DEFAULT_BLEED_DELAY_S,
-    DEFAULT_POST_SPEAK_COOLDOWN_S,
-    BargeTune,
-    ListenTune,
-)
+from fish_audio_suite_voice.pcm import LISTEN_HEARTBEAT_FRAMES, MIC_LEVEL_EVERY_FRAMES, pcm_rms
+from fish_audio_suite_voice.tune import DEFAULT_BARGE_PLAYING_GAIN, BargeTune, ListenTune
 from fish_audio_suite_voice.vad import frame_is_speech, open_vad
 
 __all__ = [
     "BARGE_MISS_DECAY_FRAMES",
-    "DEFAULT_BARGE_HIT_FRAMES",
-    "DEFAULT_BARGE_PLAYING_GAIN",
-    "DEFAULT_BARGE_RMS",
-    "DEFAULT_BLEED_DELAY_S",
-    "DEFAULT_POST_SPEAK_COOLDOWN_S",
-    "LISTEN_HEARTBEAT_FRAMES",
-    "MIC_LEVEL_EVERY_FRAMES",
     "BargeGate",
     "barge_rms_need",
 ]
 
-# One heartbeat trace line every this many frames (about 600 ms).
-LISTEN_HEARTBEAT_FRAMES: Final = 20
-# One MicLevel event every this many frames (about 90 ms), so a display can draw a meter.
-MIC_LEVEL_EVERY_FRAMES: Final = 3
 # Unvoiced frames in a row that take one hit back, so a short pause between words does
 # not reset the count.
 BARGE_MISS_DECAY_FRAMES: Final = 3
@@ -193,7 +176,7 @@ class BargeGate:
         # The mic position just after the frame that tripped the gate.
         self.resume_at: int | None = None
         self.failure: Exception | None = None
-        self._muted: Callable[[], bool] = muted or _never
+        self._muted: Callable[[], bool] = muted or never
         self._listen: ListenTune = listen or ListenTune()
 
     def _bleed_wait(self) -> float:
@@ -229,7 +212,7 @@ class BargeGate:
 
         try:
             for idle_frames, frame in enumerate(
-                self.mic.frames(_CancelOrMuted(cancel, self._muted), since=start),
+                self.mic.frames(any_of(cancel, self._muted), since=start),
                 start=1,
             ):
                 rms = pcm_rms(frame)
@@ -321,18 +304,3 @@ class BargeGate:
         thread = threading.Thread(target=_run, daemon=True)
         thread.start()
         return thread
-
-
-class _CancelOrMuted:
-    """A stop flag for the mic stream: set when the watch is cancelled or the user mutes."""
-
-    def __init__(self, cancel: threading.Event, muted: Callable[[], bool]) -> None:
-        self._cancel = cancel
-        self._muted = muted
-
-    def is_set(self) -> bool:
-        return self._cancel.is_set() or self._muted()
-
-
-def _never() -> bool:
-    return False

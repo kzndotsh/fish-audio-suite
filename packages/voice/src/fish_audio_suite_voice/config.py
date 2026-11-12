@@ -34,7 +34,7 @@ from fish_audio_suite_kit import (
 )
 from fish_audio_suite_voice.debug import warn
 from fish_audio_suite_voice.llm_tune import DEFAULT_HISTORY_TURNS, OPENROUTER_API_BASE, LlmTune
-from fish_audio_suite_voice.playback import DEFAULT_PLAYBACK, playback_key
+from fish_audio_suite_voice.playback_kind import DEFAULT_PLAYBACK, playback_key
 from fish_audio_suite_voice.tune import (
     DEFAULT_FADE_MS,
     DEFAULT_LOUDNESS_TARGET_DB,

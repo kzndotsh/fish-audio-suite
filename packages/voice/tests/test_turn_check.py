@@ -16,7 +16,7 @@ from fish_audio_suite_voice.asr import AsrResult
 from fish_audio_suite_voice.duplex_state import DuplexContext
 from fish_audio_suite_voice.events import EVENTS, Event, Heard
 from fish_audio_suite_voice.hearing import HeardLine, hear_line
-from fish_audio_suite_voice.mic import FRAME_MS
+from fish_audio_suite_voice.pcm import FRAME_MS
 from fish_audio_suite_voice.tune import ListenTune, TurnTune
 from fish_audio_suite_voice.turn_check import (
     OpenTurn,
@@ -296,7 +296,7 @@ def test_the_check_off_keeps_one_clip_with_the_ordinary_silence(
 def test_a_failed_mic_reopen_is_fatal_like_a_failed_first_open(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from fish_audio_suite_voice.playback import PortAudioMissingError
+    from fish_audio_suite_voice.portaudio import PortAudioMissingError
 
     _asr(monkeypatch, {b"clip1": "I wanted to say that,"})
     calls: list[int] = []

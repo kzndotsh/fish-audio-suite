@@ -1,19 +1,29 @@
-"""What a streaming recogniser says about a turn, and the connection both of ours share.
+"""What a streaming recogniser is, what it says about a turn, and the connection they share.
 
-Deepgram Flux (``deepgram``) and Fish's realtime speech to text (``fish_realtime``) each take
-audio as it is spoken and decide for themselves when the speaker has finished. Each reads its
-own protocol into these messages, so ``streaming`` hears a turn the same way through either.
+A streaming recogniser takes audio as it is spoken and decides for itself when the speaker
+has finished. Each one is an adapter module (``deepgram``, ``fish_realtime``) that declares a
+``Recogniser``: its settings name, how it is opened from the settings, and what it needs. It
+reads its own protocol into the messages below, so ``streaming`` hears a turn the same way
+through any of them.
 """
 
 from __future__ import annotations
 
+import contextlib
+import importlib.util
 import ssl
-from collections.abc import AsyncIterator, Mapping
-from dataclasses import dataclass
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from dataclasses import dataclass, field
 from typing import Any, Final, Protocol
+
+from fish_audio_suite_kit import SuiteDefaults
+from fish_audio_suite_voice.tune import SttTune
 
 __all__ = [
     "EagerTurnEnd",
+    "Recogniser",
+    "RecogniserSettings",
+    "SocketStream",
     "StreamError",
     "StreamWarning",
     "SttStreamError",
@@ -191,6 +201,84 @@ class TurnStream(Protocol):
         ...
 
 
+@dataclass(frozen=True, slots=True)
+class RecogniserSettings:
+    """The settings a streaming recogniser is opened with, read once at start-up.
+
+    Attributes
+    ----------
+    stt : SttTune
+        Which recogniser, its own settings, the early end of turn and where to save the audio.
+    fish_key : str
+        The Fish API key, for a recogniser on the Fish account.
+    fish_base : str
+        The Fish API base, for a recogniser on the Fish account.
+    """
+
+    stt: SttTune
+    fish_key: str = field(default="", repr=False)
+    fish_base: str = SuiteDefaults().fish_base
+
+
+@dataclass(frozen=True, slots=True)
+class Recogniser:
+    """What a streaming recogniser declares about itself, so nothing else names it.
+
+    Attributes
+    ----------
+    name : str
+        Its ``FISH_VOICE_STT`` value, such as ``"deepgram"``.
+    label : str
+        What log lines call it, such as ``"Flux"``.
+    extra : str
+        The package extra that installs its client.
+    key_name : str
+        The environment variable its key comes from.
+    key : Callable
+        Reads its key from the settings. Empty when it is not set.
+    url : Callable
+        Builds the address to connect to from the settings.
+    stream : Callable
+        Opens a ``TurnStream`` given ``(url, key, settings)``. Nothing is sent until ``open``.
+    min_silence_frames : int
+        The least local silence, in 30 ms frames, before the app ends a turn itself. A
+        recogniser that needs longer than the user's silence limit to end a turn on its own
+        sets it, so its judgment is not cut short. 0 keeps the user's limit.
+    """
+
+    name: str
+    label: str
+    extra: str
+    key_name: str
+    key: Callable[[RecogniserSettings], str]
+    url: Callable[[RecogniserSettings], str]
+    stream: Callable[[str, str, RecogniserSettings], TurnStream]
+    min_silence_frames: int = 0
+
+    def problem(self, settings: RecogniserSettings) -> str | None:
+        """Say why this recogniser cannot be used, before the session starts.
+
+        Parameters
+        ----------
+        settings : RecogniserSettings
+            The settings it would be opened with.
+
+        Returns
+        -------
+        str or None
+            What is missing, the key or the extra that installs ``websockets``, or None when
+            nothing is.
+        """
+        if not self.key(settings):
+            return f"{self.key_name} (FISH_VOICE_STT={self.name}) missing"
+        if importlib.util.find_spec("websockets") is None:
+            return (
+                f"FISH_VOICE_STT={self.name} needs the {self.extra} extra: "
+                f"pip install 'fish-audio-suite-voice[{self.extra}]' (or uv sync --extra {self.extra})"
+            )
+        return None
+
+
 def is_closed(exc: Exception) -> bool:
     """Say whether ``exc`` is the connection closing, which is the end of the stream.
 
@@ -274,3 +362,71 @@ async def websockets_connect(
         ) from exc
     except (OSError, TimeoutError) as exc:
         raise SttStreamError(f"could not reach {service}: {exc}") from exc
+
+
+class SocketStream:
+    """The part of a ``TurnStream`` every recogniser shares: the socket, read and closed.
+
+    An adapter adds its own ``send_audio`` and ``force_end_turn``, and may extend ``open``.
+
+    Parameters
+    ----------
+    url : str
+        The WebSocket address.
+    key : str
+        The API key. Sent as a header, never in the address.
+    connect : Callable
+        Opens the connection, given ``(url, key=...)``.
+    parse : Callable
+        Reads one frame into a turn message, or None for one that needs no action.
+    goodbye : str or bytes
+        Sent before the socket is closed, to end the session.
+    """
+
+    def __init__(
+        self,
+        url: str,
+        key: str,
+        *,
+        connect: Callable[..., Awaitable[Any]],
+        parse: Callable[[str | bytes], TurnMessage | None],
+        goodbye: str | bytes,
+    ) -> None:
+        self._url = url
+        self._key = key
+        self._connect = connect
+        self._parse = parse
+        self._goodbye = goodbye
+        self._socket: Any = None
+
+    async def open(self) -> None:
+        """Connect. Raises ``SttStreamError`` when the recogniser cannot be reached or says no."""
+        self._socket = await self._connect(self._url, key=self._key)
+
+    async def messages(self) -> AsyncIterator[TurnMessage]:
+        """Read messages until the connection closes.
+
+        Yields
+        ------
+        TurnStarted or TurnUpdate or TurnEnded or EagerTurnEnd or TurnResumed or TurnDropped \
+        or StreamError or StreamWarning
+            What the recogniser says, in order. Messages that need no action are skipped.
+        """
+        if self._socket is None:
+            return
+        try:
+            async for raw in self._socket:
+                if (message := self._parse(raw)) is not None:
+                    yield message
+        except Exception as exc:
+            if not is_closed(exc):
+                raise
+
+    async def close(self) -> None:
+        """Say goodbye and close. Safe to call twice, or on a connection that never opened."""
+        socket, self._socket = self._socket, None
+        if socket is None:
+            return
+        with contextlib.suppress(Exception):  # it may be closed already
+            await socket.send(self._goodbye)
+        await socket.close()

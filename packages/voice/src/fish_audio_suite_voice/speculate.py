@@ -1,8 +1,8 @@
 """Start writing the reply while the user may still be finishing, and keep it only if they were.
 
-With ``FISH_VOICE_EAGER_EOT_THRESHOLD`` set, Deepgram Flux says when a turn is *probably* over
-a little before it is sure. The model is asked for its reply then, in the background, and
-nothing is shown or spoken. If Flux then confirms the same words, the reply that is already
+With ``FISH_VOICE_EAGER_EOT_THRESHOLD`` set, the streaming recogniser says when a turn is
+*probably* over a little before it is sure. The model is asked for its reply then, in the
+background, and nothing is shown or spoken. If the recogniser then confirms the same words, the reply that is already
 under way is used, which saves the time between the two signals. If the user carried on, or
 the confirmed words differ, it is thrown away and the reply is asked for as usual.
 """

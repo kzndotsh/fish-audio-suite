@@ -15,26 +15,20 @@ from typing import Any, Final
 import numpy as np
 
 from fish_audio_suite_voice.debug import debug
+from fish_audio_suite_voice.pcm import SAMPLE_BYTES, SAMPLE_RATE, even_pcm, pcm_rms
 from fish_audio_suite_voice.tune import DEFAULT_AEC_BLEED_DELAY_S, AecTune
 
 __all__ = [
-    "AEC_RATE",
-    "SAMPLE_BYTES",
     "EchoCanceller",
     "FarEndTap",
-    "even_pcm",
-    "pcm_rms",
     "resample_int16",
 ]
 
-AEC_RATE: Final = 16_000
-SAMPLE_BYTES: Final = 2
 _FAR_HOLD_S: Final = 2
-FAR_HOLD_SAMPLES: Final = AEC_RATE * _FAR_HOLD_S
+FAR_HOLD_SAMPLES: Final = SAMPLE_RATE * _FAR_HOLD_S
 # Playback that ended this recently still counts as playing: its tail is still in the
 # device buffer and the room.
 _FAR_RECENT_S: Final = 0.4
-_RMS_FLOOR: Final = 1e-9
 # A far-end frame quieter than this has no echo worth cancelling, so the mic frame is
 # treated as if nothing played.
 FAR_SILENCE_RMS: Final = 40.0
@@ -42,12 +36,6 @@ FAR_SILENCE_RMS: Final = 40.0
 _FULL_WET: Final = 0.999
 # WebRTC's ns_level for each attenuation step in AecTune.noise_suppression_db.
 _NS_LEVELS: Final = {6: 0, 12: 1, 18: 2, 21: 3}
-
-
-def even_pcm(pcm: bytes) -> bytes:
-    """Drop a trailing odd byte so the buffer stays int16-aligned."""
-    extra = len(pcm) % SAMPLE_BYTES
-    return pcm if extra == 0 else pcm[:-extra]
 
 
 def _realign(buf: bytearray) -> None:
@@ -106,7 +94,7 @@ class FarEndTap:
 
     def push(self, pcm: bytes, sample_rate: int) -> None:
         """Append resampled far-end PCM and keep only the recent hold window."""
-        chunk = resample_int16(pcm, sample_rate, AEC_RATE)
+        chunk = resample_int16(pcm, sample_rate, SAMPLE_RATE)
         if not chunk:
             return
         duration_s = len(even_pcm(pcm)) / SAMPLE_BYTES / sample_rate
@@ -140,7 +128,7 @@ class FarEndTap:
         seconds : float
             Audio to keep, at the 16 kHz far-end rate.
         """
-        keep = max(0, int(seconds * AEC_RATE)) * SAMPLE_BYTES
+        keep = max(0, int(seconds * SAMPLE_RATE)) * SAMPLE_BYTES
         with self._lock:
             extra = len(self._pcm) - keep
             if extra > 0:
@@ -149,14 +137,6 @@ class FarEndTap:
     def playing_recently(self, window_s: float = _FAR_RECENT_S) -> bool:
         """Return whether playback ended inside the recent window."""
         return time.monotonic() < (self._playing_until + window_s)
-
-
-def pcm_rms(frame: bytes) -> float:
-    """Return RMS of an int16 frame, floored so silence is not zero."""
-    if not frame:
-        return 0.0
-    samples = np.frombuffer(frame, dtype=np.int16).astype(np.float32)
-    return float(np.sqrt(np.mean(samples * samples)) + _RMS_FLOOR)
 
 
 # ``align`` keeps the output latency, at least this much, plus the margin.
@@ -227,7 +207,7 @@ class EchoCanceller:
     def _build(self, processor: Any) -> Any:
         tune = self.tune
         return processor(
-            sample_rate=AEC_RATE,
+            sample_rate=SAMPLE_RATE,
             num_channels=1,
             echo_cancellation=tune.enabled,
             noise_suppression=tune.noise_suppression_db > 0,

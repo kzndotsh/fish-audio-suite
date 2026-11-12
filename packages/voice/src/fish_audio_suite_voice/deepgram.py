@@ -11,41 +11,41 @@ the ``deepgram`` extra.
 
 from __future__ import annotations
 
-import contextlib
 import json
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import Awaitable, Callable
 from typing import Any, Final
 from urllib.parse import urlencode
 
+from fish_audio_suite_voice.pcm import SAMPLE_RATE
+from fish_audio_suite_voice.tune import DEEPGRAM_HOSTS, DEFAULT_DEEPGRAM_REGION
 from fish_audio_suite_voice.turn_stream import (
     EagerTurnEnd,
+    Recogniser,
+    RecogniserSettings,
+    SocketStream,
     StreamError,
     StreamWarning,
+    TurnDropped,
     TurnEnded,
     TurnMessage,
     TurnResumed,
     TurnStarted,
     TurnUpdate,
-    is_closed,
     websockets_connect,
 )
 
 __all__ = [
-    "FLUX_URL",
+    "DEEPGRAM",
     "FluxStream",
     "flux_base",
     "flux_url",
     "parse_flux_message",
 ]
 
-FLUX_URL: Final = "wss://api.deepgram.com/v2/listen"
-# The regional hosts process the audio inside their region and fail rather than send it elsewhere.
-_REGION_HOSTS: Final = {
-    "eu": "api.eu.deepgram.com",
-    "au": "api.au.deepgram.com",
-    "in": "api.in.deepgram.com",
-}
-DEFAULT_EOT_TIMEOUT_MS: Final = 5000  # Flux ends a turn after this much silence at the latest
+_EXTRA: Final = "deepgram"
+_EOT_TIMEOUT_MS: Final = 5000  # Flux ends a turn after this much silence at the latest
+# Flux says this when asked to end a turn that never started: there is nothing to end.
+_NO_TURN_CODE: Final = "FORCE_END_TURN_NO_ACTIVE_TURN"
 
 
 def flux_base(region: str) -> str:
@@ -54,7 +54,7 @@ def flux_base(region: str) -> str:
     Parameters
     ----------
     region : str
-        ``"eu"``, ``"au"`` or ``"in"``. Anything else, such as ``"global"``, is the default.
+        A key of ``DEEPGRAM_HOSTS``, such as ``"eu"``. Anything else is the global host.
 
     Returns
     -------
@@ -65,11 +65,11 @@ def flux_base(region: str) -> str:
     --------
     >>> flux_base("eu")
     'wss://api.eu.deepgram.com/v2/listen'
-    >>> flux_base("global") == FLUX_URL
-    True
+    >>> flux_base("global")
+    'wss://api.deepgram.com/v2/listen'
     """
-    host = _REGION_HOSTS.get(region)
-    return FLUX_URL if host is None else f"wss://{host}/v2/listen"
+    host = DEEPGRAM_HOSTS.get(region, DEEPGRAM_HOSTS[DEFAULT_DEEPGRAM_REGION])
+    return f"wss://{host}/v2/listen"
 
 
 def flux_url(
@@ -77,9 +77,8 @@ def flux_url(
     *,
     sample_rate: int,
     eot_threshold: float,
-    eot_timeout_ms: int = DEFAULT_EOT_TIMEOUT_MS,
     eager_eot_threshold: float = 0.0,
-    base: str = FLUX_URL,
+    base: str | None = None,
 ) -> str:
     """Build the Flux connection address for 16-bit mono PCM.
 
@@ -91,18 +90,17 @@ def flux_url(
         Samples a second of the audio that will be sent.
     eot_threshold : float
         How sure Flux must be that a turn is over, from 0.5 to 1.
-    eot_timeout_ms : int, optional
-        The longest silence before a turn is ended anyway.
     eager_eot_threshold : float, optional
         From 0.3 to 0.9, and no higher than ``eot_threshold``. Asks Flux to say when a turn
         is probably over, before it is sure. 0 leaves it off.
-    base : str, optional
-        The endpoint, to use a regional one.
+    base : str or None, optional
+        The endpoint, to use a regional one. None is the global one.
 
     Returns
     -------
     str
-        The address, with ``mip_opt_out=true`` so Deepgram keeps neither the audio nor the text.
+        The address, with ``mip_opt_out=true`` so Deepgram keeps neither the audio nor the text,
+        and a 5 s limit on the silence before Flux ends a turn anyway.
 
     Examples
     --------
@@ -114,13 +112,13 @@ def flux_url(
         "encoding": "linear16",
         "sample_rate": sample_rate,
         "eot_threshold": eot_threshold,
-        "eot_timeout_ms": eot_timeout_ms,
+        "eot_timeout_ms": _EOT_TIMEOUT_MS,
         "mip_opt_out": "true",
     }
     if eager_eot_threshold > 0:
         params["eager_eot_threshold"] = eager_eot_threshold
     query = urlencode(params)
-    return f"{base}?{query}"
+    return f"{base or flux_base(DEFAULT_DEEPGRAM_REGION)}?{query}"
 
 
 def _number(value: object) -> float:
@@ -141,10 +139,11 @@ def parse_flux_message(raw: str | bytes) -> TurnMessage | None:
 
     Returns
     -------
-    TurnStarted or TurnUpdate or TurnEnded or EagerTurnEnd or TurnResumed or StreamError \
-    or StreamWarning or None
+    TurnStarted or TurnUpdate or TurnEnded or EagerTurnEnd or TurnResumed or TurnDropped \
+    or StreamError or StreamWarning or None
         What the message says, or None for one that needs no action: the greeting, an
-        acknowledgement, malformed JSON or anything new.
+        acknowledgement, malformed JSON or anything new. The warning that there was no turn
+        to end is a ``TurnDropped``.
 
     Examples
     --------
@@ -165,7 +164,10 @@ def parse_flux_message(raw: str | bytes) -> TurnMessage | None:
     if kind == "Error":
         return StreamError(str(message.get("code", "")), str(message.get("description", "")))
     if kind == "Warning":
-        return StreamWarning(str(message.get("code", "")), str(message.get("description", "")))
+        code = str(message.get("code", ""))
+        if code == _NO_TURN_CODE:
+            return TurnDropped()
+        return StreamWarning(code, str(message.get("description", "")))
     if kind != "TurnInfo":
         return None
     text = str(message.get("transcript") or "")
@@ -191,11 +193,11 @@ def parse_flux_message(raw: str | bytes) -> TurnMessage | None:
 async def _websockets_connect(url: str, *, key: str) -> Any:
     """Open a real connection to Deepgram, with the key as a header."""
     return await websockets_connect(
-        url, {"Authorization": f"Token {key}"}, service="Deepgram", extra="deepgram"
+        url, {"Authorization": f"Token {key}"}, service="Deepgram", extra=_EXTRA
     )
 
 
-class FluxStream:
+class FluxStream(SocketStream):
     """One Flux connection: send audio up, read turn messages back.
 
     Parameters
@@ -215,14 +217,13 @@ class FluxStream:
         *,
         connect: Callable[..., Awaitable[Any]] | None = None,
     ) -> None:
-        self._url = url
-        self._key = key
-        self._connect = connect or _websockets_connect
-        self._socket: Any = None
-
-    async def open(self) -> None:
-        """Connect. Raises ``SttStreamError`` when Deepgram cannot be reached or says no."""
-        self._socket = await self._connect(self._url, key=self._key)
+        super().__init__(
+            url,
+            key,
+            connect=connect or _websockets_connect,
+            parse=parse_flux_message,
+            goodbye=json.dumps({"type": "CloseStream"}),
+        )
 
     async def send_audio(self, pcm: bytes) -> None:
         """Send audio.
@@ -241,30 +242,28 @@ class FluxStream:
         if self._socket is not None:
             await self._socket.send(json.dumps({"type": "ForceEndTurn"}))
 
-    async def messages(self) -> AsyncIterator[TurnMessage]:
-        """Read messages until the connection closes.
 
-        Yields
-        ------
-        TurnStarted or TurnUpdate or TurnEnded or EagerTurnEnd or TurnResumed or StreamError \
-        or StreamWarning
-            What Flux says, in order. Messages that need no action are skipped.
-        """
-        if self._socket is None:
-            return
-        try:
-            async for raw in self._socket:
-                if (message := parse_flux_message(raw)) is not None:
-                    yield message
-        except Exception as exc:
-            if not is_closed(exc):
-                raise
+def _url(settings: RecogniserSettings) -> str:
+    deepgram = settings.stt.deepgram
+    return flux_url(
+        deepgram.model,
+        sample_rate=SAMPLE_RATE,
+        eot_threshold=deepgram.eot_threshold,
+        eager_eot_threshold=settings.stt.eager_eot_threshold,
+        base=flux_base(deepgram.region),
+    )
 
-    async def close(self) -> None:
-        """Say goodbye and close. Safe to call twice, or on a connection that never opened."""
-        socket, self._socket = self._socket, None
-        if socket is None:
-            return
-        with contextlib.suppress(Exception):  # it may be closed already
-            await socket.send(json.dumps({"type": "CloseStream"}))
-        await socket.close()
+
+def _stream(url: str, key: str, _settings: RecogniserSettings) -> FluxStream:
+    return FluxStream(url, key)
+
+
+DEEPGRAM: Final = Recogniser(
+    name="deepgram",
+    label="Flux",
+    extra=_EXTRA,
+    key_name="DEEPGRAM_API_KEY",
+    key=lambda settings: settings.stt.deepgram.key,
+    url=_url,
+    stream=_stream,
+)

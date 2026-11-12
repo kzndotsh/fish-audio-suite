@@ -6,7 +6,7 @@ import importlib
 from collections.abc import Callable
 from typing import Final, Protocol
 
-from fish_audio_suite_voice.mic import SAMPLE_RATE
+from fish_audio_suite_voice.pcm import SAMPLE_RATE
 
 __all__ = [
     "SILERO_THRESHOLDS",

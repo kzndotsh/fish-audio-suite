@@ -15,11 +15,13 @@ from typing import Final
 import numpy as np
 from numpy.typing import NDArray
 
+from fish_audio_suite_kit import MS_PER_S
+from fish_audio_suite_voice.pcm import SAMPLE_BYTES, SAMPLE_DTYPE
+
 __all__ = [
     "EdgeFade",
 ]
 
-_MS_PER_S: Final = 1000
 # Samples this small count as silence (about -62 dBFS for 16-bit audio).
 _QUIET: Final = 24
 # Silence this long around a sound makes its edge a sentence edge. Sentence gaps are
@@ -53,9 +55,9 @@ class EdgeFade:
     """
 
     def __init__(self, sample_rate: int, fade_ms: float) -> None:
-        self._fade = max(0, round(sample_rate * fade_ms / _MS_PER_S))
-        self._min_quiet = max(1, round(sample_rate * _MIN_QUIET_MS / _MS_PER_S))
-        self._confirm = max(1, round(sample_rate * _CONFIRM_MS / _MS_PER_S))
+        self._fade = max(0, round(sample_rate * fade_ms / MS_PER_S))
+        self._min_quiet = max(1, round(sample_rate * _MIN_QUIET_MS / MS_PER_S))
+        self._confirm = max(1, round(sample_rate * _CONFIRM_MS / MS_PER_S))
         self._hold = self._fade + self._confirm
         steps = (np.arange(self._fade, dtype=np.float64) + 1.0) / (self._fade + 1.0)
         self._up = steps
@@ -87,11 +89,11 @@ class EdgeFade:
         if self._fade == 0:
             return pcm
         data = self._odd + pcm
-        usable = len(data) - len(data) % 2
+        usable = len(data) - len(data) % SAMPLE_BYTES
         self._odd = data[usable:]
         if usable == 0:
             return b""
-        new = np.frombuffer(data[:usable], dtype="<i2").astype(np.int16)
+        new = np.frombuffer(data[:usable], dtype=SAMPLE_DTYPE).astype(np.int16)
         start = self._raw.size
         self._raw = np.concatenate([self._raw, new])
         self._gain = np.concatenate([self._gain, np.ones(new.size, dtype=np.float64)])
@@ -161,7 +163,7 @@ class EdgeFade:
         if emit == 0:
             return b""
         shaped: NDArray[np.float64] = self._raw[:emit] * self._gain[:emit]
-        out = np.rint(shaped).astype("<i2").tobytes()
+        out = np.rint(shaped).astype(SAMPLE_DTYPE).tobytes()
         quiet = np.abs(self._raw[:emit].astype(np.int32)) < _QUIET
         if quiet.all():
             self._quiet_before += emit

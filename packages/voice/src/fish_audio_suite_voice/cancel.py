@@ -1,19 +1,69 @@
-"""Tell our own cancellation and its tear-down noise from real errors."""
+"""Stop flags, and telling our own cancellation and its tear-down noise from real errors."""
 
 from __future__ import annotations
 
 import asyncio
 import threading
-from typing import Any, Final
+from collections.abc import Callable
+from typing import Any, Final, Protocol
 
 from fish_audio_suite_voice.debug import debug
 
 __all__ = [
+    "StopFlag",
+    "any_of",
     "is_cancel_noise",
     "is_own_cancel",
+    "never",
     "quiet_shutdown",
     "reap",
 ]
+
+
+class StopFlag(Protocol):
+    """Anything with ``is_set``, such as a ``threading.Event``, that ends a mic stream."""
+
+    def is_set(self) -> bool:
+        """Return whether the stream should stop."""
+        ...
+
+
+class _AnyOf:
+    """A stop flag that is set when any of several are."""
+
+    def __init__(self, flags: tuple[StopFlag | Callable[[], bool], ...]) -> None:
+        self._flags = flags
+
+    def is_set(self) -> bool:
+        return any(flag() if callable(flag) else flag.is_set() for flag in self._flags)
+
+
+def any_of(*flags: StopFlag | Callable[[], bool]) -> StopFlag:
+    """Return a stop flag that is set when any of ``flags`` is.
+
+    Parameters
+    ----------
+    *flags : StopFlag or Callable
+        Flags, or functions that say whether to stop, such as the session's mute check.
+        They are asked in order, and the first that says stop ends the asking.
+
+    Returns
+    -------
+    StopFlag
+        Set while any of them is. It reads them each time it is asked.
+    """
+    return _AnyOf(flags)
+
+
+def never() -> bool:
+    """Say no: the stand-in for a stop or mute check that is never set.
+
+    Returns
+    -------
+    bool
+        Always False.
+    """
+    return False
 
 
 # Last resort when a teardown error is not an exception type we know. Matching

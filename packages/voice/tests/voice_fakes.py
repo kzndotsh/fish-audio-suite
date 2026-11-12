@@ -17,7 +17,7 @@ import pytest
 from fish_audio_suite_kit import FishHttpError
 from fish_audio_suite_voice import reply
 from fish_audio_suite_voice.aec import EchoCanceller
-from fish_audio_suite_voice.mic import StopFlag
+from fish_audio_suite_voice.cancel import StopFlag
 from fish_audio_suite_voice.speaker import FishSpeaker
 from fish_audio_suite_voice.tune import AecTune
 from fish_audio_suite_voice.wire import TtsResult

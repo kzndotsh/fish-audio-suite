@@ -9,7 +9,7 @@ import pytest
 from voice_fakes import ScriptedMic, install_vad
 
 from fish_audio_suite_voice.listen import record_utterance, stream_utterance
-from fish_audio_suite_voice.mic import FRAME_BYTES
+from fish_audio_suite_voice.pcm import FRAME_BYTES
 from fish_audio_suite_voice.tune import DEFAULT_VAD_ENGINE, ListenTune
 from fish_audio_suite_voice.vad import SILERO_THRESHOLDS, VAD_ENGINES, open_vad, vad_problem
 

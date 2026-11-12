@@ -11,7 +11,7 @@ import re
 from typing import Final
 
 from fish_audio_suite_kit import strip_cue_tags
-from fish_audio_suite_voice.aec import SAMPLE_BYTES
+from fish_audio_suite_voice.pcm import SAMPLE_BYTES
 
 __all__ = [
     "spoken_prefix",

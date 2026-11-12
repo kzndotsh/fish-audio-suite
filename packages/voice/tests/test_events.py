@@ -28,7 +28,8 @@ from voice_fakes import ScriptedMic, install_audio, install_vad, make_result, se
 from fish_audio_suite_kit import LatencySnapshot
 from fish_audio_suite_voice import events as events_module
 from fish_audio_suite_voice.asr import AsrResult
-from fish_audio_suite_voice.barge import MIC_LEVEL_EVERY_FRAMES, BargeGate
+from fish_audio_suite_voice.barge import BargeGate
+from fish_audio_suite_voice.cancel import StopFlag
 from fish_audio_suite_voice.cli import _quit_line  # pyright: ignore[reportPrivateUsage]
 from fish_audio_suite_voice.debug import configure_voice_logging
 from fish_audio_suite_voice.duplex import duplex_turns
@@ -61,7 +62,7 @@ from fish_audio_suite_voice.events import (
 )
 from fish_audio_suite_voice.hearing import HeardLine, hear_line
 from fish_audio_suite_voice.listen import _Listen  # pyright: ignore[reportPrivateUsage]
-from fish_audio_suite_voice.mic import FRAME_BYTES, StopFlag
+from fish_audio_suite_voice.pcm import FRAME_BYTES, MIC_LEVEL_EVERY_FRAMES
 from fish_audio_suite_voice.speaker import FishSpeaker
 from fish_audio_suite_voice.tune import ListenTune
 

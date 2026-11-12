@@ -16,15 +16,17 @@ import pytest
 from voice_fakes import ScriptedMic
 
 from fish_audio_suite_voice import streaming
+from fish_audio_suite_voice.cancel import StopFlag
 from fish_audio_suite_voice.deepgram import FluxStream
 from fish_audio_suite_voice.events import EVENTS, Event, Interim
-from fish_audio_suite_voice.mic import FRAME_BYTES, Mic, StopFlag
+from fish_audio_suite_voice.mic import Mic
+from fish_audio_suite_voice.pcm import FRAME_BYTES
 from fish_audio_suite_voice.streaming import StreamedTurn, StreamFallback, stream_turn
-from fish_audio_suite_voice.tune import ListenTune, SttTune
+from fish_audio_suite_voice.tune import DeepgramTune, ListenTune, SttTune
 from fish_audio_suite_voice.turn_stream import (
     EagerTurnEnd,
+    RecogniserSettings,
     StreamError,
-    StreamWarning,
     SttStreamError,
     TurnDropped,
     TurnEnded,
@@ -36,7 +38,7 @@ from fish_audio_suite_voice.turn_stream import (
 
 CHUNK = streaming._SEND_BYTES  # 80 ms of audio: the size Deepgram recommends
 FRAME = b"\x01\x00" * (FRAME_BYTES // 2)
-STT = SttTune(provider="deepgram", deepgram_key="secret")
+STT = SttTune(provider="deepgram", deepgram=DeepgramTune(key="secret"))
 # Most tests are about the stream, so one voiced frame is enough to open it.
 ONE_VOICED = ListenTune(min_voiced_frames=1)
 
@@ -135,6 +137,7 @@ def _run(
     listen_fn: Callable[..., bool],
     *,
     stt: SttTune = STT,
+    fish_key: str = "",
     stop: StopFlag | None = None,
     prefix: bytes = b"",
     listen: ListenTune = ONE_VOICED,
@@ -144,7 +147,7 @@ def _run(
 
     async def go() -> streaming.StreamedTurn | StreamFallback | str:
         return await stream_turn(
-            stt=stt,
+            settings=RecogniserSettings(stt, fish_key=fish_key),
             listen=listen,
             mic=ScriptedMic(),
             quit_requested=quit_flag,
@@ -239,7 +242,7 @@ def test_a_turn_with_no_words_is_noise(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_a_missing_key_and_a_refused_connection_are_fatal_but_an_outage_hands_over_the_speech() -> (
     None
 ):
-    no_key = SttTune(provider="deepgram", deepgram_key="")
+    no_key = SttTune(provider="deepgram", deepgram=DeepgramTune(key=""))
     assert _run(_FakeFlux(), _mic(1), stt=no_key) == "fatal"
     assert _run(_FakeFlux(open_errors=[SttStreamError("HTTP 401", fatal=True)]), _mic(1)) == "fatal"
     outage = _run(_FakeFlux(open_errors=[SttStreamError("no route")]), _mic(3))
@@ -302,7 +305,7 @@ def test_a_turn_cancelled_while_the_mic_lets_go_still_closes_the_stream() -> Non
     async def go() -> None:
         turn = asyncio.create_task(
             stream_turn(
-                stt=STT,
+                settings=RecogniserSettings(STT),
                 listen=ONE_VOICED,
                 mic=ScriptedMic(),
                 quit_requested=threading.Event(),
@@ -340,8 +343,9 @@ def test_a_forced_end_with_no_turn_to_end_is_noise_straight_away_not_after_the_w
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(streaming, "_FORCE_WAIT_S", 5.0)  # it must not wait this long
-    # Flux took the sound for no speech, so it answers ForceEndTurn with a warning, not an EndOfTurn.
-    fake = _FakeFlux(on_force=[StreamWarning("FORCE_END_TURN_NO_ACTIVE_TURN", "no turn")])
+    # Flux took the sound for no speech, so it answers ForceEndTurn with a warning, not an
+    # EndOfTurn, and its parser reads that warning as a dropped turn.
+    fake = _FakeFlux(on_force=[TurnDropped()])
     started = time.monotonic()
     assert _run(fake, _mic(3, local_end=True)) == "noise"
     assert time.monotonic() - started < 2.0
@@ -462,7 +466,9 @@ def test_the_connection_goes_to_the_regional_endpoint_that_was_chosen() -> None:
 
     async def go(region: str) -> object:
         return await stream_turn(
-            stt=replace(STT, deepgram_region=region),
+            settings=RecogniserSettings(
+                replace(STT, deepgram=replace(STT.deepgram, region=region))
+            ),
             listen=ONE_VOICED,
             mic=ScriptedMic(),
             quit_requested=threading.Event(),
@@ -599,7 +605,7 @@ def test_a_turn_whose_words_arrive_in_time_is_not_given_up_on(
 
 
 def test_fish_realtime_connects_to_the_fish_base_with_the_fish_key_and_the_eager_setting() -> None:
-    from fish_audio_suite_voice.fish_realtime import FishRealtimeStream
+    from fish_audio_suite_voice.fish_realtime import FISH_REALTIME, FishRealtimeStream
 
     made: list[tuple[str, str]] = []
 
@@ -609,15 +615,15 @@ def test_fish_realtime_connects_to_the_fish_base_with_the_fish_key_and_the_eager
 
     async def go(fish_key: str = "", fish_base: str = "https://api.fish.audio") -> object:
         return await stream_turn(
-            stt=SttTune(provider="fish-realtime"),
+            settings=RecogniserSettings(
+                SttTune(provider="fish-realtime"), fish_key=fish_key, fish_base=fish_base
+            ),
             listen=ONE_VOICED,
             mic=ScriptedMic(),
             quit_requested=threading.Event(),
             stop=threading.Event(),
             make_stream=make,
             listen_fn=_mic(1),
-            fish_key=fish_key,
-            fish_base=fish_base,
         )
 
     assert asyncio.run(go()) == "fatal"  # no Fish key: nothing is connected
@@ -627,11 +633,14 @@ def test_fish_realtime_connects_to_the_fish_base_with_the_fish_key_and_the_eager
     assert made == [("wss://fish.example/v1/asr/realtime", "fish-secret")]
 
     for threshold, eager in ((0.0, False), (0.5, True)):
-        endpoint = streaming._endpoint(
-            SttTune(provider="fish-realtime", eager_eot_threshold=threshold), "k", "https://f"
+        settings = RecogniserSettings(
+            SttTune(provider="fish-realtime", eager_eot_threshold=threshold),
+            fish_key="k",
+            fish_base="https://f",
         )
-        assert endpoint is not None
-        stream = endpoint[2]("wss://f/v1/asr/realtime", "k")
+        stream = FISH_REALTIME.stream(
+            FISH_REALTIME.url(settings), FISH_REALTIME.key(settings), settings
+        )
         assert isinstance(stream, FishRealtimeStream)
         assert stream._config["turn_detection"] == {"mode": "auto", "eager": eager}
 
@@ -656,7 +665,7 @@ def test_fish_realtime_keeps_the_local_silence_limit_behind_fishs_own_end_of_tur
         _run(
             fake,
             _mic(6, seen=seen),
-            stt=SttTune(provider=provider, deepgram_key="k"),
+            stt=SttTune(provider=provider, deepgram=DeepgramTune(key="k")),
             listen=ListenTune(min_voiced_frames=1, end_silence_frames=frames),
             fish_key="k",
         )

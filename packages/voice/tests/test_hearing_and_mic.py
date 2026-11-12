@@ -14,14 +14,15 @@ import pytest
 from session_fakes import make_ctx
 
 from fish_audio_suite_kit import FishHttpError
-from fish_audio_suite_voice import barge, console, mic
+from fish_audio_suite_voice import barge, console, mic, pcm
 from fish_audio_suite_voice.asr import AsrResult
 from fish_audio_suite_voice.console import console_print, end_reply_line, write_reply_token
 from fish_audio_suite_voice.debug import configure_voice_logging
 from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexContext
 from fish_audio_suite_voice.hearing import hear_line, recognize
-from fish_audio_suite_voice.mic import FRAME_BYTES, SessionMic
-from fish_audio_suite_voice.playback import PortAudioMissingError
+from fish_audio_suite_voice.mic import SessionMic
+from fish_audio_suite_voice.pcm import FRAME_BYTES
+from fish_audio_suite_voice.portaudio import PortAudioMissingError
 
 
 def _asr_returns(monkeypatch: pytest.MonkeyPatch, outcome: str | BaseException) -> None:
@@ -101,7 +102,7 @@ def test_a_batch_turn_reports_the_silence_it_waited_out(monkeypatch: pytest.Monk
     _asr_returns(monkeypatch, "what time is it")
     monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", lambda *_a, **_k: b"wav")
     heard = asyncio.run(hear_line(ctx, ""))
-    assert heard.end_wait_ms == ctx.config.listen.end_silence_frames * mic.FRAME_MS
+    assert heard.end_wait_ms == ctx.config.listen.end_silence_frames * pcm.FRAME_MS
 
 
 def test_a_barge_in_clip_is_never_a_stale_copy(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -262,7 +263,7 @@ def test_a_reader_that_falls_behind_keeps_only_the_newest_audio(
             got = list(source.frames(stop, since=0))
         finally:
             timer.cancel()
-    assert 0 < len(got) <= 2_000 // mic.FRAME_MS  # at most about two seconds
+    assert 0 < len(got) <= 2_000 // pcm.FRAME_MS  # at most about two seconds
     assert got == buffers[-len(got) :]  # the newest frames, in order, with no gap
 
 
@@ -318,10 +319,10 @@ def test_a_closed_stdout_never_raises_from_the_console_helpers(
 
 def test_a_buffer_shorter_than_a_frame_waits_and_a_zero_frame_size_yields_nothing() -> None:
     pending = bytearray()
-    assert mic._take_full_frames(pending, b"ab", 4) == []  # pyright: ignore[reportPrivateUsage]
-    assert mic._take_full_frames(pending, b"cdef", 4) == [b"abcd"]  # pyright: ignore[reportPrivateUsage]
+    assert pcm.take_frames(pending, b"ab", 4) == []
+    assert pcm.take_frames(pending, b"cdef", 4) == [b"abcd"]
     assert bytes(pending) == b"ef"
-    assert mic._take_full_frames(pending, b"gh", 0) == []  # pyright: ignore[reportPrivateUsage]
+    assert pcm.take_frames(pending, b"gh", 0) == []
 
 
 def test_hear_line_logs_instead_of_printing_listening_in_debug_mode(

@@ -7,13 +7,13 @@ from fish_audio_suite_voice.llm_tune import LlmTune
 from fish_audio_suite_voice.playback import (
     FileSink,
     MpvSink,
-    PlaybackKind,
     PlaybackSink,
-    PortAudioMissingError,
     SounddeviceSink,
     StdoutSink,
     make_sink,
 )
+from fish_audio_suite_voice.playback_kind import PlaybackKind
+from fish_audio_suite_voice.portaudio import PortAudioMissingError
 from fish_audio_suite_voice.signals import DuplexSession
 from fish_audio_suite_voice.speaker import FishSpeaker
 from fish_audio_suite_voice.tune import AecTune, BargeTune, ListenTune

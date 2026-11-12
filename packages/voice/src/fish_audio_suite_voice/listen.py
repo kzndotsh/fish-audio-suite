@@ -7,18 +7,23 @@ import io
 from collections.abc import Callable, Sequence
 from typing import Final
 
-from fish_audio_suite_voice.aec import pcm_rms
-from fish_audio_suite_voice.barge import (
-    DEFAULT_BARGE_RMS,
-    LISTEN_HEARTBEAT_FRAMES,
-    MIC_LEVEL_EVERY_FRAMES,
-)
+from fish_audio_suite_kit import MS_PER_S
+from fish_audio_suite_voice.cancel import StopFlag
 from fish_audio_suite_voice.debug import debug, heartbeat_due, trace
 from fish_audio_suite_voice.events import EVENTS, MicLevel
 from fish_audio_suite_voice.floor import AdaptiveFloor
-from fish_audio_suite_voice.mic import FRAME_BYTES, FRAME_MS, SAMPLE_RATE, Mic, StopFlag
-from fish_audio_suite_voice.playback import write_mono_wav
+from fish_audio_suite_voice.mic import Mic
+from fish_audio_suite_voice.pcm import (
+    FRAME_MS,
+    LISTEN_HEARTBEAT_FRAMES,
+    MIC_LEVEL_EVERY_FRAMES,
+    SAMPLE_RATE,
+    pcm_rms,
+    take_frames,
+    write_mono_wav,
+)
 from fish_audio_suite_voice.tune import (
+    DEFAULT_BARGE_RMS,
     IMPULSE_START_EXTRA,
     MAX_UTTERANCE_FRAMES,
     ListenTune,
@@ -335,7 +340,7 @@ def _clip_wav(heard: _Listen, tune: ListenTune) -> bytes | None:
     pcm = b"".join(heard.clip_frames)
     debug(
         "listen.end {:.2f}s clip, {} voiced frames, peak rms {}",
-        len(heard.clip_frames) * FRAME_MS / 1000,
+        len(heard.clip_frames) * FRAME_MS / MS_PER_S,
         heard.speech_hits,
         round(heard.clip_peak),
     )
@@ -344,7 +349,7 @@ def _clip_wav(heard: _Listen, tune: ListenTune) -> bytes | None:
 
 def _prime_listen(heard: _Listen, pcm: bytes) -> None:
     """Start a listen from barge audio. Those frames already passed the interrupt gate."""
-    frames = [pcm[i : i + FRAME_BYTES] for i in range(0, len(pcm) - FRAME_BYTES + 1, FRAME_BYTES)]
+    frames = take_frames(bytearray(), pcm)
     if not frames:
         return
     heard.triggered = True

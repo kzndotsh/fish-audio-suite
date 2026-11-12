@@ -1,4 +1,4 @@
-"""Listen for one turn and turn it into a line of text, through Fish ASR or Deepgram."""
+"""Listen for one turn and turn it into a line of text, through Fish ASR or a streaming recogniser."""
 
 from __future__ import annotations
 
@@ -22,6 +22,7 @@ from fish_audio_suite_kit import (
     trace_id_of,
 )
 from fish_audio_suite_voice.asr import fish_asr
+from fish_audio_suite_voice.cancel import StopFlag
 from fish_audio_suite_voice.debug import (
     clear_turn,
     debug,
@@ -34,11 +35,11 @@ from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexContext
 from fish_audio_suite_voice.events import EVENTS, Heard, Listening
 from fish_audio_suite_voice.history import remember_user
 from fish_audio_suite_voice.listen import record_utterance
-from fish_audio_suite_voice.mic import FRAME_MS, StopFlag
-from fish_audio_suite_voice.playback import PortAudioMissingError
+from fish_audio_suite_voice.pcm import FRAME_MS
+from fish_audio_suite_voice.portaudio import PortAudioMissingError
+from fish_audio_suite_voice.recognisers import recogniser
 from fish_audio_suite_voice.speculate import Speculation
 from fish_audio_suite_voice.streaming import StreamedTurn, StreamFallback, stream_turn
-from fish_audio_suite_voice.tune import STREAMING_STT_PROVIDERS
 from fish_audio_suite_voice.turn_check import (
     OpenTurn,
     Reopened,
@@ -46,6 +47,7 @@ from fish_audio_suite_voice.turn_check import (
     first_clip_tune,
     wait_frames,
 )
+from fish_audio_suite_voice.turn_stream import RecogniserSettings
 
 __all__ = [
     "HeardLine",
@@ -314,7 +316,7 @@ async def hear_line(
     EVENTS.emit(Listening())
     clear_turn()
     trace("listen.waiting device={}", ctx.device)
-    if ctx.config.stt.provider in STREAMING_STT_PROVIDERS and (
+    if recogniser(ctx.config.stt.provider) is not None and (
         streamed := await _hear_streaming(ctx, last_user, stop)
     ):
         if streamed.kind != "line":
@@ -460,7 +462,7 @@ def drop_speculation(ctx: DuplexContext) -> None:
 
 
 def _speculate(ctx: DuplexContext, text: str) -> None:
-    """Start writing the reply for ``text``, which Flux thinks is probably the whole turn."""
+    """Start writing the reply for ``text``, which the recogniser thinks is probably the whole turn."""
     drop_speculation(ctx)
     asked = list(ctx.history)  # the real history only gains the line once the turn is confirmed
     remember_user(asked, text, ctx.config.history_turns, ctx.pinned)
@@ -484,29 +486,29 @@ async def _hear_streaming(
     Returns
     -------
     HeardLine or None
-        What the loop should do next, or None when Deepgram cannot be reached, so this
+        What the loop should do next, or None when the recogniser cannot be reached, so this
         turn is heard the usual way.
     """
     quit_requested = ctx.session.quit_requested
     clip = ctx.carry.take_prefix()
     opened = time.monotonic()
-    eager = ctx.config.stt.eager_eot_threshold > 0
+    eager = ctx.config.stt.eager
     outcome = await stream_turn(
-        stt=ctx.config.stt,
+        settings=RecogniserSettings(
+            ctx.config.stt, fish_key=ctx.config.fish_api_key, fish_base=ctx.config.fish_base
+        ),
         listen=ctx.config.listen,
         mic=ctx.mic,
         quit_requested=quit_requested,
         stop=quit_requested if stop is None else stop,
         prefix=clip.pcm,
         since=clip.since,
-        fish_key=ctx.config.fish_api_key,
-        fish_base=ctx.config.fish_base,
         on_eager=functools.partial(_speculate, ctx) if eager else None,
         on_resumed=functools.partial(drop_speculation, ctx) if eager else None,
     )
     if isinstance(outcome, StreamFallback):
-        # Deepgram failed once speech had started. The batch recogniser carries on from the
-        # speech captured so far, the way it carries on from a barge-in.
+        # The streaming recogniser failed once speech had started. The batch recogniser carries
+        # on from the speech captured so far, the way it carries on from a barge-in.
         ctx.carry.hand_back(outcome.prefix)
         return None
     if quit_requested.is_set():

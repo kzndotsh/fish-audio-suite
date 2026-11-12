@@ -321,9 +321,9 @@ layers = [
     "cli",
     "duplex : tui : console_sink : inputs",
     "reply : hearing : streaming",
-    "listen : barge : speaker : duplex_state : speculate : tts_turn : turn_check",
-    "config : mic : wire : llm : playback : transports : vad : deepgram : fish_realtime : turn_stream : asr : aec : loudness : spoken : signals : session_view",
-    "tune : llm_tune : events : debug : envfile : cancel : ws_tap : console : declick : floor : history : pause : tts_text",
+    "listen : barge : speaker : duplex_state : speculate : tts_turn",
+    "mic : wire : llm : playback : transports : recognisers : deepgram : fish_realtime : turn_stream : asr : aec : signals : session_view",
+    "config : tune : llm_tune : events : debug : envfile : cancel : ws_tap : console : declick : floor : history : pause : tts_text : pcm : portaudio : playback_kind : vad : loudness : spoken : turn_check",
 ]
 
 [tool.basedpyright]

@@ -13,12 +13,12 @@ from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexContext
 from fish_audio_suite_voice.events import EVENTS, Event, Heard
 from fish_audio_suite_voice.hearing import HeardLine, hear_line
 from fish_audio_suite_voice.streaming import StreamedTurn, StreamFallback
-from fish_audio_suite_voice.tune import SttTune
+from fish_audio_suite_voice.tune import DeepgramTune, SttTune
 
 
 def _ctx(provider: str = "deepgram") -> DuplexContext:
     ctx = make_ctx()
-    ctx.config = replace(ctx.config, stt=SttTune(provider=provider, deepgram_key="k"))
+    ctx.config = replace(ctx.config, stt=SttTune(provider=provider, deepgram=DeepgramTune(key="k")))
     return ctx
 
 
@@ -49,7 +49,9 @@ def test_a_streamed_turn_becomes_a_line_and_is_announced(monkeypatch: pytest.Mon
         "line", text="what is the weather", asr_ms=240.0, started=123.0, trace_id="a" * 32
     )
     assert Heard("what is the weather", 240.0) in seen
-    assert calls[0]["stt"].deepgram_key == "k"  # the settings go down; nothing below reads the env
+    assert (
+        calls[0]["settings"].stt.deepgram.key == "k"
+    )  # the settings go down; nothing below reads the env
 
 
 def test_the_default_provider_never_touches_deepgram(monkeypatch: pytest.MonkeyPatch) -> None:

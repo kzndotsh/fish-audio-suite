@@ -22,6 +22,7 @@ from fish_audio_suite_voice.turn_stream import (
     StreamError,
     StreamWarning,
     SttStreamError,
+    TurnDropped,
     TurnEnded,
     TurnResumed,
     TurnStarted,
@@ -36,7 +37,7 @@ def _turn(event: str, text: str = "", **extra: Any) -> str:
 
 
 def test_the_address_asks_for_16_bit_mono_pcm_and_no_retention() -> None:
-    url = flux_url("flux-general-en", sample_rate=16000, eot_threshold=0.7, eot_timeout_ms=4000)
+    url = flux_url("flux-general-en", sample_rate=16000, eot_threshold=0.7)
     parts = urlsplit(url)
     assert f"{parts.scheme}://{parts.netloc}{parts.path}" == "wss://api.deepgram.com/v2/listen"
     query = {key: value[0] for key, value in parse_qs(parts.query).items()}
@@ -45,7 +46,7 @@ def test_the_address_asks_for_16_bit_mono_pcm_and_no_retention() -> None:
         "encoding": "linear16",
         "sample_rate": "16000",
         "eot_threshold": "0.7",
-        "eot_timeout_ms": "4000",
+        "eot_timeout_ms": "5000",
         "mip_opt_out": "true",  # Deepgram keeps neither the audio nor the text
     }
     assert "key" not in parts.query.lower()  # the key goes in a header, never the address
@@ -266,6 +267,13 @@ def test_the_real_connection_sends_the_key_as_a_header_and_never_in_the_address(
 def test_a_warning_is_read_so_it_can_be_logged() -> None:
     raw = json.dumps({"type": "Warning", "code": "SOME_CODE", "description": "heads up"})
     assert parse_flux_message(raw) == StreamWarning("SOME_CODE", "heads up")
+
+
+def test_the_warning_that_there_was_no_turn_to_end_is_a_dropped_turn() -> None:
+    raw = json.dumps(
+        {"type": "Warning", "code": "FORCE_END_TURN_NO_ACTIVE_TURN", "description": "no turn"}
+    )
+    assert parse_flux_message(raw) == TurnDropped()
 
 
 def test_a_full_turn_info_message_as_the_schema_describes_it_is_read() -> None:

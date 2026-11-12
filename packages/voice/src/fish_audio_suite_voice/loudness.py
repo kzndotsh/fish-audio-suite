@@ -19,7 +19,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from fish_audio_suite_kit import MS_PER_S
-from fish_audio_suite_voice.aec import SAMPLE_BYTES
+from fish_audio_suite_voice.pcm import SAMPLE_BYTES, SAMPLE_DTYPE
 
 __all__ = [
     "LoudnessMatch",
@@ -113,7 +113,7 @@ class LoudnessMatch:
         self._odd = data[usable:]
         if usable == 0:
             return b""
-        samples = np.frombuffer(data[:usable], dtype="<i2").astype(np.float64) / _FULL_SCALE
+        samples = np.frombuffer(data[:usable], dtype=SAMPLE_DTYPE).astype(np.float64) / _FULL_SCALE
         self._measure(samples)
         wanted = self._wanted_db()
         if wanted is None:
@@ -139,7 +139,7 @@ class LoudnessMatch:
         return (
             np.rint(shaped * _FULL_SCALE)
             .clip(-_FULL_SCALE, _FULL_SCALE - 1)
-            .astype("<i2")
+            .astype(SAMPLE_DTYPE)
             .tobytes()
         )
 

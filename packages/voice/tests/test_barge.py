@@ -13,15 +13,11 @@ from voice_fakes import ScriptedMic, install_vad
 from fish_audio_suite_voice.aec import EchoCanceller
 from fish_audio_suite_voice.barge import (
     BARGE_MISS_DECAY_FRAMES,
-    DEFAULT_BARGE_HIT_FRAMES,
-    DEFAULT_BARGE_PLAYING_GAIN,
-    DEFAULT_BARGE_RMS,
-    DEFAULT_BLEED_DELAY_S,
-    DEFAULT_POST_SPEAK_COOLDOWN_S,
     BargeGate,
     _barge_step,
     barge_rms_need,
 )
+from fish_audio_suite_voice.cancel import StopFlag
 from fish_audio_suite_voice.listen import (
     _CAP_QUIET_FRAMES,
     _clip_wav,
@@ -35,11 +31,16 @@ from fish_audio_suite_voice.listen import (
     start_hit,
     trailing_start_hits,
 )
-from fish_audio_suite_voice.mic import FRAME_BYTES, StopFlag, _take_full_frames
+from fish_audio_suite_voice.pcm import FRAME_BYTES, take_frames
 from fish_audio_suite_voice.tune import (
+    DEFAULT_BARGE_HIT_FRAMES,
+    DEFAULT_BARGE_PLAYING_GAIN,
+    DEFAULT_BARGE_RMS,
+    DEFAULT_BLEED_DELAY_S,
     DEFAULT_END_SILENCE_FRAMES,
     DEFAULT_MIN_SPEECH_RMS,
     DEFAULT_MIN_VOICED_FRAMES,
+    DEFAULT_POST_SPEAK_COOLDOWN_S,
     IMPULSE_START_EXTRA,
     MAX_UTTERANCE_FRAMES,
     AecTune,
@@ -423,14 +424,14 @@ def test_spike_start_blocks_decaying_bang() -> None:
 def test_mic_chunks_join_when_short_and_split_when_long() -> None:
     pending = bytearray()
     half = b"\x01" * (FRAME_BYTES // 2)
-    assert _take_full_frames(pending, half, FRAME_BYTES) == []
-    assert _take_full_frames(pending, half, FRAME_BYTES) == [b"\x01" * FRAME_BYTES]
+    assert take_frames(pending, half, FRAME_BYTES) == []
+    assert take_frames(pending, half, FRAME_BYTES) == [b"\x01" * FRAME_BYTES]
     assert pending == bytearray()
     long = b"\x02" * (FRAME_BYTES * 2 + 3)
-    frames = _take_full_frames(pending, long, FRAME_BYTES)
+    frames = take_frames(pending, long, FRAME_BYTES)
     assert frames == [b"\x02" * FRAME_BYTES, b"\x02" * FRAME_BYTES]
     rest = b"\x03" * (FRAME_BYTES - 3)
-    done = _take_full_frames(pending, rest, FRAME_BYTES)
+    done = take_frames(pending, rest, FRAME_BYTES)
     assert done == [b"\x02" * 3 + rest]
     assert pending == bytearray()
 

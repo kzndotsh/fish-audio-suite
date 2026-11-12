@@ -29,9 +29,8 @@ import threading
 import time
 from collections.abc import Sequence
 
-from fish_audio_suite_voice.aec import pcm_rms
-from fish_audio_suite_voice.barge import MIC_LEVEL_EVERY_FRAMES
 from fish_audio_suite_voice.mic import SessionMic
+from fish_audio_suite_voice.pcm import MIC_LEVEL_EVERY_FRAMES, pcm_rms
 
 _FULL_SCALE = 32768.0
 _SILENCE_DB = -90.0

@@ -19,6 +19,7 @@ from fish_audio_suite_kit import (
     FISH_RETRY_ATTEMPTS,
     ensure_trace_headers,
     fish_backoff_s,
+    is_header_safe,
 )
 from fish_audio_suite_voice.cancel import is_cancel_noise, quiet_shutdown
 from fish_audio_suite_voice.debug import debug
@@ -83,7 +84,7 @@ class SdkSocket:
         # websocket client raise before Fish can answer, so every later
         # turn fails the same way instead of stopping on 401.
         token = spec.api_key.strip()
-        if not token or any(ord(ch) < 32 or ord(ch) >= 127 for ch in token):
+        if not token or not is_header_safe(token):
             raise AuthenticationError(401, "Invalid Token")
         http = httpx.AsyncClient(
             base_url=spec.base_url,

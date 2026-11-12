@@ -6,8 +6,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from fish_audio_suite_voice.aec import EchoCanceller, FarEndTap, pcm_rms, resample_int16
+from fish_audio_suite_voice.aec import EchoCanceller, FarEndTap, resample_int16
 from fish_audio_suite_voice.floor import AdaptiveFloor
+from fish_audio_suite_voice.pcm import pcm_rms
 from fish_audio_suite_voice.playback import (
     SounddeviceSink,
     dac_slice_bytes,
