@@ -121,6 +121,10 @@ Set `DEEPGRAM_API_KEY`, and install the `deepgram` extra (`uv sync --extra deepg
 
 Install it (`uv sync --extra fish-realtime`, or `pip install 'fish-audio-suite-voice[fish-realtime]'`). It needs no key besides `FISH_API_KEY`.
 
+### With `FISH_VOICE_STT=fish-realtime`, your words appear and then nothing is answered
+
+Run with `--debug` and look for `stt.dropped not the user's turn`. Fish judged the speech to be noise or another voice, and the app does not answer such a turn. In testing this happened to a clip recorded at a very low level and not to the same clip made louder, so keep `FISH_VOICE_AGC` on (the default) and speak closer to the mic.
+
 ### `stt Fish realtime speech to text refused the connection (HTTP 429)`
 
 Your account is at its concurrency limit, which every open Fish request and connection counts toward. That turn is heard with Fish ASR instead. HTTP 401 or 402 means the key was refused or has no credit, and the app stops.
@@ -130,6 +134,8 @@ Your account is at its concurrency limit, which every open Fish request and conn
 The WebSocket could not verify Deepgram's certificate. The connection uses `certifi`'s certificates, so this means `certifi` is missing or a proxy is rewriting TLS. That turn is heard with Fish ASR instead, from the speech already captured.
 
 ### `stt empty Flux was sent N kB (X s of audio) and found no speech`
+
+With `FISH_VOICE_STT=fish-realtime` the line says `Fish was sent`, and means the same.
 
 Flux heard the audio and recognised no words, so it never started a turn. The usual cause is a quiet mic: speech around -50 to -40 dBFS (an rms of roughly 100 to 300) was missed in testing, before the app had automatic gain. Check that the gain is on (see [the quiet mic](#soft-speech-is-missed-or-talking-over-the-bot-does-nothing-because-the-mic-is-quiet)), raise the input volume or the mic's gain, and set `FISH_VOICE_STT_SAVE_DIR=tmp/stt` to save what was sent and listen to it. A `stt noise` line instead means the local gate dropped a knock or a cough before anything was sent. A `stt gave_up` line means Flux returned no words within 1.2 s of streaming starting, so the turn was dropped as noise early, as with repeated taps.
 

@@ -111,7 +111,7 @@ As Fish documents them in October 2026; check Fish's pricing page for today's nu
 | `FISH_VOICE_MIN_VOICED_FRAMES` | `12` (360 ms) | `7` (210 ms) | A one-word answer is about 200 to 250 ms of voice. Lower lets "yes" and "no" through, but some coughs and desk taps reach speech-to-text too, where they usually come back empty |
 | `FISH_VOICE_SPEECH_FRAMES` | `4` (120 ms) | | How long a sound must last before it starts a turn |
 | `FISH_VOICE_STT` | `fish` | `deepgram` | Streams your speech to Deepgram Flux while you talk, which ends the turn by the model's own judgment instead of a fixed silence. Needs the `deepgram` extra and a key. Quiet speech was missed more often than with Fish ASR in testing, and near-homophones can differ |
-| `FISH_VOICE_STT` | `fish` | `fish-realtime` | The same, with Fish's `transcribe-stream-1` (preview) on the Fish key. Needs the `fish-realtime` extra. Not yet measured here |
+| `FISH_VOICE_STT` | `fish` | `fish-realtime` | The same, with Fish's `transcribe-stream-1` (preview) on the Fish key. Needs the `fish-realtime` extra. On one 3 s clip streamed at speaking pace, the first words came back about 0.5 s after the audio started and the turn ended 1.3 to 1.4 s after the speech did (two runs, 2026-11-11). Speech at a very low level was judged not to be the user's and dropped, so keep `FISH_VOICE_AGC` on |
 | `FISH_VOICE_EOT_THRESHOLD` | `0.7` | `0.6` | How sure Flux must be that you have finished. Lower ends turns sooner but may cut in on a long pause. Turns that end at `trigger=manual` waited for the silence timer instead |
 | `FISH_VOICE_EAGER_EOT_THRESHOLD` | `0` (off) | `0.5` | Starts the reply on Flux's early guess, held back until it is confirmed. Faster, and costs 50 to 70 percent more model calls |
 
