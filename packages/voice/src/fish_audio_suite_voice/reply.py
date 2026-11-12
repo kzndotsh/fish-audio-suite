@@ -21,9 +21,11 @@ from fish_audio_suite_kit import (
     make_traceparent,
     normalize_cues,
     scrub_tts,
+    takes_directions,
 )
 from fish_audio_suite_voice.barge import BargeGate
 from fish_audio_suite_voice.cancel import is_cancel_noise, is_own_cancel
+from fish_audio_suite_voice.config import VoiceCliConfig
 from fish_audio_suite_voice.console import end_reply_line
 from fish_audio_suite_voice.debug import debug, warn
 from fish_audio_suite_voice.duplex_state import EXIT_FATAL, DuplexContext
@@ -231,6 +233,17 @@ def after_speech(
     )
 
 
+def _shaped(reply: str, c: VoiceCliConfig) -> str:
+    """Scrub a reply and shape its cues the way the session's TTS model takes them."""
+    directed = takes_directions(c.tts_model)
+    return normalize_cues(
+        scrub_tts(reply, directed=directed),
+        lead=c.mood_lead,
+        official=c.official_cues,
+        directed=directed,
+    )
+
+
 def _keep_for_resume(ctx: DuplexContext, sent: str, result: TtsResult, barge: BargeGate) -> None:
     # A barge-in keeps the clip that tripped it. If that clip turns out to be
     # noise, the rest of the reply is spoken again.
@@ -259,7 +272,7 @@ async def speak_reply(
     """
     c = ctx.config
     scrubbed = ensure_lead_cue(
-        normalize_cues(scrub_tts(reply), lead=c.mood_lead, official=c.official_cues),
+        _shaped(reply, c),
         default="calm",
     )
     if is_tts_junk(scrubbed, drop_narration=c.drop_narration):
@@ -414,7 +427,7 @@ async def stream_turn(
         _keep_for_resume(
             ctx,
             ensure_lead_cue(
-                normalize_cues(scrub_tts(reply), lead=c.mood_lead, official=c.official_cues),
+                _shaped(reply, c),
                 default="calm",
             ),
             result,

@@ -32,6 +32,7 @@ from fish_audio_suite_kit import (
     is_empty_delta,
     should_retry_fish_status,
     split_tts_piece,
+    takes_directions,
 )
 from fish_audio_suite_voice.cancel import is_cancel_noise, reap
 from fish_audio_suite_voice.debug import debug, warn, with_detail
@@ -172,6 +173,8 @@ async def text_events(
     prepared: str,
     cancel: threading.Event,
     partial_chars: int,
+    *,
+    directed: bool = False,
 ) -> AsyncIterator[Any]:
     """Yield Fish text events for a whole reply, then one flush.
 
@@ -184,6 +187,9 @@ async def text_events(
     partial_chars : int
         Passed to ``split_tts_piece``. ``flush_rest`` is True, so the tail
         is not left buffered.
+    directed : bool, optional
+        The model takes each direction where it is written (``takes_directions``), so no
+        mood is carried onto the next sentence. Default False.
 
     Yields
     ------
@@ -204,7 +210,7 @@ async def text_events(
         if is_empty_delta(piece):
             continue
         # A sentence the model wrote without a cue gets the mood the last one had.
-        yield TextEvent(text=carry.apply(piece))
+        yield TextEvent(text=piece if directed else carry.apply(piece))
         sent += 1
     flush = flush_if_sent(sent, cancel)
     if flush is not None:
@@ -289,7 +295,16 @@ async def send_turn(socket: FishSocket, events: AsyncIterator[Any], run: TurnRun
     spec = run.spec
     run.acc.pieces.clear()
     run.acc.tts_first_text_ms = None
-    replay = text_events(run.sent_text, run.cancel, spec.partial_chars) if run.sent_text else events
+    replay = (
+        text_events(
+            run.sent_text,
+            run.cancel,
+            spec.partial_chars,
+            directed=takes_directions(spec.model),
+        )
+        if run.sent_text
+        else events
+    )
     stream = socket.stream(_tee_text_events(replay, run.t0, run.acc), spec)
     await _pump_ws_audio(stream, run, socket.close)
 

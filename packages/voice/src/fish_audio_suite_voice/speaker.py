@@ -28,6 +28,7 @@ from fish_audio_suite_kit import (
     normalize_tts_model,
     scrub_tts,
     strip_base,
+    takes_directions,
     utf8_text,
 )
 from fish_audio_suite_voice.cancel import is_cancel_noise
@@ -119,8 +120,10 @@ def _sdk_volume(volume: float) -> float:
     return min(_SDK_VOLUME_HI, max(_SDK_VOLUME_LO, volume))
 
 
-def _spoken(text: str, *, lead: bool = True, official: bool = False) -> str:
-    return normalize_cues(scrub_tts(text), lead=lead, official=official)
+def _spoken(text: str, *, lead: bool, official: bool, directed: bool) -> str:
+    return normalize_cues(
+        scrub_tts(text, directed=directed), lead=lead, official=official, directed=directed
+    )
 
 
 def _quiet_result(cancelled: bool) -> TtsResult:
@@ -328,7 +331,10 @@ class FishSpeaker:
         ``speak`` calls this on a private loop, which keeps the caller's loop
         free for the LLM.
         """
-        prepared = _spoken(text, lead=self.mood_lead, official=self.official_cues)
+        directed = takes_directions(self.model)
+        prepared = _spoken(
+            text, lead=self.mood_lead, official=self.official_cues, directed=directed
+        )
         # The whole reply is known, so its length is the partial-cut window. A
         # comma then never splits a short tail such as "honey?" off a sentence,
         # which drama-3 speaks with uneven prosody. Sentence ends still
@@ -336,7 +342,7 @@ class FishSpeaker:
         partial = len(prepared) or self.partial_chars
         return await run_turn(
             self._spec(partial_chars=partial),
-            text_events(prepared, cancel, partial),
+            text_events(prepared, cancel, partial, directed=directed),
             sink,
             cancel,
             sent_text=prepared,
@@ -390,6 +396,7 @@ class FishSpeaker:
                 partial_chars=self.partial_chars,
                 mood_lead=self.mood_lead,
                 official=self.official_cues,
+                directed=takes_directions(self.model),
                 early_flush=early_flush,
             ),
             sink,

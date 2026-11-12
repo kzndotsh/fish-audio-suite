@@ -684,3 +684,26 @@ def test_official_mode_maps_invented_cues_while_streaming() -> None:
     assert "smiling" not in text
     assert "storytelling" not in text
     assert "[smiling wider]" in "".join(_streamed_pieces(tokens))  # free mode leaves it
+
+
+def test_a_directed_model_is_streamed_its_directions_and_paired_tags_as_written() -> None:
+    tokens = [
+        "[barely holding it together] I'm fine. ",
+        "It is <emphasis>mine</emphasis>. ",
+        "[shaky breath] Truly.",
+    ]
+
+    async def run(*, directed: bool) -> str:
+        events = delta_events(
+            tokens, threading.Event(), partial_chars=40, official=True, directed=directed
+        )
+        return "".join([event.text async for event in events if isinstance(event, TextEvent)])
+
+    sent = asyncio.run(run(directed=True))
+    assert "[barely holding it together] I'm fine." in sent
+    assert "<emphasis>mine</emphasis>" in sent
+    assert sent.count("[barely holding it together]") == 1  # no mood is carried on
+    assert "[shaky breath] Truly." in sent
+    plain = asyncio.run(run(directed=False))
+    assert "<emphasis>" not in plain
+    assert "[barely holding it together]" not in plain

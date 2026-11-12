@@ -553,3 +553,15 @@ def test_cancel_while_waiting_for_audio_stops_the_pump_at_once() -> None:
     assert not sink.chunks
     # Polling waited up to 0.25 s after the cancel. Now it takes one loop turn.
     assert elapsed < 0.2
+
+
+def test_a_whole_reply_for_a_directed_model_carries_no_mood_between_sentences() -> None:
+    text = "[happy] You sound so relaxed. Just perfect. Truly."
+    cancel = threading.Event()
+
+    async def run(*, directed: bool) -> str:
+        events = text_events(text, cancel, 30, directed=directed)
+        return "".join([event.text async for event in events if isinstance(event, TextEvent)])
+
+    assert asyncio.run(run(directed=True)).count("[happy]") == 1
+    assert asyncio.run(run(directed=False)).count("[happy]") > 1

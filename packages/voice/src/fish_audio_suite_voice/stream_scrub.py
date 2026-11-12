@@ -138,6 +138,7 @@ def _scrub_chunk(
     after: str = "",
     continued: bool = False,
     official: bool = False,
+    directed: bool = False,
 ) -> str:
     """Scrub one stable stream chunk with the text already accepted around it."""
     if not text:
@@ -156,8 +157,9 @@ def _scrub_chunk(
         continued=continued,
         before=before[-1:],
         after=after[:1],
+        directed=directed,
     )
-    spoken = normalize_cues(cleaned, lead=lead, official=official)
+    spoken = normalize_cues(cleaned, lead=lead, official=official, directed=directed)
     if (lead_space or cleaned[:1] == " ") and spoken[:1] != " ":
         spoken = f" {spoken}"
     if (trail_space or cleaned[-1:] == " ") and spoken[-1:] != " ":
@@ -189,9 +191,11 @@ class _StreamScrubber:
         mood_lead: bool,
         early_flush: bool,
         official: bool = False,
+        directed: bool = False,
     ) -> None:
         self._cancel = cancel
         self._official = official
+        self._directed = directed
         self._carry = MoodCarry()
         self._partial_chars = partial_chars
         self._mood_lead = mood_lead
@@ -226,7 +230,8 @@ class _StreamScrubber:
             return
         # Each piece goes to Fish on its own, so a sentence the model wrote without a cue
         # would start cold. It gets the mood the last sentence had.
-        event = _text_event(self._carry.apply(piece))
+        # A directed model takes each direction where it is written, so none is carried on.
+        event = _text_event(piece if self._directed else self._carry.apply(piece))
         if event is None:
             return
         self._sent += 1
@@ -269,6 +274,7 @@ class _StreamScrubber:
                     after=self._raw[:1],
                     continued=bool((self._sent_line + self._ready).strip()),
                     official=self._official,
+                    directed=self._directed,
                 ),
             )
             if self._ready:
@@ -291,6 +297,7 @@ class _StreamScrubber:
                     before=self._ready[-1:] or self._last,
                     continued=bool((self._sent_line + self._ready).strip()),
                     official=self._official,
+                    directed=self._directed,
                 ),
             )
         # A span held until the end can be longer than the send window.
@@ -317,6 +324,7 @@ async def delta_events(
     mood_lead: bool = False,
     early_flush: bool = False,
     official: bool = False,
+    directed: bool = False,
 ) -> AsyncIterator[Any]:
     """Cut model deltas into Fish text events, scrubbing as each span closes.
 
@@ -332,6 +340,10 @@ async def delta_events(
         Rewrite a sentence-leading mood word into a ``[cue]``. Default False.
     official : bool, optional
         Keep only Fish's own cues, mapping or removing the rest. Default False.
+    directed : bool, optional
+        The model is directed in plain language (``takes_directions``): directions and
+        paired tags go through as written, and no mood is carried between sentences.
+        Default False.
     early_flush : bool, optional
         Flush once at the end of the first sentence, so Fish speaks it while
         the model is still writing. Default False. Fish holds text until a
@@ -359,6 +371,7 @@ async def delta_events(
         mood_lead=mood_lead,
         early_flush=early_flush,
         official=official,
+        directed=directed,
     )
     async for tok in as_async(deltas):
         if cancel.is_set():
