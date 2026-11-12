@@ -32,8 +32,8 @@ def test_a_character_file_comes_first_and_keeps_the_voice_rules(
 ) -> None:
     monkeypatch.setenv("FISH_VOICE_SYSTEM_PROMPT_FILE", str(_card(tmp_path, f"\n{CARD}\n\n")))
     config = load_config()
-    assert config.system_prompt == f"{CARD}\n\n{DEFAULT_SYSTEM_PROMPT}"
-    assert config.pin_seed
+    assert config.prompt.text == f"{CARD}\n\n{DEFAULT_SYSTEM_PROMPT}"
+    assert config.prompt.pin_seed
 
 
 def test_a_character_file_still_pins_the_cue_example() -> None:
@@ -47,16 +47,16 @@ def test_an_inline_prompt_is_used_whole_and_gets_no_cue_example(
 ) -> None:
     monkeypatch.setenv("FISH_VOICE_SYSTEM_PROMPT", "Answer in one word.")
     config = load_config()
-    assert config.system_prompt == "Answer in one word."
-    assert not config.pin_seed
-    assert History.opening(config.system_prompt, seed=config.pin_seed, turns=1).pinned == 1
+    assert config.prompt.text == "Answer in one word."
+    assert not config.prompt.pin_seed
+    assert History.opening(config.prompt.text, seed=config.prompt.pin_seed, turns=1).pinned == 1
 
 
 def test_a_blank_inline_prompt_still_means_no_system_prompt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("FISH_VOICE_SYSTEM_PROMPT", "")
-    assert load_config().system_prompt == ""
+    assert load_config().prompt.text == ""
 
 
 def test_the_file_wins_over_the_inline_prompt_and_says_so(
@@ -64,7 +64,7 @@ def test_the_file_wins_over_the_inline_prompt_and_says_so(
 ) -> None:
     monkeypatch.setenv("FISH_VOICE_SYSTEM_PROMPT_FILE", str(_card(tmp_path)))
     monkeypatch.setenv("FISH_VOICE_SYSTEM_PROMPT", "ignored")
-    assert load_config().system_prompt.startswith(CARD)
+    assert load_config().prompt.text.startswith(CARD)
     assert "FISH_VOICE_SYSTEM_PROMPT is ignored" in capsys.readouterr().err
 
 
@@ -86,7 +86,7 @@ def test_an_unusable_file_warns_and_the_default_prompt_is_used(
 ) -> None:
     path = make(tmp_path)
     monkeypatch.setenv("FISH_VOICE_SYSTEM_PROMPT_FILE", str(path))
-    assert load_config().system_prompt == DEFAULT_SYSTEM_PROMPT
+    assert load_config().prompt.text == DEFAULT_SYSTEM_PROMPT
     assert message in capsys.readouterr().err
 
 
@@ -108,7 +108,7 @@ def test_the_cli_flag_loads_the_file_and_a_bad_path_exits_2(
     seen: list[str] = []
 
     async def fake_loop(config: VoiceCliConfig) -> int:
-        seen.append(config.system_prompt)
+        seen.append(config.prompt.text)
         return 0
 
     monkeypatch.setattr("fish_audio_suite_voice.cli.run_loop", fake_loop)
@@ -203,5 +203,5 @@ def test_the_slot_works_through_the_environment_variable(
         "FISH_VOICE_SYSTEM_PROMPT_FILE", str(_card(tmp_path, "{{default_prompt}}\n\n" + CARD))
     )
     config = load_config()
-    assert config.system_prompt == f"{DEFAULT_SYSTEM_PROMPT}\n\n{CARD}"
-    assert config.pin_seed
+    assert config.prompt.text == f"{DEFAULT_SYSTEM_PROMPT}\n\n{CARD}"
+    assert config.prompt.pin_seed

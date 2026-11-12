@@ -1,4 +1,4 @@
-"""The Fish TTS models and modes, what each model can do, and the ranges Fish accepts.
+"""The Fish TTS and ASR models, what each TTS model can do, and the ranges Fish accepts.
 
 Each lookup table is built from its ``literals`` type, so a model or a mode is listed
 once. What a model can do beyond the common cues lives in one row of ``_TRAITS``.
@@ -10,19 +10,15 @@ from dataclasses import dataclass
 from typing import Final, Literal, get_args
 
 from fish_audio_suite_kit._charsets import is_header_safe
-from fish_audio_suite_kit.literals import FishLatency, TtsModel
+from fish_audio_suite_kit.literals import AsrModel, FishLatency, TtsModel
 from fish_audio_suite_kit.urls import is_cloud_base
 
 __all__ = [
-    "CHUNK_LENGTH_CLOUD_HI",
-    "CHUNK_LENGTH_LO",
+    "FISH_ASR_MODEL_IDS",
     "FISH_TTS_MODEL_IDS",
-    "MIN_CHUNK_LENGTH_HI",
-    "MIN_CHUNK_LENGTH_LO",
-    "TTS_SPEED_HI",
-    "TTS_SPEED_LO",
-    "UNIT_INTERVAL_HI",
-    "UNIT_INTERVAL_LO",
+    "PRO_ASR_MODEL",
+    "TTS_RANGES",
+    "TtsRanges",
     "chunk_length_hi",
     "known_latency",
     "known_mp3_bitrate",
@@ -31,20 +27,49 @@ __all__ = [
     "takes_directions",
 ]
 
-CHUNK_LENGTH_LO: Final = 100
-CHUNK_LENGTH_CLOUD_HI: Final = 300
+
+@dataclass(frozen=True, slots=True)
+class TtsRanges:
+    """The values Fish accepts for each TTS number, as ``(lo, hi)`` with both ends included.
+
+    Each field is named after the Fish request field it bounds. A caller clamps with
+    ``clamp_number(value, *TTS_RANGES.speed, default, float)``.
+
+    Attributes
+    ----------
+    speed : tuple of float
+        ``prosody.speed``: 0.5 to 2.
+    temperature : tuple of float
+        0 to 1.
+    top_p : tuple of float
+        0 to 1.
+    early_stop_threshold : tuple of float
+        0 to 1.
+    chunk_length : tuple of int
+        100 to 300, the cloud range. A self-hosted base accepts up to ``chunk_length_hi``.
+    min_chunk_length : tuple of int
+        0 to 100.
+    """
+
+    speed: tuple[float, float] = (0.5, 2.0)
+    temperature: tuple[float, float] = (0.0, 1.0)
+    top_p: tuple[float, float] = (0.0, 1.0)
+    early_stop_threshold: tuple[float, float] = (0.0, 1.0)
+    chunk_length: tuple[int, int] = (100, 300)
+    min_chunk_length: tuple[int, int] = (0, 100)
+
+
+TTS_RANGES: Final = TtsRanges()
 _CHUNK_LENGTH_SELF_HOSTED_HI: Final = 1000
-MIN_CHUNK_LENGTH_LO: Final = 0
-MIN_CHUNK_LENGTH_HI: Final = 100
-TTS_SPEED_LO: Final = 0.5
-TTS_SPEED_HI: Final = 2.0
-UNIT_INTERVAL_LO: Final = 0.0
-UNIT_INTERVAL_HI: Final = 1.0
 # An Opus bitrate of -1000 asks Fish to pick the rate.
 OPUS_AUTO: Final = -1000
 
 FISH_TTS_MODEL_IDS: Final[tuple[TtsModel, ...]] = get_args(TtsModel)
 DEFAULT_TTS_MODEL: Final[TtsModel] = "s2.1-pro"
+
+FISH_ASR_MODEL_IDS: Final[tuple[AsrModel, ...]] = get_args(AsrModel)
+PRO_ASR_MODEL: Final[AsrModel] = "transcribe-1-pro"
+"""The default ASR model, and the only one that takes the speaker and audio-event fields."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,7 +112,8 @@ def chunk_length_hi(fish_base: str) -> int:
     int
         300 for the cloud API, 1000 for self-hosted fish-speech.
     """
-    return CHUNK_LENGTH_CLOUD_HI if is_cloud_base(fish_base) else _CHUNK_LENGTH_SELF_HOSTED_HI
+    cloud_hi = TTS_RANGES.chunk_length[1]
+    return cloud_hi if is_cloud_base(fish_base) else _CHUNK_LENGTH_SELF_HOSTED_HI
 
 
 def normalize_tts_model(name: str) -> str:

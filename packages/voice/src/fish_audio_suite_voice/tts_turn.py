@@ -21,9 +21,7 @@ from fishaudio.types import Model
 
 from fish_audio_suite_kit import (
     FISH_RETRY_ATTEMPTS,
-    describe_request_error,
     ensure_trace_headers,
-    fish_attempt_exhausted,
     is_header_safe,
     should_retry_fish_status,
 )
@@ -48,7 +46,7 @@ from fish_audio_suite_voice.wire import (
     send_turn,
     tts_result,
 )
-from fish_audio_suite_voice.wording import with_detail
+from fish_audio_suite_voice.wording import transport_failure
 
 _WS_TIMEOUT_S: Final = 240.0
 
@@ -147,7 +145,7 @@ class _Turn:
         return self.source
 
 
-async def _one_attempt(turn: _Turn, attempt: int) -> Retry | None:
+async def _one_attempt(turn: _Turn, attempt: int) -> Retry[None] | None:
     """Play one attempt. ``Retry`` asks for another, before any audio; None ends the turn."""
     run = turn.run
     try:
@@ -167,19 +165,26 @@ async def _one_attempt(turn: _Turn, attempt: int) -> Retry | None:
         raise exc.error from None
     except (Exception, BaseExceptionGroup) as exc:  # noqa: BLE001 - turn boundary: classified by turn_failure and reported in the result
         fate = turn_failure(
-            exc,
-            attempt=attempt,
-            sent_text=run.sent_text,
-            got_audio=run.audio.got_audio,
-            cancel=run.cancel,
+            exc, sent_text=run.sent_text, got_audio=run.audio.got_audio, cancel=run.cancel
         )
         await turn.socket.close()
         if fate.retry:
             # The SDK's APIError carries no headers, so a 429's Retry-After cannot be read.
-            return Retry()
-        run.error_status = fate.error_status
-        run.error_message = fate.error_message
+            return Retry(
+                lambda: _record(run, fate.give_up()),
+                on_retry=lambda: warn(
+                    f"[tts] retry status={fate.error_status} "
+                    f"attempt={attempt + 1}/{FISH_RETRY_ATTEMPTS}"
+                ),
+            )
+        _record(run, fate)
     return None
+
+
+def _record(run: TurnRun, fate: TtsFailure) -> None:
+    """Keep a failure the turn ends with, for its result."""
+    run.error_status = fate.error_status
+    run.error_message = fate.error_message
 
 
 def _turn_headers(spec: TurnSpec, sent_text: str) -> dict[str, str]:
@@ -325,11 +330,23 @@ class TtsFailure:
     error_status: int | None = None
     error_message: str | None = None
 
+    def give_up(self) -> TtsFailure:
+        """Report a failure that is not tried again, and return it as final.
+
+        Returns
+        -------
+        TtsFailure
+            The same status and message, with ``retry`` False.
+        """
+        message = self.error_message or ""
+        status = self.error_status
+        warn(f"[tts] {status} {message}" if status is not None else f"[tts] {message}")
+        return TtsFailure(retry=False, error_status=status, error_message=message)
+
 
 def turn_failure(
     exc: BaseException,
     *,
-    attempt: int,
     sent_text: str,
     got_audio: bool,
     cancel: threading.Event,
@@ -340,8 +357,6 @@ def turn_failure(
     ----------
     exc : BaseException
         Error from one attempt. Exception groups are unwrapped to the first real error.
-    attempt : int
-        Zero-based attempt. ``FISH_RETRY_ATTEMPTS - 1`` is the last.
     sent_text : str
         Text available to replay. Empty blocks a retry.
     got_audio : bool
@@ -354,7 +369,8 @@ def turn_failure(
     -------
     TtsFailure
         ``retry`` is True only for a 429, a 5xx, a websocket error or a failed
-        connection, before audio, with text to replay and attempts left.
+        connection, before audio, with text to replay. Whether an attempt is left is
+        ``fish_retries``'s call: it gives up (``TtsFailure.give_up``) after the last.
     """
     root = first_real_error(exc)
     retry, status, message = _classify_fish_exc(root)
@@ -366,14 +382,10 @@ def turn_failure(
         error_message = str(root)
         warn(f"[tts] {error_message}")
         return TtsFailure(retry=False, error_message=error_message)
-    last = fish_attempt_exhausted(attempt)
-    can_replay = bool(sent_text) and not got_audio
-    if retry and not last and can_replay:
-        warn(f"[tts] retry status={status} attempt={attempt + 1}/{FISH_RETRY_ATTEMPTS}")
-        return TtsFailure(retry=True)
-    error_message = message or str(root)
-    warn(f"[tts] {status} {error_message}" if status is not None else f"[tts] {error_message}")
-    return TtsFailure(retry=False, error_status=status, error_message=error_message)
+    fate = TtsFailure(retry=True, error_status=status, error_message=message or str(root))
+    if retry and sent_text and not got_audio:
+        return fate
+    return fate.give_up()
 
 
 def _classify_fish_exc(exc: BaseException) -> tuple[bool, int | None, str]:
@@ -386,6 +398,6 @@ def _classify_fish_exc(exc: BaseException) -> tuple[bool, int | None, str]:
     if isinstance(exc, WebSocketError):
         return True, None, str(exc)
     if isinstance(exc, httpx.RequestError):
-        status, message = describe_request_error(exc, httpx.TimeoutException)
-        return True, status, with_detail(message, exc)
+        failure = transport_failure(exc)
+        return True, failure.status, failure.message
     return False, None, str(exc)

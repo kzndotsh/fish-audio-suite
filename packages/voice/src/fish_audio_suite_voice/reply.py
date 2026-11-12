@@ -12,10 +12,8 @@ from typing import Final
 
 from fish_audio_suite_kit import (
     ChatMessage,
-    FishAuthError,
     elapsed_ms,
     ensure_lead_cue,
-    is_same_utterance,
     is_tts_junk,
     make_traceparent,
 )
@@ -30,7 +28,6 @@ from fish_audio_suite_voice.history import History, with_tone_hint
 from fish_audio_suite_voice.latency import LatencySnapshot
 from fish_audio_suite_voice.playback import PlaybackSink, make_sink
 from fish_audio_suite_voice.portaudio import PortAudioMissingError
-from fish_audio_suite_voice.recognised import BargeIn
 from fish_audio_suite_voice.speculate import Speculation
 from fish_audio_suite_voice.spoken import unspoken_text
 from fish_audio_suite_voice.transports import ChatUnusableError
@@ -224,9 +221,8 @@ def _after_speech(
     instead of starting a new one.
     """
     c = ctx.config
-    history = ctx.chat.history.messages
     notes = ["cancelled" if result.cancelled else "", "no audio" if not result.got_audio else ""]
-    if result.error_status is not None or result.error_message:
+    if result.failed:
         notes.append(f"error={result.error_status} {result.error_message or ''}".strip())
     debug(
         "tts.done spoken={} chars, played {} kB {}",
@@ -234,25 +230,15 @@ def _after_speech(
         result.bytes_played // 1000,
         " ".join(note for note in notes if note),
     )
-    if isinstance(result.error, FishAuthError):
+    if result.fatal:
         return snapshot, ExitCode.FATAL
     if not result.got_audio and result.cancelled:
         notice("  [tts cancelled before audio]")
-    elif not result.got_audio and result.error_status is None and not result.error_message:
+    elif not result.got_audio and not result.failed:
         notice(f"  [tts silent] voice={c.fish_voice_id} model={c.tts_model}")
-    spoken = result.spoken_so_far
-    # The last history row is the user line this reply answers. Saving an
-    # exact copy teaches the next turn to repeat them again.
-    last_user = ctx.chat.history.last_user()
-    if (
-        spoken
-        and (result.got_audio or not result.cancelled)
-        and not is_same_utterance(spoken, last_user)
-    ):
-        if resumes and history and history[-1]["role"] == "assistant":
-            history[-1]["content"] = f"{history[-1]['content']} {spoken}"
-        else:
-            history.append({"role": "assistant", "content": spoken})
+    if result.got_audio or not result.cancelled:
+        # History holds the heard part of the text Fish was sent (``spoken_so_far``).
+        ctx.chat.history.remember_assistant(result.spoken_so_far, resumes=resumes)
     return (
         replace(
             snapshot,
@@ -293,10 +279,10 @@ def _prepared(reply: str, c: VoiceCliConfig) -> str:
 def _keep_for_resume(ctx: DuplexContext, sent: str, result: TtsResult, barge: BargeGate) -> None:
     # A barge-in keeps the clip that tripped it. If that clip turns out to be
     # noise, the rest of the reply is spoken again.
-    if result.cancelled and barge.captured:
+    clip = barge.clip()
+    if result.cancelled and clip is not None:
         ctx.turn_input.carry.keep(
-            BargeIn(barge.captured, barge.resume_at, barge.tune.min_rms),
-            unspoken_text(sent, result.spoken_so_far) if result.got_audio else "",
+            clip, unspoken_text(sent, result.spoken_so_far) if result.got_audio else ""
         )
 
 
@@ -363,7 +349,7 @@ def _end_llm_when_tts_stops(task: asyncio.Future[TtsResult], llm_cancel: asyncio
         task.cancelled()
         or task.exception() is not None
         or task.result().cancelled
-        or isinstance(task.result().error, FishAuthError)
+        or task.result().fatal
     ):
         llm_cancel.set()
 
@@ -470,10 +456,7 @@ async def stream_turn(
         debug("tts.stream empty reply, nothing to speak")
         return snapshot, ExitCode.FATAL if unusable else None
     failed_early = (
-        not result.got_audio
-        and not result.cancelled
-        and (result.error_status is not None or bool(result.error_message))
-        and not isinstance(result.error, FishAuthError)
+        not result.got_audio and not result.cancelled and result.failed and not result.fatal
     )
     if failed_early and reply and not ctx.turn_input.session.quit_requested.is_set():
         debug("tts.stream failed before audio, speaking the finished reply")

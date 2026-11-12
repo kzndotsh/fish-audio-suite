@@ -293,3 +293,36 @@ def test_an_extras_version_bound_is_the_same_in_the_extra_and_the_test_group(
     assert bound(root["dependency-groups"]["test"]) == bound(
         voice["project"]["optional-dependencies"][extra]
     ), f"keep the {package} bound in packages/voice/pyproject.toml and the root test group equal"
+
+
+@cache
+def _layer_rows(contract_id: str) -> list[list[str]]:
+    config = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    for contract in config["tool"]["importlinter"]["contracts"]:
+        if contract["id"] == contract_id:
+            return [[name.strip() for name in row.split(":")] for row in contract["layers"]]
+    pytest.fail(f"pyproject.toml has no import-linter contract {contract_id!r}")
+
+
+@pytest.mark.parametrize(
+    ("contract_id", "package"),
+    [("voice-direction", VOICE_SRC), ("kit-layers", KIT_PACKAGE)],
+)
+def test_every_module_sits_in_exactly_one_row_of_its_layers_contract(
+    contract_id: str, package: Path
+) -> None:
+    """import-linter checks only the modules a layers contract lists; an unlisted one is free."""
+    rows = _layer_rows(contract_id)
+    listed = [name for row in rows for name in row]
+    on_disk = sorted(p.stem for p in package.glob("*.py") if p.stem != "__init__")
+    missing = [name for name in on_disk if name not in listed]
+    twice = sorted({name for name in listed if listed.count(name) > 1})
+    gone = sorted(set(listed) - set(on_disk))
+    assert not missing, (
+        f"{', '.join(missing)} not in any row of {contract_id} in pyproject.toml: "
+        "put each in the lowest row it fits"
+    )
+    assert not twice, f"{', '.join(twice)} in more than one row of {contract_id}"
+    assert not gone, (
+        f"{contract_id} lists {', '.join(gone)}, which is not a module of {package.name}"
+    )

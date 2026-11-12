@@ -24,8 +24,7 @@ import os
 import sys
 from pathlib import Path
 
-from fish_audio_suite_voice import FileSink, FishSpeaker
-from fish_audio_suite_voice.envfile import load_dotenv
+from fish_audio_suite_voice import FileSink, FishSpeaker, load_dotenv
 
 # The repository root: this file lives in `<root>/examples/`.
 ROOT = Path(__file__).resolve().parent.parent

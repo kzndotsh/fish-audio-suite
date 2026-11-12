@@ -14,7 +14,7 @@ __all__ = [
 ]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, kw_only=True)
 class LatencySnapshot:
     """One cascade turn. Times are milliseconds. Never store utterance text.
 
@@ -42,11 +42,6 @@ class LatencySnapshot:
     end_wait_ms : float or None
         The silence the listener waited out after the last word before it sent the
         utterance. None when the recogniser decided the end itself (Deepgram Flux).
-
-    Notes
-    -----
-    The fields keep their order, so a snapshot built by position keeps its
-    meaning; a new field goes last and is not keyword-only.
     """
 
     asr_ms: float | None = None
@@ -55,8 +50,6 @@ class LatencySnapshot:
     tts_first_audio_ms: float | None = None
     voice_to_voice_ms: float | None = None
     trace_id: str | None = None
-    # Last, and deliberately not keyword-only: a caller that builds a snapshot by
-    # position keeps its meaning, and a new field must never shift the old ones.
     first_audio_ms: float | None = None
     end_wait_ms: float | None = None
 
@@ -162,9 +155,9 @@ def session_summary(snapshots: Sequence[LatencySnapshot]) -> str:
     Returns
     -------
     str
-        ``session N turns · since you stopped p50 … p90 …`` and the same for first
-        audio, the LLM's first token and the total, for each one any turn recorded.
-        Empty when there were no turns.
+        ``N turns · since you stopped p50 … p90 …`` and the same for first audio, the
+        LLM's first token and the total, for each one any turn recorded. Empty when there
+        were no turns. A display adds its own label.
     """
     if not snapshots:
         return ""
@@ -174,7 +167,7 @@ def session_summary(snapshots: Sequence[LatencySnapshot]) -> str:
         ("llm first token", [s.llm_first_token_ms for s in snapshots]),
         ("total", [s.voice_to_voice_ms for s in snapshots]),
     ]
-    parts = [f"session {len(snapshots)} turns"]
+    parts = [f"{len(snapshots)} turns"]
     for name, values in fields:
         known = [value for value in values if value is not None]
         if known:
@@ -196,8 +189,8 @@ def turn_summary(snapshot: LatencySnapshot) -> str:
     Returns
     -------
     str
-        ``  ↳ since you stopped … · first audio … · …`` for each time the turn recorded,
-        or empty when it recorded none.
+        ``since you stopped … · first audio … · …`` for each time the turn recorded, or
+        empty when it recorded none. A display adds its own indent or marker.
     """
     fields = [
         ("since you stopped", snapshot.since_stop_ms),
@@ -208,4 +201,4 @@ def turn_summary(snapshot: LatencySnapshot) -> str:
         ("total", snapshot.voice_to_voice_ms),
     ]
     shown = [f"{name} {_seconds(value)}" for name, value in fields if value is not None]
-    return "  ↳ " + " · ".join(shown) if shown else ""
+    return " · ".join(shown)

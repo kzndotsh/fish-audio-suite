@@ -638,6 +638,19 @@ def test_a_fish_error_without_ids_has_only_the_provider_name(
     assert json.loads(bytes(out.body))["error"]["metadata"] == {"provider_name": "fish-audio"}
 
 
+def test_a_deeply_nested_fish_error_body_is_still_a_provider_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # The ids were read with a second JSON parse that raised RecursionError here.
+    out, _client, _sleeps = run_fish_send(
+        monkeypatch, [FakeUpstream(400, b"[" * 20_000, {"x-request-id": "rid-1"})]
+    )
+    assert isinstance(out, JSONResponse)
+    assert out.status_code == 400
+    metadata = json.loads(bytes(out.body))["error"]["metadata"]
+    assert metadata == {"provider_name": "fish-audio", "request_id": "rid-1"}
+
+
 def test_a_transcription_log_names_the_fish_request_id(
     monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:

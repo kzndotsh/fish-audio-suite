@@ -138,6 +138,7 @@ def test_the_early_end_of_turn_is_off_unless_set_and_is_kept_within_flux_limits(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    monkeypatch.setenv("FISH_VOICE_STT", "deepgram")
     assert SttTune.from_env().eager_eot_threshold == 0.0  # off: it costs extra model calls
     monkeypatch.setenv("FISH_VOICE_EAGER_EOT_THRESHOLD", "0.5")
     assert SttTune.from_env().eager_eot_threshold == 0.5
@@ -148,6 +149,20 @@ def test_the_early_end_of_turn_is_off_unless_set_and_is_kept_within_flux_limits(
     monkeypatch.setenv("FISH_VOICE_EOT_THRESHOLD", "0.9")
     assert SttTune.from_env().eager_eot_threshold == 0.85
     assert "FISH_VOICE_EAGER_EOT_THRESHOLD" in capsys.readouterr().err
+
+
+def test_fish_realtime_takes_an_early_threshold_above_deepgrams_without_a_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Fish's realtime recogniser has no threshold: any value above 0 only turns it on.
+    monkeypatch.setenv("FISH_VOICE_STT", "fish-realtime")
+    monkeypatch.setenv("FISH_VOICE_EAGER_EOT_THRESHOLD", "0.85")
+    tune = SttTune.from_env()
+    assert tune.eager_eot_threshold == 0.85
+    assert tune.eager
+    assert capsys.readouterr().err == ""
+    assert SttTune(provider="fish-realtime", eager_eot_threshold=0.85).eager_eot_threshold == 0.85
 
 
 def test_every_streaming_provider_setting_names_a_registered_recogniser() -> None:
@@ -169,8 +184,12 @@ def test_every_streaming_provider_setting_names_a_registered_recogniser() -> Non
         (lambda: DeepgramTune(model="nova-3"), "model"),
         (lambda: DeepgramTune(eot_threshold=0.4), "eot_threshold"),
         (lambda: SttTune(eager_eot_threshold=0.1), "eager_eot_threshold"),
-        # Above the end-of-turn threshold, which caps it.
-        (lambda: SttTune(eager_eot_threshold=0.8), "eager_eot_threshold must be from 0.3 to 0.7"),
+        # Above Deepgram's end-of-turn threshold, which caps it.
+        (
+            lambda: SttTune(provider="deepgram", eager_eot_threshold=0.8),
+            "eager_eot_threshold must be from 0.3 to 0.7",
+        ),
+        (lambda: SttTune(provider="fish-realtime", eager_eot_threshold=0.95), "0.3 to 0.9"),
         (lambda: LlmTune(temperature=2.5), "temperature"),
         (lambda: LlmTune(provider_sort="fastest"), "provider_sort"),
         (lambda: TtsTune(fade_ms=60.0), "fade_ms"),

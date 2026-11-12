@@ -80,11 +80,13 @@ A voice setting belongs to the frozen `*Tune` dataclass of the library class tha
 `config.py` when only the CLI uses it. It is read once, through `env_read`, which warns
 about a bad value and uses the default. Three places change:
 
-1. **The tune's module.** Add a `DEFAULT_*` constant and any bound as a named constant, the
-   field with its docstring entry, the read in `from_env()` (for example
-   `read_int("FISH_VOICE_X", DEFAULT_X, lo=_X_LO, hi=_X_HI)`, or `read_choice(...)` with a
-   tuple of the words and a `Literal` for the field), and the same bounds in
-   `__post_init__` with `check_range`, so a tune built in code is held to them too.
+1. **The tune's module.** Add a `DEFAULT_*` constant, the field with its docstring entry, and
+   the read in `from_env()`. A setting with a range or a list of words is declared once, as
+   `_X = IntSetting("FISH_VOICE_X", DEFAULT_X, lo=..., hi=...)` (or `FloatSetting`, or
+   `ChoiceSetting` with a tuple of the words and a `Literal` for the field): `from_env()` reads
+   it with `_X.read()` and `__post_init__` holds a tune built in code to the same bounds with
+   `_X.check("Tune.x", self.x)`. A setting with no bound is read with `read_flag`, `read_word`
+   or `read_text`.
 2. **The package README's settings table.** One row: the default, backticked (or `on` /
    `off`), and a two-sided range as `lo to hi`.
 3. **`.env.example`.** One commented line with the default, and the range in the comment

@@ -8,10 +8,9 @@ from dataclasses import replace
 from typing import Any
 
 import pytest
-from session_fakes import FakeBackend, barge_clip, make_ctx
+from session_fakes import FakeBackend, ScriptedAsr, ScriptedRecordings, barge_clip, make_ctx
 
 from fish_audio_suite_kit import ChatMessage
-from fish_audio_suite_voice.asr import AsrResult
 from fish_audio_suite_voice.duplex_state import DuplexContext
 from fish_audio_suite_voice.events import EVENTS, Event, ExitCode, Heard
 from fish_audio_suite_voice.heard import HeardLine
@@ -20,8 +19,8 @@ from fish_audio_suite_voice.recognised import NoTurn, StreamFallback, Transcript
 from fish_audio_suite_voice.tune import DeepgramTune, SttProvider, SttTune
 
 
-def _ctx(provider: SttProvider = "deepgram") -> DuplexContext:
-    ctx = make_ctx()
+def _ctx(asr: ScriptedAsr | None = None, provider: SttProvider = "deepgram") -> DuplexContext:
+    ctx = make_ctx(asr=asr)
     return replace(
         ctx,
         config=replace(ctx.config, stt=SttTune(provider=provider, deepgram=DeepgramTune(key="k"))),
@@ -62,8 +61,9 @@ def test_a_streamed_turn_becomes_a_line_and_is_announced(monkeypatch: pytest.Mon
 
 def test_the_default_provider_never_touches_deepgram(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = _stream_returns(monkeypatch, _turn())
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", lambda *_a, **_k: b"")
-    assert asyncio.run(hear_line(_ctx("fish"), "")) == HeardLine("noise")  # the batch path ran
+    ScriptedRecordings(monkeypatch)  # hears nothing
+    heard = asyncio.run(hear_line(_ctx(provider="fish"), ""))
+    assert heard == HeardLine("noise")  # the batch path ran
     assert calls == []
 
 
@@ -72,15 +72,10 @@ def test_when_deepgram_cannot_be_reached_the_turn_is_heard_the_usual_way_from_th
 ) -> None:
     captured = b"\x05\x00" * 200
     _stream_returns(monkeypatch, StreamFallback(((captured, True),), None))
-    recorded: list[bytes] = []
-
-    def record(*_args: Any, carried: StreamFallback, **_kwargs: Any) -> bytes:
-        recorded.append(carried.pcm)
-        return b""
-
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", record)
+    recordings = ScriptedRecordings(monkeypatch)
     assert asyncio.run(hear_line(_ctx(), "")) == HeardLine("noise")
-    assert recorded == [captured]  # the batch path carries on from what was already said
+    # The batch path carries on from what was already said.
+    assert [call["carried"].pcm for call in recordings.calls] == [captured]
 
 
 @pytest.mark.parametrize(
@@ -198,21 +193,12 @@ def test_a_reply_started_early_is_dropped_when_the_turn_turns_out_to_be_nothing(
 
 def _fallback_then_asr(
     monkeypatch: pytest.MonkeyPatch, said: str
-) -> tuple[list[StreamFallback], DuplexContext]:
+) -> tuple[ScriptedRecordings, DuplexContext]:
     fallback = StreamFallback(((b"\x05\x00" * 480, True),), since=77)
     _stream_returns(monkeypatch, fallback)
-    seen: list[StreamFallback] = []
-
-    def record(*_args: Any, carried: StreamFallback, **_kwargs: Any) -> bytes:
-        seen.append(carried)
-        return b"wav"
-
-    async def asr(*_args: object, **_kwargs: object) -> AsrResult:
-        return AsrResult(said)
-
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", record)
-    monkeypatch.setattr("fish_audio_suite_voice.asr.fish_asr", asr)
-    return seen, _ctx()
+    recordings = ScriptedRecordings(monkeypatch, b"wav")
+    ctx = _ctx(ScriptedAsr(monkeypatch, said))
+    return recordings, ctx
 
 
 def test_speech_handed_back_by_a_failed_stream_is_a_fresh_turn_not_an_interruption(
@@ -220,10 +206,12 @@ def test_speech_handed_back_by_a_failed_stream_is_a_fresh_turn_not_an_interrupti
 ) -> None:
     # The fallback used to ride on the barge-in prefix, so "yeah" was taken for "go on" and
     # skipped, and the batch listen read on from "now", losing the frames in between.
-    carried, ctx = _fallback_then_asr(monkeypatch, "Yeah.")
+    recordings, ctx = _fallback_then_asr(monkeypatch, "Yeah.")
     heard = asyncio.run(hear_line(ctx, ""))
     assert (heard.kind, heard.text) == ("line", "Yeah.")
-    assert carried[0].since == 77  # the batch listen reads on from just after the speech
+    assert (
+        recordings.calls[0]["carried"].since == 77
+    )  # the batch listen reads on from just after the speech
 
 
 def test_speech_handed_back_by_a_failed_stream_can_still_be_a_stale_repeat(

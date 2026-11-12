@@ -4,15 +4,21 @@ from __future__ import annotations
 
 import asyncio
 import threading
-import time
+from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
 
 import pytest
-from session_fakes import barge_clip, make_ctx
+from session_fakes import (
+    WAIT_FOR_STOP,
+    AsrReply,
+    Recording,
+    ScriptedAsr,
+    ScriptedRecordings,
+    barge_clip,
+    make_ctx,
+)
 
-from fish_audio_suite_kit import FishHttpError
-from fish_audio_suite_voice.asr import AsrResult
 from fish_audio_suite_voice.duplex_state import DuplexContext
 from fish_audio_suite_voice.events import EVENTS, Event, Heard
 from fish_audio_suite_voice.heard import HeardLine
@@ -26,63 +32,32 @@ from fish_audio_suite_voice.turn_check import (
     wait_frames,
 )
 
-WAIT = "wait"
 
+def _mic(monkeypatch: pytest.MonkeyPatch, *continuations: Recording) -> ScriptedRecordings:
+    """Record ``clip1`` first, then each continuation, then keep listening until stopped.
 
-class ScriptedMic:
-    """``record_utterance`` stand-in. Call 1 is the first clip, later calls are continuations.
-
-    A continuation outcome is the WAV it returns, ``None`` for a recording that heard nothing,
-    or ``WAIT`` for a mic that keeps listening until the caller sets its stop flag.
+    A continuation is the WAV it returns, None for a recording that heard nothing, or
+    ``WAIT_FOR_STOP`` for a mic that keeps listening until the caller sets its stop flag.
     """
-
-    def __init__(self, *continuations: bytes | str | None) -> None:
-        self.calls: list[dict[str, Any]] = []
-        self._script = iter(continuations)
-
-    def __call__(self, device: object, stop: Any, **kwargs: Any) -> bytes | None:
-        self.calls.append({"stop": stop, **kwargs})
-        if len(self.calls) == 1:
-            return b"clip1"
-        outcome = next(self._script, WAIT)
-        if outcome == WAIT:
-            while not stop.is_set():
-                time.sleep(0.001)
-            return None
-        assert isinstance(outcome, bytes) or outcome is None
-        return outcome
+    return ScriptedRecordings(monkeypatch, b"clip1", *continuations, then=WAIT_FOR_STOP)
 
 
-def _asr(monkeypatch: pytest.MonkeyPatch, said: dict[bytes, str | BaseException]) -> list[bytes]:
-    heard: list[bytes] = []
-
-    async def asr(wav: bytes, *_args: object, **_kwargs: object) -> AsrResult:
-        heard.append(wav)
-        outcome = said[wav]
-        if isinstance(outcome, BaseException):
-            raise outcome
-        await asyncio.sleep(0.03)  # the mic keeps listening while the clip is transcribed
-        return AsrResult(outcome)
-
-    monkeypatch.setattr("fish_audio_suite_voice.asr.fish_asr", asr)
-    return heard
+def _asr(
+    monkeypatch: pytest.MonkeyPatch, said: dict[bytes, AsrReply | Callable[[], AsrReply]]
+) -> ScriptedAsr:
+    # The mic keeps listening while each clip is transcribed.
+    return ScriptedAsr(monkeypatch, by_clip=said, delay_s=0.03)
 
 
-def _ctx(**turn: Any) -> DuplexContext:
-    ctx = make_ctx()
+def _ctx(asr: ScriptedAsr, **turn: Any) -> DuplexContext:
+    ctx = make_ctx(asr=asr)
     return replace(ctx, config=replace(ctx.config, turn=TurnTune(enabled=True, **turn)))
 
 
 def _hear(
-    monkeypatch: pytest.MonkeyPatch,
-    ctx: DuplexContext,
-    mic: ScriptedMic,
-    *,
-    last_user: str = "",
-    stop: Any = None,
+    ctx: DuplexContext, *, last_user: str = "", stop: Any = None
 ) -> tuple[HeardLine, list[Event]]:
     seen: list[Event] = []
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", mic)
     unsubscribe = EVENTS.subscribe(seen.append)
     try:
         heard = asyncio.run(asyncio.wait_for(hear_line(ctx, last_user, stop=stop), 5))
@@ -98,11 +73,11 @@ def _said(seen: list[Event]) -> list[str]:
 def test_a_finished_clip_is_answered_on_the_short_silence_and_the_mic_is_closed_again(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    heard_clips = _asr(monkeypatch, {b"clip1": "What time is it?"})
-    mic = ScriptedMic()
-    heard, seen = _hear(monkeypatch, _ctx(), mic)
+    asr = _asr(monkeypatch, {b"clip1": "What time is it?"})
+    mic = _mic(monkeypatch)
+    heard, seen = _hear(_ctx(asr))
     assert (heard.kind, heard.text) == ("line", "What time is it?")
-    assert heard_clips == [b"clip1"]
+    assert asr.clips == [b"clip1"]
     assert _said(seen) == ["What time is it?"]
     first, reopened = mic.calls
     assert first["tune"].end_silence_frames == 12
@@ -115,66 +90,69 @@ def test_the_silence_waited_out_is_counted_from_the_clip_that_ended_the_turn(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     first_ms = 12 * FRAME_MS
-    _asr(monkeypatch, {b"clip1": "What time is it?"})
-    heard, _ = _hear(monkeypatch, _ctx(), ScriptedMic())
+    _mic(monkeypatch)
+    heard, _ = _hear(_ctx(_asr(monkeypatch, {b"clip1": "What time is it?"})))
     assert heard.end_wait_ms == first_ms
-    _asr(monkeypatch, {b"clip1": "I was going to ask, but", b"clip2": "never mind, it is fine."})
-    joined, _ = _hear(monkeypatch, _ctx(), ScriptedMic(b"clip2"))
+    asr = _asr(
+        monkeypatch, {b"clip1": "I was going to ask, but", b"clip2": "never mind, it is fine."}
+    )
+    _mic(monkeypatch, b"clip2")
+    joined, _ = _hear(_ctx(asr))
     assert joined.end_wait_ms == 40 * FRAME_MS  # the continuation's longer silence
 
 
 def test_the_mic_is_already_listening_for_more_while_the_first_clip_is_transcribed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    mic = ScriptedMic()
+    mic = _mic(monkeypatch)
     started_during_asr: list[bool] = []
 
-    async def asr(wav: bytes, *_args: object, **_kwargs: object) -> AsrResult:
-        await asyncio.sleep(0.05)
+    def heard() -> AsrReply:
         started_during_asr.append(len(mic.calls) == 2)
-        return AsrResult("What time is it?")
+        return "What time is it?"
 
-    monkeypatch.setattr("fish_audio_suite_voice.asr.fish_asr", asr)
-    _hear(monkeypatch, _ctx(), mic)
+    _hear(_ctx(ScriptedAsr(monkeypatch, heard, delay_s=0.05)))
     assert started_during_asr == [True]
 
 
 def test_an_unfinished_clip_is_joined_with_its_continuation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    heard_clips = _asr(
+    asr = _asr(
         monkeypatch, {b"clip1": "I was going to ask, but", b"clip2": "never mind, it is fine."}
     )
-    mic = ScriptedMic(b"clip2")
-    heard, seen = _hear(monkeypatch, _ctx(), mic)
+    _mic(monkeypatch, b"clip2")
+    heard, seen = _hear(_ctx(asr))
     assert heard.kind == "line"
     assert heard.text == "I was going to ask, but never mind, it is fine."
-    assert heard_clips == [b"clip1", b"clip2"]
+    assert asr.clips == [b"clip1", b"clip2"]
     assert _said(seen) == [heard.text]  # announced once, as the whole line
 
 
 def test_the_first_words_are_kept_when_nothing_more_is_said(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _asr(monkeypatch, {b"clip1": "Tell me about the"})
-    mic = ScriptedMic(None)
-    heard, _ = _hear(monkeypatch, _ctx(), mic)
+    asr = _asr(monkeypatch, {b"clip1": "Tell me about the"})
+    mic = _mic(monkeypatch, None)
+    heard, _ = _hear(_ctx(asr))
     assert (heard.kind, heard.text) == ("line", "Tell me about the")
     assert len(mic.calls) == 2
 
 
 def test_a_turn_is_extended_no_more_than_the_cap(monkeypatch: pytest.MonkeyPatch) -> None:
-    heard_clips = _asr(
-        monkeypatch, {b"clip1": "First, and", b"clip2": "second, and", b"clip3": "third, and"}
-    )
-    one = ScriptedMic(b"clip2", b"clip3")
-    heard, _ = _hear(monkeypatch, _ctx(max_extensions=1), one)
+    said: dict[bytes, AsrReply | Callable[[], AsrReply]] = {
+        b"clip1": "First, and",
+        b"clip2": "second, and",
+        b"clip3": "third, and",
+    }
+    asr = _asr(monkeypatch, said)
+    one = _mic(monkeypatch, b"clip2", b"clip3")
+    heard, _ = _hear(_ctx(asr, max_extensions=1))
     assert heard.text == "First, and second, and"
-    assert heard_clips == [b"clip1", b"clip2"]
+    assert asr.clips == [b"clip1", b"clip2"]
     assert len(one.calls) == 2  # no mic is opened for a third clip
-    heard_clips.clear()
-    two = ScriptedMic(b"clip2", b"clip3")
-    heard, _ = _hear(monkeypatch, _ctx(max_extensions=2), two)
+    two = _mic(monkeypatch, b"clip2", b"clip3")
+    heard, _ = _hear(_ctx(_asr(monkeypatch, said), max_extensions=2))
     assert heard.text == "First, and second, and third, and"
     assert len(two.calls) == 3
 
@@ -182,37 +160,41 @@ def test_a_turn_is_extended_no_more_than_the_cap(monkeypatch: pytest.MonkeyPatch
 def test_a_continuation_that_is_noise_is_dropped_and_the_first_words_stand(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _asr(monkeypatch, {b"clip1": "I think that,", b"clip2": "Thanks for watching."})
-    heard, _ = _hear(monkeypatch, _ctx(), ScriptedMic(b"clip2"))
+    asr = _asr(monkeypatch, {b"clip1": "I think that,", b"clip2": "Thanks for watching."})
+    _mic(monkeypatch, b"clip2")
+    heard, _ = _hear(_ctx(asr))
     assert heard.text == "I think that,"
 
 
 def test_a_failed_continuation_keeps_the_first_words(monkeypatch: pytest.MonkeyPatch) -> None:
-    _asr(monkeypatch, {b"clip1": "Let me think,", b"clip2": FishHttpError(503, "down")})
-    heard, _ = _hear(monkeypatch, _ctx(), ScriptedMic(b"clip2"))
+    asr = _asr(monkeypatch, {b"clip1": "Let me think,", b"clip2": 503})
+    _mic(monkeypatch, b"clip2")
+    heard, _ = _hear(_ctx(asr))
     assert (heard.kind, heard.text) == ("line", "Let me think,")
 
 
 def test_a_failed_first_clip_is_listened_for_again(monkeypatch: pytest.MonkeyPatch) -> None:
-    _asr(monkeypatch, {b"clip1": FishHttpError(503, "down")})
-    heard, _ = _hear(monkeypatch, _ctx(), ScriptedMic())
+    asr = _asr(monkeypatch, {b"clip1": 503})
+    _mic(monkeypatch)
+    heard, _ = _hear(_ctx(asr))
     assert heard.kind == "again"
 
 
 def test_a_filler_the_speaker_goes_on_from_is_not_dropped_as_noise(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _asr(monkeypatch, {b"clip1": "Um,", b"clip2": "can you open the door?"})
-    heard, _ = _hear(monkeypatch, _ctx(), ScriptedMic(b"clip2"))
+    asr = _asr(monkeypatch, {b"clip1": "Um,", b"clip2": "can you open the door?"})
+    _mic(monkeypatch, b"clip2")
+    heard, _ = _hear(_ctx(asr))
     assert (heard.kind, heard.text) == ("line", "Um, can you open the door?")
 
 
 def test_a_quit_word_the_speaker_trails_off_on_still_ends_the_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _asr(monkeypatch, {b"clip1": "Goodbye,"})
-    mic = ScriptedMic(None)
-    heard, _ = _hear(monkeypatch, _ctx(), mic)
+    asr = _asr(monkeypatch, {b"clip1": "Goodbye,"})
+    mic = _mic(monkeypatch, None)
+    heard, _ = _hear(_ctx(asr))
     assert heard.kind == "bye"
     assert len(mic.calls) == 2  # it waited for more first
 
@@ -220,13 +202,12 @@ def test_a_quit_word_the_speaker_trails_off_on_still_ends_the_session(
 def test_quit_while_waiting_for_a_continuation_is_a_bye_and_nothing_is_answered(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ctx = _ctx()
-    _asr(monkeypatch, {b"clip1": "I wanted to say that,"})
-    mic = ScriptedMic(WAIT)
+    ctx = _ctx(_asr(monkeypatch, {b"clip1": "I wanted to say that,"}))
+    mic = _mic(monkeypatch, WAIT_FOR_STOP)
     timer = threading.Timer(0.2, ctx.turn_input.session.quit_requested.set)
     timer.start()
     try:
-        heard, seen = _hear(monkeypatch, ctx, mic)
+        heard, seen = _hear(ctx)
     finally:
         timer.cancel()
     assert heard.kind == "bye"
@@ -237,12 +218,13 @@ def test_quit_while_waiting_for_a_continuation_is_a_bye_and_nothing_is_answered(
 def test_a_mute_or_typed_line_while_waiting_drops_the_turn_without_announcing_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _asr(monkeypatch, {b"clip1": "I wanted to say that,"})
+    asr = _asr(monkeypatch, {b"clip1": "I wanted to say that,"})
+    _mic(monkeypatch, WAIT_FOR_STOP)
     interrupt = threading.Event()
     timer = threading.Timer(0.2, interrupt.set)
     timer.start()
     try:
-        heard, seen = _hear(monkeypatch, _ctx(), ScriptedMic(WAIT), stop=interrupt)
+        heard, seen = _hear(_ctx(asr), stop=interrupt)
     finally:
         timer.cancel()
     assert heard.kind == "noise"
@@ -250,22 +232,20 @@ def test_a_mute_or_typed_line_while_waiting_drops_the_turn_without_announcing_it
 
 
 def test_a_muted_mic_is_not_reopened_for_a_continuation(monkeypatch: pytest.MonkeyPatch) -> None:
-    ctx = _ctx()
+    ctx = _ctx(_asr(monkeypatch, {b"clip1": "I wanted to say that,"}))
     ctx = replace(ctx, turn_input=replace(ctx.turn_input, muted=lambda: True))
-    _asr(monkeypatch, {b"clip1": "I wanted to say that,"})
-    mic = ScriptedMic()
-    heard, _ = _hear(monkeypatch, ctx, mic)
+    mic = _mic(monkeypatch)
+    heard, _ = _hear(ctx)
     assert (heard.kind, heard.text) == ("line", "I wanted to say that,")
     assert len(mic.calls) == 1
 
 
 def test_a_barge_in_clip_goes_to_the_first_recording_only(monkeypatch: pytest.MonkeyPatch) -> None:
-    ctx = _ctx()
+    ctx = _ctx(_asr(monkeypatch, {b"clip1": "Wait,", b"clip2": "stop that please."}))
     clip = barge_clip(b"pcm")
     ctx.turn_input.carry.keep(clip, "")
-    _asr(monkeypatch, {b"clip1": "Wait,", b"clip2": "stop that please."})
-    mic = ScriptedMic(b"clip2")
-    heard, _ = _hear(monkeypatch, ctx, mic)
+    mic = _mic(monkeypatch, b"clip2")
+    heard, _ = _hear(ctx)
     assert heard.text == "Wait, stop that please."
     assert mic.calls[0]["carried"] == clip
     assert "carried" not in mic.calls[1]
@@ -275,20 +255,18 @@ def test_a_barge_in_clip_goes_to_the_first_recording_only(monkeypatch: pytest.Mo
 def test_a_joined_line_is_not_taken_for_a_stale_copy_of_the_last_one(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _asr(monkeypatch, {b"clip1": "Tell me a story,", b"clip2": "tell me a story."})
-    heard, _ = _hear(
-        monkeypatch, _ctx(), ScriptedMic(b"clip2"), last_user="Tell me a story, tell me a story."
-    )
+    asr = _asr(monkeypatch, {b"clip1": "Tell me a story,", b"clip2": "tell me a story."})
+    _mic(monkeypatch, b"clip2")
+    heard, _ = _hear(_ctx(asr), last_user="Tell me a story, tell me a story.")
     assert heard.kind == "line"
 
 
 def test_the_check_off_keeps_one_clip_with_the_ordinary_silence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _asr(monkeypatch, {b"clip1": "I was going to say that, but"})
-    ctx = make_ctx()
-    mic = ScriptedMic()
-    heard, _ = _hear(monkeypatch, ctx, mic)
+    ctx = make_ctx(asr=_asr(monkeypatch, {b"clip1": "I was going to say that, but"}))
+    mic = _mic(monkeypatch)
+    heard, _ = _hear(ctx)
     assert (heard.kind, heard.text) == ("line", "I was going to say that, but")
     assert len(mic.calls) == 1
     assert mic.calls[0]["tune"].end_silence_frames == 40
@@ -299,17 +277,9 @@ def test_a_failed_mic_reopen_is_fatal_like_a_failed_first_open(
 ) -> None:
     from fish_audio_suite_voice.portaudio import PortAudioMissingError
 
-    _asr(monkeypatch, {b"clip1": "I wanted to say that,"})
-    calls: list[int] = []
-
-    def mic(*_args: object, **_kwargs: object) -> bytes | None:
-        calls.append(1)
-        if len(calls) == 1:
-            return b"clip1"
-        raise PortAudioMissingError("gone")
-
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", mic)
-    heard = asyncio.run(asyncio.wait_for(hear_line(_ctx(), ""), 5))
+    asr = _asr(monkeypatch, {b"clip1": "I wanted to say that,"})
+    ScriptedRecordings(monkeypatch, b"clip1", PortAudioMissingError("gone"))
+    heard = asyncio.run(asyncio.wait_for(hear_line(_ctx(asr), ""), 5))
     assert heard.kind == "fatal"
 
 

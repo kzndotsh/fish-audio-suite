@@ -34,7 +34,14 @@ test = [
 testpaths = ["packages", "tests"]
 # Shared test helpers live next to the tests under unique module names, so two
 # packages can never both claim a package called "tests".
-pythonpath = ["packages/kit/tests", "packages/proxy/tests", "packages/voice/tests", "scripts", "examples"]
+pythonpath = [
+    "packages/kit/tests",
+    "packages/proxy/tests",
+    "packages/voice/tests",
+    "tests",
+    "scripts",
+    "examples",
+]
 markers = [
     "perf: timing guards. A slow runner can trip them, so run `-m 'not perf'` to skip them.",
 ]
@@ -312,7 +319,7 @@ forbidden_modules = [
 
 [[tool.importlinter.contracts]]
 id = "voice-direction"
-name = "voice imports point down: the CLI, the session and the screen, a turn, capture and speech, adapters, then settings, events and logging"
+name = "voice imports point down: the CLI, the session and the screen, a turn, capture and speech, adapters, turn and audio logic, then settings, events and logging"
 type = "layers"
 containers = ["fish_audio_suite_voice"]
 # Each row may import the rows below it, never the rows above. Modules in one row may
@@ -323,7 +330,8 @@ layers = [
     "reply : hearing : streaming : inputs",
     "listen : barge : speaker : duplex_state : speculate : tts_turn",
     "mic : wire : llm : playback : transports : recognisers : deepgram : fish_realtime : turn_stream : asr : aec",
-    "config : tune : llm_tune : tts_tune : env_read : events : signals : heard : latency : console_sink : session_view : debug : log_format : log_file : log_setup : wording : envfile : cancel : ws_tap : log_meta : declick : audio_chain : floor : history : pause : tts_text : pcm : portaudio : playback_kind : vad : scorer : loudness : spoken : turn_check : recognised",
+    "heard : recognised : turn_check : history : scorer : floor : vad : tts_text : spoken : audio_chain : declick : loudness",
+    "config : tune : llm_tune : tts_tune : env_read : playback_kind : envfile : events : signals : latency : console_sink : session_view : debug : log_format : log_file : log_setup : log_meta : ws_tap : wording : cancel : pause : pcm : portaudio",
 ]
 
 [tool.basedpyright]

@@ -48,6 +48,7 @@ def test_the_root_exports_the_types_public_signatures_use() -> None:
         "Mic",
         "ChatBackend",
         "PlaybackKind",
+        "load_dotenv",
     ):
         assert name in voice.__all__, name
         assert getattr(voice, name) is not None

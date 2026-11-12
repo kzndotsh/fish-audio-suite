@@ -30,6 +30,7 @@ from fish_audio_suite_voice.config import (
 from fish_audio_suite_voice.console_sink import ConsoleSink, console_print
 from fish_audio_suite_voice.debug import DebugLevel, debug_level, warn
 from fish_audio_suite_voice.duplex import duplex_turns
+from fish_audio_suite_voice.duplex_state import session_speaker
 from fish_audio_suite_voice.envfile import apply_cli_env_files
 from fish_audio_suite_voice.events import EVENTS, ExitCode
 from fish_audio_suite_voice.inputs import LiveInput
@@ -41,7 +42,7 @@ from fish_audio_suite_voice.log_setup import (
     mirror_conversation,
 )
 from fish_audio_suite_voice.playback import FileSink, duplex_playback_problem
-from fish_audio_suite_voice.playback_kind import playback_key
+from fish_audio_suite_voice.playback_kind import PlaybackKind, playback_key
 from fish_audio_suite_voice.portaudio import parse_device
 from fish_audio_suite_voice.recognisers import recogniser_problem
 from fish_audio_suite_voice.signals import DuplexSession
@@ -53,8 +54,6 @@ from fish_audio_suite_voice.wording import short_model
 from fish_audio_suite_voice.ws_tap import install_fish_ws_tap
 
 __all__ = [
-    "apply_cli_env_files",
-    "load_config",
     "main",
     "run_loop",
     "smoke_test",
@@ -97,17 +96,6 @@ def _preflight(
     return None
 
 
-def _fish_tts(c: VoiceCliConfig) -> FishSpeaker:
-    return FishSpeaker(
-        api_key=c.fish_api_key,
-        voice_id=c.fish_voice_id,
-        model=c.tts_model,
-        tune=c.tts,
-        cue_style=c.cue_style,
-        base_url=c.fish_base,
-    )
-
-
 async def smoke_test(c: VoiceCliConfig, out: Path | None = None) -> int:
     """Speak one line to a WAV file. Does not open the microphone.
 
@@ -133,7 +121,7 @@ async def smoke_test(c: VoiceCliConfig, out: Path | None = None) -> int:
             prefix="fish-audio-suite-smoke-", suffix=".wav", delete=False
         ) as handle:
             out = Path(handle.name)
-    tts = _fish_tts(c)
+    tts = session_speaker(c)
     sink = FileSink(out, sample_rate=c.tts.sample_rate, wav=True)
     result = tts.speak("Hello there.", sink)
     if result.error_status is not None:
@@ -166,7 +154,7 @@ def _start(c: VoiceCliConfig) -> _Runtime | None:
     if _preflight(c) is not None:
         return None
     return _Runtime(
-        config=c, tts=_fish_tts(c), device=parse_device(c.device), session=DuplexSession()
+        config=c, tts=session_speaker(c), device=parse_device(c.device), session=DuplexSession()
     )
 
 
@@ -302,7 +290,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--playback",
         default=None,
-        help="sounddevice | file | stdout | mpv (overrides FISH_VOICE_PLAYBACK)",
+        help=f"{' | '.join(PlaybackKind)} (overrides FISH_VOICE_PLAYBACK)",
     )
     p.add_argument(
         "--prompt-file",
@@ -415,7 +403,7 @@ def main(argv: list[str] | None = None) -> int:
         prompt = prompt_from_file(str(args.prompt_file), required=True)
         if prompt is None:
             return ExitCode.FATAL
-        c = replace(c, system_prompt=prompt.text, pin_seed=prompt.pin_seed)
+        c = replace(c, prompt=prompt)
 
     if args.smoke:
         try:

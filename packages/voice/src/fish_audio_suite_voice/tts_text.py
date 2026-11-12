@@ -17,7 +17,15 @@ from typing import Any, Final
 
 from fishaudio import FlushEvent, TextEvent
 
-from fish_audio_suite_kit import CueStyle, MoodCarry, ends_sentence, split_tts_piece
+from fish_audio_suite_kit import (
+    EMPHASIS_MARKS,
+    SENTENCE_AND_CLAUSE_MARKS,
+    CueStyle,
+    MoodCarry,
+    ends_sentence,
+    fold_line_breaks,
+    split_tts_piece,
+)
 
 __all__ = [
     "WholeText",
@@ -174,18 +182,7 @@ def _at_line_start(ready: str) -> bool:
 
 # A closer split from its word ("words" then "** ") is not an operator.
 # " * " still is: the mark does not start the chunk.
-_ORPHAN_CLOSER_RE: Final = re.compile(r"^[*_`~]+(?=\s)")
-
-
-def _fold_stream_breaks(text: str) -> str:
-    # A carriage return or a Unicode line separator is a newline only after
-    # scrub. Until then the next mood looks mid-sentence and is spoken.
-    return (
-        text.replace("\r\n", "\n")
-        .replace("\r", "\n")
-        .replace("\u2028", "\n")
-        .replace("\u2029", "\n")
-    )
+_ORPHAN_CLOSER_RE: Final = re.compile(rf"^[{re.escape(EMPHASIS_MARKS)}]+(?=\s)")
 
 
 def _glue_sentence_stop(ready: str, piece: str) -> str:
@@ -193,7 +190,7 @@ def _glue_sentence_stop(ready: str, piece: str) -> str:
     # The period arrives next, and Fish says "door" and then "dot".
     if (
         piece
-        and piece[0] in ".!?…。！？,;:，；："
+        and piece[0] in SENTENCE_AND_CLAUSE_MARKS
         and ready[-1:].isspace()
         and ready[-1:] not in "\n\r"
     ):
@@ -251,7 +248,7 @@ def _shape_chunk(
         text,
         line_start=line_start,
         continued=continued,
-        before=before[-1:],
+        before=before,
         after=after[:1],
         sentence_start=sentence_start,
     )
@@ -339,7 +336,7 @@ class _StreamShaper:
                 self._style,
                 sentence_start=sentence_start,
                 line_start=_at_line_start(accepted),
-                before=self._ready[-1:] or self._last,
+                before=accepted or self._last,
                 after=after,
                 continued=bool(accepted.strip()),
             ),
@@ -349,7 +346,9 @@ class _StreamShaper:
         """Take one model token and yield the events it makes ready."""
         # A space-only token is not a TextEvent, but it is the boundary
         # between words. Dropping it here joins those words.
-        self._raw = _fold_stream_breaks(self._raw + tok)
+        # A carriage return or a Unicode line separator is a newline only after
+        # scrub. Until then the next mood looks mid-sentence and is spoken.
+        self._raw = fold_line_breaks(self._raw + tok)
         # The line already sent counts too: once a piece leaves, ``ready`` is empty
         # and a mood word inside a long sentence would look like a new one.
         sentence_start = not _continues_sentence(self._sent_line + self._ready, self._raw)

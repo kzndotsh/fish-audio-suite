@@ -6,21 +6,21 @@ import asyncio
 import copy
 from collections.abc import AsyncIterator
 from dataclasses import replace
-from typing import Any
 
 import pytest
 from session_fakes import (
-    ScriptedHearing,
+    ScriptedAsr,
+    ScriptedRecordings,
+    ScriptedTurns,
     make_config,
     make_ctx,
     quick_config,
     run_session,
     speak_with_fakes,
 )
-from voice_fakes import install_audio
+from voice_fakes import install_gate
 
 from fish_audio_suite_kit import ChatMessage, normalize_cues, scrub_tts
-from fish_audio_suite_voice.asr import AsrResult
 from fish_audio_suite_voice.hearing import HeardLine, hear_line
 from fish_audio_suite_voice.history import with_tone_hint
 from fish_audio_suite_voice.speaker import FishSpeaker
@@ -34,48 +34,30 @@ HISTORY: list[ChatMessage] = [
 ]
 
 
-def _asr(monkeypatch: pytest.MonkeyPatch, *results: AsrResult) -> list[dict[str, Any]]:
-    calls: list[dict[str, Any]] = []
-    queue = iter(results)
-
-    async def asr(wav: bytes, *_args: object, **kwargs: object) -> AsrResult:
-        calls.append(dict(kwargs))
-        return next(queue)
-
-    monkeypatch.setattr("fish_audio_suite_voice.asr.fish_asr", asr)
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", lambda *_a, **_k: b"w")
-    return calls
-
-
 def test_the_heard_line_carries_the_tone_and_the_clean_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls = _asr(monkeypatch, AsrResult("tell me a joke", ("laughter", "tired")))
-    ctx = make_ctx()
+    ScriptedRecordings(monkeypatch, b"w")
+    ctx = make_ctx(asr=ScriptedAsr(monkeypatch, "[laughter] tell me a joke [tired]"))
     ctx = replace(ctx, config=replace(ctx.config, hear_tone=True))
     heard = asyncio.run(hear_line(ctx, ""))
     assert (heard.text, heard.tone) == ("tell me a joke", ("laughter", "tired"))
-    assert calls[0]["hear_tone"] is True
 
 
 def test_tone_is_not_asked_for_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    calls = _asr(monkeypatch, AsrResult("tell me a joke"))
-    heard = asyncio.run(hear_line(make_ctx(), ""))
-    assert heard.tone == ()
-    assert calls[0]["hear_tone"] is False
+    ScriptedRecordings(monkeypatch, b"w")
+    ctx = make_ctx(asr=ScriptedAsr(monkeypatch, "[laughter] tell me a joke"))
+    heard = asyncio.run(hear_line(ctx, ""))
+    assert (heard.text, heard.tone) == ("tell me a joke", ())
 
 
 def test_tone_from_every_clip_of_a_turn_reaches_the_line(monkeypatch: pytest.MonkeyPatch) -> None:
-    _asr(
+    asr = ScriptedAsr(
         monkeypatch,
-        AsrResult("tell me, and", ("tired",)),
-        AsrResult("then a joke.", ("laughter", "tired")),
+        by_clip={b"c1": "[tired] tell me, and", b"c2": "[laughter] then a joke. [tired]"},
     )
-    clips = iter([b"c1", b"c2"])
-    monkeypatch.setattr(
-        "fish_audio_suite_voice.hearing.record_utterance", lambda *_a, **_k: next(clips, None)
-    )
-    ctx = make_ctx()
+    ScriptedRecordings(monkeypatch, b"c1", b"c2", then=None)
+    ctx = make_ctx(asr=asr)
     ctx = replace(ctx, config=replace(ctx.config, hear_tone=True, turn=TurnTune(enabled=True)))
     heard = asyncio.run(hear_line(ctx, ""))
     assert heard.text == "tell me, and then a joke."
@@ -121,23 +103,18 @@ def test_the_model_is_told_the_tone_for_that_turn_and_history_keeps_the_plain_li
         yield "Okay."
 
     tts = FishSpeaker(api_key="k", voice_id="voice")
-    install_audio(monkeypatch)
+    install_gate(monkeypatch)
     speak_with_fakes(monkeypatch, tts, stream=stream)
-    loop = ScriptedHearing(
-        monkeypatch,
+    source = ScriptedTurns(
         HeardLine("line", text="tell me a joke", tone=("laughter",)),
         HeardLine("line", text="another one"),
     )
-    assert run_session(quick_config(stream=stream), tts, tokens) == 0
+    assert run_session(quick_config(stream=stream), tts, tokens, source=source) == 0
     assert "laughter" in asked[0][-1]["content"]
     assert asked[0][-1]["content"].startswith("tell me a joke")
-    # The next request has no memory of the note, and nor does the history.
+    # The next request has no memory of the note, and nor does the history it is sent.
     assert all("laughter" not in m["content"] for m in asked[1])
-    assert loop.ctx is not None
-    assert all("laughter" not in m["content"] for m in loop.ctx.chat.history.messages)
-    assert "tell me a joke" in [
-        m["content"] for m in loop.ctx.chat.history.messages if m["role"] == "user"
-    ]
+    assert "tell me a joke" in [m["content"] for m in asked[1] if m["role"] == "user"]
 
 
 def test_the_default_config_has_the_tone_off() -> None:

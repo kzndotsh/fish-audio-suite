@@ -54,12 +54,8 @@ def test_a_whole_turn_folds_into_the_view_a_screen_shows() -> None:
     )
     assert view == SessionView(
         state=SessionState.IDLE,
-        heard="tell me a story",
         reply="Once upon a time.",
         last_turn=snapshot,
-        turns=1,
-        mic_rms=300.0,
-        mic_need=200.0,
     )
 
 
@@ -92,9 +88,8 @@ def test_the_end_of_the_reply_replaces_what_was_streamed() -> None:
     assert view.reply == "[calm] Hi there"
 
 
-def test_notices_and_the_end_of_the_session_are_kept() -> None:
+def test_the_end_of_the_session_is_kept() -> None:
     view = _fold(Notice("[llm 429, retrying in 4s]"), Bye(ExitCode.FATAL))
-    assert view.last_notice == "[llm 429, retrying in 4s]"
     assert view.exit_code == 2
     assert view.state is SessionState.IDLE
     assert SessionView().exit_code is None
@@ -291,5 +286,5 @@ def test_the_turn_summary_leads_with_the_wait_since_the_last_word() -> None:
     from fish_audio_suite_voice.latency import turn_summary
 
     line = turn_summary(LatencySnapshot(first_audio_ms=900.0, end_wait_ms=360.0))
-    assert line.startswith("  ↳ since you stopped 1.26s · first audio 0.90s")
+    assert line.startswith("since you stopped 1.26s · first audio 0.90s")
     assert "since you stopped" not in turn_summary(LatencySnapshot(first_audio_ms=900.0))

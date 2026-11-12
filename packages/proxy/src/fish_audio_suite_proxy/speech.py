@@ -11,13 +11,7 @@ from typing import Any, Final, TypedDict
 import ormsgpack
 
 from fish_audio_suite_kit import (
-    CHUNK_LENGTH_LO,
-    MIN_CHUNK_LENGTH_HI,
-    MIN_CHUNK_LENGTH_LO,
-    TTS_SPEED_HI,
-    TTS_SPEED_LO,
-    UNIT_INTERVAL_HI,
-    UNIT_INTERVAL_LO,
+    TTS_RANGES,
     AudioFormat,
     CueStyle,
     FishLatency,
@@ -295,15 +289,13 @@ def _fish_tts_payload(
         "latency": controls.latency,
         "temperature": clamp_number(
             _body_float(body, "temperature", defaults.temperature),
-            UNIT_INTERVAL_LO,
-            UNIT_INTERVAL_HI,
+            *TTS_RANGES.temperature,
             defaults.temperature,
             float,
         ),
         "top_p": clamp_number(
             _body_float(body, "top_p", defaults.top_p),
-            UNIT_INTERVAL_LO,
-            UNIT_INTERVAL_HI,
+            *TTS_RANGES.top_p,
             defaults.top_p,
             float,
         ),
@@ -326,8 +318,7 @@ def _fish_tts_payload(
         ),
         "early_stop_threshold": clamp_number(
             _body_float(body, "early_stop_threshold", defaults.early_stop_threshold),
-            UNIT_INTERVAL_LO,
-            UNIT_INTERVAL_HI,
+            *TTS_RANGES.early_stop_threshold,
             defaults.early_stop_threshold,
             float,
         ),
@@ -400,21 +391,21 @@ def _speech_controls(body: dict[str, Any], settings: ProxySettings) -> SpeechCon
     raw_speed = _body_float(body, "speed", _REQUEST_SPEED) * defaults.speed
     return SpeechControls(
         model=resolve_tts_model(body.get("model"), defaults.tts_model, settings.model_aliases),
-        speed=clamp_number(raw_speed, TTS_SPEED_LO, TTS_SPEED_HI, defaults.speed, float),
+        speed=clamp_number(raw_speed, *TTS_RANGES.speed, defaults.speed, float),
         fmt=_read_format(body, settings.tts_format),
         latency=_read_latency(body, defaults.latency),
         chunk_length=_clamped_int(
             body,
             "chunk_length",
-            lo=CHUNK_LENGTH_LO,
+            lo=TTS_RANGES.chunk_length[0],
             hi=chunk_length_hi(defaults.fish_base),
             default=defaults.chunk_length,
         ),
         min_chunk_length=_clamped_int(
             body,
             "min_chunk_length",
-            lo=MIN_CHUNK_LENGTH_LO,
-            hi=MIN_CHUNK_LENGTH_HI,
+            lo=TTS_RANGES.min_chunk_length[0],
+            hi=TTS_RANGES.min_chunk_length[1],
             default=defaults.min_chunk_length,
         ),
     )

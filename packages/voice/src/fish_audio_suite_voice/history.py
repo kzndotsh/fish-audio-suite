@@ -13,9 +13,7 @@ from typing import Final, Self
 from fish_audio_suite_kit import DEFAULT_SEED_EXCHANGE, ChatMessage, is_same_utterance
 
 __all__ = [
-    "KEEP_SYSTEM",
     "History",
-    "trim_history",
     "with_tone_hint",
 ]
 
@@ -56,7 +54,7 @@ class History:
             The system prompt for this session.
         seed : bool
             Pin one opening exchange with cues after the system message, because the model
-            copies the pattern of the replies it sees. ``VoiceCliConfig.pin_seed`` decides
+            copies the pattern of the replies it sees. ``config.SystemPrompt.pin_seed`` decides
             it: the default prompt and a character file (which keeps the voice rules) get
             it, and a prompt written out in full does not, so it stays in control of how
             the model replies.
@@ -118,6 +116,31 @@ class History:
         else:
             messages.append({"role": "user", "content": text})
         trim_history(messages, self.turns, self.pinned)
+
+    def remember_assistant(self, spoken: str, *, resumes: bool = False) -> None:
+        """Record what the user heard of a reply.
+
+        Parameters
+        ----------
+        spoken : str
+            The part of the reply that was heard. Empty records nothing.
+        resumes : bool, optional
+            The rest of a reply a false barge-in cut off: it joins the last assistant
+            message instead of starting a new one.
+
+        Notes
+        -----
+        A reply that only repeats the line it answers is not recorded: saved, it would teach
+        the next turn to repeat the user again. Nothing is trimmed here; the next user line
+        trims.
+        """
+        if not spoken or is_same_utterance(spoken, self.last_user()):
+            return
+        messages = self.messages
+        if resumes and messages and messages[-1]["role"] == "assistant":
+            messages[-1]["content"] = f"{messages[-1]['content']} {spoken}"
+        else:
+            messages.append({"role": "assistant", "content": spoken})
 
 
 def with_tone_hint(history: list[ChatMessage], tone: tuple[str, ...]) -> list[ChatMessage]:

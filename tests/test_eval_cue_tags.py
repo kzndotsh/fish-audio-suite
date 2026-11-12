@@ -2,18 +2,15 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
-from collections.abc import AsyncGenerator, AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import eval_cue_tags
-import eval_models
 import pytest
+from chat_fakes import install_chat
 
 from fish_audio_suite_kit import DEFAULT_SYSTEM_PROMPT, ChatMessage
-from fish_audio_suite_voice.llm_tune import LlmTune
 
 
 def test_cues_are_listed_as_written_and_as_fish_is_sent_them() -> None:
@@ -90,42 +87,20 @@ def test_the_built_in_lines_are_distinct() -> None:
     assert len(set(eval_cue_tags.LINES)) == len(eval_cue_tags.LINES) >= 8
 
 
-class _FakeBackend:
-    """Answers with one mood under the default prompt, and a different one per line otherwise."""
-
-    def __init__(self, model: str) -> None:
-        self.model = model
-
-    async def stream(
-        self,
-        messages: list[ChatMessage],
-        *,
-        cancel: asyncio.Event | None = None,
-        trace_id: str | None = None,
-    ) -> AsyncIterator[str]:
-        del cancel, trace_id
-        if self.model == "broken/model":
-            raise RuntimeError("provider down")
-        if messages[0]["content"] == DEFAULT_SYSTEM_PROMPT:
-            yield "[happy] Sure thing."
-            return
-        moods = ("sad", "curious", "calm")
-        yield f"[{moods[len(messages[-1]['content']) % 3]}] Sure thing."
-
-    async def aclose(self) -> None:
-        return None
+async def _answer(model: str, messages: list[ChatMessage]) -> AsyncIterator[str]:
+    """One mood under the default prompt, and a different one per line otherwise."""
+    if model == "broken/model":
+        raise RuntimeError("provider down")
+    if messages[0]["content"] == DEFAULT_SYSTEM_PROMPT:
+        yield "[happy] Sure thing."
+        return
+    moods = ("sad", "curious", "calm")
+    yield f"[{moods[len(messages[-1]['content']) % 3]}] Sure thing."
 
 
 @pytest.fixture
 def fake_backend(monkeypatch: pytest.MonkeyPatch) -> None:
-    @asynccontextmanager
-    async def opened(
-        tune: LlmTune, *, session_id: str | None = None
-    ) -> AsyncGenerator[_FakeBackend, None]:
-        del session_id
-        yield _FakeBackend(tune.model)
-
-    monkeypatch.setattr(eval_models, "open_chat_backend", opened)
+    install_chat(monkeypatch, _answer)
 
 
 @pytest.mark.usefixtures("fake_backend")
@@ -194,26 +169,11 @@ def test_the_seed_flag_pins_the_opening_example_under_a_prompt_file_too(
 ) -> None:
     seen: list[tuple[str, int]] = []
 
-    class Recording(_FakeBackend):
-        async def stream(
-            self,
-            messages: list[ChatMessage],
-            *,
-            cancel: asyncio.Event | None = None,
-            trace_id: str | None = None,
-        ) -> AsyncIterator[str]:
-            del cancel, trace_id
-            seen.append((messages[0]["content"], len(messages)))
-            yield "[calm] Fine."
+    async def recording(_model: str, messages: list[ChatMessage]) -> AsyncIterator[str]:
+        seen.append((messages[0]["content"], len(messages)))
+        yield "[calm] Fine."
 
-    @asynccontextmanager
-    async def opened(
-        tune: LlmTune, *, session_id: str | None = None
-    ) -> AsyncGenerator[_FakeBackend, None]:
-        del session_id
-        yield Recording(tune.model)
-
-    monkeypatch.setattr(eval_models, "open_chat_backend", opened)
+    install_chat(monkeypatch, recording)
     monkeypatch.setenv("OPENROUTER_API_KEY", "k")
     wide = tmp_path / "wide.txt"
     wide.write_text("Use many cues.", encoding="utf-8")

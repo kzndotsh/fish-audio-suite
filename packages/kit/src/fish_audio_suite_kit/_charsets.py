@@ -20,6 +20,7 @@ __all__ = [
     "IDEOGRAPHIC_STOPS",
     "LATIN_CLOSER_CHARS",
     "PUNCT_BEFORE_CLOSER",
+    "SENTENCE_AND_CLAUSE_MARKS",
     "SENTENCE_CLOSERS",
     "SENTENCE_CLOSER_CHARS",
     "SENTENCE_STOPS",
@@ -32,6 +33,7 @@ __all__ = [
     "TURN_TERMINALS",
     "cjk_latin_counts",
     "cut_at_control",
+    "fold_line_breaks",
     "is_cjk",
     "is_header_safe",
     "plain_breaks",
@@ -66,12 +68,13 @@ EMPHASIS_MARKS = "*_`~"
 # The marks a streamed chunk holds when it ends on them, in case they open emphasis. A
 # backtick is left out: the fence holds own it.
 TRAILING_EMPHASIS_MARKS = EMPHASIS_MARKS.replace("`", "")
+# The stops and clause marks that end a sentence or a clause without a space first. The
+# spaced stops are left out: they count only after their space.
+SENTENCE_AND_CLAUSE_MARKS = frozenset(ASCII_STOPS + IDEOGRAPHIC_STOPS + CLAUSE_MARKS)
 # The punctuation a closing emphasis run may follow right after a word ("**done,**"):
 # stops and clause marks, without the ellipsis, the ideographic full stop and question
 # mark, and the fullwidth semicolon.
-PUNCT_BEFORE_CLOSER = frozenset(ASCII_STOPS + IDEOGRAPHIC_STOPS + CLAUSE_MARKS) - frozenset(
-    "…。？；"
-)
+PUNCT_BEFORE_CLOSER = SENTENCE_AND_CLAUSE_MARKS - frozenset("…。？；")
 
 # Hiragana/katakana, CJK ext A, unified ideographs, compatibility, Hangul.
 CJK_RANGES = (
@@ -108,7 +111,24 @@ THOUGHT_CLOSE_RE = re.compile(rf"<\s*/\s*(?:{_THOUGHT_NAMES})\s*>", re.IGNORECAS
 
 
 def is_cjk(ch: str) -> bool:
-    """Return whether a character is Han, kana, or Hangul."""
+    """Return whether a character is Han, kana, or Hangul.
+
+    Parameters
+    ----------
+    ch : str
+        One character.
+
+    Returns
+    -------
+    bool
+        True inside ``CJK_RANGES``: kana, CJK extension A, the unified ideographs, the
+        compatibility ideographs and Hangul syllables.
+
+    Examples
+    --------
+    >>> is_cjk("你"), is_cjk("한"), is_cjk("a")
+    (True, True, False)
+    """
     code = ord(ch)
     return any(code in span for span in CJK_RANGES)
 
@@ -135,6 +155,33 @@ def cjk_latin_counts(text: str) -> tuple[int, int]:
     return cjk, letters
 
 
+def fold_line_breaks(text: str) -> str:
+    r"""Turn every way of writing a line break into a newline.
+
+    Parameters
+    ----------
+    text : str
+        Raw model or ASR text, or the unsent part of a stream.
+
+    Returns
+    -------
+    str
+        CRLF, CR, and the Unicode line and paragraph separators become a newline.
+        Nothing else changes, so a stream can tell where a line starts before scrubbing.
+
+    Examples
+    --------
+    >>> fold_line_breaks("one\r\ntwo\u2028three")
+    'one\ntwo\nthree'
+    """
+    return (
+        text.replace("\r\n", "\n")
+        .replace("\r", "\n")
+        .replace("\u2028", "\n")
+        .replace("\u2029", "\n")
+    )
+
+
 def plain_breaks(text: str) -> str:
     """Normalize line breaks and drop invisible characters.
 
@@ -146,15 +193,11 @@ def plain_breaks(text: str) -> str:
     Returns
     -------
     str
-        CRLF, CR, and the Unicode line and paragraph separators become a
-        newline. A zero-width space, word joiner, BOM, and soft hyphen are
-        removed because they are not sounds.
+        ``fold_line_breaks``, then a zero-width space, word joiner, BOM, and soft
+        hyphen are removed because they are not sounds.
     """
     return (
-        text.replace("\r\n", "\n")
-        .replace("\r", "\n")
-        .replace("\u2028", "\n")
-        .replace("\u2029", "\n")
+        fold_line_breaks(text)
         .replace("\u200b", "")
         .replace("\ufeff", "")
         .replace("\u2060", "")

@@ -107,7 +107,9 @@ class CueStyle:
         continued : bool, optional
             True when text was already sent before this chunk. Default False.
         before : str, optional
-            Text already sent before this chunk. Only its last character is read.
+            Text already sent on this line before this chunk. Scrubbing reads its last
+            character, and cue shaping reads it to tell whether a stop at the start of
+            the chunk ends a sentence.
         after : str, optional
             Text still held after this chunk. Only its first character is read.
         sentence_start : bool, optional
@@ -136,11 +138,14 @@ class CueStyle:
             cleaned = extract_quoted_speech(cleaned)
         spoken = normalize_cues(
             cleaned,
-            lead=self.lead and sentence_start,
+            lead=self.lead,
+            continued=not sentence_start,
+            before=before,
             official=self.mode == "official",
             directed=directed,
         )
-        # Scrub keeps one edge space for a neighbour, and a rewritten lead would drop it.
+        # Scrub keeps one edge space for a neighbour, even one it decoded (``&#160;``),
+        # and a rewritten lead would drop it.
         if cleaned[:1] == " " and spoken[:1] != " ":
             spoken = f" {spoken}"
         if cleaned[-1:] == " " and spoken[-1:] != " ":

@@ -10,9 +10,10 @@ from __future__ import annotations
 import json
 import threading
 import time
+from collections.abc import Callable
 from contextlib import AsyncExitStack
 from dataclasses import dataclass
-from typing import Any, Final
+from typing import Any, Final, NoReturn
 
 import httpx
 
@@ -26,9 +27,7 @@ from fish_audio_suite_kit import (
     bearer,
     clean_transcript,
     cut_at_control,
-    describe_request_error,
     elapsed_ms,
-    fish_attempt_exhausted,
     fish_request_id,
     make_traceparent,
     parse_asr_body,
@@ -43,8 +42,7 @@ from fish_audio_suite_voice.debug import debug, warn
 from fish_audio_suite_voice.log_meta import public_meta
 from fish_audio_suite_voice.pause import Retry, fish_retries
 from fish_audio_suite_voice.recognised import NoTurn, Transcript
-from fish_audio_suite_voice.transports import HTTP_KEEPALIVE_S
-from fish_audio_suite_voice.wording import with_detail
+from fish_audio_suite_voice.wording import transport_failure
 
 __all__ = [
     "AsrResult",
@@ -55,6 +53,9 @@ __all__ = [
 
 _ASR_TIMEOUT_S: Final = 60.0
 _ASR_CONNECT_S: Final = 10.0
+# Idle seconds the session's ASR connection stays open. httpx's default of 5 s is shorter
+# than the gap between two turns, so each turn would pay a new TLS handshake.
+_ASR_KEEPALIVE_S: Final = 120.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,13 +76,6 @@ class AsrResult:
     tone: tuple[str, ...] = ()
 
 
-def _json_or_none(text: str) -> object:
-    try:
-        return json.loads(text)
-    except (ValueError, RecursionError):
-        return None
-
-
 async def _post_fish(
     client: httpx.AsyncClient,
     url: str,
@@ -90,33 +84,42 @@ async def _post_fish(
 ) -> httpx.Response | None:
     """Post once per attempt. None means the quit flag stopped the retries."""
 
-    async def attempt(number: int) -> httpx.Response | Retry:
+    async def attempt(_number: int) -> httpx.Response | Retry[httpx.Response]:
         try:
             response = await client.post(url, **kwargs)
         except httpx.RequestError as exc:
-            status, message = describe_request_error(exc, httpx.TimeoutException)
-            if fish_attempt_exhausted(number):
-                raise FishHttpError(status, with_detail(message, exc)) from exc
-            return Retry()
+            return Retry(_raises(transport_failure(exc), exc))
         if response.status_code >= 400:
-            detail = parse_fish_error(response.status_code, response.text)
-            request_id = fish_request_id(
-                _json_or_none(response.text), response.headers, header_first=True
+            detail = parse_fish_error(
+                response.status_code, response.text, response.headers, header_first=True
             )
             message = (
-                f"{detail.message} (request_id {request_id})" if request_id else detail.message
+                f"{detail.message} (request_id {detail.request_id})"
+                if detail.request_id
+                else detail.message
             )
             error = FishHttpError(
                 detail.status,
                 message,
                 retry_after=retry_after_s(response.headers),
             )
-            if not error.retryable or fish_attempt_exhausted(number):
+            if not error.retryable:
                 raise error
-            return Retry(error.retry_after)
+            return Retry(_raises(error), error.retry_after)
         return response
 
     return await fish_retries(attempt, cancel.is_set if cancel is not None else never)
+
+
+def _raises(error: FishHttpError, cause: BaseException | None = None) -> Callable[[], NoReturn]:
+    """Return what raises ``error`` (from ``cause``) when no attempt is left."""
+
+    def give_up() -> NoReturn:
+        if cause is None:
+            raise error
+        raise error from cause
+
+    return give_up
 
 
 def asr_client() -> httpx.AsyncClient:
@@ -131,7 +134,7 @@ def asr_client() -> httpx.AsyncClient:
     """
     return httpx.AsyncClient(
         timeout=httpx.Timeout(_ASR_TIMEOUT_S, connect=_ASR_CONNECT_S),
-        limits=httpx.Limits(keepalive_expiry=HTTP_KEEPALIVE_S),
+        limits=httpx.Limits(keepalive_expiry=_ASR_KEEPALIVE_S),
     )
 
 

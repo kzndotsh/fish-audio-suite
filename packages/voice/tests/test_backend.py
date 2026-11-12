@@ -10,7 +10,7 @@ import pytest
 from fish_audio_suite_voice.asr import asr_client
 from fish_audio_suite_voice.llm import ChatBackend, open_chat_backend
 from fish_audio_suite_voice.llm_tune import LlmTune
-from fish_audio_suite_voice.transports import HTTP_KEEPALIVE_S, chat_completions_url, http_client
+from fish_audio_suite_voice.transports import chat_completions_url, http_client
 
 SSE = (
     'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n'
@@ -21,7 +21,6 @@ SSE = (
 
 def _http_tune(**kw: Any) -> LlmTune:
     fields: dict[str, Any] = {
-        "backend": "openai",
         "base": "https://llm.example.test/v1",
         "api_key": "sk-test",
         "model": "some/model",
@@ -161,7 +160,7 @@ def test_openrouter_backend_checks_the_model_once_and_passes_the_session_id(
             return None
 
     monkeypatch.setattr("openrouter.OpenRouter", _Client)
-    tune = LlmTune(backend="openrouter", api_key="sk", model="org/model")
+    tune = LlmTune(api_key="sk", model="org/model")
 
     async def run() -> str:
         async with open_chat_backend(tune, session_id="sess-1") as backend:
@@ -196,5 +195,7 @@ def test_session_clients_keep_idle_connections_between_turns(
             pass
 
     asyncio.run(check())
-    assert [limits.keepalive_expiry for limits in built] == [HTTP_KEEPALIVE_S] * 2
-    assert HTTP_KEEPALIVE_S > 60
+    assert len(built) == 2
+    assert all(
+        limits.keepalive_expiry is not None and limits.keepalive_expiry > 60 for limits in built
+    )

@@ -7,12 +7,8 @@ from dataclasses import dataclass, field, fields
 from typing import Any, Final
 
 from fish_audio_suite_kit import (
-    CHUNK_LENGTH_LO,
     FISH_RETRY_ATTEMPTS,
-    MIN_CHUNK_LENGTH_HI,
-    MIN_CHUNK_LENGTH_LO,
-    TTS_SPEED_HI,
-    TTS_SPEED_LO,
+    TTS_RANGES,
     SuiteDefaults,
     chunk_length_hi,
     clamp_number,
@@ -243,26 +239,21 @@ def _suite_defaults(tts_format: ClientFormat) -> SuiteDefaults:
         latency=known_latency(env_token("FISH_LATENCY", stock.latency), stock.latency),
         chunk_length=clamp_number(
             env_int("FISH_CHUNK_LENGTH", stock.chunk_length),
-            CHUNK_LENGTH_LO,
+            TTS_RANGES.chunk_length[0],
             chunk_length_hi(fish_base),
             stock.chunk_length,
             int,
         ),
         min_chunk_length=clamp_number(
             env_int("FISH_MIN_CHUNK_LENGTH", stock.min_chunk_length),
-            MIN_CHUNK_LENGTH_LO,
-            MIN_CHUNK_LENGTH_HI,
+            *TTS_RANGES.min_chunk_length,
             stock.min_chunk_length,
             int,
         ),
         audio_format=fish_audio_format(tts_format),
         mp3_bitrate=known_mp3_bitrate(env_int("FISH_MP3_BITRATE", stock.mp3_bitrate)),
         speed=clamp_number(
-            env_float("FISH_SPEED", stock.speed),
-            TTS_SPEED_LO,
-            TTS_SPEED_HI,
-            stock.speed,
-            float,
+            env_float("FISH_SPEED", stock.speed), *TTS_RANGES.speed, stock.speed, float
         ),
         fish_base=fish_base,
     )

@@ -2,6 +2,7 @@
 
 from fish_audio_suite_voice.aec import EchoCanceller
 from fish_audio_suite_voice.barge import BargeGate
+from fish_audio_suite_voice.envfile import load_dotenv
 from fish_audio_suite_voice.llm import ChatBackend
 from fish_audio_suite_voice.llm_tune import LlmTune
 from fish_audio_suite_voice.mic import Mic
@@ -42,5 +43,6 @@ __all__ = [
     "TtsResult",
     "TtsTune",
     "TurnSignals",
+    "load_dotenv",
     "make_sink",
 ]

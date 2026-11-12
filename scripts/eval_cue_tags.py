@@ -28,7 +28,6 @@ import argparse
 import asyncio
 import json
 import math
-import re
 import sys
 from collections import Counter
 from collections.abc import Callable, Sequence
@@ -42,6 +41,7 @@ from fish_audio_suite_kit import (
     CueStyle,
     last_emotion,
     official_cue,
+    sentence_cuts,
     split_cues,
 )
 from fish_audio_suite_voice.config import SystemPrompt
@@ -69,7 +69,6 @@ LINES: tuple[str, ...] = (
 )
 
 DEFAULT_NAME = "default"
-_SENTENCE_END = re.compile(r"[.!?]+(?:\s|$)")
 _TOP_CUES = 12
 
 
@@ -174,7 +173,10 @@ def _evenness(counts: Counter[str]) -> float:
 
 def _bare_sentences(text: str) -> tuple[int, int]:
     """Count a reply's sentences, and how many of them carry no cue."""
-    pieces = [piece for piece in _SENTENCE_END.split(CueStyle().shape(text)) if piece.strip()]
+    shaped = CueStyle().shape(text)
+    starts = [0, *sentence_cuts(shaped)]
+    ends = [*starts[1:], len(shaped)]
+    pieces = [shaped[a:b] for a, b in zip(starts, ends, strict=True) if shaped[a:b].strip()]
     bare = sum(1 for piece in pieces if not any(is_cue for _, is_cue in split_cues(piece)))
     return len(pieces), bare
 

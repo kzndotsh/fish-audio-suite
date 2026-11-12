@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json as jsonlib
 import logging
 import time
 from collections.abc import Awaitable, Callable, Mapping
@@ -14,14 +13,12 @@ import httpx
 
 from fish_audio_suite_kit import (
     FISH_RETRY_ATTEMPTS,
+    FishErrorBody,
     FishHttpError,
-    cut_at_control,
     ensure_trace_headers,
     fish_backoff_s,
-    fish_request_id,
     parse_fish_error,
     retry_after_s,
-    utf8_text,
 )
 from fish_audio_suite_proxy.errors import FishProviderError, ProxyError
 
@@ -108,31 +105,17 @@ def _transport_error(exc: httpx.RequestError) -> ProxyError:
     return _fixed(FishHttpError.for_unreachable())
 
 
-# Fish ids are short. A long or multi-line value is cut so it cannot fill a log line.
-_ID_MAX_CHARS: Final = 128
-
-
-def _short_code(value: object) -> str:
-    if isinstance(value, bool) or not isinstance(value, (str, int)):
-        return ""
-    return utf8_text(cut_at_control(str(value).strip())[:_ID_MAX_CHARS].strip())
-
-
-def _fish_error_ids(body: bytes, headers: Mapping[str, str]) -> dict[str, str]:
-    """Return Fish's error ``code`` and ``request_id``, from the body or the header.
+def _error_ids(detail: FishErrorBody) -> dict[str, str]:
+    """Return Fish's error ``code`` and ``request_id`` as the client's error metadata.
 
     ``transcribe-1-pro`` errors are ``{status, message, code, request_id}``, and
     the request id is also in ``x-request-id``. Fish support asks for it.
     """
-    try:
-        data: object = jsonlib.loads(body) if body else None
-    except (ValueError, UnicodeDecodeError):
-        data = None
     ids: dict[str, str] = {}
-    if isinstance(data, dict) and (code := _short_code(data.get("code"))):
-        ids["provider_code"] = code
-    if request_id := fish_request_id(data, headers):
-        ids["request_id"] = request_id
+    if detail.code:
+        ids["provider_code"] = detail.code
+    if detail.request_id:
+        ids["request_id"] = detail.request_id
     return ids
 
 
@@ -170,7 +153,7 @@ async def _closed_error(upstream: httpx.Response) -> tuple[FishProviderError, Fi
         # lost, so the message says that and the exception text stays in the log.
         code = upstream.status_code
         log.warning("fish error body unreadable status=%s: %s", code, exc)
-        ids = _fish_error_ids(b"", upstream.headers)
+        ids = _error_ids(parse_fish_error(code, b"", upstream.headers))
         _log_fish_error(code, ids)
         failure = FishHttpError(
             code,
@@ -180,8 +163,8 @@ async def _closed_error(upstream: httpx.Response) -> tuple[FishProviderError, Fi
         return FishProviderError(code, failure.message, metadata=ids), failure
     finally:
         await upstream.aclose()
-    detail = parse_fish_error(upstream.status_code, body)
-    ids = _fish_error_ids(body, upstream.headers)
+    detail = parse_fish_error(upstream.status_code, body, upstream.headers)
+    ids = _error_ids(detail)
     _log_fish_error(upstream.status_code, ids)
     # The HTTP status decides whether to retry, even when the body names another.
     failure = FishHttpError(

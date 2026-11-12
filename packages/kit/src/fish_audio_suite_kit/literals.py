@@ -12,6 +12,7 @@ from typing import Literal
 
 __all__ = [
     "AsrFormat",
+    "AsrModel",
     "AudioFormat",
     "ChatRole",
     "FishLatency",
@@ -22,6 +23,8 @@ __all__ = [
 FishLatency = Literal["low", "balanced", "normal"]
 # Audio formats Fish returns for text to speech.
 AudioFormat = Literal["wav", "pcm", "mp3", "opus"]
+# Fish ASR models, in the order ``FISH_ASR_MODEL_IDS`` lists them.
+AsrModel = Literal["transcribe-1", "transcribe-1-pro"]
 # Response formats a transcription request can ask for.
 AsrFormat = Literal["json", "text", "verbose_json", "srt", "vtt"]
 # Catalog TTS models, in the order ``FISH_TTS_MODEL_IDS`` lists them. A caller may

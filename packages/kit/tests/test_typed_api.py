@@ -10,7 +10,11 @@ import pytest
 
 import fish_audio_suite_kit as kit
 from fish_audio_suite_kit import (
+    FISH_ASR_MODEL_IDS,
     FISH_TTS_MODEL_IDS,
+    PRO_ASR_MODEL,
+    TTS_RANGES,
+    AsrModel,
     AudioFormat,
     ChatMessage,
     FishAuthError,
@@ -21,6 +25,7 @@ from fish_audio_suite_kit import (
     FishTimeoutError,
     FishUpstreamError,
     SuiteDefaults,
+    chunk_length_hi,
     env_bool,
     known_latency,
     normalize_tts_model,
@@ -123,6 +128,17 @@ def test_every_catalog_model_is_recognised_whatever_its_case() -> None:
     assert FISH_TTS_MODEL_IDS
     for model in FISH_TTS_MODEL_IDS:
         assert normalize_tts_model(f" {model.upper()} ") == model
+
+
+def test_the_asr_models_come_from_their_literal_and_the_default_is_the_pro_model() -> None:
+    assert get_args(AsrModel) == FISH_ASR_MODEL_IDS
+    assert PRO_ASR_MODEL in FISH_ASR_MODEL_IDS
+    assert SuiteDefaults().asr_model == PRO_ASR_MODEL
+
+
+def test_the_cloud_chunk_length_range_is_the_one_the_cloud_base_takes() -> None:
+    assert chunk_length_hi("https://api.fish.audio") == TTS_RANGES.chunk_length[1]
+    assert chunk_length_hi("http://localhost:8080") > TTS_RANGES.chunk_length[1]
 
 
 def test_a_chat_message_has_only_a_role_and_content() -> None:

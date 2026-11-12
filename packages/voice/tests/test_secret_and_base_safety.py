@@ -8,8 +8,7 @@ import httpx
 import pytest
 from fishaudio.types import TTSConfig
 
-from fish_audio_suite_kit import FISH_RETRY_ATTEMPTS
-from fish_audio_suite_voice.config import VoiceCliConfig, warn_if_insecure_base
+from fish_audio_suite_voice.config import SystemPrompt, VoiceCliConfig, warn_if_insecure_base
 from fish_audio_suite_voice.llm_tune import LlmTune
 from fish_audio_suite_voice.speaker import FishSpeaker
 from fish_audio_suite_voice.tts_tune import TtsTune
@@ -36,10 +35,9 @@ def _config(
         tts_model="s2.1-pro",
         tts=TtsTune(latency="balanced", temperature=0.7, top_p=0.7, repetition_penalty=1.2),
         playback="stdout",
-        system_prompt="be brief",
+        prompt=SystemPrompt("be brief", pin_seed=True),
         device=None,
-        llm=llm
-        or LlmTune(backend="openai", base="https://llm.example/v1", api_key=SECRET, model="m"),
+        llm=llm or LlmTune(base="https://llm.example/v1", api_key=SECRET, model="m"),
     )
 
 
@@ -81,17 +79,9 @@ def test_with_detail_adds_the_errors_own_text() -> None:
 
 def test_a_transport_error_keeps_its_detail_for_the_local_user() -> None:
     refused = httpx.ConnectError("connect to 10.0.0.5 refused")
-    first = turn_failure(
-        refused, attempt=0, sent_text="Hi.", got_audio=False, cancel=threading.Event()
-    )
+    first = turn_failure(refused, sent_text="Hi.", got_audio=False, cancel=threading.Event())
     assert first.retry is True
-    last = turn_failure(
-        refused,
-        attempt=FISH_RETRY_ATTEMPTS - 1,
-        sent_text="Hi.",
-        got_audio=False,
-        cancel=threading.Event(),
-    )
+    last = first.give_up()  # what fish_retries does after the last attempt
     assert last.retry is False
     assert last.error_status == 502
     assert last.error_message is not None
@@ -104,7 +94,7 @@ def test_plain_http_to_a_remote_host_warns_for_both_keys(
 ) -> None:
     config = _config(
         fish_base="http://10.0.0.5:8080",
-        llm=LlmTune(backend="openai", base="http://10.0.0.6/v1", api_key=SECRET, model="m"),
+        llm=LlmTune(base="http://10.0.0.6/v1", api_key=SECRET, model="m"),
     )
     assert warn_if_insecure_base(config) is True
     notes = capsys.readouterr().err.splitlines()
@@ -118,7 +108,7 @@ def test_https_and_loopback_do_not_warn(capsys: pytest.CaptureFixture[str]) -> N
     assert warn_if_insecure_base(_config()) is False
     local = _config(
         fish_base="http://127.0.0.1:8080",
-        llm=LlmTune(backend="openai", base="http://localhost:1234/v1", api_key=SECRET, model="m"),
+        llm=LlmTune(base="http://localhost:1234/v1", api_key=SECRET, model="m"),
     )
     assert warn_if_insecure_base(local) is False
     assert capsys.readouterr().err == ""
@@ -128,7 +118,7 @@ def test_no_key_means_no_warning(capsys: pytest.CaptureFixture[str]) -> None:
     keyless = _config(
         fish_api_key="",
         fish_base="http://10.0.0.5:8080",
-        llm=LlmTune(backend="openai", base="http://10.0.0.6/v1", api_key="", model="m"),
+        llm=LlmTune(base="http://10.0.0.6/v1", api_key="", model="m"),
     )
     assert warn_if_insecure_base(keyless) is False
     assert capsys.readouterr().err == ""
@@ -140,7 +130,6 @@ def test_the_warning_prints_only_the_host_never_credentials_in_the_url(
     config = _config(
         fish_base="http://alice:hunter2@10.0.0.5:8080/v1?token=abc123",
         llm=LlmTune(
-            backend="openai",
             base="http://bob:s3cret@10.0.0.6/v1?key=zzz",
             api_key=SECRET,
             model="m",

@@ -4,6 +4,8 @@ import pytest
 from kit_helpers import assert_linear_time
 
 from fish_audio_suite_kit import (
+    CueMode,
+    CueStyle,
     MoodCarry,
     ensure_lead_cue,
     last_emotion,
@@ -268,6 +270,34 @@ def test_a_continued_chunk_skips_only_its_first_sentence() -> None:
         == "excited, hello. [sad] bye"
     )
     assert normalize_cues("excited, hello", continued=True) == "excited, hello"
+
+
+def test_a_stop_at_the_start_of_a_continued_chunk_ends_a_sentence_only_by_what_came_before() -> (
+    None
+):
+    chunk = ". Happy, the patient arrived."
+    assert normalize_cues(chunk, lead=True, continued=True, before="Dr") == (
+        ". Happy, the patient arrived."
+    )
+    assert normalize_cues(chunk, lead=True, continued=True, before="Well and more") == (
+        ". [happy] the patient arrived."
+    )
+    # Only the line the chunk continues counts: a list number on its own line is a marker.
+    assert normalize_cues(chunk, lead=True, continued=True, before="Done.\n1") == chunk
+
+
+@pytest.mark.parametrize("mode", ["official", "free"])
+def test_a_style_shapes_later_sentences_of_a_chunk_that_continues_one(mode: CueMode) -> None:
+    # A chunk that continues a sentence once turned the lead off for all of it, so
+    # "Excited," after "more." was spoken while the whole reply led with it.
+    style = CueStyle(mode, lead=True)
+    chunk = "and more. Excited, hi there. Sad, bye."
+    assert style.shape(chunk, sentence_start=False) == "and more. [excited] hi there. [sad] bye."
+    assert style.shape("Excited, hi. Sad, bye.", sentence_start=False) == (
+        "Excited, hi. [sad] bye."
+    )
+    off = CueStyle(mode, lead=False)
+    assert off.shape(chunk, sentence_start=False) == chunk
 
 
 def test_explicit_cues_are_normalized_without_the_lead_switch() -> None:

@@ -27,22 +27,16 @@ def test_the_wait_after_the_last_word_adds_the_silence_to_the_first_audio() -> N
     assert LatencySnapshot(end_wait_ms=360).since_stop_ms is None  # no sound was heard
 
 
-def test_latency_snapshot_keeps_its_positional_fields() -> None:
-    snapshot = LatencySnapshot(1.0, 2.0, 3.0, 4.0, 5.0, "trace", 6.0)
-    assert snapshot == LatencySnapshot(
+def test_latency_snapshot_log_line_names_every_time() -> None:
+    line = LatencySnapshot(
         asr_ms=1.0,
         llm_first_token_ms=2.0,
         tts_first_text_ms=3.0,
         tts_first_audio_ms=4.0,
         voice_to_voice_ms=5.0,
-        trace_id="trace",
+        trace_id="t",
         first_audio_ms=6.0,
-    )
-    assert LatencySnapshot(1.0).first_audio_ms is None
-
-
-def test_latency_snapshot_log_line_names_every_time() -> None:
-    line = LatencySnapshot(1.0, 2.0, 3.0, 4.0, 5.0, "t", 6.0).log_line()
+    ).log_line()
     assert line == (
         "[timing asr=1ms llm_first_token=2ms tts_first_text=3ms tts_first_audio=4ms"
         " first_audio=6ms voice_to_voice=5ms trace=t]"

@@ -30,7 +30,7 @@ from fish_audio_suite_voice.aec import EchoCanceller
 from fish_audio_suite_voice.cancel import StopFlag, any_of
 from fish_audio_suite_voice.debug import debug, trace, warn
 from fish_audio_suite_voice.events import EVENTS, Interim
-from fish_audio_suite_voice.listen import stream_utterance, voice_needed
+from fish_audio_suite_voice.listen import mic_failure, stream_utterance, voice_needed
 from fish_audio_suite_voice.mic import Mic
 from fish_audio_suite_voice.pcm import BYTES_PER_S, SAMPLE_RATE, write_mono_wav
 from fish_audio_suite_voice.portaudio import PortAudioMissingError
@@ -39,7 +39,6 @@ from fish_audio_suite_voice.recognised import (
     NoTurn,
     StreamFallback,
     Transcript,
-    mic_failure,
 )
 from fish_audio_suite_voice.recognisers import recogniser
 from fish_audio_suite_voice.tune import ListenTune

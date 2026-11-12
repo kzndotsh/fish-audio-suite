@@ -147,7 +147,7 @@ def test_a_turn_is_shown_as_it_happens() -> None:
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
-    assert harness.app.view.turns == 1
+    assert harness.app.view.last_turn == LatencySnapshot(asr_ms=120.0, first_audio_ms=900.0)
 
 
 def test_square_brackets_in_a_reply_are_shown_as_they_are_not_read_as_markup() -> None:
@@ -208,8 +208,7 @@ def test_events_from_another_thread_reach_the_screen_without_flooding_it() -> No
         thread.start()
         await asyncio.to_thread(thread.join)
         await pilot.pause(0.2)
-        assert "done" in harness.messages()
-        assert harness.app.view.mic_rms == 499.0
+        assert "done" in harness.messages()  # the last event, after all 500 levels
         # 501 events, but the app is woken far fewer times than that.
         assert len(wakes) < 100
         await pilot.press("ctrl+q")
@@ -358,7 +357,7 @@ def test_the_app_stops_collecting_events_when_it_closes() -> None:
 
     _drive(harness, scenario)
     harness.bus.emit(Heard("after", 1.0))  # nobody is listening, and nothing fails
-    assert harness.app.view.heard != "after"
+    assert harness.app.view.state is not SessionState.THINKING
 
 
 @pytest.mark.parametrize("size", [(80, 24), (60, 20), (120, 40)])
@@ -651,7 +650,7 @@ def test_an_event_that_arrives_as_the_app_closes_is_ignored() -> None:
 
     asyncio.run(asyncio.wait_for(main(), 20))
     assert harness.app.return_value == 0
-    assert harness.app.view.heard != "too late"
+    assert harness.app.view.state is not SessionState.THINKING
 
 
 def test_the_pulse_holds_still_when_animations_are_turned_off() -> None:
@@ -1042,7 +1041,6 @@ def test_while_the_model_speaks_the_strip_shows_the_speaker_and_hands_back_to_th
         harness.bus.emit(OutputLevel(8000.0))  # a late slice of the old reply
         harness.bus.emit(MicLevel(1000.0, 200.0, "listen"))
         await pilot.pause(0.1)
-        assert harness.app.view.out_rms == 8000.0
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0

@@ -8,7 +8,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Final
 
-from fish_audio_suite_kit import FISH_RETRY_ATTEMPTS, fish_backoff_s
+from fish_audio_suite_kit import fish_attempt_exhausted, fish_backoff_s
 
 __all__ = [
     "Retry",
@@ -60,22 +60,30 @@ async def sleep_unless(
 
 
 @dataclass(frozen=True, slots=True)
-class Retry:
-    """What a failed Fish attempt returns to ask for another one after the backoff.
+class Retry[T]:
+    """What a failed Fish attempt returns: try again after the backoff, or give up.
 
     Attributes
     ----------
+    give_up : Callable
+        What the failure comes to when no attempt is left. ``fish_retries`` calls it after
+        the last attempt and returns its result, so it raises, or returns what the caller
+        reports.
     retry_after : float or None
         The wait the reply asked for in ``Retry-After``, which the backoff honours. None
         when there was no header: a TTS failure never has one, because the SDK's
         ``APIError`` carries no headers.
+    on_retry : Callable or None
+        Called when another attempt will follow, before the wait, such as to log it.
     """
 
+    give_up: Callable[[], T]
     retry_after: float | None = None
+    on_retry: Callable[[], None] | None = None
 
 
 async def fish_retries[T](
-    attempt: Callable[[int], Awaitable[T | Retry]],
+    attempt: Callable[[int], Awaitable[T | Retry[T]]],
     stop: Callable[[], bool],
 ) -> T | None:
     """Run ``attempt`` until it returns a result, waiting out the Fish backoff between tries.
@@ -84,8 +92,7 @@ async def fish_retries[T](
     ----------
     attempt : Callable
         Called with the zero-based attempt number. It returns its result, or ``Retry`` to
-        be called again after the backoff. On the last attempt (``fish_attempt_exhausted``)
-        it must not ask for a retry: it raises or returns what the caller reports.
+        be called again after the backoff.
     stop : Callable
         Says whether the caller was cancelled, for example ``event.is_set``. It is read
         before each attempt and during each wait, so a quit never starts another try.
@@ -93,19 +100,26 @@ async def fish_retries[T](
     Returns
     -------
     T or None
-        What the attempt returned. None when ``stop`` turned true first.
+        What the attempt returned, or what ``Retry.give_up`` returned for the last attempt.
+        None when ``stop`` turned true first.
 
     Notes
     -----
-    At most ``FISH_RETRY_ATTEMPTS`` attempts. The wait is ``fish_backoff_s``, with jitter.
+    At most ``FISH_RETRY_ATTEMPTS`` attempts: the last one's ``Retry`` gives up instead of
+    waiting. The wait is ``fish_backoff_s``, with jitter.
     """
-    for number in range(FISH_RETRY_ATTEMPTS):
+    number = 0
+    while True:
         if stop():
             return None
         outcome = await attempt(number)
         if not isinstance(outcome, Retry):
             return outcome
+        if fish_attempt_exhausted(number):
+            return outcome.give_up()
+        if outcome.on_retry is not None:
+            outcome.on_retry()
         # A plain sleep would ignore barge-in or quit, and the next try would run anyway.
         if await sleep_unless(fish_backoff_s(number, retry_after=outcome.retry_after), stop):
             return None
-    return None
+        number += 1

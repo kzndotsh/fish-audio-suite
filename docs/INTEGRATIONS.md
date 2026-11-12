@@ -351,7 +351,7 @@ Pass any object with these methods as the sink. `FileSink`, `StdoutSink`, `Sound
 ```python
 class MySink:
     audio_format = "pcm"            # optional: what Fish sends, pcm (the default), wav, mp3 or opus
-    output_latency_s = 0.0          # seconds of device buffer, for the spoken-prefix estimate
+    output_latency_s = 0.0          # optional: seconds of device buffer, for the spoken-prefix estimate
     def start(self) -> None: ...     # called once per turn
     def write(self, chunk: bytes) -> None: ...   # PCM (or encoded audio, per audio_format)
     def finish(self, *, kill: bool = False) -> None: ...   # kill=True: stop at once

@@ -23,7 +23,6 @@ from wire_helpers import (
 )
 
 from fish_audio_suite_kit import (
-    FISH_RETRY_ATTEMPTS,
     CueStyle,
     FishAuthError,
     FishLatency,
@@ -197,35 +196,28 @@ def test_fish_is_asked_for_the_format_the_sink_takes(spec_of: Callable[..., Turn
 def test_turn_failure_retries_only_before_audio(capsys: pytest.CaptureFixture[str]) -> None:
     slow = RateLimitError(429, "slow down", None)
     cancel = threading.Event()
-    retryable = turn_failure(slow, attempt=0, sent_text="hello", got_audio=False, cancel=cancel)
+    retryable = turn_failure(slow, sent_text="hello", got_audio=False, cancel=cancel)
     assert retryable.retry is True
-    heard = turn_failure(slow, attempt=0, sent_text="hello", got_audio=True, cancel=cancel)
+    heard = turn_failure(slow, sent_text="hello", got_audio=True, cancel=cancel)
     assert heard.retry is False
     assert heard.error_status == 429
-    empty = turn_failure(slow, attempt=0, sent_text="", got_audio=False, cancel=cancel)
+    empty = turn_failure(slow, sent_text="", got_audio=False, cancel=cancel)
     assert empty.retry is False
-    last = turn_failure(
-        slow,
-        attempt=FISH_RETRY_ATTEMPTS - 1,
-        sent_text="hello",
-        got_audio=False,
-        cancel=cancel,
-    )
+    # Out of attempts, fish_retries gives the retryable failure up.
+    last = retryable.give_up()
     assert last.retry is False
+    assert last.error_status == 429
     cancel.set()
-    barged = turn_failure(slow, attempt=0, sent_text="hello", got_audio=False, cancel=cancel)
+    barged = turn_failure(slow, sent_text="hello", got_audio=False, cancel=cancel)
     assert barged.retry is False
     assert barged.error_status is None
     assert "no audio" not in capsys.readouterr().err
 
 
-def test_turn_failure_classifies_socket_validation_and_groups(
-    capsys: pytest.CaptureFixture[str],
-) -> None:
+def test_turn_failure_classifies_socket_validation_and_groups() -> None:
     cancel = threading.Event()
     socket = turn_failure(
         WebSocketError("dropped"),
-        attempt=0,
         sent_text="hello",
         got_audio=False,
         cancel=cancel,
@@ -233,7 +225,6 @@ def test_turn_failure_classifies_socket_validation_and_groups(
     assert socket.retry is True
     invalid = turn_failure(
         ValidationError("bad voice"),
-        attempt=0,
         sent_text="hello",
         got_audio=False,
         cancel=cancel,
@@ -242,7 +233,6 @@ def test_turn_failure_classifies_socket_validation_and_groups(
     assert invalid.error_status == 400
     grouped = turn_failure(
         BaseExceptionGroup("turn", [RateLimitError(503, "down", None)]),
-        attempt=0,
         sent_text="hello",
         got_audio=False,
         cancel=cancel,
@@ -253,7 +243,6 @@ def test_turn_failure_classifies_socket_validation_and_groups(
             "turn",
             [asyncio.CancelledError(), RateLimitError(503, "down", None)],
         ),
-        attempt=0,
         sent_text="hello",
         got_audio=False,
         cancel=cancel,
@@ -261,7 +250,6 @@ def test_turn_failure_classifies_socket_validation_and_groups(
     assert hidden.retry is True
     only_cancel = turn_failure(
         BaseExceptionGroup("turn", [asyncio.CancelledError()]),
-        attempt=0,
         sent_text="hello",
         got_audio=False,
         cancel=cancel,
@@ -269,13 +257,12 @@ def test_turn_failure_classifies_socket_validation_and_groups(
     assert only_cancel.retry is False
     refused = turn_failure(
         httpx.ConnectError("refused"),
-        attempt=0,
         sent_text="hello",
         got_audio=False,
         cancel=cancel,
     )
     assert refused.retry is True
-    assert "status=502" in capsys.readouterr().err
+    assert refused.error_status == 502
 
 
 def test_pump_does_not_play_audio_that_arrives_after_cancel(
@@ -437,8 +424,8 @@ def test_speak_takes_cancel_by_keyword_only() -> None:
 
 
 def test_a_sink_without_output_latency_still_finishes_the_turn() -> None:
-    class OldSink:
-        """Written against the protocol before output_latency_s existed."""
+    class PlainSink:
+        """Leaves out the optional ``output_latency_s``."""
 
         def start(self) -> None:
             return None
@@ -453,10 +440,29 @@ def test_a_sink_without_output_latency_still_finishes_the_turn() -> None:
             return 0
 
     run, _sink = make_run()
-    # The cast is the point: this sink deliberately lacks a member of the protocol.
-    run.sink = cast("PlaybackSink", OldSink())
+    run.sink = PlainSink()
     result = tts_result(run)
     assert result.bytes_played == 0
+
+
+@pytest.mark.parametrize(
+    ("status", "message", "failed", "fatal"),
+    [
+        (None, None, False, False),
+        (None, "socket dropped", True, False),
+        (503, "busy", True, False),
+        (429, "slow", True, False),
+        (401, "bad key", True, True),
+        (402, "no credit", True, True),
+        (403, "forbidden", True, True),
+    ],
+)
+def test_a_result_says_whether_fish_failed_and_whether_that_ends_the_session(
+    status: int | None, message: str | None, failed: bool, fatal: bool
+) -> None:
+    result = TtsResult("", 0, False, False, None, None, error_status=status, error_message=message)
+    assert result.failed is failed
+    assert result.fatal is fatal
 
 
 def test_a_result_built_from_a_status_gets_the_matching_error() -> None:

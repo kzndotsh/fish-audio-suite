@@ -16,7 +16,9 @@ import pytest
 from loguru import logger
 from session_fakes import (
     FakeBackend,
-    ScriptedHearing,
+    ScriptedAsr,
+    ScriptedRecordings,
+    ScriptedTurns,
     heard_line,
     hello_tokens,
     make_ctx,
@@ -24,14 +26,14 @@ from session_fakes import (
     run_session,
     speak_with_fakes,
 )
-from voice_fakes import ScriptedMic, install_audio, install_vad, make_result, set_tts
+from voice_fakes import ScriptedMic, install_gate, install_vad, make_result, set_tts
 
 from fish_audio_suite_voice import events as events_module
-from fish_audio_suite_voice.asr import AsrResult
 from fish_audio_suite_voice.barge import BargeGate
 from fish_audio_suite_voice.cancel import StopFlag
 from fish_audio_suite_voice.console_sink import ConsoleSink
 from fish_audio_suite_voice.duplex import duplex_turns
+from fish_audio_suite_voice.duplex_state import TurnInput
 from fish_audio_suite_voice.events import (
     DEFAULT_KEYS,
     EVENTS,
@@ -132,12 +134,9 @@ def test_a_notice_is_reported_trimmed_and_printed_by_nothing_itself(
 def test_hear_line_reports_listening_and_the_transcript(
     monkeypatch: pytest.MonkeyPatch, seen: list[Event]
 ) -> None:
-    async def asr(*_args: object, **_kwargs: object) -> AsrResult:
-        return AsrResult("tell me something fun")
-
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", lambda *_a, **_k: b"w")
-    monkeypatch.setattr("fish_audio_suite_voice.asr.fish_asr", asr)
-    heard = asyncio.run(hear_line(make_ctx(), ""))
+    ScriptedRecordings(monkeypatch, b"w")
+    ctx = make_ctx(asr=ScriptedAsr(monkeypatch, "tell me something fun"))
+    heard = asyncio.run(hear_line(ctx, ""))
     assert heard.kind == "line"
     assert seen[0] == Listening()
     assert isinstance(seen[1], Heard)
@@ -149,10 +148,10 @@ def test_a_turn_reports_the_reply_as_it_streams_then_the_timings_then_bye(
     monkeypatch: pytest.MonkeyPatch, seen: list[Event]
 ) -> None:
     tts = FishSpeaker(api_key="k", voice_id="voice")
-    install_audio(monkeypatch)
+    install_gate(monkeypatch)
     speak_with_fakes(monkeypatch, tts)
-    ScriptedHearing(monkeypatch, heard_line("hi there"))
-    assert run_session(quick_config(), tts, hello_tokens) == 0
+    source = ScriptedTurns(heard_line("hi there"))
+    assert run_session(quick_config(), tts, hello_tokens, source=source) == 0
     assert [type(e) for e in seen] == [ReplyToken, ReplyToken, ReplyEnd, TurnEnded, Bye]
     assert [e.text for e in seen if isinstance(e, ReplyToken)] == ["Hello ", "there friend."]
     assert ReplyEnd("Hello there friend.") in seen
@@ -317,7 +316,7 @@ def test_the_first_audio_of_a_reply_is_reported_as_speaking(
     monkeypatch: pytest.MonkeyPatch, seen: list[Event]
 ) -> None:
     tts = FishSpeaker(api_key="k", voice_id="voice")
-    install_audio(monkeypatch)
+    install_gate(monkeypatch)
 
     def speak(
         text: str,
@@ -330,8 +329,8 @@ def test_the_first_audio_of_a_reply_is_reported_as_speaking(
         return make_result(text, bytes_played=4, got_audio=True, tts_first_audio_ms=3.0)
 
     set_tts(monkeypatch, tts, speak=speak)
-    ScriptedHearing(monkeypatch, heard_line("hi there"))
-    assert run_session(quick_config(), tts, hello_tokens) == 0
+    source = ScriptedTurns(heard_line("hi there"))
+    assert run_session(quick_config(), tts, hello_tokens, source=source) == 0
     kinds = [type(e) for e in seen]
     assert kinds.index(Speaking) > kinds.index(ReplyEnd)
     assert kinds.index(Speaking) < kinds.index(TurnEnded)
@@ -362,8 +361,7 @@ def test_bye_is_sent_once_with_the_exit_code_however_the_session_ends(
     code: ExitCode,
 ) -> None:
     tts = FishSpeaker(api_key="k", voice_id="voice")
-    ScriptedHearing(monkeypatch, heard)
-    assert run_session(quick_config(), tts, hello_tokens) == code
+    assert run_session(quick_config(), tts, hello_tokens, source=ScriptedTurns(heard)) == code
     assert [e for e in seen if isinstance(e, Bye)] == [Bye(code)]
     assert next(e for e in seen if isinstance(e, Bye)).code == code
     assert ("bye" in capsys.readouterr().out) is (code == 0)
@@ -372,12 +370,12 @@ def test_bye_is_sent_once_with_the_exit_code_however_the_session_ends(
 def test_bye_is_sent_when_the_session_crashes(
     monkeypatch: pytest.MonkeyPatch, seen: list[Event]
 ) -> None:
-    async def broken(_ctx: object, _last: str) -> HeardLine:
+    def broken(_turn: TurnInput) -> HeardLine:
         raise RuntimeError("boom")
 
-    monkeypatch.setattr("fish_audio_suite_voice.duplex.hear_line", broken)
+    tts = FishSpeaker(api_key="k", voice_id="voice")
     with pytest.raises(RuntimeError, match="boom"):
-        run_session(quick_config(), FishSpeaker(api_key="k", voice_id="voice"), hello_tokens)
+        run_session(quick_config(), tts, hello_tokens, source=ScriptedTurns(broken))
     assert [e for e in seen if isinstance(e, Bye)] == [Bye(ExitCode.CRASH)]
 
 
@@ -457,12 +455,10 @@ def test_a_cancelled_session_still_sends_bye_and_stops_the_console(
     """A UI runs the session as a worker, and a worker is cancelled when the app exits."""
     listening = asyncio.Event()
 
-    async def wait_forever(_ctx: object, _last: str) -> HeardLine:
+    async def wait_forever(_turn: TurnInput) -> HeardLine:
         listening.set()
         await asyncio.sleep(3600)
         return HeardLine("bye")
-
-    monkeypatch.setattr("fish_audio_suite_voice.duplex.hear_line", wait_forever)
 
     async def printed_session() -> int:
         with ConsoleSink(EVENTS):  # as ``fish-voice`` runs it
@@ -471,6 +467,7 @@ def test_a_cancelled_session_still_sends_bye_and_stops_the_console(
                 FishSpeaker(api_key="k", voice_id="voice"),
                 None,
                 FakeBackend(hello_tokens),
+                source=ScriptedTurns(wait_forever),
             )
 
     async def scenario() -> None:

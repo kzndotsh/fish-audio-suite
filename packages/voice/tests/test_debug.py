@@ -18,7 +18,6 @@ from fish_audio_suite_voice.debug import (
 )
 from fish_audio_suite_voice.events import EventBus, Heard, ReplyEnd, ReplyToken
 from fish_audio_suite_voice.log_setup import configure_voice_logging
-from fish_audio_suite_voice.wording import short_model
 
 
 def conversation(role: str, text: str) -> None:
@@ -183,15 +182,6 @@ def test_piped_conversation_stays_plain_on_stdout_even_with_debug(
     captured = capsys.readouterr()
     assert captured.out == "you \u25b8 Hey there\n"
     assert "Hey there" not in captured.err
-
-
-def test_short_model_drops_only_the_vendor_prefix() -> None:
-    assert short_model("cognitivecomputations/dolphin-mistral-24b-venice-edition") == (
-        "dolphin-mistral-24b-venice-edition"
-    )
-    assert short_model("openai/gpt-4o:nitro") == "gpt-4o:nitro"
-    assert short_model("local-model") == "local-model"
-    assert short_model(None) == ""
 
 
 def test_debug_level_is_fixed_when_logging_is_configured(

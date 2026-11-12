@@ -138,9 +138,9 @@ class ConsoleSink:
         if not summary:
             return
         if debug_enabled():
-            debug("session.summary {}", summary.removeprefix("session "))
+            debug("session.summary {}", summary)
         else:
-            console_print(summary, flush=True)
+            console_print(f"session {summary}", flush=True)
 
     def _on_event(self, event: Event) -> None:
         match event:
@@ -166,10 +166,10 @@ class ConsoleSink:
                 self._turns.append(snapshot)
                 summary = turn_summary(snapshot)
                 if debug_enabled():
-                    debug("turn.summary {}", summary.strip().removeprefix("↳ "))
+                    debug("turn.summary {}", summary)
                     trace("turn.timing {}", snapshot.log_line())
                 else:
-                    console_print(summary, flush=True)
+                    console_print(f"  ↳ {summary}" if summary else "", flush=True)
             case Bye(code=code):
                 # A session that stopped mid-reply never ended the reply.
                 self.end_reply_line()

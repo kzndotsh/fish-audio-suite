@@ -7,8 +7,9 @@ from dataclasses import dataclass, field
 
 import httpx
 
+from fish_audio_suite_voice.aec import EchoCanceller
 from fish_audio_suite_voice.cancel import never
-from fish_audio_suite_voice.config import SinkLatency, VoiceCliConfig
+from fish_audio_suite_voice.config import SinkLatency, VoiceCliConfig, sink_latency
 from fish_audio_suite_voice.history import History
 from fish_audio_suite_voice.llm import ChatBackend
 from fish_audio_suite_voice.mic import Mic
@@ -22,6 +23,8 @@ __all__ = [
     "Chat",
     "DuplexContext",
     "TurnInput",
+    "session_context",
+    "session_speaker",
 ]
 
 
@@ -142,3 +145,88 @@ class DuplexContext:
     tts: FishSpeaker
     asr_http: httpx.AsyncClient
     sink_latency: SinkLatency
+
+
+def session_speaker(config: VoiceCliConfig) -> FishSpeaker:
+    """Build the speaker a session replies with, from its settings.
+
+    Parameters
+    ----------
+    config : VoiceCliConfig
+        The Fish key, voice, model, base URL, speech settings and cue style.
+
+    Returns
+    -------
+    FishSpeaker
+        The speaker ``fish-voice`` uses for its session and its smoke test.
+    """
+    return FishSpeaker(
+        api_key=config.fish_api_key,
+        voice_id=config.fish_voice_id,
+        model=config.tts_model,
+        tune=config.tts,
+        cue_style=config.cue_style,
+        base_url=config.fish_base,
+    )
+
+
+def session_context(
+    config: VoiceCliConfig,
+    *,
+    session: DuplexSession,
+    open_mic: Callable[[EchoCanceller], Mic],
+    backend: ChatBackend,
+    tts: FishSpeaker,
+    asr_http: httpx.AsyncClient,
+    device: str | int | None = None,
+    muted: Callable[[], bool] = never,
+    full_screen: bool = False,
+) -> DuplexContext:
+    """Assemble one session's context from its settings and what it holds open.
+
+    Parameters
+    ----------
+    config : VoiceCliConfig
+        The session's settings.
+    session : DuplexSession
+        Quit, and the handles of the reply in flight.
+    open_mic : Callable
+        Opens the session's one input stream around the echo canceller built here from
+        ``config.aec``.
+    backend : ChatBackend
+        The open chat backend.
+    tts : FishSpeaker
+        Speaks each reply.
+    asr_http : httpx.AsyncClient
+        The client Fish ASR requests share.
+    device : str or int or None, optional
+        The PortAudio device for the mic and the speaker. The host default when None.
+    muted : Callable, optional
+        The mute switch of the session's turn source. Never muted when omitted.
+    full_screen : bool, optional
+        Whether the session runs in the full-screen app, which decides an ``auto``
+        ``output_latency``.
+
+    Returns
+    -------
+    DuplexContext
+        The context with the opening history: the system prompt, and the pinned seed
+        exchange when the prompt asks for one.
+    """
+    # One input for the whole session, so nothing is lost between listens. The echo
+    # canceller lives with it: the mic cleans every frame and the speaker feeds it.
+    mic = open_mic(EchoCanceller(config.aec))
+    return DuplexContext(
+        config=config,
+        device=device,
+        turn_input=TurnInput(session=session, mic=mic, muted=muted),
+        chat=Chat(
+            backend,
+            History.opening(
+                config.prompt.text, seed=config.prompt.pin_seed, turns=config.history_turns
+            ),
+        ),
+        tts=tts,
+        asr_http=asr_http,
+        sink_latency=sink_latency(config.output_latency, full_screen=full_screen),
+    )

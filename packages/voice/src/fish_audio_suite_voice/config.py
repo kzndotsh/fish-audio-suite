@@ -10,6 +10,8 @@ from urllib.parse import urlsplit
 
 from fish_audio_suite_kit import (
     DEFAULT_SYSTEM_PROMPT,
+    FISH_ASR_MODEL_IDS,
+    PRO_ASR_MODEL,
     CueStyle,
     SuiteDefaults,
     is_insecure_fish_base,
@@ -18,11 +20,10 @@ from fish_audio_suite_kit import (
 )
 from fish_audio_suite_voice.debug import warn
 from fish_audio_suite_voice.env_read import (
-    check_range,
+    FloatSetting,
+    IntSetting,
     read_choice,
     read_flag,
-    read_float,
-    read_int,
     read_text,
     read_verbatim,
     read_word,
@@ -47,7 +48,6 @@ __all__ = [
     "log_dir_from_env",
     "prompt_from_file",
     "sink_latency",
-    "system_prompt_from_file",
     "warn_if_insecure_base",
 ]
 
@@ -65,8 +65,6 @@ TTS_CUE_MODES: Final[tuple[TtsCues, ...]] = ("official", "free")
 OutputLatency = Literal["auto", "low", "high"]
 SinkLatency = Literal["low", "high"]
 OUTPUT_LATENCIES: Final[tuple[OutputLatency, ...]] = ("auto", "low", "high")
-# The two ASR models voice runs. Anything else would 4xx on every turn.
-_ASR_MODELS: Final = ("transcribe-1", "transcribe-1-pro")
 # Names that appear in a read and in a message.
 _FISH_KEY_ENV: Final = "FISH_API_KEY"
 _VOICE_ID_ENV: Final = "FISH_VOICE_ID"
@@ -75,6 +73,45 @@ _PROMPT_ENV: Final = "FISH_VOICE_SYSTEM_PROMPT"
 _PROMPT_FILE_ENV: Final = "FISH_VOICE_SYSTEM_PROMPT_FILE"
 # An unknown word for these keeps the default and says which words there are.
 _USE_ONE_OF: Final = "fish-voice: ignoring {name}={value!r}, use {one_of}"
+# Read by ``load_config`` and checked by ``VoiceCliConfig`` with the same range.
+_HISTORY_TURNS = IntSetting("FISH_VOICE_HISTORY_TURNS", DEFAULT_HISTORY_TURNS, lo=_HISTORY_TURNS_LO)
+_REPEAT_WINDOW = FloatSetting(
+    "FISH_VOICE_REPEAT_WINDOW", DEFAULT_REPEAT_WINDOW_S, lo=_REPEAT_WINDOW_LO_S
+)
+
+
+@dataclass(frozen=True, slots=True)
+class SystemPrompt:
+    """The session's system prompt, and whether the opening exchange is pinned after it.
+
+    Attributes
+    ----------
+    text : str
+        The system prompt.
+    pin_seed : bool
+        Pin the opening exchange that shows several cues. It is pinned for the default
+        prompt and for a character file, which keeps the voice rules. A prompt written
+        out in full is left alone. This is the one place that decides it.
+    """
+
+    text: str
+    pin_seed: bool
+
+    @classmethod
+    def written(cls, text: str) -> SystemPrompt:
+        """Take a prompt written out in full, such as ``FISH_VOICE_SYSTEM_PROMPT``.
+
+        Parameters
+        ----------
+        text : str
+            The whole system prompt.
+
+        Returns
+        -------
+        SystemPrompt
+            Pinned only when it is the default prompt.
+        """
+        return cls(text, pin_seed=text == DEFAULT_SYSTEM_PROMPT)
 
 
 @dataclass(frozen=True, slots=True)
@@ -97,6 +134,8 @@ class VoiceCliConfig:
         Which speech recognition hears the user.
     turn : TurnTune
         The end-of-turn check on the Fish path. Off by default.
+    prompt : SystemPrompt
+        The system prompt, and whether the opening exchange is pinned after it.
     hear_tone : bool
         Keep the tone Fish ASR hears in the voice (``[laughter]``) and give the model a short
         note about it for that turn. Experimental, and off by default.
@@ -132,11 +171,10 @@ class VoiceCliConfig:
     fish_asr_language: str
     tts_model: str
     playback: str
-    system_prompt: str
+    prompt: SystemPrompt
     device: str | None
     output_latency: OutputLatency = "auto"
-    asr_model: str = "transcribe-1-pro"
-    pin_seed: bool = True
+    asr_model: str = PRO_ASR_MODEL
     tts: TtsTune = field(default_factory=TtsTune)
     llm: LlmTune = field(default_factory=LlmTune)
     listen: ListenTune = field(default_factory=ListenTune)
@@ -160,8 +198,8 @@ class VoiceCliConfig:
         ValueError
             When ``history_turns`` is under 1 or ``repeat_window_s`` is negative.
         """
-        check_range("VoiceCliConfig.history_turns", self.history_turns, lo=_HISTORY_TURNS_LO)
-        check_range("VoiceCliConfig.repeat_window_s", self.repeat_window_s, lo=_REPEAT_WINDOW_LO_S)
+        _HISTORY_TURNS.check("VoiceCliConfig.history_turns", self.history_turns)
+        _REPEAT_WINDOW.check("VoiceCliConfig.repeat_window_s", self.repeat_window_s)
 
     @property
     def cue_style(self) -> CueStyle:
@@ -282,6 +320,7 @@ def load_config() -> VoiceCliConfig:
     to a default key. There is no default voice id.
     """
     d = SuiteDefaults()
+    # Read first, so its warnings come before the tunes'.
     prompt = _system_prompt()
     return VoiceCliConfig(
         fish_api_key=read_text(_FISH_KEY_ENV),
@@ -291,14 +330,14 @@ def load_config() -> VoiceCliConfig:
         tts_model=normalize_tts_model(read_word("FISH_TTS_MODEL", d.tts_model)),
         tts=TtsTune.from_env(),
         playback=playback_key(read_word("FISH_VOICE_PLAYBACK", DEFAULT_PLAYBACK)),
-        system_prompt=prompt.text,
-        pin_seed=prompt.pin_seed,
+        prompt=prompt,
         device=read_verbatim("FISH_VOICE_DEVICE"),
         output_latency=read_choice(
             "FISH_VOICE_OUTPUT_LATENCY", "auto", OUTPUT_LATENCIES, warning=_USE_ONE_OF
         ),
-        # Silent, as the proxy is: an unknown id keeps the default.
-        asr_model=read_choice("FISH_ASR_MODEL", d.asr_model, _ASR_MODELS, quiet=True),
+        # Silent, as the proxy is: an unknown id keeps the default, since anything Fish
+        # does not list would fail every turn.
+        asr_model=read_choice("FISH_ASR_MODEL", d.asr_model, FISH_ASR_MODEL_IDS, quiet=True),
         llm=LlmTune.from_env(),
         listen=ListenTune.from_env(),
         barge=BargeTune.from_env(),
@@ -306,51 +345,13 @@ def load_config() -> VoiceCliConfig:
         stt=SttTune.from_env(),
         turn=TurnTune.from_env(),
         hear_tone=read_flag("FISH_VOICE_HEAR_TONE", default=False),
-        history_turns=read_int(
-            "FISH_VOICE_HISTORY_TURNS", DEFAULT_HISTORY_TURNS, lo=_HISTORY_TURNS_LO
-        ),
-        repeat_window_s=read_float(
-            "FISH_VOICE_REPEAT_WINDOW", DEFAULT_REPEAT_WINDOW_S, lo=_REPEAT_WINDOW_LO_S
-        ),
+        history_turns=_HISTORY_TURNS.read(),
+        repeat_window_s=_REPEAT_WINDOW.read(),
         mood_lead=read_flag("FISH_TTS_MOOD_LEAD", default=False),
         tts_cues=read_choice("FISH_TTS_CUES", "official", TTS_CUE_MODES, warning=_USE_ONE_OF),
         drop_narration=read_flag("FISH_TTS_DROP_NARRATION", default=False),
         stream_tts=read_flag("FISH_VOICE_STREAM_TTS", default=False),
     )
-
-
-@dataclass(frozen=True, slots=True)
-class SystemPrompt:
-    """The session's system prompt, and whether the opening exchange is pinned after it.
-
-    Attributes
-    ----------
-    text : str
-        The system prompt.
-    pin_seed : bool
-        Pin the opening exchange that shows several cues. It is pinned for the default
-        prompt and for a character file, which keeps the voice rules. A prompt written
-        out in full is left alone. This is the one place that decides it.
-    """
-
-    text: str
-    pin_seed: bool
-
-    @classmethod
-    def written(cls, text: str) -> SystemPrompt:
-        """Take a prompt written out in full, such as ``FISH_VOICE_SYSTEM_PROMPT``.
-
-        Parameters
-        ----------
-        text : str
-            The whole system prompt.
-
-        Returns
-        -------
-        SystemPrompt
-            Pinned only when it is the default prompt.
-        """
-        return cls(text, pin_seed=text == DEFAULT_SYSTEM_PROMPT)
 
 
 # A character card is a few KB. This stops a wrong path (a log, a binary) from

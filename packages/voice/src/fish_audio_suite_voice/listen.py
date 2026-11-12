@@ -9,7 +9,7 @@ from typing import Final
 
 from fish_audio_suite_kit import MS_PER_S
 from fish_audio_suite_voice.cancel import StopFlag
-from fish_audio_suite_voice.debug import debug, heartbeat_due, trace
+from fish_audio_suite_voice.debug import debug, heartbeat_due, trace, warn
 from fish_audio_suite_voice.mic import Mic
 from fish_audio_suite_voice.pcm import (
     FRAME_MS,
@@ -18,7 +18,8 @@ from fish_audio_suite_voice.pcm import (
     pcm_rms,
     write_mono_wav,
 )
-from fish_audio_suite_voice.recognised import BargeIn, CarriedClip, StreamFallback
+from fish_audio_suite_voice.portaudio import PortAudioMissingError
+from fish_audio_suite_voice.recognised import BargeIn, CarriedClip, NoTurn, StreamFallback
 from fish_audio_suite_voice.scorer import FrameScorer
 from fish_audio_suite_voice.tune import (
     IMPULSE_EXTRA_VOICED,
@@ -33,6 +34,7 @@ from fish_audio_suite_voice.vad import Vad, open_vad
 __all__ = [
     "cooldown_report",
     "listen_reject_reason",
+    "mic_failure",
     "record_utterance",
     "spike_start_allowed",
     "start_frames_needed",
@@ -529,3 +531,20 @@ def stream_utterance(
         if heard.take(frame, idle_frames):
             return True
     return False
+
+
+def mic_failure(error: PortAudioMissingError) -> NoTurn:
+    """Report that the mic cannot open, and end the session.
+
+    Parameters
+    ----------
+    error : PortAudioMissingError
+        What the device loader raised when a listen opened the mic, with its install hints.
+
+    Returns
+    -------
+    NoTurn
+        ``fatal``: without PortAudio no listen can work.
+    """
+    warn(str(error))
+    return NoTurn("fatal")

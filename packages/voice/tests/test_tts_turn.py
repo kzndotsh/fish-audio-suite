@@ -12,6 +12,7 @@ from fishaudio.exceptions import AuthenticationError, RateLimitError, WebSocketE
 from wire_helpers import (
     RecordingSink,
     ScriptedSocket,
+    install_fish_audio,
     make_run,
     play_stream,
 )
@@ -323,21 +324,6 @@ def test_a_cancel_scope_error_before_audio_is_teardown_noise_not_a_failure(
     assert result.got_audio is False
 
 
-class _AudioSocket(SdkSocket):
-    """The SDK socket with two chunks of audio in place of its websocket, and no client."""
-
-    def stream(self, events: AsyncIterator[Any], spec: TurnSpec) -> AsyncIterator[bytes]:
-        del spec
-
-        async def audio() -> AsyncIterator[bytes]:
-            async for _event in events:
-                pass
-            yield b"\x00\x00" * 800
-            yield b"\x00\x00" * 800
-
-        return audio()
-
-
 class _FailingSink(RecordingSink):
     """Raises ``error`` from ``stage`` (start, write or finish), after ``cancel`` is set if given."""
 
@@ -374,7 +360,7 @@ def test_an_error_the_sink_raises_reaches_the_caller(
 ) -> None:
     # A RuntimeError from the sink used to come back as a silent turn, and a failed write
     # as a Fish error in the result. Both now raise, as the speak docstring says.
-    monkeypatch.setattr("fish_audio_suite_voice.tts_turn.SdkSocket", _AudioSocket)
+    install_fish_audio(monkeypatch, [b"\x00\x00" * 800] * 2)
     tts = FishSpeaker(api_key="k", voice_id="v")
     sink = _FailingSink(stage, error)
 
@@ -391,7 +377,7 @@ def test_an_error_the_sink_raises_reaches_the_caller(
 def test_a_sink_error_while_the_turn_is_cancelled_ends_it_quietly(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr("fish_audio_suite_voice.tts_turn.SdkSocket", _AudioSocket)
+    install_fish_audio(monkeypatch, [b"\x00\x00" * 800] * 2)
     tts = FishSpeaker(api_key="k", voice_id="v")
     cancel = threading.Event()
     sink = _FailingSink("write", RuntimeError("stream closed"), cancel=cancel)

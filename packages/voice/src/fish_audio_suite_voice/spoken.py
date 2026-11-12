@@ -10,7 +10,14 @@ from __future__ import annotations
 import re
 from typing import Final
 
-from fish_audio_suite_kit import cue_pattern, strip_cue_tags
+from fish_audio_suite_kit import (
+    CLEAR_CUE,
+    SENTENCE_AND_CLAUSE_MARKS,
+    SENTENCE_CLOSERS,
+    cue_pattern,
+    is_cjk,
+    strip_cue_tags,
+)
 from fish_audio_suite_voice.pcm import SAMPLE_BYTES
 
 __all__ = [
@@ -24,10 +31,10 @@ CHARS_PER_S: Final = 16
 _MIN_SPEED: Final = 0.1
 # A cue is a short bracketed stage direction. Brackets are never speech here.
 _CUE_SPAN_RE: Final = re.compile(cue_pattern(80, flat=True))
-# A model can still write [clear]. That is a throat-clear, not words, so it
-# stays out of the next turn's history. Other cues stay, so the model keeps
-# seeing the style it used.
-_CLEAR: Final = "[clear]"
+# The short [clear] tag stays out of the next turn's history. It was once the default lead
+# the app added to every reply, and a stored one taught the model to open with it. Other
+# cues stay, so the model keeps seeing the style it used.
+_CLEAR: Final = f"[{CLEAR_CUE}]"
 
 
 def _without_clear(text: str) -> str:
@@ -41,19 +48,8 @@ def _pcm_chars(bytes_played: int, sample_rate: int, speed: float, latency_s: flo
     return max(0, int(secs * CHARS_PER_S * max(speed, _MIN_SPEED)))
 
 
-def _cjk_char(ch: str) -> bool:
-    code = ord(ch)
-    return (
-        0x3040 <= code < 0x3100
-        or 0x3400 <= code < 0x4DC0
-        or 0x4E00 <= code < 0xA000
-        or 0xF900 <= code < 0xFB00
-        or 0xAC00 <= code < 0xD7B0
-    )
-
-
 def _word_char(ch: str) -> bool:
-    return ch.isalnum() and not _cjk_char(ch)
+    return ch.isalnum() and not is_cjk(ch)
 
 
 def _extends_tail(tail: str, nxt: str) -> bool:
@@ -61,7 +57,7 @@ def _extends_tail(tail: str, nxt: str) -> bool:
     # "ther" is not finished when the next character is "e". A Cyrillic
     # letter continues the word too. "there.Friend" has finished "there":
     # the period is not part of the next word.
-    if not tail or _cjk_char(nxt):
+    if not tail or is_cjk(nxt):
         return False
     last = tail[-1]
     if nxt.isalnum():
@@ -106,13 +102,13 @@ def _word_prefix(text: str, n: int) -> str:
         # should not record that fragment. CJK has no spaces, including after
         # an English word ("Hello你好"), so there the cut is kept.
         stripped = cut.strip()
-        if any(_cjk_char(ch) for ch in stripped):
-            if _cjk_char(stripped[-1]) or _boundary_finished(stripped, text[n]):
+        if any(is_cjk(ch) for ch in stripped):
+            if is_cjk(stripped[-1]) or _boundary_finished(stripped, text[n]):
                 return stripped
             # The cut is inside a Latin word that follows CJK text. Keep the
             # CJK and drop the half word, or history records "你好H".
             end = len(stripped)
-            while end > 0 and not _cjk_char(stripped[end - 1]):
+            while end > 0 and not is_cjk(stripped[end - 1]):
                 end -= 1
             return stripped[:end].strip()
         # "Hello there" cut on the last letter of "Hello" has no space yet.
@@ -136,7 +132,7 @@ def _word_prefix(text: str, n: int) -> str:
             return f"{head} {tail[:index]}".strip()
     extra = []
     for ch in tail:
-        if not _cjk_char(ch):
+        if not is_cjk(ch):
             break
         extra.append(ch)
     if extra:
@@ -203,8 +199,10 @@ def spoken_prefix(
     return _word_prefix(strip_cue_tags(sent_text), chars)
 
 
-# Punctuation and closers that stay with the word they follow.
-_CLOSERS: Final = frozenset(".,!?;:…‥。！？，、；：\"'”’»›)]}」』）】〉》〕〗")
+# Punctuation and closers that stay with the word they follow: kit's stops, clause marks and
+# sentence closers, plus closing brackets (a cue or an aside ends on one), the two-dot leader
+# and the ideographic comma, which kit's sentence sets leave out.
+_CLOSERS: Final = SENTENCE_AND_CLAUSE_MARKS | SENTENCE_CLOSERS | frozenset("]}）】〕〗‥、")
 # Fewer letters than this are not worth speaking again: "right?" after a barge-in.
 _MIN_RESUME_CHARS: Final = 8
 

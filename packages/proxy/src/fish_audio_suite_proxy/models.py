@@ -5,10 +5,15 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Final
 
-from fish_audio_suite_kit import FISH_TTS_MODEL_IDS, is_header_safe, normalize_tts_model
+from fish_audio_suite_kit import (
+    FISH_ASR_MODEL_IDS,
+    FISH_TTS_MODEL_IDS,
+    PRO_ASR_MODEL,
+    is_header_safe,
+    normalize_tts_model,
+)
 
 __all__ = [
-    "PRO_ASR_MODEL",
     "catalog_ids",
     "default_tts_aliases",
     "parse_aliases",
@@ -20,9 +25,6 @@ __all__ = [
 # and FISH_PROXY_TTS_ALIASES adds or replaces entries.
 _OPENAI_TTS_NAMES: Final = ("tts-1", "tts-1-hd", "gpt-4o-mini-tts")
 
-PRO_ASR_MODEL: Final = "transcribe-1-pro"
-"""The ASR model that takes speaker and audio-event options, and the fallback ASR id."""
-_ASR_NATIVE = ("transcribe-1", PRO_ASR_MODEL)
 # Accepted on the transcription route. It is not a Fish id, so it takes the default.
 _ASR_ALIASES = ("whisper-1",)
 _PREFIX = "fish-audio/"
@@ -127,7 +129,7 @@ def resolve_asr_model(model: object, default: str) -> str:
         Client ``model``. A ``fish-audio/`` prefix is stripped. ``whisper-1``
         and any other id that is not native fall back to ``default``.
     default : str
-        Used when ``model`` is not ``transcribe-1`` or ``transcribe-1-pro``.
+        Used when ``model`` is not one of ``FISH_ASR_MODEL_IDS``.
 
     Returns
     -------
@@ -138,10 +140,10 @@ def resolve_asr_model(model: object, default: str) -> str:
         illegal default becomes ``PRO_ASR_MODEL``.
     """
     chosen = _header_model(_native_model_id(_model_name(model, default))).lower()
-    if chosen in _ASR_NATIVE:
+    if chosen in FISH_ASR_MODEL_IDS:
         return chosen
     fallback = _header_model(_native_model_id(default)).lower()
-    if fallback in _ASR_NATIVE:
+    if fallback in FISH_ASR_MODEL_IDS:
         return fallback
     custom = _header_model(default)
     if custom:
@@ -163,7 +165,7 @@ def catalog_ids(aliases: Mapping[str, str]) -> list[str]:
         Native Fish ids, the accepted aliases, and the native ids prefixed
         with ``fish-audio/``. Every id listed here is accepted on a route.
     """
-    native = [*FISH_TTS_MODEL_IDS, *_ASR_NATIVE]
+    native = [*FISH_TTS_MODEL_IDS, *FISH_ASR_MODEL_IDS]
     prefixed = [f"{_PREFIX}{name}" for name in native]
     # An alias can share a name with a native id. Each id is listed once.
     return list(dict.fromkeys([*native, *aliases, *_ASR_ALIASES, *prefixed]))

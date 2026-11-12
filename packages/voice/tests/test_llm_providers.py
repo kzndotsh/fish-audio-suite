@@ -56,6 +56,24 @@ def test_the_default_is_openrouter_and_never_reads_the_experiential_key(
     assert tune.api_key == "or-key"
 
 
+@pytest.mark.parametrize(
+    ("base", "backend"),
+    [
+        (OPENROUTER_API_BASE, "openrouter"),
+        ("https://eu.openrouter.ai/api/v1", "openrouter"),
+        ("https://api.example.com/v1", "openai"),
+        (EXPERIENTIAL_API_BASE, "openai"),
+        ("http://localhost:11434/v1", "openai"),
+        ("https://example.test/openrouter.ai", "openai"),
+    ],
+)
+def test_a_tune_built_in_code_takes_its_backend_from_the_base(base: str, backend: str) -> None:
+    # A caller who sets only the base must not send OpenRouter SDK traffic to another host.
+    tune = LlmTune(base=base, api_key="k", model="m")
+    assert tune.backend == backend
+    assert tune.uses_openrouter_sdk is (backend == "openrouter")
+
+
 def test_naming_experiential_picks_its_base_key_and_model(env: pytest.MonkeyPatch) -> None:
     env.setenv("FISH_LLM_PROVIDER", "Experiential")
     env.setenv("EXPLABS_API_KEY", "xpl-key")
@@ -176,7 +194,6 @@ def test_service_tier_is_validated(
 
 def _experiential_tune(**kw: Any) -> LlmTune:
     fields: dict[str, Any] = {
-        "backend": "openai",
         "base": EXPERIENTIAL_API_BASE,
         "api_key": "xpl_test",
         "model": "glm-5.3-flash-abliterated",

@@ -11,10 +11,8 @@ from typing import Final
 from fish_audio_suite_voice.events import (
     Bye,
     Event,
+    ExitCode,
     Heard,
-    MicLevel,
-    Notice,
-    OutputLevel,
     ReplyEnd,
     ReplyToken,
     SessionState,
@@ -28,7 +26,6 @@ __all__ = [
     "Ballistics",
     "SessionView",
     "SpeechScale",
-    "TurnTimings",
     "noise_floor_db",
     "processing_level",
     "reduce_view",
@@ -62,42 +59,27 @@ _DOT_BITS: Final = ((0x01, 0x08), (0x02, 0x10), (0x04, 0x20), (0x40, 0x80))
 
 @dataclass(frozen=True, slots=True)
 class SessionView:
-    """Everything a display shows about a session, as one immutable value.
+    """What a display shows about a session, folded from its events, as one immutable value.
+
+    The level strips are not in it: a display draws each ``MicLevel`` and ``OutputLevel`` as
+    it arrives, because a strip shows every block, not only the latest.
 
     Attributes
     ----------
     state : SessionState
         What the session is doing.
-    heard : str
-        The last line that will be, or was, answered. Empty before the first.
     reply : str
         The model's reply so far, growing token by token, then the whole reply.
     last_turn : LatencySnapshot or None
         The timings of the last finished turn.
-    turns : int
-        How many turns have finished.
-    mic_rms : float
-        The latest mic level, after mic cleanup.
-    mic_need : float
-        The level that counts as speech.
-    last_notice : str
-        The latest status line, such as a retry.
-    exit_code : int or None
+    exit_code : ExitCode or None
         Set when the session has ended. None while it runs.
-    out_rms : float
-        The latest level of the reply being played.
     """
 
     state: SessionState = SessionState.IDLE
-    heard: str = ""
     reply: str = ""
     last_turn: LatencySnapshot | None = None
-    turns: int = 0
-    mic_rms: float = 0.0
-    mic_need: float = 0.0
-    last_notice: str = ""
-    exit_code: int | None = None
-    out_rms: float = 0.0
+    exit_code: ExitCode | None = None
 
 
 def wave_dots(
@@ -163,31 +145,25 @@ def reduce_view(view: SessionView, event: Event) -> SessionView:
     Returns
     -------
     SessionView
-        A new view, or ``view`` itself when the event changes nothing. A display
-        assigns the result to one reactive attribute, which refreshes only when the
-        value changed.
+        A new view, or an equal one when the event changes nothing.
 
     Notes
     -----
     Call it from one thread, in event order, such as the thread that drains an
-    ``EventQueue``. ``LogLine`` events do not change the view: log lines belong in a log.
+    ``EventQueue``. Only the state, the reply, the last turn's timings and the exit code
+    are folded: the conversation, notes, levels and log lines are each drawn as their
+    event arrives.
     """
     moved = replace(view, state=next_state(view.state, event))
     match event:
-        case Heard(text=text):
-            return replace(moved, heard=text, reply="")
+        case Heard():
+            return replace(moved, reply="")
         case ReplyToken(text=text):
             return replace(moved, reply=view.reply + text)
         case ReplyEnd(text=text):
             return replace(moved, reply=text)
-        case MicLevel(rms=rms, need=need):
-            return replace(moved, mic_rms=rms, mic_need=need)
-        case OutputLevel(rms=rms):
-            return replace(moved, out_rms=rms)
-        case Notice(text=text):
-            return replace(moved, last_notice=text)
         case TurnEnded(snapshot=snapshot):
-            return replace(moved, last_turn=snapshot, turns=view.turns + 1)
+            return replace(moved, last_turn=snapshot)
         case Bye(code=code):
             return replace(moved, exit_code=code)
         case _:

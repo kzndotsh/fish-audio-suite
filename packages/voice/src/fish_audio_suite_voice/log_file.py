@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Any, Final, TextIO
 
-from fish_audio_suite_voice.log_format import TAG_WIDTH, clock_stamp, log_tag, turn_offset
+from fish_audio_suite_voice.log_format import clock_stamp, compose, log_tag
 
 __all__ = [
     "close_log_file",
@@ -54,9 +54,11 @@ class _FileLog:
         return path
 
     def write(self, tag: str, body: str, stamp: str | None = None) -> None:
-        line = f"{stamp or clock_stamp()} {turn_offset()}  {tag.ljust(TAG_WIDTH)}{body}".rstrip()
+        stamp = stamp or clock_stamp()
         with self._lock, contextlib.suppress(OSError, ValueError):
             if self._handle is not None:
+                # Laid out like a terminal line; a file is not a terminal, so it is plain.
+                line = compose(stamp, tag, tag, body, self._handle).rstrip()
                 self._handle.write(line + "\n")
 
     def close(self) -> None:

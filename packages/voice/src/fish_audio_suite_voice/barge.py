@@ -18,6 +18,7 @@ from fish_audio_suite_voice.debug import debug, heartbeat_due, trace, warn
 from fish_audio_suite_voice.events import EVENTS, BargedIn
 from fish_audio_suite_voice.mic import Mic
 from fish_audio_suite_voice.pcm import LISTEN_HEARTBEAT_FRAMES
+from fish_audio_suite_voice.recognised import BargeIn
 from fish_audio_suite_voice.scorer import FrameScorer
 from fish_audio_suite_voice.tune import BargeTune, ListenTune
 from fish_audio_suite_voice.vad import open_vad
@@ -157,6 +158,19 @@ class BargeGate:
         self.failure: Exception | None = None
         self._muted: Callable[[], bool] = muted or never
         self._listen: ListenTune = listen or ListenTune()
+
+    def clip(self) -> BargeIn | None:
+        """Return the speech that tripped the gate, for the next listen to start from.
+
+        Returns
+        -------
+        BargeIn or None
+            The kept frames, the mic position after them and the level this gate admitted
+            them at (``BargeTune.min_rms``). None when the gate did not trip.
+        """
+        if not self.captured:
+            return None
+        return BargeIn(self.captured, self.resume_at, self.tune.min_rms)
 
     def _bleed_wait(self) -> float:
         # AEC3 takes the speaker out of the mic, so the watch can start sooner with it.

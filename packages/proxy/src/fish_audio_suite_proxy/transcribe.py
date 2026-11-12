@@ -15,6 +15,7 @@ from starlette.datastructures import FormData, UploadFile
 from starlette.exceptions import HTTPException
 
 from fish_audio_suite_kit import (
+    PRO_ASR_MODEL,
     AsrBody,
     AsrFormat,
     CaptionCue,
@@ -32,7 +33,7 @@ from fish_audio_suite_kit import (
     utf8_text,
 )
 from fish_audio_suite_proxy.errors import ProxyError, unsupported_format
-from fish_audio_suite_proxy.models import PRO_ASR_MODEL, resolve_asr_model
+from fish_audio_suite_proxy.models import resolve_asr_model
 from fish_audio_suite_proxy.phrases import AsrScrub, caption_cues, json_number, word_cues
 from fish_audio_suite_proxy.request_body import decode_audio_b64, read_json_object
 from fish_audio_suite_proxy.settings import ProxySettings

@@ -132,7 +132,6 @@ def _stream(
     return llm_token_stream(
         [{"role": "user", "content": "hi"}],
         tune=LlmTune(
-            backend="openai",
             base="https://api.example.com/v1",
             api_key="sk-test",
             model="org/model",

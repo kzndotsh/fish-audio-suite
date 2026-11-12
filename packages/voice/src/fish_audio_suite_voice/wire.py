@@ -12,11 +12,17 @@ from typing import Any, Final, Protocol
 from fishaudio import FlushEvent, TextEvent
 from fishaudio.types import LatencyMode, TTSConfig
 
-from fish_audio_suite_kit import AudioFormat, FishHttpError, SuiteDefaults, elapsed_ms
+from fish_audio_suite_kit import (
+    AudioFormat,
+    FishAuthError,
+    FishHttpError,
+    SuiteDefaults,
+    elapsed_ms,
+)
 from fish_audio_suite_voice.audio_chain import AudioChain
 from fish_audio_suite_voice.cancel import reap
 from fish_audio_suite_voice.debug import debug, warn
-from fish_audio_suite_voice.playback import PlaybackSink
+from fish_audio_suite_voice.playback import PlaybackSink, sink_output_latency
 from fish_audio_suite_voice.spoken import spoken_prefix
 
 __all__ = [
@@ -63,8 +69,8 @@ class TtsResult:
     error_message : str or None
         Text of the failure, set for a socket drop too.
     error : FishHttpError or None
-        The failure as a kit error, set when there is a status. Test it with
-        ``isinstance``: ``FishAuthError`` (401, 402, 403) ends duplex.
+        The failure as a kit error, set when there is a status. ``fatal`` says whether
+        it is a ``FishAuthError`` (401, 402, 403), which ends duplex.
     """
 
     spoken_so_far: str
@@ -82,6 +88,16 @@ class TtsResult:
         if self.error is None and self.error_status is not None:
             error = FishHttpError(self.error_status, self.error_message or "")
             object.__setattr__(self, "error", error)
+
+    @property
+    def failed(self) -> bool:
+        """Whether Fish failed the turn: an HTTP status, or a message for a socket drop."""
+        return self.error_status is not None or bool(self.error_message)
+
+    @property
+    def fatal(self) -> bool:
+        """Whether the failure is the key's (401, 402 or 403), which no later turn can pass."""
+        return isinstance(self.error, FishAuthError)
 
 
 _STOCK_RATE: Final = SuiteDefaults().sample_rate
@@ -442,9 +458,7 @@ def tts_result(run: TurnRun) -> TtsResult:
         # A socket drop has no HTTP status. The message is still a failed turn.
         failed=run.error_status is not None or bool(run.error_message),
         speed=spec.speed,
-        # A third-party sink may not have the attribute, and a turn that
-        # already played must not fail on it.
-        output_latency_s=float(getattr(run.sink, "output_latency_s", 0.0) or 0.0),
+        output_latency_s=sink_output_latency(run.sink),
     )
     return TtsResult(
         spoken_so_far=spoken,

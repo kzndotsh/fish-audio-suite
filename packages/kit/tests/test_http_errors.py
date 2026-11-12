@@ -9,7 +9,6 @@ from fish_audio_suite_kit import (
     FishErrorBody,
     FishHttpError,
     bearer,
-    describe_request_error,
     fish_backoff_s,
     fish_request_id,
     parse_asr_body,
@@ -28,24 +27,6 @@ def test_fish_error_message_is_utf8() -> None:
     body.message.encode("utf-8")
     err = FishHttpError(502, "bad \ud800 byte")
     err.message.encode("utf-8")
-
-
-def test_transport_error_timeout_and_unreachable() -> None:
-    status, message = describe_request_error(TimeoutError("late"), TimeoutError)
-    assert status == 504
-    assert message == "Fish request timed out"
-    status, message = describe_request_error(ConnectionError("reset"), TimeoutError)
-    assert (status, message) == (502, "Fish upstream unreachable")
-
-
-def test_transport_error_text_never_reaches_the_message() -> None:
-    secret = "connect to 10.0.0.5:443 refused [Errno 111]"
-    status, message = describe_request_error(ConnectionError(secret), TimeoutError)
-    assert status == 502
-    assert "10.0.0.5" not in message
-    assert "Errno" not in message
-    _status, timeout_message = describe_request_error(TimeoutError(secret), TimeoutError)
-    assert "10.0.0.5" not in timeout_message
 
 
 def test_fish_error_ignores_a_body_status_that_is_not_an_error() -> None:
@@ -210,3 +191,15 @@ def test_fish_request_id_reads_the_body_or_the_header_and_keeps_one_short_line()
     assert fish_request_id({"request_id": "x\ty"}, {}) == "x"
     assert fish_request_id({"request_id": " \n "}, {"x-request-id": "h"}) == "h"
     assert fish_request_id({"request_id": "x" * 500}, {}) == "x" * 128
+
+
+def test_a_fish_error_carries_its_code_and_request_id() -> None:
+    body = b'{"message": "too long", "code": "audio_too_long", "request_id": "req-1"}'
+    found = parse_fish_error(400, body, {"x-request-id": "hdr-1"})
+    assert (found.message, found.code, found.request_id) == ("too long", "audio_too_long", "req-1")
+    assert parse_fish_error(400, body, {"x-request-id": "hdr-1"}, header_first=True).request_id == (
+        "hdr-1"
+    )
+    plain = parse_fish_error(502, b"bad gateway", {"x-request-id": " rid\nX: 1"})
+    assert (plain.code, plain.request_id) == ("", "rid")
+    assert parse_fish_error(400, {"code": True, "request_id": ["x"]}).code == ""

@@ -14,11 +14,12 @@ from typing import Final, Literal, Self
 
 from fish_audio_suite_voice.debug import warn
 from fish_audio_suite_voice.env_read import (
+    ChoiceSetting,
+    FloatSetting,
+    IntSetting,
     check_range,
-    read_choice,
     read_flag,
     read_float,
-    read_int,
     read_text,
     read_word,
 )
@@ -134,6 +135,59 @@ _WET_HI: Final = 1.0
 NOISE_SUPPRESSION_STEPS_DB: Final = (0, 6, 12, 18, 21)
 DEFAULT_NOISE_SUPPRESSION_DB: Final = 18
 
+# Each setting a tune reads and checks, with its variable, default and range, declared once:
+# ``from_env`` reads it and ``__post_init__`` holds a value given in code to the same range.
+_VAD = IntSetting("FISH_VOICE_VAD", DEFAULT_VAD_AGGRESSIVENESS, lo=_VAD_MODE_LO, hi=_VAD_MODE_HI)
+_SILENCE = IntSetting("FISH_VOICE_SILENCE_FRAMES", DEFAULT_END_SILENCE_FRAMES, lo=_ONE_FRAME)
+_SPEECH = IntSetting("FISH_VOICE_SPEECH_FRAMES", DEFAULT_START_SPEECH_FRAMES, lo=_ONE_FRAME)
+_MIN_RMS = FloatSetting("FISH_VOICE_MIN_RMS", DEFAULT_MIN_SPEECH_RMS, positive=True)
+_PRE_PAD = IntSetting("FISH_VOICE_PRE_PAD_FRAMES", DEFAULT_PRE_PAD_FRAMES, lo=0)
+_MIN_VOICED = IntSetting(
+    "FISH_VOICE_MIN_VOICED_FRAMES",
+    DEFAULT_MIN_VOICED_FRAMES,
+    lo=_ONE_FRAME,
+    hi=MAX_UTTERANCE_FRAMES,
+)
+_TURN_SILENCE = IntSetting(
+    "FISH_VOICE_TURN_SILENCE_FRAMES", DEFAULT_TURN_SILENCE_FRAMES, lo=_ONE_FRAME
+)
+_TURN_EXTEND = IntSetting(
+    "FISH_VOICE_TURN_EXTEND_FRAMES", DEFAULT_END_SILENCE_FRAMES, lo=_ONE_FRAME
+)
+_TURN_EXTENSIONS = IntSetting(
+    "FISH_VOICE_TURN_EXTENSIONS", DEFAULT_TURN_EXTENSIONS, lo=1, hi=_TURN_EXTENSIONS_MAX
+)
+_BARGE_FRAMES = IntSetting("FISH_VOICE_BARGE_FRAMES", DEFAULT_BARGE_HIT_FRAMES, lo=_ONE_FRAME)
+_BARGE_RMS = FloatSetting("FISH_VOICE_BARGE_RMS", DEFAULT_BARGE_RMS, positive=True)
+_PLAYING_GAIN = FloatSetting(
+    "FISH_VOICE_BARGE_PLAYING_GAIN", DEFAULT_BARGE_PLAYING_GAIN, lo=_PLAYING_GAIN_LO
+)
+_BLEED_DELAY = FloatSetting("FISH_VOICE_BLEED_DELAY", DEFAULT_BLEED_DELAY_S, lo=_NO_WAIT_S)
+_AEC_BLEED_DELAY = FloatSetting(
+    "FISH_VOICE_AEC_BLEED_DELAY", DEFAULT_AEC_BLEED_DELAY_S, lo=_NO_WAIT_S
+)
+_COOLDOWN = FloatSetting("FISH_VOICE_COOLDOWN", DEFAULT_POST_SPEAK_COOLDOWN_S, lo=_NO_WAIT_S)
+_AEC_WET = FloatSetting("FISH_VOICE_AEC_WET", DEFAULT_AEC_WET, lo=_WET_LO, hi=_WET_HI)
+# Read within the outer steps first; ``AecTune`` then takes only a step itself.
+_NOISE = IntSetting(
+    "FISH_VOICE_NOISE_SUPPRESSION",
+    DEFAULT_NOISE_SUPPRESSION_DB,
+    lo=NOISE_SUPPRESSION_STEPS_DB[0],
+    hi=NOISE_SUPPRESSION_STEPS_DB[-1],
+)
+_DEEPGRAM_REGION = ChoiceSetting(
+    "FISH_VOICE_DEEPGRAM_REGION",
+    DEFAULT_DEEPGRAM_REGION,
+    DEEPGRAM_REGIONS,
+    warning="fish-voice: ignoring {name}={value!r}, using {default} (one of {choices})",
+)
+_EOT = FloatSetting(
+    "FISH_VOICE_EOT_THRESHOLD", DEFAULT_EOT_THRESHOLD, lo=_EOT_THRESHOLD_LO, hi=_EOT_THRESHOLD_HI
+)
+_STT: Final[ChoiceSetting[SttProvider]] = ChoiceSetting(
+    "FISH_VOICE_STT", DEFAULT_STT, STT_PROVIDERS
+)
+
 
 @dataclass(frozen=True, slots=True)
 class ListenTune:
@@ -183,22 +237,12 @@ class ListenTune:
         ValueError
             When a value is out of range.
         """
-        check_range(
-            "ListenTune.vad_aggressiveness",
-            self.vad_aggressiveness,
-            lo=_VAD_MODE_LO,
-            hi=_VAD_MODE_HI,
-        )
-        check_range("ListenTune.end_silence_frames", self.end_silence_frames, lo=_ONE_FRAME)
-        check_range("ListenTune.start_speech_frames", self.start_speech_frames, lo=_ONE_FRAME)
-        check_range("ListenTune.min_speech_rms", self.min_speech_rms, positive=True)
-        check_range("ListenTune.pre_pad_frames", self.pre_pad_frames, lo=0)
-        check_range(
-            "ListenTune.min_voiced_frames",
-            self.min_voiced_frames,
-            lo=_ONE_FRAME,
-            hi=MAX_UTTERANCE_FRAMES,
-        )
+        _VAD.check("ListenTune.vad_aggressiveness", self.vad_aggressiveness)
+        _SILENCE.check("ListenTune.end_silence_frames", self.end_silence_frames)
+        _SPEECH.check("ListenTune.start_speech_frames", self.start_speech_frames)
+        _MIN_RMS.check("ListenTune.min_speech_rms", self.min_speech_rms)
+        _PRE_PAD.check("ListenTune.pre_pad_frames", self.pre_pad_frames)
+        _MIN_VOICED.check("ListenTune.min_voiced_frames", self.min_voiced_frames)
         shortest = self.start_speech_frames + IMPULSE_START_EXTRA
         if self.pre_pad_frames < shortest:
             object.__setattr__(self, "pre_pad_frames", shortest)
@@ -212,25 +256,16 @@ class ListenTune:
         ListenTune
             Validated tune. A bad value is replaced by its default with a warning.
         """
-        start = read_int("FISH_VOICE_SPEECH_FRAMES", DEFAULT_START_SPEECH_FRAMES, lo=_ONE_FRAME)
-        pad = read_int("FISH_VOICE_PRE_PAD_FRAMES", DEFAULT_PRE_PAD_FRAMES, lo=0)
+        start = _SPEECH.read()
+        pad = _PRE_PAD.read()
         return cls(
-            vad_aggressiveness=read_int(
-                "FISH_VOICE_VAD", DEFAULT_VAD_AGGRESSIVENESS, lo=_VAD_MODE_LO, hi=_VAD_MODE_HI
-            ),
+            vad_aggressiveness=_VAD.read(),
             vad_engine=read_word("FISH_VOICE_VAD_ENGINE", DEFAULT_VAD_ENGINE),
-            end_silence_frames=read_int(
-                "FISH_VOICE_SILENCE_FRAMES", DEFAULT_END_SILENCE_FRAMES, lo=_ONE_FRAME
-            ),
+            end_silence_frames=_SILENCE.read(),
             start_speech_frames=start,
-            min_speech_rms=read_float("FISH_VOICE_MIN_RMS", DEFAULT_MIN_SPEECH_RMS, positive=True),
+            min_speech_rms=_MIN_RMS.read(),
             pre_pad_frames=pad,
-            min_voiced_frames=read_int(
-                "FISH_VOICE_MIN_VOICED_FRAMES",
-                DEFAULT_MIN_VOICED_FRAMES,
-                lo=_ONE_FRAME,
-                hi=MAX_UTTERANCE_FRAMES,
-            ),
+            min_voiced_frames=_MIN_VOICED.read(),
         )
 
 
@@ -271,9 +306,9 @@ class TurnTune:
         ValueError
             When a value is out of range.
         """
-        check_range("TurnTune.silence_frames", self.silence_frames, lo=_ONE_FRAME)
-        check_range("TurnTune.extend_frames", self.extend_frames, lo=_ONE_FRAME)
-        check_range("TurnTune.max_extensions", self.max_extensions, lo=1, hi=_TURN_EXTENSIONS_MAX)
+        _TURN_SILENCE.check("TurnTune.silence_frames", self.silence_frames)
+        _TURN_EXTEND.check("TurnTune.extend_frames", self.extend_frames)
+        _TURN_EXTENSIONS.check("TurnTune.max_extensions", self.max_extensions)
 
     @classmethod
     def from_env(cls) -> Self:
@@ -286,18 +321,9 @@ class TurnTune:
         """
         return cls(
             enabled=read_flag("FISH_VOICE_TURN_CHECK", default=False),
-            silence_frames=read_int(
-                "FISH_VOICE_TURN_SILENCE_FRAMES", DEFAULT_TURN_SILENCE_FRAMES, lo=_ONE_FRAME
-            ),
-            extend_frames=read_int(
-                "FISH_VOICE_TURN_EXTEND_FRAMES", DEFAULT_END_SILENCE_FRAMES, lo=_ONE_FRAME
-            ),
-            max_extensions=read_int(
-                "FISH_VOICE_TURN_EXTENSIONS",
-                DEFAULT_TURN_EXTENSIONS,
-                lo=1,
-                hi=_TURN_EXTENSIONS_MAX,
-            ),
+            silence_frames=_TURN_SILENCE.read(),
+            extend_frames=_TURN_EXTEND.read(),
+            max_extensions=_TURN_EXTENSIONS.read(),
         )
 
 
@@ -344,12 +370,12 @@ class BargeTune:
         ValueError
             When a value is out of range.
         """
-        check_range("BargeTune.hit_frames", self.hit_frames, lo=_ONE_FRAME)
-        check_range("BargeTune.min_rms", self.min_rms, positive=True)
-        check_range("BargeTune.playing_gain", self.playing_gain, lo=_PLAYING_GAIN_LO)
-        check_range("BargeTune.bleed_delay_s", self.bleed_delay_s, lo=_NO_WAIT_S)
-        check_range("BargeTune.aec_bleed_delay_s", self.aec_bleed_delay_s, lo=_NO_WAIT_S)
-        check_range("BargeTune.cooldown_s", self.cooldown_s, lo=_NO_WAIT_S)
+        _BARGE_FRAMES.check("BargeTune.hit_frames", self.hit_frames)
+        _BARGE_RMS.check("BargeTune.min_rms", self.min_rms)
+        _PLAYING_GAIN.check("BargeTune.playing_gain", self.playing_gain)
+        _BLEED_DELAY.check("BargeTune.bleed_delay_s", self.bleed_delay_s)
+        _AEC_BLEED_DELAY.check("BargeTune.aec_bleed_delay_s", self.aec_bleed_delay_s)
+        _COOLDOWN.check("BargeTune.cooldown_s", self.cooldown_s)
 
     @classmethod
     def from_env(cls) -> Self:
@@ -361,20 +387,12 @@ class BargeTune:
             Validated tune. A bad value is replaced by its default with a warning.
         """
         return cls(
-            hit_frames=read_int("FISH_VOICE_BARGE_FRAMES", DEFAULT_BARGE_HIT_FRAMES, lo=_ONE_FRAME),
-            min_rms=read_float("FISH_VOICE_BARGE_RMS", DEFAULT_BARGE_RMS, positive=True),
-            playing_gain=read_float(
-                "FISH_VOICE_BARGE_PLAYING_GAIN", DEFAULT_BARGE_PLAYING_GAIN, lo=_PLAYING_GAIN_LO
-            ),
-            bleed_delay_s=read_float(
-                "FISH_VOICE_BLEED_DELAY", DEFAULT_BLEED_DELAY_S, lo=_NO_WAIT_S
-            ),
-            cooldown_s=read_float(
-                "FISH_VOICE_COOLDOWN", DEFAULT_POST_SPEAK_COOLDOWN_S, lo=_NO_WAIT_S
-            ),
-            aec_bleed_delay_s=read_float(
-                "FISH_VOICE_AEC_BLEED_DELAY", DEFAULT_AEC_BLEED_DELAY_S, lo=_NO_WAIT_S
-            ),
+            hit_frames=_BARGE_FRAMES.read(),
+            min_rms=_BARGE_RMS.read(),
+            playing_gain=_PLAYING_GAIN.read(),
+            bleed_delay_s=_BLEED_DELAY.read(),
+            cooldown_s=_COOLDOWN.read(),
+            aec_bleed_delay_s=_AEC_BLEED_DELAY.read(),
         )
 
 
@@ -412,8 +430,8 @@ class AecTune:
         ValueError
             When a value is out of range.
         """
-        check_range("AecTune.wet", self.wet, lo=_WET_LO, hi=_WET_HI)
-        if self.noise_suppression_db not in NOISE_SUPPRESSION_STEPS_DB:
+        _AEC_WET.check("AecTune.wet", self.wet)
+        if not _is_noise_step(self.noise_suppression_db):
             msg = (
                 f"AecTune.noise_suppression_db must be one of {_steps()}, "
                 f"not {self.noise_suppression_db}"
@@ -429,19 +447,13 @@ class AecTune:
         AecTune
             Validated tune. A bad value is replaced by its default with a warning.
         """
-        name = "FISH_VOICE_NOISE_SUPPRESSION"
-        noise = read_int(
-            name,
-            DEFAULT_NOISE_SUPPRESSION_DB,
-            lo=NOISE_SUPPRESSION_STEPS_DB[0],
-            hi=NOISE_SUPPRESSION_STEPS_DB[-1],
-        )
-        if noise not in NOISE_SUPPRESSION_STEPS_DB:
-            warn(f"fish-voice: {name} takes {_steps()}, using {DEFAULT_NOISE_SUPPRESSION_DB}")
-            noise = DEFAULT_NOISE_SUPPRESSION_DB
+        noise = _NOISE.read()
+        if not _is_noise_step(noise):
+            warn(f"fish-voice: {_NOISE.name} takes {_steps()}, using {_NOISE.default}")
+            noise = _NOISE.default
         return cls(
             enabled=read_flag("FISH_VOICE_AEC", default=True),
-            wet=read_float("FISH_VOICE_AEC_WET", DEFAULT_AEC_WET, lo=_WET_LO, hi=_WET_HI),
+            wet=_AEC_WET.read(),
             auto_gain=read_flag("FISH_VOICE_AGC", default=True),
             noise_suppression_db=noise,
         )
@@ -460,6 +472,10 @@ class AecTune:
 
 def _steps() -> str:
     return ", ".join(map(str, NOISE_SUPPRESSION_STEPS_DB))
+
+
+def _is_noise_step(db: int) -> bool:
+    return db in NOISE_SUPPRESSION_STEPS_DB
 
 
 @dataclass(frozen=True, slots=True)
@@ -503,18 +519,11 @@ class DeepgramTune:
         ValueError
             When a value is out of range.
         """
-        if not self.model.startswith(_DEEPGRAM_MODEL_FAMILY):
+        if not _is_flux(self.model):
             msg = f"DeepgramTune.model must be a Flux model, not {self.model!r}"
             raise ValueError(msg)
-        if self.region not in DEEPGRAM_REGIONS:
-            msg = f"DeepgramTune.region must be one of {', '.join(DEEPGRAM_REGIONS)}, not {self.region!r}"
-            raise ValueError(msg)
-        check_range(
-            "DeepgramTune.eot_threshold",
-            self.eot_threshold,
-            lo=_EOT_THRESHOLD_LO,
-            hi=_EOT_THRESHOLD_HI,
-        )
+        _DEEPGRAM_REGION.check("DeepgramTune.region", self.region)
+        _EOT.check("DeepgramTune.eot_threshold", self.eot_threshold)
 
     @classmethod
     def from_env(cls) -> Self:
@@ -527,7 +536,7 @@ class DeepgramTune:
         """
         name = "FISH_VOICE_DEEPGRAM_MODEL"
         model = read_word(name, DEFAULT_DEEPGRAM_MODEL)
-        if not model.startswith(_DEEPGRAM_MODEL_FAMILY):
+        if not _is_flux(model):
             warn(
                 f"fish-voice: ignoring {name}={model!r}, "
                 f"using {DEFAULT_DEEPGRAM_MODEL} (only Flux models stream turns)"
@@ -536,23 +545,26 @@ class DeepgramTune:
         return cls(
             key=read_text("DEEPGRAM_API_KEY"),
             model=model,
-            region=read_choice(
-                "FISH_VOICE_DEEPGRAM_REGION",
-                DEFAULT_DEEPGRAM_REGION,
-                DEEPGRAM_REGIONS,
-                warning="fish-voice: ignoring {name}={value!r}, using {default} (one of {choices})",
-            ),
-            eot_threshold=read_float(
-                "FISH_VOICE_EOT_THRESHOLD",
-                DEFAULT_EOT_THRESHOLD,
-                lo=_EOT_THRESHOLD_LO,
-                hi=_EOT_THRESHOLD_HI,
-            ),
+            region=_DEEPGRAM_REGION.read(),
+            eot_threshold=_EOT.read(),
         )
 
 
-def _eager_threshold(eot: float) -> float:
-    """Read ``FISH_VOICE_EAGER_EOT_THRESHOLD``: 0 for off, else 0.3 to 0.9 and at most ``eot``."""
+def _is_flux(model: str) -> bool:
+    return model.startswith(_DEEPGRAM_MODEL_FAMILY)
+
+
+def _eager_cap(provider: SttProvider, deepgram: DeepgramTune) -> float | None:
+    """Return the end-of-turn threshold an early one may not pass, or None for no cap.
+
+    Only Deepgram's Flux has one: Fish's realtime recogniser takes any early threshold
+    above 0 as "on".
+    """
+    return deepgram.eot_threshold if provider == "deepgram" else None
+
+
+def _eager_threshold(cap: float | None) -> float:
+    """Read ``FISH_VOICE_EAGER_EOT_THRESHOLD``: 0 for off, else 0.3 to 0.9 and at most ``cap``."""
     name = "FISH_VOICE_EAGER_EOT_THRESHOLD"
     # Anything from 0 up reads, so a value just under the range is raised to it, not dropped.
     value = read_float(name, _EAGER_EOT_OFF, lo=_EAGER_EOT_OFF, hi=_EAGER_EOT_HI)
@@ -561,9 +573,9 @@ def _eager_threshold(eot: float) -> float:
     if value < _EAGER_EOT_LO:
         warn(f"fish-voice: {name} needs {_EAGER_EOT_LO} to {_EAGER_EOT_HI}, using {_EAGER_EOT_LO}")
         value = _EAGER_EOT_LO
-    if value > eot:
-        warn(f"fish-voice: {name} is above FISH_VOICE_EOT_THRESHOLD, using {eot}")
-        value = eot
+    if cap is not None and value > cap:
+        warn(f"fish-voice: {name} is above {_EOT.name}, using {cap}")
+        value = cap
     return value
 
 
@@ -581,11 +593,11 @@ class SttTune:
     deepgram : DeepgramTune
         Deepgram's key, model, region and end-of-turn threshold.
     eager_eot_threshold : float
-        0 (the default) is off. From 0.3 to 0.9, and no higher than Deepgram's
-        ``eot_threshold``, it asks the streaming recogniser to say when a turn is probably
-        over, a little before it is sure, so the reply can start being written early. Costs
-        50 to 70 percent more model calls. Fish's realtime recogniser has no threshold: any
-        value above 0 turns its early end of turn on.
+        0 (the default) is off. From 0.3 to 0.9 it asks the streaming recogniser to say when
+        a turn is probably over, a little before it is sure, so the reply can start being
+        written early. Costs 50 to 70 percent more model calls. With Deepgram it is no higher
+        than Deepgram's ``eot_threshold``. Fish's realtime recogniser has no threshold: any
+        value above 0 turns its early end of turn on, so it is not capped there.
     save_dir : str
         A folder to write each streamed turn's audio to, as a 16 kHz WAV, to hear what the
         streaming recogniser was sent. Empty (the default) saves nothing.
@@ -609,17 +621,14 @@ class SttTune:
         ValueError
             When a value is out of range.
         """
-        if self.provider not in STT_PROVIDERS:
-            msg = (
-                f"SttTune.provider must be one of {', '.join(STT_PROVIDERS)}, not {self.provider!r}"
-            )
-            raise ValueError(msg)
+        _STT.check("SttTune.provider", self.provider)
         if self.eager_eot_threshold != _EAGER_EOT_OFF:
+            cap = _eager_cap(self.provider, self.deepgram)
             check_range(
                 "SttTune.eager_eot_threshold",
                 self.eager_eot_threshold,
                 lo=_EAGER_EOT_LO,
-                hi=min(_EAGER_EOT_HI, self.deepgram.eot_threshold),
+                hi=_EAGER_EOT_HI if cap is None else min(_EAGER_EOT_HI, cap),
             )
 
     @property
@@ -636,11 +645,11 @@ class SttTune:
         SttTune
             Validated tune. A bad value is replaced by its default with a warning.
         """
-        provider: SttProvider = read_choice("FISH_VOICE_STT", DEFAULT_STT, STT_PROVIDERS)
+        provider = _STT.read()
         deepgram = DeepgramTune.from_env()
         return cls(
             provider=provider,
             deepgram=deepgram,
-            eager_eot_threshold=_eager_threshold(deepgram.eot_threshold),
+            eager_eot_threshold=_eager_threshold(_eager_cap(provider, deepgram)),
             save_dir=read_text("FISH_VOICE_STT_SAVE_DIR"),
         )

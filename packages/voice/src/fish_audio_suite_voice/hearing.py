@@ -25,7 +25,7 @@ from fish_audio_suite_voice.debug import (
 from fish_audio_suite_voice.duplex_state import DuplexContext
 from fish_audio_suite_voice.events import EVENTS, Listening
 from fish_audio_suite_voice.heard import Circumstances, HeardLine, heard_line
-from fish_audio_suite_voice.listen import record_utterance
+from fish_audio_suite_voice.listen import mic_failure, record_utterance
 from fish_audio_suite_voice.pcm import FRAME_MS
 from fish_audio_suite_voice.portaudio import PortAudioMissingError
 from fish_audio_suite_voice.recognised import (
@@ -35,7 +35,6 @@ from fish_audio_suite_voice.recognised import (
     Recognised,
     StreamFallback,
     Transcript,
-    mic_failure,
 )
 from fish_audio_suite_voice.recognisers import recogniser
 from fish_audio_suite_voice.reply import drop_speculation, start_speculation

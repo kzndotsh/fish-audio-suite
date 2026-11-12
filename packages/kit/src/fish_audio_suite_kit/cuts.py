@@ -106,7 +106,7 @@ _COMPANY_SUFFIXES = ("ltd", "inc", "corp", "llc", "plc", "&")
 # continues it ("3.14"). The guillemets and CJK closers are not in this run.
 _NUMBER_STOP_RUN = ASCII_STOPS + LATIN_CLOSER_CHARS
 # How far before a stop the abbreviation check reads.
-_LOOKBACK = 64
+ABBREVIATION_LOOKBACK: Final = 64
 
 
 def _context_abbreviation(word: str, rest: str) -> bool:
@@ -126,7 +126,7 @@ def _skip_abbreviation(buf: str, end_start: int) -> bool:
     # Only the word before the stop and the start of its line matter, so look back a
     # short way. Copying and searching the whole buffer for every stop is quadratic
     # in a long reply of short sentences.
-    window_start = max(0, end_start - _LOOKBACK)
+    window_start = max(0, end_start - ABBREVIATION_LOOKBACK)
     before = buf[window_start:end_start]
     found = _trailing_word(before)
     if found is None:

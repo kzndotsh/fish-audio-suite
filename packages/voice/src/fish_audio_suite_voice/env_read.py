@@ -1,7 +1,10 @@
 """Read one setting from the environment, and hold a tune built in code to the same bounds.
 
 Every voice setting is read through one of these functions, so each read names its
-variable, its default and its range or choices in one call. The policy is voice's: a value
+variable, its default and its range or choices in one call. A setting a tune also checks
+when it is built in code is declared once as an ``IntSetting``, ``FloatSetting`` or
+``ChoiceSetting``: its ``read`` is the environment's call and its ``check`` the tune's, so
+the two take the same bounds. The policy is voice's: a value
 that is not a number, not a known word, or out of range warns on stderr and the default is
 used. A call that passes ``quiet=True`` keeps the policy the shared ``FISH_*`` settings
 have in the proxy too: a number that does not parse falls back without a warning and one
@@ -14,13 +17,16 @@ from __future__ import annotations
 import math
 import os
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Final
 
 from fish_audio_suite_kit import env_float, env_int, parse_flag, parse_number
 from fish_audio_suite_voice.debug import warn
 
 __all__ = [
-    "IGNORED",
+    "ChoiceSetting",
+    "FloatSetting",
+    "IntSetting",
     "check_range",
     "read_choice",
     "read_first",
@@ -359,3 +365,150 @@ def _clamped[T: int | float](value: T, lo: T | None, hi: T | None) -> T:
     if hi is not None and value > hi:
         return hi
     return value
+
+
+@dataclass(frozen=True, slots=True)
+class IntSetting:
+    """A whole-number setting: its variable, its default and its range, stated once.
+
+    Attributes
+    ----------
+    name : str
+        The environment variable.
+    default : int
+        What an unset or unusable value reads as.
+    lo, hi : int or None
+        The smallest and largest value taken. None for no bound.
+    """
+
+    name: str
+    default: int
+    lo: int | None = None
+    hi: int | None = None
+
+    def read(self) -> int:
+        """Read the variable, as ``read_int`` does.
+
+        Returns
+        -------
+        int
+            The value, or ``default`` with a warning when it is unusable.
+        """
+        return read_int(self.name, self.default, lo=self.lo, hi=self.hi)
+
+    def check(self, where: str, value: int) -> None:
+        """Hold a value given in code to the same range, as ``check_range`` does.
+
+        Parameters
+        ----------
+        where : str
+            The field, as ``Tune.field``, for the message.
+        value : int
+            The value given.
+        """
+        check_range(where, value, lo=self.lo, hi=self.hi)
+
+
+@dataclass(frozen=True, slots=True)
+class FloatSetting:
+    """A number setting: its variable, its default and its range, stated once.
+
+    Attributes
+    ----------
+    name : str
+        The environment variable.
+    default : float
+        What an unset or unusable value reads as.
+    lo, hi : float or None
+        The smallest and largest value taken. None for no bound.
+    positive : bool
+        Zero and below are refused.
+    """
+
+    name: str
+    default: float
+    lo: float | None = None
+    hi: float | None = None
+    positive: bool = False
+
+    def read(self) -> float:
+        """Read the variable, as ``read_float`` does.
+
+        Returns
+        -------
+        float
+            The value, or ``default`` with a warning when it is unusable.
+        """
+        return read_float(self.name, self.default, lo=self.lo, hi=self.hi, positive=self.positive)
+
+    def check(self, where: str, value: float) -> None:
+        """Hold a value given in code to the same range, as ``check_range`` does.
+
+        Parameters
+        ----------
+        where : str
+            The field, as ``Tune.field``, for the message.
+        value : float
+            The value given.
+        """
+        check_range(where, value, lo=self.lo, hi=self.hi, positive=self.positive)
+
+
+@dataclass(frozen=True, slots=True)
+class ChoiceSetting[T: str]:
+    """A setting that is one word of a fixed list: its variable, default and words, stated once.
+
+    Attributes
+    ----------
+    name : str
+        The environment variable.
+    default : str
+        What an unset or unknown word reads as.
+    choices : tuple of str
+        The accepted words, lowercase, in the order the docs list them.
+    aliases : Mapping or None
+        More accepted words and the choice each stands for, such as ``off``.
+    warning : str
+        The warning for an unknown word, with the fields ``read_choice`` fills.
+    """
+
+    name: str
+    default: T
+    choices: tuple[T, ...]
+    aliases: Mapping[str, T] | None = None
+    warning: str = IGNORED
+
+    def read(self) -> T:
+        """Read the variable, as ``read_choice`` does.
+
+        Returns
+        -------
+        str
+            The lowercased choice, or ``default``, with a warning for an unknown word.
+        """
+        return read_choice(
+            self.name, self.default, self.choices, aliases=self.aliases, warning=self.warning
+        )
+
+    def check(self, where: str, value: str) -> None:
+        """Refuse a value given in code that no word, alias or the default reads as.
+
+        Parameters
+        ----------
+        where : str
+            The field, as ``Tune.field``, for the message.
+        value : str
+            The value given.
+
+        Raises
+        ------
+        ValueError
+            When ``value`` is none of them. The message lists the words, and says ``or
+            empty`` when an empty value is taken but is not one of them.
+        """
+        taken = {*self.choices, *(self.aliases or {}).values(), self.default}
+        if value in taken:
+            return
+        empty = " or empty" if "" in taken and "" not in self.choices else ""
+        msg = f"{where} must be one of {', '.join(self.choices)}{empty}, not {value!r}"
+        raise ValueError(msg)

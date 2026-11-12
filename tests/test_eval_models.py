@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncGenerator, AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import eval_models
 import httpx
 import pytest
+from chat_fakes import install_chat
 from loguru import logger
 
 from fish_audio_suite_kit import ChatMessage
@@ -57,45 +57,24 @@ def test_the_models_listed_at_the_top_of_the_script_are_not_empty() -> None:
     assert all("/" in model for model in eval_models.MODELS)
 
 
-class _FakeBackend:
-    def __init__(self, model: str) -> None:
-        self.model = model
-
-    async def stream(
-        self,
-        messages: list[ChatMessage],
-        *,
-        cancel: asyncio.Event | None = None,
-        trace_id: str | None = None,
-    ) -> AsyncIterator[str]:
-        del cancel, trace_id
-        assert messages[0]["role"] == "system"
-        assert messages[-1]["role"] == "user"
-        if self.model == "empty/model":
-            return
-        if self.model == "broken/model":
-            raise RuntimeError("provider down")
-        yield "[happy] "
-        yield f"Hello from {self.model}!"
-        # The real backend logs this line when a reply ends, with the cost OpenRouter reports.
-        logger.debug(
-            "llm.stream_end finish=stop in=262 out=26 cost=$0.00012 chunks=25 provider=DeepInfra model=x"
-        )
-
-    async def aclose(self) -> None:
-        return None
+async def _answer(model: str, messages: list[ChatMessage]) -> AsyncIterator[str]:
+    assert messages[0]["role"] == "system"
+    assert messages[-1]["role"] == "user"
+    if model == "empty/model":
+        return
+    if model == "broken/model":
+        raise RuntimeError("provider down")
+    yield "[happy] "
+    yield f"Hello from {model}!"
+    # The real backend logs this line when a reply ends, with the cost OpenRouter reports.
+    logger.debug(
+        "llm.stream_end finish=stop in=262 out=26 cost=$0.00012 chunks=25 provider=DeepInfra model=x"
+    )
 
 
 @pytest.fixture
 def fake_backend(monkeypatch: pytest.MonkeyPatch) -> None:
-    @asynccontextmanager
-    async def opened(
-        tune: LlmTune, *, session_id: str | None = None
-    ) -> AsyncGenerator[_FakeBackend, None]:
-        del session_id
-        yield _FakeBackend(tune.model)
-
-    monkeypatch.setattr(eval_models, "open_chat_backend", opened)
+    install_chat(monkeypatch, _answer)
 
 
 @pytest.mark.usefixtures("fake_backend")
@@ -226,7 +205,6 @@ def test_the_cost_parser_reads_the_line_the_backend_really_logs() -> None:
 
     async def stream() -> list[str]:
         tune = LlmTune(
-            backend="openai",
             base="https://llm.example.test/v1",
             api_key="sk-test",
             model="some/model",

@@ -5,7 +5,16 @@ environment readers, the Fish error shape and retry policy, and W3C trace header
 No HTTP client, no audio, no API key. Unofficial. Not affiliated with Fish Audio.
 """
 
-from fish_audio_suite_kit._charsets import cut_at_control, is_header_safe, utf8_text
+from fish_audio_suite_kit._charsets import (
+    EMPHASIS_MARKS,
+    SENTENCE_AND_CLAUSE_MARKS,
+    SENTENCE_CLOSERS,
+    cut_at_control,
+    fold_line_breaks,
+    is_cjk,
+    is_header_safe,
+    utf8_text,
+)
 from fish_audio_suite_kit._speech_floor import DEFAULT_SHORT_WORDS
 from fish_audio_suite_kit._values import clamp_number, parse_flag, parse_number
 from fish_audio_suite_kit._version import read_version
@@ -28,15 +37,11 @@ from fish_audio_suite_kit.asr_text import (
 )
 from fish_audio_suite_kit.captions import CaptionCue, format_as_srt, format_as_vtt
 from fish_audio_suite_kit.catalog import (
-    CHUNK_LENGTH_CLOUD_HI,
-    CHUNK_LENGTH_LO,
+    FISH_ASR_MODEL_IDS,
     FISH_TTS_MODEL_IDS,
-    MIN_CHUNK_LENGTH_HI,
-    MIN_CHUNK_LENGTH_LO,
-    TTS_SPEED_HI,
-    TTS_SPEED_LO,
-    UNIT_INTERVAL_HI,
-    UNIT_INTERVAL_LO,
+    PRO_ASR_MODEL,
+    TTS_RANGES,
+    TtsRanges,
     chunk_length_hi,
     known_latency,
     known_mp3_bitrate,
@@ -46,6 +51,7 @@ from fish_audio_suite_kit.catalog import (
 )
 from fish_audio_suite_kit.cue_style import CueMode, CueStyle
 from fish_audio_suite_kit.cues import (
+    CLEAR_CUE,
     MoodCarry,
     cue_pattern,
     ensure_lead_cue,
@@ -77,7 +83,6 @@ from fish_audio_suite_kit.http_errors import (
     FishTimeoutError,
     FishUpstreamError,
     bearer,
-    describe_request_error,
     fish_attempt_exhausted,
     fish_backoff_s,
     fish_request_id,
@@ -89,6 +94,7 @@ from fish_audio_suite_kit.http_errors import (
 from fish_audio_suite_kit.junk import is_tts_junk
 from fish_audio_suite_kit.literals import (
     AsrFormat,
+    AsrModel,
     AudioFormat,
     ChatRole,
     FishLatency,
@@ -117,26 +123,26 @@ from fish_audio_suite_kit.urls import is_insecure_fish_base, strip_base
 __version__ = read_version()
 
 __all__ = [
-    "CHUNK_LENGTH_CLOUD_HI",
-    "CHUNK_LENGTH_LO",
+    "CLEAR_CUE",
     "DEFAULT_BACKCHANNELS",
     "DEFAULT_QUIT_PHRASES",
     "DEFAULT_SEED_EXCHANGE",
     "DEFAULT_SHORT_WORDS",
     "DEFAULT_SYSTEM_PROMPT",
+    "EMPHASIS_MARKS",
+    "FISH_ASR_MODEL_IDS",
     "FISH_ASR_PATH",
     "FISH_RETRY_ATTEMPTS",
     "FISH_TTS_MODEL_IDS",
     "FISH_TTS_PATH",
-    "MIN_CHUNK_LENGTH_HI",
-    "MIN_CHUNK_LENGTH_LO",
     "MS_PER_S",
-    "TTS_SPEED_HI",
-    "TTS_SPEED_LO",
-    "UNIT_INTERVAL_HI",
-    "UNIT_INTERVAL_LO",
+    "PRO_ASR_MODEL",
+    "SENTENCE_AND_CLAUSE_MARKS",
+    "SENTENCE_CLOSERS",
+    "TTS_RANGES",
     "AsrBody",
     "AsrFormat",
+    "AsrModel",
     "AsrSegment",
     "AsrWord",
     "AudioFormat",
@@ -159,6 +165,7 @@ __all__ = [
     "SuiteDefaults",
     "TranscriptSource",
     "TtsModel",
+    "TtsRanges",
     "TurnJudgement",
     "TurnReason",
     "__version__",
@@ -170,7 +177,6 @@ __all__ = [
     "clean_transcript",
     "cue_pattern",
     "cut_at_control",
-    "describe_request_error",
     "elapsed_ms",
     "ends_sentence",
     "ensure_lead_cue",
@@ -185,11 +191,13 @@ __all__ = [
     "fish_attempt_exhausted",
     "fish_backoff_s",
     "fish_request_id",
+    "fold_line_breaks",
     "format_as_srt",
     "format_as_vtt",
     "is_asr_hallucination",
     "is_backchannel",
     "is_caption_watermark",
+    "is_cjk",
     "is_filler",
     "is_header_safe",
     "is_insecure_fish_base",

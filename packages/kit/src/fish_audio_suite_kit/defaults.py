@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from fish_audio_suite_kit.catalog import DEFAULT_TTS_MODEL, OPUS_AUTO
+from fish_audio_suite_kit.catalog import DEFAULT_TTS_MODEL, OPUS_AUTO, PRO_ASR_MODEL
 from fish_audio_suite_kit.cuts import PARTIAL_CHARS
 from fish_audio_suite_kit.literals import AudioFormat, FishLatency
 
@@ -27,7 +27,7 @@ class SuiteDefaults:
     """
 
     tts_model: str = DEFAULT_TTS_MODEL
-    asr_model: str = "transcribe-1-pro"
+    asr_model: str = PRO_ASR_MODEL
     asr_language: str = ""
     latency: FishLatency = "normal"
     chunk_length: int = 200

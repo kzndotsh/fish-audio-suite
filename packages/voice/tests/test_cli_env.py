@@ -82,7 +82,7 @@ def test_quoted_prompt_keeps_the_following_line(
         encoding="utf-8",
     )
     apply_cli_env_files([path], required=True)
-    assert load_config().system_prompt == "You are helpful.\nBe brief."
+    assert load_config().prompt.text == "You are helpful.\nBe brief."
     assert load_config().fish_voice_id == "vid"
 
 
@@ -97,7 +97,7 @@ def test_single_quoted_backslash_does_not_swallow_the_next_key(
     )
     apply_cli_env_files([path], required=True)
     assert load_config().fish_voice_id == "vid"
-    assert load_config().system_prompt == "C:\\\\temp\\\\"
+    assert load_config().prompt.text == "C:\\\\temp\\\\"
 
 
 def test_escaped_quote_and_newline_stay_in_the_prompt(
@@ -111,7 +111,7 @@ def test_escaped_quote_and_newline_stay_in_the_prompt(
         encoding="utf-8",
     )
     apply_cli_env_files([path], required=True)
-    assert load_config().system_prompt == 'Say "hi"\nthere.'
+    assert load_config().prompt.text == 'Say "hi"\nthere.'
     assert load_config().fish_voice_id == "vid"
     monkeypatch.delenv("FISH_VOICE_SYSTEM_PROMPT", raising=False)
     monkeypatch.delenv("FISH_VOICE_ID", raising=False)
@@ -121,7 +121,7 @@ def test_escaped_quote_and_newline_stay_in_the_prompt(
         encoding="utf-8",
     )
     apply_cli_env_files([split], required=True)
-    assert load_config().system_prompt == 'Say "hi\nthere.'
+    assert load_config().prompt.text == 'Say "hi\nthere.'
     assert load_config().fish_voice_id == "vid"
 
 

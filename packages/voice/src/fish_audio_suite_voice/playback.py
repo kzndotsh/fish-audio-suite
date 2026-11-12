@@ -31,6 +31,7 @@ __all__ = [
     "iter_pcm_slices",
     "make_sink",
     "sink_format",
+    "sink_output_latency",
 ]
 
 _DEFAULT_RATE: Final = SuiteDefaults().sample_rate
@@ -49,6 +50,9 @@ class PlaybackSink(Protocol):
     A sink may also set ``audio_format`` (``"pcm"``, ``"wav"``, ``"mp3"`` or ``"opus"``)
     to say what it takes, and the speaker asks Fish for that format. A sink without it
     is sent 16-bit mono PCM, so a custom sink need not declare it. ``sink_format`` reads it.
+    And it may set ``output_latency_s``, the seconds of audio it holds before they are
+    heard, which the spoken-prefix estimate discounts; ``sink_output_latency`` reads it, and
+    a sink without it counts as 0.
     """
 
     def start(self) -> None:
@@ -79,18 +83,6 @@ class PlaybackSink(Protocol):
         -------
         int
             Used to trim ``spoken_so_far`` when the turn was cancelled mid-word.
-        """
-        ...
-
-    @property
-    def output_latency_s(self) -> float:
-        """Seconds of audio the device buffers ahead of the speaker, or 0 when unknown.
-
-        Returns
-        -------
-        float
-            Used to discount audio that was written but not yet heard when
-            ``spoken_so_far`` is estimated.
         """
         ...
 
@@ -455,6 +447,23 @@ def duplex_playback_problem(name: str) -> str | None:
     if kind is PlaybackKind.MPV and shutil.which("mpv") is None:
         return "mpv is not on PATH"
     return None
+
+
+def sink_output_latency(sink: PlaybackSink) -> float:
+    """Return the seconds of audio ``sink`` holds before they are heard.
+
+    Parameters
+    ----------
+    sink : PlaybackSink
+        Any sink. ``SounddeviceSink`` reports its device buffer; the others hold nothing.
+
+    Returns
+    -------
+    float
+        The sink's ``output_latency_s``, or 0 when it has none.
+    """
+    declared: object = getattr(sink, "output_latency_s", 0.0)
+    return float(declared) if isinstance(declared, int | float) else 0.0
 
 
 def sink_format(sink: PlaybackSink) -> AudioFormat:

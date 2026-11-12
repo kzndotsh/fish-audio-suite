@@ -4,25 +4,26 @@ from __future__ import annotations
 
 import asyncio
 import re
-import threading
 from collections.abc import Iterator
 
 import pytest
 from loguru import logger
 from session_fakes import (
+    MIC,
     FakeBackend,
+    ScriptedAsr,
+    ScriptedRecordings,
+    ScriptedTurns,
     hello_tokens,
     quick_config,
-    run_session_with,
+    run_session,
     speak_with_fakes,
 )
-from voice_fakes import install_audio
+from voice_fakes import install_gate
 
-from fish_audio_suite_voice.asr import AsrResult
 from fish_audio_suite_voice.console_sink import ConsoleSink
 from fish_audio_suite_voice.debug import warn
 from fish_audio_suite_voice.duplex import duplex_turns
-from fish_audio_suite_voice.duplex_state import TurnInput
 from fish_audio_suite_voice.events import (
     EVENTS,
     Bye,
@@ -37,7 +38,6 @@ from fish_audio_suite_voice.events import (
     TurnEnded,
 )
 from fish_audio_suite_voice.hearing import HeardLine
-from fish_audio_suite_voice.inputs import Hear
 from fish_audio_suite_voice.latency import LatencySnapshot
 from fish_audio_suite_voice.speaker import FishSpeaker
 
@@ -135,38 +135,16 @@ def test_a_closed_sink_prints_nothing(capsys: pytest.CaptureFixture[str]) -> Non
     assert capsys.readouterr().out == ""
 
 
-class _OneTurn:
-    """The real mic path for the first turn, then goodbye."""
-
-    def __init__(self, *, real: bool) -> None:
-        self._real = real
-        self._turns = 0
-
-    muted = False
-
-    async def next_turn(self, turn: TurnInput, hear: Hear) -> HeardLine:
-        del turn
-        self._turns += 1
-        if self._turns > 1:
-            return HeardLine("bye")
-        if self._real:
-            return await hear(threading.Event())
-        return HeardLine("line", text="hi")
-
-
 def test_a_whole_turn_prints_the_same_transcript_as_before(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     tts = FishSpeaker(api_key="k", voice_id="voice")
-    install_audio(monkeypatch)
+    install_gate(monkeypatch)
     speak_with_fakes(monkeypatch, tts)
 
-    async def asr(*_args: object, **_kwargs: object) -> AsrResult:
-        return AsrResult("tell me something fun")
-
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", lambda *_a, **_k: b"w")
-    monkeypatch.setattr("fish_audio_suite_voice.asr.fish_asr", asr)
-    assert run_session_with(quick_config(), tts, hello_tokens, _OneTurn(real=True)) == 0
+    ScriptedRecordings(monkeypatch, b"w")
+    ScriptedAsr(monkeypatch, "tell me something fun").serve_sessions()
+    assert run_session(quick_config(), tts, hello_tokens, source=ScriptedTurns(MIC)) == 0
     out = capsys.readouterr().out.splitlines()
     assert out[:3] == ["listening…", "you ▸ tell me something fun", "llm ▸ Hello there friend."]
     assert out[3].startswith("  ↳ ")
@@ -178,7 +156,7 @@ def test_a_display_that_draws_its_own_screen_leaves_the_console_off(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     tts = FishSpeaker(api_key="k", voice_id="voice")
-    install_audio(monkeypatch)
+    install_gate(monkeypatch)
     speak_with_fakes(monkeypatch, tts)
     seen: list[Event] = []
     unsubscribe = EVENTS.subscribe(seen.append)
@@ -190,7 +168,7 @@ def test_a_display_that_draws_its_own_screen_leaves_the_console_off(
                     tts,
                     None,
                     FakeBackend(hello_tokens),
-                    source=_OneTurn(real=False),
+                    source=ScriptedTurns(HeardLine("line", text="hi")),
                 ),
                 5,
             )

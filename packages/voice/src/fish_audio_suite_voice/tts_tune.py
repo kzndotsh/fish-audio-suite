@@ -6,20 +6,13 @@ from dataclasses import dataclass
 from typing import Final, Self
 
 from fish_audio_suite_kit import (
-    CHUNK_LENGTH_CLOUD_HI,
-    CHUNK_LENGTH_LO,
-    MIN_CHUNK_LENGTH_HI,
-    MIN_CHUNK_LENGTH_LO,
-    TTS_SPEED_HI,
-    TTS_SPEED_LO,
-    UNIT_INTERVAL_HI,
-    UNIT_INTERVAL_LO,
+    TTS_RANGES,
     FishLatency,
     SuiteDefaults,
     clamp_number,
     known_latency,
 )
-from fish_audio_suite_voice.env_read import check_range, read_flag, read_float, read_int, read_word
+from fish_audio_suite_voice.env_read import FloatSetting, read_flag, read_float, read_int, read_word
 from fish_audio_suite_voice.pcm import wav_rate
 
 __all__ = [
@@ -41,6 +34,14 @@ _FADE_MAX_MS: Final = 50.0
 # Quieter than this leaves nothing to hear, and louder leaves no room for a peak.
 _LOUDNESS_TARGET_LO_DB: Final = -40.0
 _LOUDNESS_TARGET_HI_DB: Final = -6.0
+# Read by ``from_env`` and checked by ``TtsTune`` with the same range.
+_FADE = FloatSetting("FISH_VOICE_FADE_MS", DEFAULT_FADE_MS, lo=_FADE_MIN_MS, hi=_FADE_MAX_MS)
+_LOUDNESS_TARGET = FloatSetting(
+    "FISH_VOICE_LOUDNESS_TARGET_DB",
+    DEFAULT_LOUDNESS_TARGET_DB,
+    lo=_LOUDNESS_TARGET_LO_DB,
+    hi=_LOUDNESS_TARGET_HI_DB,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,35 +111,24 @@ class TtsTune:
             When ``fade_ms`` or ``loudness_db`` is out of the range ``from_env`` accepts.
         """
         fit = {
-            "speed": clamp_number(self.speed, TTS_SPEED_LO, TTS_SPEED_HI, _STOCK.speed, float),
+            "speed": clamp_number(self.speed, *TTS_RANGES.speed, _STOCK.speed, float),
             "temperature": clamp_number(
-                self.temperature, UNIT_INTERVAL_LO, UNIT_INTERVAL_HI, _STOCK.temperature, float
+                self.temperature, *TTS_RANGES.temperature, _STOCK.temperature, float
             ),
-            "top_p": clamp_number(
-                self.top_p, UNIT_INTERVAL_LO, UNIT_INTERVAL_HI, _STOCK.top_p, float
-            ),
+            "top_p": clamp_number(self.top_p, *TTS_RANGES.top_p, _STOCK.top_p, float),
             "chunk_length": clamp_number(
-                self.chunk_length, CHUNK_LENGTH_LO, CHUNK_LENGTH_CLOUD_HI, _STOCK.chunk_length, int
+                self.chunk_length, *TTS_RANGES.chunk_length, _STOCK.chunk_length, int
             ),
             "min_chunk_length": clamp_number(
-                self.min_chunk_length,
-                MIN_CHUNK_LENGTH_LO,
-                MIN_CHUNK_LENGTH_HI,
-                _STOCK.min_chunk_length,
-                int,
+                self.min_chunk_length, *TTS_RANGES.min_chunk_length, _STOCK.min_chunk_length, int
             ),
             "sample_rate": wav_rate(self.sample_rate),
         }
         for name, value in fit.items():
             object.__setattr__(self, name, value)
-        check_range("TtsTune.fade_ms", self.fade_ms, lo=_FADE_MIN_MS, hi=_FADE_MAX_MS)
+        _FADE.check("TtsTune.fade_ms", self.fade_ms)
         if self.loudness_db is not None:
-            check_range(
-                "TtsTune.loudness_db",
-                self.loudness_db,
-                lo=_LOUDNESS_TARGET_LO_DB,
-                hi=_LOUDNESS_TARGET_HI_DB,
-            )
+            _LOUDNESS_TARGET.check("TtsTune.loudness_db", self.loudness_db)
 
     @classmethod
     def from_env(cls) -> Self:
@@ -154,52 +144,37 @@ class TtsTune:
         # does not parse is the default and one out of range is clamped.
         return cls(
             latency=known_latency(read_word("FISH_LATENCY", _STOCK.latency), _STOCK.latency),
-            speed=read_float(
-                "FISH_SPEED", _STOCK.speed, lo=TTS_SPEED_LO, hi=TTS_SPEED_HI, quiet=True
-            ),
-            temperature=read_float(
-                "FISH_TEMPERATURE",
-                _STOCK.temperature,
-                lo=UNIT_INTERVAL_LO,
-                hi=UNIT_INTERVAL_HI,
-                quiet=True,
-            ),
-            top_p=read_float(
-                "FISH_TOP_P", _STOCK.top_p, lo=UNIT_INTERVAL_LO, hi=UNIT_INTERVAL_HI, quiet=True
-            ),
+            speed=_fish_float("FISH_SPEED", _STOCK.speed, TTS_RANGES.speed),
+            temperature=_fish_float("FISH_TEMPERATURE", _STOCK.temperature, TTS_RANGES.temperature),
+            top_p=_fish_float("FISH_TOP_P", _STOCK.top_p, TTS_RANGES.top_p),
             repetition_penalty=read_float(
                 "FISH_REPETITION_PENALTY", _STOCK.repetition_penalty, quiet=True
             ),
-            chunk_length=read_int(
-                "FISH_CHUNK_LENGTH",
-                _STOCK.chunk_length,
-                lo=CHUNK_LENGTH_LO,
-                hi=CHUNK_LENGTH_CLOUD_HI,
-                quiet=True,
+            chunk_length=_fish_int(
+                "FISH_CHUNK_LENGTH", _STOCK.chunk_length, TTS_RANGES.chunk_length
             ),
-            min_chunk_length=read_int(
-                "FISH_MIN_CHUNK_LENGTH",
-                _STOCK.min_chunk_length,
-                lo=MIN_CHUNK_LENGTH_LO,
-                hi=MIN_CHUNK_LENGTH_HI,
-                quiet=True,
+            min_chunk_length=_fish_int(
+                "FISH_MIN_CHUNK_LENGTH", _STOCK.min_chunk_length, TTS_RANGES.min_chunk_length
             ),
             volume=read_float("FISH_VOLUME", _STOCK.volume, quiet=True),
             sample_rate=read_int("FISH_SAMPLE_RATE", _STOCK.sample_rate, quiet=True),
-            fade_ms=read_float(
-                "FISH_VOICE_FADE_MS", DEFAULT_FADE_MS, lo=_FADE_MIN_MS, hi=_FADE_MAX_MS
-            ),
+            fade_ms=_FADE.read(),
             loudness_db=_loudness_db(),
         )
+
+
+def _fish_float(name: str, default: float, bounds: tuple[float, float]) -> float:
+    lo, hi = bounds
+    return read_float(name, default, lo=lo, hi=hi, quiet=True)
+
+
+def _fish_int(name: str, default: int, bounds: tuple[int, int]) -> int:
+    lo, hi = bounds
+    return read_int(name, default, lo=lo, hi=hi, quiet=True)
 
 
 def _loudness_db() -> float | None:
     """Read ``FISH_VOICE_NORMALIZE_LOUDNESS`` and, when it is on, ``FISH_VOICE_LOUDNESS_TARGET_DB``."""
     if not read_flag("FISH_VOICE_NORMALIZE_LOUDNESS", default=False):
         return None
-    return read_float(
-        "FISH_VOICE_LOUDNESS_TARGET_DB",
-        DEFAULT_LOUDNESS_TARGET_DB,
-        lo=_LOUDNESS_TARGET_LO_DB,
-        hi=_LOUDNESS_TARGET_HI_DB,
-    )
+    return _LOUDNESS_TARGET.read()

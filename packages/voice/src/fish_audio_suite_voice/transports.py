@@ -29,7 +29,6 @@ from fish_audio_suite_voice.llm_tune import LlmTune
 from fish_audio_suite_voice.wording import short_model
 
 __all__ = [
-    "HTTP_KEEPALIVE_S",
     "ChatCall",
     "ChatChunk",
     "ChatHttpError",
@@ -47,9 +46,9 @@ __all__ = [
     "usage_brief",
 ]
 
-# Idle seconds an ASR or LLM connection stays open. httpx's default of 5 s is shorter than
-# the gap between two turns, so each turn would pay a new TLS handshake.
-HTTP_KEEPALIVE_S: Final = 120.0
+# Idle seconds an LLM connection stays open. httpx's default of 5 s is shorter than the gap
+# between two turns, so each turn would pay a new TLS handshake.
+_KEEPALIVE_S: Final = 120.0
 
 _ABORT_CHARS: Final = 800
 _EVENT_TRACE_CHARS: Final = 600
@@ -349,7 +348,7 @@ def http_client(tune: LlmTune) -> httpx.AsyncClient:
         Reused for every reply in a session. The caller closes it.
     """
     return httpx.AsyncClient(
-        timeout=tune.timeout_s, limits=httpx.Limits(keepalive_expiry=HTTP_KEEPALIVE_S)
+        timeout=tune.timeout_s, limits=httpx.Limits(keepalive_expiry=_KEEPALIVE_S)
     )
 
 
@@ -381,7 +380,7 @@ async def openrouter_client(tune: LlmTune) -> AsyncGenerator[Any, None]:
     # key with a newline, which would raise before the request is sent.
     async with (
         httpx.AsyncClient(
-            follow_redirects=True, limits=httpx.Limits(keepalive_expiry=HTTP_KEEPALIVE_S)
+            follow_redirects=True, limits=httpx.Limits(keepalive_expiry=_KEEPALIVE_S)
         ) as http,
         OpenRouter(
             api_key=bearer(tune.api_key).removeprefix("Bearer "),

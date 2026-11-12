@@ -166,6 +166,27 @@ def _recording(fn: Callable[..., object], package: str, reads: list[Read]) -> Ca
     return record
 
 
+type _Setting = env_read.IntSetting | env_read.FloatSetting | env_read.ChoiceSetting[str]
+
+
+def _recording_setting[S: _Setting](
+    read: Callable[[S], object], reads: list[Read]
+) -> Callable[[S], object]:
+    """Record a declared setting's read: the record holds what a reader call would pass."""
+
+    def record(setting: S) -> object:
+        lo = hi = None
+        if not isinstance(setting, env_read.ChoiceSetting):
+            lo, hi = setting.lo, setting.hi
+        positive = isinstance(setting, env_read.FloatSetting) and setting.positive
+        reads.append(
+            Read("voice", setting.name, setting.default, _number(lo), _number(hi), positive)
+        )
+        return read(setting)
+
+    return record
+
+
 def _number(value: object) -> float | None:
     return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
@@ -195,6 +216,15 @@ def recorded() -> tuple[tuple[Read, ...], frozenset[str]]:
     with pytest.MonkeyPatch.context() as patch:
         for module, attr, value in readers:
             patch.setattr(module, attr, _recording(value, _package(module), reads))
+        # A setting a tune also checks in code is declared once and read through its record.
+        patch.setattr(
+            env_read.IntSetting, "read", _recording_setting(env_read.IntSetting.read, reads)
+        )
+        patch.setattr(
+            env_read.FloatSetting, "read", _recording_setting(env_read.FloatSetting.read, reads)
+        )
+        choice_read = env_read.ChoiceSetting[str].read
+        patch.setattr(env_read.ChoiceSetting, "read", _recording_setting(choice_read, reads))
         # Unfixed, the debug level is read from the environment on each call.
         voice_debug.reset_debug_level()
         for environment in ENVIRONMENTS:

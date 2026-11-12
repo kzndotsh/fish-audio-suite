@@ -16,9 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from fish_audio_suite_voice.debug import warn
 from fish_audio_suite_voice.pcm import take_frames
-from fish_audio_suite_voice.portaudio import PortAudioMissingError
 
 __all__ = [
     "BargeIn",
@@ -27,7 +25,6 @@ __all__ = [
     "Recognised",
     "StreamFallback",
     "Transcript",
-    "mic_failure",
     "said_over_reply",
 ]
 
@@ -168,20 +165,3 @@ class NoTurn:
 
 
 type Recognised = Transcript | NoTurn | StreamFallback
-
-
-def mic_failure(error: PortAudioMissingError) -> NoTurn:
-    """Report that the mic cannot open, and end the session.
-
-    Parameters
-    ----------
-    error : PortAudioMissingError
-        What the device loader raised, with its install hints.
-
-    Returns
-    -------
-    NoTurn
-        ``fatal``: without PortAudio no listen can work.
-    """
-    warn(str(error))
-    return NoTurn("fatal")

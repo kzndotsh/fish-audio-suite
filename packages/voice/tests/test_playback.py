@@ -4,12 +4,11 @@ import asyncio
 import io
 import threading
 import wave
-from collections.abc import AsyncIterator, Callable
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 
 import pytest
-from wire_helpers import FakeOutputStream, open_sounddevice_sink
+from wire_helpers import FakeOutputStream, install_fish_audio, open_sounddevice_sink
 
 from fish_audio_suite_kit import SuiteDefaults
 from fish_audio_suite_voice.events import EVENTS, Event, OutputLevel
@@ -30,8 +29,7 @@ from fish_audio_suite_voice.playback_kind import PlaybackKind, parse_playback
 from fish_audio_suite_voice.portaudio import PortAudioMissingError, missing_portaudio
 from fish_audio_suite_voice.speaker import FishSpeaker
 from fish_audio_suite_voice.tts_tune import TtsTune
-from fish_audio_suite_voice.tts_turn import SdkSocket
-from fish_audio_suite_voice.wire import TtsResult, TurnSpec
+from fish_audio_suite_voice.wire import TtsResult
 
 
 def test_zero_sample_rate_still_writes_a_wav(tmp_path: Path) -> None:
@@ -270,22 +268,8 @@ def test_sounddevice_sink_skips_write_when_cancelled(monkeypatch: pytest.MonkeyP
     assert sink.bytes_played() == 0
 
 
-class _AudioSocket(SdkSocket):
-    """The SDK socket with 64 samples of audio in place of its websocket, and no client."""
-
-    def stream(self, events: AsyncIterator[Any], spec: TurnSpec) -> AsyncIterator[bytes]:
-        del spec
-
-        async def audio() -> AsyncIterator[bytes]:
-            async for _event in events:
-                pass
-            yield b"\x00\x00" * 64
-
-        return audio()
-
-
 def test_speak_works_inside_asyncio_run(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setattr("fish_audio_suite_voice.tts_turn.SdkSocket", _AudioSocket)
+    install_fish_audio(monkeypatch, [b"\x00\x00" * 64])
     tts = FishSpeaker(api_key="k", voice_id="v", tune=TtsTune(sample_rate=44_100))
     path = tmp_path / "t.wav"
     sink = FileSink(path, sample_rate=44_100, wav=True)

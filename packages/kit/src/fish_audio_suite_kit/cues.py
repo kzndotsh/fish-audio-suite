@@ -10,9 +10,10 @@ from __future__ import annotations
 import re
 from typing import Final
 
-from fish_audio_suite_kit.cuts import ends_sentence, sentence_cuts
+from fish_audio_suite_kit.cuts import ABBREVIATION_LOOKBACK, ends_sentence, sentence_cuts
 
 __all__ = [
+    "CLEAR_CUE",
     "MoodCarry",
     "ensure_lead_cue",
     "last_emotion",
@@ -188,7 +189,10 @@ _INNER_CUE_RE: Final = re.compile(rf"\[([^\]]{{1,{_MAX_CUE_CHARS}}})\]")
 _LINE_SPLIT_RE: Final = re.compile(r"(\n+)")
 
 
-_PAREN_CUE_NAMES: Final = _KNOWN_TAGS | {"clear"}
+# The short [clear] tag. Fish's list names only [clear throat], yet Fish speaks [clear] as
+# an ahem too, so it counts as a cue. It was once the default lead cue.
+CLEAR_CUE: Final = "clear"
+_PAREN_CUE_NAMES: Final = _KNOWN_TAGS | {CLEAR_CUE}
 # [name] for any known cue name, longest first so "laughing" beats "laugh".
 # A tag inside a larger bracket expression ("[[happy]]") is literal text.
 _KNOWN_CUE_TAG_RE: Final = re.compile(
@@ -460,7 +464,7 @@ def _official_bracket(inner: str) -> str:
 
 def _cue_word(inner: str) -> bool:
     word = inner.strip().lower()
-    return word in _CUE_ALIASES or word in LEAD_WORDS or word == "clear"
+    return word in _CUE_ALIASES or word in LEAD_WORDS or word == CLEAR_CUE
 
 
 def rewrite_s1_parens(text: str) -> str:
@@ -472,11 +476,15 @@ def _lead(tags: str, rest: str) -> str:
     return f"{tags} {rest}" if rest else tags
 
 
-def _sentence_spans(part: str) -> list[tuple[str, str]]:
-    # Only a real sentence end splits, so "Dr. Happy" is not a new sentence.
+def _sentence_spans(part: str, before: str = "") -> list[tuple[str, str]]:
+    # Only a real sentence end splits, so "Dr. Happy" is not a new sentence. A stop at
+    # the start of a streamed chunk ends a sentence only by what came before it.
     spans: list[tuple[str, str]] = []
     start = 0
-    for end in sentence_cuts(part):
+    for cut in sentence_cuts(before + part):
+        end = cut - len(before)
+        if end <= 0:
+            continue
         piece = part[start:end]
         body = piece.rstrip()
         spans.append((body, piece[len(body) :]))
@@ -510,6 +518,7 @@ def normalize_cues(
     *,
     lead: bool = False,
     continued: bool = False,
+    before: str = "",
     official: bool = False,
     directed: bool = False,
 ) -> str:
@@ -530,6 +539,10 @@ def normalize_cues(
         True when ``text`` continues a sentence already sent. The first
         sentence is then not a mood lead, but later ones still are. Only
         meaningful with ``lead``. Default False.
+    before : str, optional
+        Text already sent on the line ``text`` continues. It is read only to tell
+        whether a stop at the start of ``text`` ends a sentence (``Dr`` then
+        ``. Happy`` does not). Default empty.
     official : bool, optional
         Keep only Fish's own cues. Any other cue is replaced by the nearest official one
         (``[smiling]`` becomes ``[happy]``, ``[soft chuckle]`` becomes ``[chuckling]``) or
@@ -580,12 +593,16 @@ def normalize_cues(
     parts = _LINE_SPLIT_RE.split(text)
     out: list[str] = []
     allow_lead = lead and not continued
+    # Whether a stop ends a sentence depends only on the word before it, so a short tail
+    # of the line is enough, and a long single-line reply is not rescanned per chunk.
+    context = before.rsplit("\n", 1)[-1][-2 * ABBREVIATION_LOOKBACK :]
     for part in parts:
         if not part or part.isspace():
             out.append(part)
+            context = ""
             continue
         spoken: list[str] = []
-        for sent, sep in _sentence_spans(part):
+        for sent, sep in _sentence_spans(part, context):
             if not sent.strip():
                 if sep:
                     spoken.append(sep)
@@ -593,6 +610,7 @@ def normalize_cues(
             spoken.append(_one_sentence(sent, lead=allow_lead) + sep)
             allow_lead = lead
         out.append("".join(spoken))
+        context = ""
     return "".join(out)
 
 

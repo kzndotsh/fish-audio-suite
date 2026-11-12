@@ -31,7 +31,6 @@ OR_BASE = "https://openrouter.ai/api/v1"
 
 def _tune(**kw: Any) -> LlmTune:
     fields: dict[str, Any] = {
-        "backend": "openrouter",
         "base": OR_BASE,
         "api_key": "sk-test",
         "model": "org/model",
@@ -44,7 +43,6 @@ def _tune(**kw: Any) -> LlmTune:
 
 def _openai_tune(**kw: Any) -> LlmTune:
     fields: dict[str, Any] = {
-        "backend": "openai",
         "base": "https://api.example.com/v1",
         "api_key": "sk-test",
         "model": "org/model",
@@ -173,7 +171,6 @@ def test_a_provider_error_group_is_reported(
             async for tok in llm_token_stream(
                 [{"role": "user", "content": "hi"}],
                 tune=LlmTune(
-                    backend="openai",
                     base="https://api.example.com/v1",
                     api_key="sk-test",
                     model="org/model",
@@ -200,7 +197,6 @@ def test_a_cancel_group_does_not_warn(
             async for tok in llm_token_stream(
                 [{"role": "user", "content": "hi"}],
                 tune=LlmTune(
-                    backend="openai",
                     base="https://api.example.com/v1",
                     api_key="sk-test",
                     model="org/model",
@@ -244,7 +240,7 @@ def test_nitro_is_off_unless_asked() -> None:
 
 
 def test_nitro_is_never_added_off_openrouter() -> None:
-    other = _tune(backend="openai", base="https://api.example.com/v1")
+    other = _tune(base="https://api.example.com/v1")
     assert routed_model(other) == "org/model"
 
 
@@ -900,7 +896,6 @@ def test_429_within_cap_retries_once(monkeypatch: pytest.MonkeyPatch) -> None:
             async for tok in llm_token_stream(
                 [{"role": "user", "content": "hi"}],
                 tune=LlmTune(
-                    backend="openai",
                     base="https://api.example.com/v1",
                     api_key="sk-test",
                     model="org/model",
@@ -927,7 +922,6 @@ def test_429_over_cap_returns_to_listening(monkeypatch: pytest.MonkeyPatch) -> N
             async for tok in llm_token_stream(
                 [{"role": "user", "content": "hi"}],
                 tune=LlmTune(
-                    backend="openai",
                     base="https://api.example.com/v1",
                     api_key="sk-test",
                     model="org/model",
@@ -959,7 +953,6 @@ def test_429_without_retry_after_retries_once_after_a_short_pause(
             async for tok in llm_token_stream(
                 [{"role": "user", "content": "hi"}],
                 tune=LlmTune(
-                    backend="openai",
                     base="https://api.example.com/v1",
                     api_key="sk-test",
                     model="org/model",
@@ -991,7 +984,6 @@ def test_a_quota_429_is_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
             async for tok in llm_token_stream(
                 [{"role": "user", "content": "hi"}],
                 tune=LlmTune(
-                    backend="openai",
                     base="https://api.example.com/v1",
                     api_key="sk-test",
                     model="org/model",
@@ -1070,7 +1062,6 @@ def test_429_after_a_token_does_not_retry(monkeypatch: pytest.MonkeyPatch) -> No
             async for tok in llm_token_stream(
                 [{"role": "user", "content": "hi"}],
                 tune=LlmTune(
-                    backend="openai",
                     base="https://api.example.com/v1",
                     api_key="sk-test",
                     model="org/model",
@@ -1343,9 +1334,7 @@ async def _drain(stream: AsyncIterator[str]) -> list[str]:
 def _hi() -> AsyncIterator[str]:
     return llm_token_stream(
         [{"role": "user", "content": "hi"}],
-        tune=LlmTune(
-            backend="openai", base="https://api.example.com/v1", api_key="sk-test", model="org/gone"
-        ),
+        tune=LlmTune(base="https://api.example.com/v1", api_key="sk-test", model="org/gone"),
     )
 
 

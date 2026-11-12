@@ -741,3 +741,56 @@ def test_a_mood_word_held_to_the_end_is_shaped_as_the_whole_reply_shapes_it(lead
     sent = asyncio.run(streamed())
     assert sent == asyncio.run(whole())
     assert sent == ("Hi. [excited] there" if lead else "Hi. Excited, there")
+
+
+@pytest.mark.parametrize(
+    ("tokens", "with_lead", "without_lead"),
+    [
+        (
+            ["Well and more.", " Excited, hi there friend."],
+            "Well and more. [excited] hi there friend.",
+            "Well and more. Excited, hi there friend.",
+        ),
+        (
+            ["Well and more", ". Excited, hi there friend."],
+            "Well and more. [excited] hi there friend.",
+            "Well and more. Excited, hi there friend.",
+        ),
+        (
+            ["Well", " and more. Excited, hi", " there friend."],
+            "Well and more. [excited] hi there friend.",
+            "Well and more. Excited, hi there friend.",
+        ),
+        (
+            ["Well and more. Excited, hi there friend."],
+            "Well and more. [excited] hi there friend.",
+            "Well and more. Excited, hi there friend.",
+        ),
+        # "Dr." does not end a sentence, so the mood word after it stays a word.
+        (
+            ["Dr.", " Happy, the patient arrived today."],
+            "Dr. Happy, the patient arrived today.",
+            "Dr. Happy, the patient arrived today.",
+        ),
+        (
+            ["1.", " Excited, the first item is ready today."],
+            "1. Excited, the first item is ready today.",
+            "1. Excited, the first item is ready today.",
+        ),
+    ],
+)
+@pytest.mark.parametrize("lead", [False, True])
+def test_a_mood_word_after_a_stop_in_a_continuing_chunk_is_shaped_as_the_whole_reply(
+    tokens: list[str], with_lead: str, without_lead: str, lead: bool
+) -> None:
+    # A chunk that continues a sentence once turned mood leads off for every sentence
+    # in it, so "Excited," after "more." was spoken while the whole reply led with it.
+    style = CueStyle(lead=lead)
+
+    async def streamed() -> str:
+        events = delta_events(tokens, threading.Event(), partial_chars=40, style=style)
+        return "".join([event.text async for event in events if isinstance(event, TextEvent)])
+
+    sent = asyncio.run(streamed())
+    assert sent == style.shape("".join(tokens))
+    assert sent == (with_lead if lead else without_lead)
