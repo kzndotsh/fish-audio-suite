@@ -59,6 +59,48 @@ variables `fish-voice` reads: the provider's key (such as `OPENROUTER_API_KEY`) 
 `FISH_LLM_API_KEY`, and the `FISH_LLM_*` settings. Requests run one at
 a time, so they do not compete for a rate limit.
 
+## eval_cue_tags.py
+
+Measures how varied the `[cue]` tags are that a chat model writes under each system prompt. Give it system prompts as files, and it sends the same user lines under each one, several times, and counts the cues. The built-in prompt is always included as `default`, so each file is measured against it.
+
+It calls a live chat API and spends credits. Nothing is sent to Fish.
+
+```bash
+uv run python scripts/eval_cue_tags.py                       # the default prompt alone
+
+uv run python scripts/eval_cue_tags.py wide.txt strict.txt -n 5
+
+uv run python scripts/eval_cue_tags.py wide.txt --model sao10k/l3.1-euryale-70b --out cues.md
+```
+
+A prompt file is the whole system prompt, used as written (as `FISH_VOICE_SYSTEM_PROMPT` is), so it gets no opening example. The user lines are `LINES` at the top of the script, twelve lines that each call for a different feeling. `-l` and `--lines-file` replace them.
+
+| Column | Meaning |
+| --- | --- |
+| cues per reply | How many cues a reply carries on average |
+| distinct | Different cues the model wrote |
+| distinct sent | Different cues left after the `official` mapping, which is what Fish hears by default |
+| evenness | 0 to 1. 1 when every cue is used equally often, 0 when one cue is the only one |
+| top cue, top 3 | The most used cue and its share, and the share of the three most used |
+| off list | Cues that are not Fish's own, so `FISH_TTS_CUES=official` maps or drops them |
+| dropped | Cues `official` removes, having found no official cue near them |
+| sounds | Cues that are a sound or a pause, not an emotion |
+| bare sentences | Sentences the model wrote without any cue |
+
+Under the table it lists each prompt's most used cues with their counts.
+
+| Flag | Meaning |
+| --- | --- |
+| `-n`, `--runs` | Repeats of each line under each prompt (default 3) |
+| `--model` | The chat model. Default: the one `fish-voice` would use |
+| `--temperature` | Sampling temperature. Default `FISH_LLM_TEMPERATURE` |
+| `-l`, `--lines-file` | User lines, in place of the built-in ones |
+| `--seed` | Pin the app's opening example under every prompt, not only the built-in one. Use it to compare a variant of the built-in prompt like for like |
+| `--no-default` | Leave the built-in prompt out |
+| `--show` | Print each reply as it arrives |
+| `--out` | Write a report: `.md` for the table, `.json` for the stats and every reply |
+| `--dry-run` | Show what would run and make no requests |
+
 ## eval_voices.py
 
 Speaks the same text with several Fish voices and TTS models, through `FishSpeaker`

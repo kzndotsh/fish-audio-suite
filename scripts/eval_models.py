@@ -410,6 +410,17 @@ def _capture(message: object) -> None:
         print(text, file=sys.stderr)
 
 
+def listen_for_usage() -> None:
+    """Read each reply's cost from the backend's log, and drop the rest except warnings.
+
+    The backend reports the cost in a debug log line, so debug logging is turned on and
+    routed here in place of the screen.
+    """
+    configure_voice_logging(debug=True)
+    logger.remove()
+    logger.add(_capture, level="DEBUG")
+
+
 async def _one(
     tune: LlmTune, messages: list[ChatMessage]
 ) -> tuple[str, float, float, float | None, str]:
@@ -758,11 +769,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
-    # The backend reports each reply's cost in a debug log line, so turn debug on and
-    # read those lines. Everything else the logger says is dropped, except warnings.
-    configure_voice_logging(debug=True)
-    logger.remove()
-    logger.add(_capture, level="DEBUG")
+    listen_for_usage()
     runs = asyncio.run(
         evaluate(
             tune,
