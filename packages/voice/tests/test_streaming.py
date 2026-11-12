@@ -647,3 +647,22 @@ def test_a_turn_the_recogniser_drops_is_noise_even_after_words_arrived() -> None
         stop_events()
     assert Interim("mm-hmm") in events
     assert fake.closed
+
+
+def test_fish_realtime_keeps_the_local_silence_limit_behind_fishs_own_end_of_turn() -> None:
+    def heard_tune(provider: str, frames: int) -> ListenTune:
+        seen: dict[str, Any] = {}
+        fake = _FakeFlux(on_audio=lambda sent: [TurnEnded("hi", 1.0, "model")] if sent else [])
+        _run(
+            fake,
+            _mic(6, seen=seen),
+            stt=SttTune(provider=provider, deepgram_key="k"),
+            listen=ListenTune(min_voiced_frames=1, end_silence_frames=frames),
+            fish_key="k",
+        )
+        return seen["tune"]
+
+    # 25 frames is 750 ms, and Fish needs about 1.3 s, so the limit is raised to 3 s.
+    assert heard_tune("fish-realtime", 25).end_silence_frames == 100
+    assert heard_tune("fish-realtime", 120).end_silence_frames == 120  # a longer one is kept
+    assert heard_tune("deepgram", 25).end_silence_frames == 25  # Flux answers well inside it

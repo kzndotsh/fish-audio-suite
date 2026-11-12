@@ -257,6 +257,7 @@ the same. What differs:
   `FISH_VOICE_EOT_THRESHOLD` does nothing here, and any `FISH_VOICE_EAGER_EOT_THRESHOLD` above
   0 turns Fish's early end of turn on.
 - A turn Fish judges not to be yours (noise, another voice) is dropped without an answer.
+- `FISH_VOICE_SILENCE_FRAMES` is raised to at least 3 s on this path. Fish ends a turn about 1.3 s after you stop, so a shorter limit would end every turn first and Fish's judgment would never be used. Turns end a little later than with a short fixed silence; `FISH_VOICE_EAGER_EOT_THRESHOLD` starts the reply earlier.
 - Fish bills the session by the second at the batch price, and each open connection counts
   toward your account's concurrency limit. The connection is open only while you speak.
 - The `FISH_VOICE_DEEPGRAM_*` settings and the Deepgram privacy options do not apply. The audio

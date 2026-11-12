@@ -20,7 +20,7 @@ import functools
 import threading
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Final, Literal
 
@@ -30,7 +30,7 @@ from fish_audio_suite_voice.deepgram import FluxStream, flux_base, flux_url
 from fish_audio_suite_voice.events import EVENTS, Interim
 from fish_audio_suite_voice.fish_realtime import FishRealtimeStream, realtime_url
 from fish_audio_suite_voice.listen import stream_utterance
-from fish_audio_suite_voice.mic import FRAME_BYTES, SAMPLE_RATE, Mic, StopFlag
+from fish_audio_suite_voice.mic import FRAME_BYTES, FRAME_MS, SAMPLE_RATE, Mic, StopFlag
 from fish_audio_suite_voice.playback import write_mono_wav
 from fish_audio_suite_voice.tune import ListenTune, SttTune
 from fish_audio_suite_voice.turn_stream import (
@@ -61,6 +61,11 @@ _FORCE_WAIT_S: Final = 2.5
 # Real speech has its first word back from Flux well inside this. A knock or a run of taps has
 # none, so the turn is given up on instead of being streamed until the silence timer ends.
 _NO_WORDS_S: Final = 1.2
+
+# Fish ends a turn about 1.3 s after the speech does, and about 2 s after a speaker who stopped
+# mid-sentence. The local silence limit has to outlast both, or it ends every turn first and
+# Fish's own judgment is never used. Measured on the live API, 2026-11-11.
+_FISH_SILENCE_FLOOR_FRAMES: Final = 3000 // FRAME_MS
 
 type Stopped = Literal["stopped", "noise", "again", "fatal"]
 # Flux says this when asked to end a turn that never started: there is nothing to end.
@@ -123,6 +128,7 @@ class _Turn:
         self.last_voice = 0.0
         self.sent = 0  # bytes of audio sent to Flux
         self.gave_up = False  # no words came back in time, so it was not speech
+        self.who = "Flux"  # the recogniser's name, for the log
         self.audio = bytearray()  # the same audio, kept only when it is to be saved
         self.keep = False
         self.on_eager: Callable[[str], None] | None = None
@@ -347,7 +353,7 @@ async def _stream_until_decided(
         tasks, timeout=_NO_WORDS_S, return_when=asyncio.FIRST_COMPLETED
     )
     if not done and not turn.text:
-        debug("stt.gave_up no words from Flux after {:.1f} s: not speech", _NO_WORDS_S)
+        debug("stt.gave_up no words from {} after {:.1f} s: not speech", turn.who, _NO_WORDS_S)
         turn.gave_up = True
         return False
     if not done:  # words are coming in: carry on until the turn is over
@@ -382,7 +388,8 @@ def _outcome(
     text = turn.text.strip()
     if not text:
         debug(
-            "stt.empty Flux was sent {} kB ({:.1f} s of audio) and found no speech",
+            "stt.empty {} was sent {} kB ({:.1f} s of audio) and found no speech",
+            turn.who,
             turn.sent // 1000,
             turn.sent / (SAMPLE_RATE * 2),
         )
@@ -488,6 +495,13 @@ async def stream_turn(
         return "fatal"
     url, key, default_stream = endpoint
     stream = (make_stream or default_stream)(url, key)
+    fish = stt.provider == "fish-realtime"
+    if fish:
+        # The silence limit stays a backstop, behind Fish's own end of turn.
+        listen = replace(
+            listen,
+            end_silence_frames=max(listen.end_silence_frames, _FISH_SILENCE_FLOOR_FRAMES),
+        )
     capture = _Capture(
         listen_fn,
         mic=mic,
@@ -498,6 +512,7 @@ async def stream_turn(
         since=since,
     )
     turn = _Turn()
+    turn.who = "Fish" if fish else "Flux"
     turn.keep = bool(stt.save_dir)
     turn.on_eager = on_eager
     turn.on_resumed = on_resumed
