@@ -10,10 +10,10 @@ from __future__ import annotations
 import re
 from typing import Final
 
-from fish_audio_suite_kit._speech_floor import too_little_speech
-from fish_audio_suite_kit.cues import cue_pattern
-from fish_audio_suite_kit.cuts import sentence_cuts
-from fish_audio_suite_kit.dialogue import QUOTE_RE
+from fish_audio_suite_kit.text._speech_floor import too_little_speech
+from fish_audio_suite_kit.tts.cues import cue_pattern
+from fish_audio_suite_kit.tts.cuts import sentence_cuts
+from fish_audio_suite_kit.tts.dialogue import QUOTE_RE
 
 __all__ = [
     "is_tts_junk",

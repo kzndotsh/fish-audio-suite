@@ -9,9 +9,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final, Literal, get_args
 
-from fish_audio_suite_kit._charsets import is_header_safe
-from fish_audio_suite_kit.literals import AsrModel, FishLatency, TtsModel
-from fish_audio_suite_kit.urls import is_cloud_base
+from fish_audio_suite_kit.http.urls import is_cloud_base
+from fish_audio_suite_kit.text._charsets import is_header_safe
+from fish_audio_suite_kit.types.literals import AsrModel, FishLatency, TtsModel
 
 __all__ = [
     "FISH_ASR_MODEL_IDS",

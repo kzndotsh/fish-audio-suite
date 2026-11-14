@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import NotRequired, TypedDict
 
-from fish_audio_suite_kit.literals import ChatRole
+from fish_audio_suite_kit.types.literals import ChatRole
 
 __all__ = [
     "AsrBody",

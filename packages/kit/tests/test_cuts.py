@@ -13,7 +13,7 @@ from fish_audio_suite_kit import (
     sentence_cuts,
     split_tts_piece,
 )
-from fish_audio_suite_kit.stream_holds import sentence_closer_hold_at
+from fish_audio_suite_kit.tts.stream_holds import sentence_closer_hold_at
 
 
 def test_next_tts_cut_skips_abbreviations() -> None:

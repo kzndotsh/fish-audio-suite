@@ -10,11 +10,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from fish_audio_suite_kit.catalog import takes_directions
-from fish_audio_suite_kit.cues import normalize_cues
-from fish_audio_suite_kit.dialogue import extract_quoted_speech
-from fish_audio_suite_kit.scrub_tts import scrub_tts
-from fish_audio_suite_kit.stream_holds import tts_hold_at
+from fish_audio_suite_kit.tts.cues import normalize_cues
+from fish_audio_suite_kit.tts.dialogue import extract_quoted_speech
+from fish_audio_suite_kit.tts.scrub_tts import scrub_tts
+from fish_audio_suite_kit.tts.stream_holds import tts_hold_at
+from fish_audio_suite_kit.types.catalog import takes_directions
 
 __all__ = [
     "CueMode",

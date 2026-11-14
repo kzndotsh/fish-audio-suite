@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Final
 
-from fish_audio_suite_kit.cues import FISH_BREAKS, FISH_EMOTIONS
+from fish_audio_suite_kit.tts.cues import FISH_BREAKS, FISH_EMOTIONS
 
 __all__ = [
     "DEFAULT_SEED_EXCHANGE",

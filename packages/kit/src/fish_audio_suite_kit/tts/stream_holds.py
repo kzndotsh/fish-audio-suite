@@ -13,7 +13,7 @@ from collections.abc import Callable, Iterator
 from functools import partial
 from typing import Final
 
-from fish_audio_suite_kit._charsets import (
+from fish_audio_suite_kit.text._charsets import (
     EMPHASIS_MARKS,
     SENTENCE_CLOSERS,
     SENTENCE_STOPS,
@@ -22,15 +22,15 @@ from fish_audio_suite_kit._charsets import (
     THOUGHT_WORDS,
     TRAILING_EMPHASIS_MARKS,
 )
-from fish_audio_suite_kit.cues import (
+from fish_audio_suite_kit.tts.cues import (
     LEAD_PUNCT,
     LEAD_WORDS,
     SPOKEN_MOOD_LEAD_RE,
     WHISPER_TAG,
     whisper_tag,
 )
-from fish_audio_suite_kit.cuts import sentence_cuts
-from fish_audio_suite_kit.scrub_tts import (
+from fish_audio_suite_kit.tts.cuts import sentence_cuts
+from fish_audio_suite_kit.tts.scrub_tts import (
     HEADING_MARK,
     HTML_BLOCK_CLOSE_RE,
     HTML_BLOCK_OPEN_RE,

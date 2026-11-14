@@ -6,7 +6,7 @@ import re
 from collections.abc import Callable
 from functools import cache, partial
 
-from fish_audio_suite_kit._charsets import (
+from fish_audio_suite_kit.text._charsets import (
     ANGLE_TOKEN_RE,
     BREAKS_RE,
     EMPHASIS_MARKS,
@@ -16,15 +16,15 @@ from fish_audio_suite_kit._charsets import (
     plain_breaks,
     utf8_text,
 )
-from fish_audio_suite_kit._single_pass import (
+from fish_audio_suite_kit.text._single_pass import (
     blank_table_separators,
     collapse_space_before_stop,
     emphasis_runs,
     flatten_table_rows,
     strip_space_before_newline,
 )
-from fish_audio_suite_kit.catalog import DIRECTED_PAIRED_TAGS
-from fish_audio_suite_kit.cues import WHISPER_TAG, is_paren_cue, rewrite_s1_parens
+from fish_audio_suite_kit.tts.cues import WHISPER_TAG, is_paren_cue, rewrite_s1_parens
+from fish_audio_suite_kit.types.catalog import DIRECTED_PAIRED_TAGS
 
 __all__ = [
     "scrub_tts",

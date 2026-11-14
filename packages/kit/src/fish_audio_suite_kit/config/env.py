@@ -6,8 +6,8 @@ import os
 import re
 from collections.abc import Callable
 
-from fish_audio_suite_kit._values import parse_flag, parse_number
-from fish_audio_suite_kit.urls import strip_base
+from fish_audio_suite_kit.config._values import parse_flag, parse_number
+from fish_audio_suite_kit.http.urls import strip_base
 
 __all__ = [
     "env_base",

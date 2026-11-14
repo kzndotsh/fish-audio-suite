@@ -7,7 +7,7 @@ import secrets
 from collections.abc import Mapping
 from typing import Final
 
-from fish_audio_suite_kit._charsets import is_header_safe
+from fish_audio_suite_kit.text._charsets import is_header_safe
 
 __all__ = [
     "ensure_trace_headers",

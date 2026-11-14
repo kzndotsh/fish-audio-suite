@@ -5,9 +5,9 @@ from __future__ import annotations
 import re
 from typing import Final
 
-from fish_audio_suite_kit._charsets import cjk_latin_counts
-from fish_audio_suite_kit._speech_floor import too_little_speech
-from fish_audio_suite_kit.cues import cue_pattern
+from fish_audio_suite_kit.text._charsets import cjk_latin_counts
+from fish_audio_suite_kit.text._speech_floor import too_little_speech
+from fish_audio_suite_kit.tts.cues import cue_pattern
 
 __all__ = [
     "extract_quoted_speech",

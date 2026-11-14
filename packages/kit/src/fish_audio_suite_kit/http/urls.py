@@ -7,7 +7,7 @@ import re
 from typing import Final
 from urllib.parse import urlsplit
 
-from fish_audio_suite_kit._charsets import cut_at_control
+from fish_audio_suite_kit.text._charsets import cut_at_control
 
 __all__ = [
     "is_insecure_fish_base",

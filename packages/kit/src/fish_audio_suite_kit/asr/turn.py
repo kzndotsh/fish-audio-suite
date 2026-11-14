@@ -13,7 +13,7 @@ import re
 from dataclasses import dataclass
 from typing import Final, Literal
 
-from fish_audio_suite_kit._charsets import CLAUSE_MARKS, TURN_CLOSER_CHARS, TURN_TERMINALS
+from fish_audio_suite_kit.text._charsets import CLAUSE_MARKS, TURN_CLOSER_CHARS, TURN_TERMINALS
 
 __all__ = [
     "TurnJudgement",

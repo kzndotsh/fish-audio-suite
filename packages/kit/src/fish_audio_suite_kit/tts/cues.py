@@ -10,7 +10,7 @@ from __future__ import annotations
 import re
 from typing import Final
 
-from fish_audio_suite_kit.cuts import ABBREVIATION_LOOKBACK, ends_sentence, sentence_cuts
+from fish_audio_suite_kit.tts.cuts import ABBREVIATION_LOOKBACK, ends_sentence, sentence_cuts
 
 __all__ = [
     "CLEAR_CUE",

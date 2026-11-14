@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Final
 
-from fish_audio_suite_kit._charsets import cjk_latin_counts
+from fish_audio_suite_kit.text._charsets import cjk_latin_counts
 
 __all__ = [
     "DEFAULT_SHORT_WORDS",

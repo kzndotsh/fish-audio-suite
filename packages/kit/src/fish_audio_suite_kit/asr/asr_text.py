@@ -9,7 +9,7 @@ from collections.abc import Callable, Sequence, Set
 from dataclasses import dataclass
 from typing import Final, Literal, cast
 
-from fish_audio_suite_kit._charsets import (
+from fish_audio_suite_kit.text._charsets import (
     ANGLE_TOKEN_RE,
     ASCII_STOPS,
     BREAKS_RE,
@@ -19,9 +19,9 @@ from fish_audio_suite_kit._charsets import (
     plain_breaks,
     utf8_text,
 )
-from fish_audio_suite_kit._single_pass import collapse_space_before_stop
-from fish_audio_suite_kit._speech_floor import too_little_speech
-from fish_audio_suite_kit.payloads import AsrBody, AsrSegment
+from fish_audio_suite_kit.text._single_pass import collapse_space_before_stop
+from fish_audio_suite_kit.text._speech_floor import too_little_speech
+from fish_audio_suite_kit.types.payloads import AsrBody, AsrSegment
 
 __all__ = [
     "DEFAULT_BACKCHANNELS",

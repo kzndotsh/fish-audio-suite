@@ -229,7 +229,7 @@ max-branches = 15
     "PLR2004", # expected values are literals
 ]
 # Cue and ASR text patterns use the real unicode quotes and dashes.
-"packages/kit/src/fish_audio_suite_kit/{asr_text,_charsets,cues,cuts,dialogue,_single_pass,scrub_tts,stream_holds}.py" = ["RUF001"]
+"packages/kit/src/fish_audio_suite_kit/{asr/asr_text,text/_charsets,tts/cues,tts/cuts,tts/dialogue,text/_single_pass,tts/scrub_tts,tts/stream_holds}.py" = ["RUF001"]
 "packages/voice/src/fish_audio_suite_voice/tts/{played_text,text}.py" = ["RUF001"]
 "packages/proxy/src/fish_audio_suite_proxy/phrases.py" = ["RUF001"]
 "packages/proxy/tests/test_proxy_asr_phrases.py" = ["RUF001"]
@@ -290,12 +290,12 @@ containers = ["fish_audio_suite_kit"]
 # Each row may import the rows below it, never the rows above. Modules in one row may
 # import each other. A new module goes in the lowest row it fits.
 layers = [
-    "cue_style : stream_holds : junk",
-    "scrub_tts : dialogue : prompt : defaults",
-    "cues",
-    "cuts : catalog : asr_text : env : http_errors : captions : trace_context : turn",
-    "urls : _single_pass : _speech_floor : payloads",
-    "_charsets : literals : _values : timing : _version",
+    "tts.cue_style : tts.stream_holds : tts.junk",
+    "tts.scrub_tts : tts.dialogue : tts.prompt : types.defaults",
+    "tts.cues",
+    "tts.cuts : types.catalog : asr.asr_text : config.env : http.http_errors : asr.captions : http.trace_context : asr.turn",
+    "http.urls : text._single_pass : text._speech_floor : types.payloads",
+    "text._charsets : types.literals : config._values : text.timing : _version",
 ]
 
 [[tool.importlinter.contracts]]

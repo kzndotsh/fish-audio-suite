@@ -17,8 +17,8 @@ from fish_audio_suite_kit import (
     takes_directions,
     tts_hold_at,
 )
-from fish_audio_suite_kit.cues import is_paren_cue
-from fish_audio_suite_kit.stream_holds import mood_lead_hold_at
+from fish_audio_suite_kit.tts.cues import is_paren_cue
+from fish_audio_suite_kit.tts.stream_holds import mood_lead_hold_at
 
 
 def test_every_alias_is_a_known_tag_like_the_tag_it_stands_for() -> None:

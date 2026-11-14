@@ -4,9 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from fish_audio_suite_kit.catalog import DEFAULT_TTS_MODEL, OPUS_AUTO, PRO_ASR_MODEL
-from fish_audio_suite_kit.cuts import PARTIAL_CHARS
-from fish_audio_suite_kit.literals import AudioFormat, FishLatency
+from fish_audio_suite_kit.tts.cuts import PARTIAL_CHARS
+from fish_audio_suite_kit.types.catalog import DEFAULT_TTS_MODEL, OPUS_AUTO, PRO_ASR_MODEL
+from fish_audio_suite_kit.types.literals import AudioFormat, FishLatency
 
 __all__ = [
     "SuiteDefaults",

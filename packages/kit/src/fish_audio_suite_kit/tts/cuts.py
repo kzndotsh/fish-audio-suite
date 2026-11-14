@@ -6,7 +6,7 @@ import re
 from collections.abc import Iterator
 from typing import Final
 
-from fish_audio_suite_kit._charsets import (
+from fish_audio_suite_kit.text._charsets import (
     ASCII_STOPS,
     IDEOGRAPHIC_STOPS,
     LATIN_CLOSER_CHARS,

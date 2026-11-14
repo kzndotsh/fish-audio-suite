@@ -194,9 +194,9 @@ def test_env_bool_takes_its_default_by_keyword_only() -> None:
 
 def _kit_modules() -> list[str]:
     return sorted(
-        f"{kit.__name__}.{info.name}"
-        for info in pkgutil.iter_modules(kit.__path__)
-        if info.name != "__init__"
+        info.name
+        for info in pkgutil.walk_packages(kit.__path__, f"{kit.__name__}.")
+        if not info.ispkg
     )
 
 

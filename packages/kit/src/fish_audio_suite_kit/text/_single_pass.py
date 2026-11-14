@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 
-from fish_audio_suite_kit._charsets import (
+from fish_audio_suite_kit.text._charsets import (
     EMPHASIS_MARKS,
     PUNCT_BEFORE_CLOSER,
     SENTENCE_AND_CLAUSE_MARKS,

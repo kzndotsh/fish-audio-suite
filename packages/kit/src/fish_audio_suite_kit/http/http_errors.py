@@ -10,9 +10,9 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any, Final, Self, cast
 
-from fish_audio_suite_kit._charsets import cut_at_control, is_header_safe, utf8_text
-from fish_audio_suite_kit._values import parse_number
-from fish_audio_suite_kit.payloads import AsrBody
+from fish_audio_suite_kit.config._values import parse_number
+from fish_audio_suite_kit.text._charsets import cut_at_control, is_header_safe, utf8_text
+from fish_audio_suite_kit.types.payloads import AsrBody
 
 __all__ = [
     "FISH_ASR_PATH",
