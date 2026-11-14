@@ -8,7 +8,9 @@ import re
 import stat
 from collections.abc import Iterator
 from dataclasses import replace
+from datetime import UTC, datetime, tzinfo
 from pathlib import Path
+from typing import cast
 
 import pytest
 from session_fakes import (
@@ -122,6 +124,34 @@ def test_resume_with_no_chat_named_takes_the_most_recently_updated(tmp_path: Pat
     assert load_chat(find_chat(tmp_path, "")).conversation.id == "a1"
 
 
+@pytest.mark.parametrize("newer", ["a1", "b2"])
+def test_chats_saved_in_one_second_still_list_newest_first(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, newer: str
+) -> None:
+    # Switching chats in the full-screen app saves both within a second.
+    early, late = (datetime(2026, 1, 1, 10, 0, 0, ms * 1000, UTC) for ms in (100, 900))
+    times = iter([early, late, early, early] if newer == "a1" else [early, early, early, late])
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz: tzinfo | None = None) -> Clock:  # noqa: ARG003
+            return cast("Clock", next(times))
+
+    monkeypatch.setattr(chat_store, "datetime", Clock)
+    _saved(tmp_path, "a1", ("hi", "Hello."))
+    _saved(tmp_path, "b2", ("yo", "Hey."))
+    assert list_chats(tmp_path)[0].id == newer
+    assert load_chat(find_chat(tmp_path, "")).conversation.id == newer
+
+
+def test_a_lone_surrogate_is_saved_and_read_back(tmp_path: Path) -> None:
+    # Half of a split emoji, as a JSON escape decoded alone gives, cannot be UTF-8 encoded.
+    conversation = _talk(Conversation("be brief"), ("hi \ud83d", "Hello."))
+    file = ChatFile.new(tmp_path, conversation)
+    file.save(conversation)
+    assert load_chat(file.path).conversation == conversation
+
+
 def test_resume_takes_an_id_prefix_a_file_name_or_a_path(tmp_path: Path) -> None:
     first = _saved(tmp_path, "abcd1111", ("hi", "Hello."))
     second = _saved(tmp_path, "abcd2222", ("yo", "Hey."))
@@ -146,6 +176,7 @@ def test_resume_refuses_an_ambiguous_or_unknown_prefix(tmp_path: Path) -> None:
     ("body", "reason"),
     [
         ("{not json", "cannot read"),
+        ("[" * 100_000, "cannot read"),  # nested past the parser's recursion limit
         ("[]", "no JSON object"),
         (json.dumps({"version": 2, "id": "a"}), "newer fish-voice"),
         (json.dumps({"version": 1, "id": "a", "system": "s", "seed": [], "turns": 3}), "turns is"),

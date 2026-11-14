@@ -92,7 +92,8 @@ class ChatFile:
         data = {
             **conversation.to_json(),
             "started": self.started.isoformat(timespec="seconds"),
-            "updated": datetime.now().astimezone().isoformat(timespec="seconds"),
+            # To the microsecond, so chats saved in one second still sort newest first.
+            "updated": datetime.now().astimezone().isoformat(),
         }
         text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -100,7 +101,8 @@ class ChatFile:
         fd, name = tempfile.mkstemp(dir=self.path.parent, prefix=f".{self.path.name}.")
         temp = Path(name)
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            # A lone surrogate has no UTF-8 form. Written as its JSON escape, it reads back.
+            with os.fdopen(fd, "w", encoding="utf-8", errors="backslashreplace") as handle:
                 handle.write(text)
                 handle.flush()
                 os.fsync(handle.fileno())
@@ -200,7 +202,7 @@ def load_chat(path: Path) -> SavedChat:
     path = path.expanduser()
     try:
         data: object = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, RecursionError) as exc:
         raise ChatLoadError(f"cannot read the saved chat {path}: {exc}") from exc
     if not isinstance(data, dict):
         raise ChatLoadError(f"{path} is not a saved chat: it holds no JSON object")
