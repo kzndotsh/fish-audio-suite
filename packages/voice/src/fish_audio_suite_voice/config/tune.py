@@ -1,7 +1,7 @@
 """The tunes of hearing the user: listening, barge-in, mic cleanup and speech recognition.
 
 Each tune is a frozen dataclass that a library class takes. ``from_env`` reads it once
-through ``env_read``, which warns about a value it cannot use and uses the default. Built
+through ``config.env``, which warns about a value it cannot use and uses the default. Built
 in code, a tune holds its values to the same bounds: ``__post_init__`` raises
 ``ValueError`` for one ``from_env`` would refuse. Library classes never read the
 environment themselves.
@@ -65,7 +65,7 @@ __all__ = [
 SttProvider = Literal["fish", "deepgram", "fish-realtime"]
 DEFAULT_STT: Final[SttProvider] = "fish"
 # The recognisers that hear a turn as it is spoken and end it themselves. Each is an adapter
-# listed in ``recognisers.RECOGNISERS``, which a test keeps this in step with.
+# listed in ``asr.backends.RECOGNISERS``, which a test keeps this in step with.
 STREAMING_STT_PROVIDERS: Final[tuple[SttProvider, ...]] = ("deepgram", "fish-realtime")
 STT_PROVIDERS: Final[tuple[SttProvider, ...]] = (DEFAULT_STT, *STREAMING_STT_PROVIDERS)
 DEFAULT_DEEPGRAM_MODEL: Final = "flux-general-en"
@@ -212,7 +212,7 @@ class ListenTune:
         Voiced frames an utterance needs before it is sent to ASR, 1 to
         ``MAX_UTTERANCE_FRAMES``.
     vad_engine : str
-        The voice detector: a name in ``vad.VAD_ENGINES`` or ``package.module:factory``.
+        The voice detector: a name in ``capture.vad.VAD_ENGINES`` or ``package.module:factory``.
         The barge-in gate uses it too.
 
     Raises

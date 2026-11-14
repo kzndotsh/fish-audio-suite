@@ -1,6 +1,6 @@
 """The names ``FISH_VOICE_PLAYBACK`` and ``--playback`` accept, read with the other settings.
 
-The sinks themselves are in ``playback``. Their names live here so the settings can be read
+The sinks themselves are in ``tts.playback``. Their names live here so the settings can be read
 and checked without importing the audio code.
 """
 

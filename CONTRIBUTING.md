@@ -77,7 +77,7 @@ and the proxy multiplies a client-sent `speed` by it.
 
 A voice setting belongs to the frozen `*Tune` dataclass of the library class that uses it
 (`ListenTune`, `BargeTune`, `TtsTune`, `LlmTune` and so on), or to `VoiceCliConfig` in
-`config.py` when only the CLI uses it. It is read once, through `env_read`, which warns
+`config/settings.py` when only the CLI uses it. It is read once, through `config.env`, which warns
 about a bad value and uses the default. Three places change:
 
 1. **The tune's module.** Add a `DEFAULT_*` constant, the field with its docstring entry, and
@@ -150,6 +150,19 @@ version stays 0.1.0 until 1.0.0):
 UPDATE_GOLDEN=1 uv run pytest packages/kit/tests/test_api_contract.py
 git diff packages/kit/tests/golden/kit_api.json
 ```
+
+### Naming
+
+- Prefer the industry term: `asr`, `tts`, `vad`, `aec`, `barge_in`, `transcript`, `session`.
+- Prefer American spelling or the acronym. Do not use `recognise*` in a new module name.
+- Name a module for the component it holds, as a noun (`scoring`, `played_text`), not a
+  narrative verb (`hearing`, `heard`). A standard verb such as `transcribe` is fine.
+- If a name needs the architecture doc to decode, rename it.
+- A new voice module goes in the subpackage for its domain (`tts`, `asr`, `capture`,
+  `session`, `llm`, `config`, `logutil`, `cli`), and in the lowest row of the
+  `voice-direction` contract in `pyproject.toml` that it fits.
+- Public names are only those in the package root's `__all__`. A new module is internal
+  unless its names are exported from the root.
 
 ## Versioning and deprecation
 

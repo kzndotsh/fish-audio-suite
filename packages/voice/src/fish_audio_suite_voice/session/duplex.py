@@ -150,7 +150,7 @@ async def duplex_turns(
         Where each turn comes from, and the mute switch. The mic when omitted.
     full_screen : bool, optional
         Whether the session runs in the full-screen app, which decides an ``auto``
-        ``output_latency`` (see ``config.sink_latency``). False by default.
+        ``output_latency`` (see ``config.settings.sink_latency``). False by default.
 
     Returns
     -------
@@ -162,7 +162,7 @@ async def duplex_turns(
     Notes
     -----
     It prints nothing: every step is an event on ``EVENTS``, and a display, such as
-    ``console_sink.ConsoleSink``, subscribes to show it. One sampled trace id is shared
+    ``cli.console_sink.ConsoleSink``, subscribes to show it. One sampled trace id is shared
     by Fish ASR and the TTS websocket for that turn. One mic stream, with the echo
     canceller that cleans it, stays open for the whole session. Barge-in keeps the
     audio that tripped the gate and skips the post-reply cooldown.

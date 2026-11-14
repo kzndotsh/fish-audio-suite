@@ -134,10 +134,10 @@ class BargeGate:
     never below ``min_rms``. It is multiplied by ``playing_gain`` while audio plays,
     only when AEC3 is not running. A frame counts only when it is over the floor and the
     voice detector calls it speech; the detector is asked only about frames over the
-    floor (see ``scorer.FrameScorer``). A trip keeps the last 20 frames and the mic position after them; the next
-    listen starts from that clip, reads on from that position, and skips the post-reply
-    cooldown. Three missed frames in a row take one hit back, so a short gap does not
-    reset the phrase.
+    floor (see ``capture.scoring.FrameScorer``). A trip keeps the last 20 frames and the mic
+    position after them; the next listen starts from that clip, reads on from that position,
+    and skips the post-reply cooldown. Three missed frames in a row take one hit back, so a
+    short gap does not reset the phrase.
     """
 
     def __init__(

@@ -3,7 +3,7 @@
 The settings are found by running the code that reads them, not by listing them here: voice
 and the proxy load their settings in an empty environment while every reader call is
 recorded with what it declares (the variable, its default, and its range), and every lookup
-in ``os.environ`` is recorded too. A reader is any function in ``env_read`` or kit's ``env``
+in ``os.environ`` is recorded too. A reader is any function in ``config.env`` or kit's ``env``
 module whose first parameter is the variable name. The docs are parsed as text. Each test
 compares the two and names the variable, the file and what each side says.
 """

@@ -68,7 +68,7 @@ class Mic(Protocol):
         Returns
         -------
         Iterator
-            One frame of ``pcm.FRAME_BYTES`` bytes at a time.
+            One frame of ``capture.pcm.FRAME_BYTES`` bytes at a time.
         """
         ...
 

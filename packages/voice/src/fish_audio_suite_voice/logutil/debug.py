@@ -3,8 +3,8 @@
 Level 1 (``--debug``) logs events. Level 2 (``--trace`` or ``FISH_VOICE_DEBUG=2``)
 adds the mic heartbeats, raw websocket audio and HTTP request lines. This is the module
 every step logs through: the debug level, ``debug``, ``trace``, ``warn`` and the
-per-turn clock. How lines look is ``log_format``, the run's file is ``log_file``, and
-where loguru sends them is set up by ``log_setup``.
+per-turn clock. How lines look is ``logutil.format``, the run's file is ``logutil.file``, and
+where loguru sends them is set up by ``logutil.setup``.
 """
 
 from __future__ import annotations

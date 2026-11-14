@@ -275,9 +275,9 @@ def _writes_to_the_terminal(path: Path) -> list[int]:
 
 
 def test_the_voice_session_reports_through_events_and_never_writes_to_the_terminal() -> None:
-    """A full-screen display owns the terminal, so session code reports through ``events``.
+    """A full-screen display owns the terminal, so session code reports through ``session.events``.
 
-    Only the plain display, the logging modules, the startup in ``cli`` and the raw
+    Only the plain display, the logging modules, the startup in ``cli.main`` and the raw
     stdout audio sink may write to a stream.
     """
     allowed = {

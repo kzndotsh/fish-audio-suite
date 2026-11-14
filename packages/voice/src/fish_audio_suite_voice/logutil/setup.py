@@ -1,7 +1,7 @@
 """Where log lines go: the terminal, the run's log file, or a display's log pane.
 
 Called once by the CLI at start-up (``configure_voice_logging``), never at import. The
-session's own steps log through ``debug``; this module only decides the sinks.
+session's own steps log through ``logutil.debug``; this module only decides the sinks.
 """
 
 from __future__ import annotations

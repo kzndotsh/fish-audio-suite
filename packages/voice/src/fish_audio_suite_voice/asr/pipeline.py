@@ -2,7 +2,7 @@
 
 This module only runs the listen: which recogniser hears the turn, the carried clip it starts
 from, and the end-of-turn check's loop over clips. Each recogniser returns a
-``recognised.Recognised`` and ``heard.heard_line`` judges it, whichever path it took.
+``asr.result.Recognised`` and ``asr.outcome.heard_line`` judges it, whichever path it took.
 """
 
 from __future__ import annotations

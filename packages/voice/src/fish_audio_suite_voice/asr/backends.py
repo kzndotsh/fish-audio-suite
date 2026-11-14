@@ -1,7 +1,7 @@
 """Every streaming recogniser, by its ``FISH_VOICE_STT`` name.
 
 Adding one is an adapter module that declares its ``Recogniser``, an entry here, its package
-extra, and its name in ``tune.STREAMING_STT_PROVIDERS`` (a test keeps the two in step).
+extra, and its name in ``config.tune.STREAMING_STT_PROVIDERS`` (a test keeps the two in step).
 """
 
 from __future__ import annotations

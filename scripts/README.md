@@ -151,7 +151,7 @@ by default (`FISH_TTS_CUES=official`). Your key is `FISH_API_KEY`, from `.env` o
 
 Records your mic for a few seconds and prints its level about every 90 ms, then a
 summary: the noise floor and speech level the app's waveform would take from it
-(`session_view.SpeechScale`'s own numbers), then the noise floor, the average level while
+(`cli.session_view.SpeechScale`'s own numbers), then the noise floor, the average level while
 you talk, the loudest moment and how far a plosive or bump sits above your speech. It is for tuning how the waveform in
 `fish-voice --tui` scales a real mic. It calls no API, sends nothing and saves no audio.
 It needs the `speakers` extra. It reads the raw mic: `fish-voice` adds automatic gain and

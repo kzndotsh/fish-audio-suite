@@ -1,6 +1,6 @@
 """Fish websocket turn: retry before the first audio byte, on a private loop.
 
-``run_turn`` plays one turn through the shared Fish retry loop (``pause.fish_retries``), and
+``run_turn`` plays one turn through the shared Fish retry loop (``session.pause.fish_retries``), and
 ``turn_failure`` decides which failure of an attempt is worth another one.
 """
 

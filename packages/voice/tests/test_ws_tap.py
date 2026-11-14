@@ -21,7 +21,7 @@ _PROCESS = "_process_audio_event"
 def sdk(monkeypatch: pytest.MonkeyPatch) -> Iterator[ModuleType]:
     """The Fish SDK's realtime module, with the tap not yet installed.
 
-    The tap installs once per process, so ``ws_tap`` is reloaded before and after the
+    The tap installs once per process, so ``tts.ws_tap`` is reloaded before and after the
     test, and the SDK functions are put back afterwards, so no wrapper outlives the test.
     """
     for name in (_STOP, _PROCESS):

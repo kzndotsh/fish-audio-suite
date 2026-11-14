@@ -1,10 +1,10 @@
 """What a streaming recogniser is, what it says about a turn, and the connection they share.
 
 A streaming recogniser takes audio as it is spoken and decides for itself when the speaker
-has finished. Each one is an adapter module (``deepgram``, ``fish_realtime``) that declares a
-``Recogniser``: its settings name, how it is opened from the settings, and what it needs. It
-reads its own protocol into the messages below, so ``streaming`` hears a turn the same way
-through any of them.
+has finished. Each one is an adapter module (``asr.deepgram``, ``asr.fish_realtime``) that
+declares a ``Recogniser``: its settings name, how it is opened from the settings, and what it
+needs. It reads its own protocol into the messages below, so ``asr.streaming`` hears a turn the
+same way through any of them.
 """
 
 from __future__ import annotations

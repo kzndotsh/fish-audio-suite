@@ -2,7 +2,7 @@
 
 It follows a session through its events, shows it as one ``SessionView``, and drives it
 with typed lines, mute and interrupt. It owns no audio or network code: the session runs
-as a worker and reports through ``events``, so everything here happens on the app's own
+as a worker and reports through ``session.events``, so everything here happens on the app's own
 thread.
 """
 

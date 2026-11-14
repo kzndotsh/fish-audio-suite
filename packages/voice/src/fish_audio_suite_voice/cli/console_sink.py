@@ -2,7 +2,7 @@
 
 The conversation goes to stdout, so piping it keeps the transcript. The reply streams onto
 one line, which stays open until the reply ends or a log line has to be written; the display
-owns that line, and logging asks it to close the line through ``debug.on_terminal_line``.
+owns that line, and logging asks it to close the line through ``logutil.debug.on_terminal_line``.
 """
 
 from __future__ import annotations

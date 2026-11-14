@@ -4,7 +4,7 @@ Two backends ship: an OpenAI-compatible httpx client for any chat-completions
 server, and the OpenRouter SDK as an opt-in adapter. ``LlmTune.backend`` picks
 one. Both share the event consumer, the 429 retry, and the cut-off continuation.
 Everything that belongs to one provider, the wire formats and OpenRouter's routing,
-model check and usage report, lives in ``transports``.
+model check and usage report, lives in ``llm.transports``.
 
 A refusal that every later turn would get too (401, 402, 404, or a model that no
 provider serves) raises ``ChatUnusableError``, which ends the session.

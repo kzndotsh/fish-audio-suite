@@ -3,7 +3,7 @@
 Every recogniser, Fish ASR on a clip or a streaming one, returns a ``Recognised``: the words
 (``Transcript``), a reason there is no turn (``NoTurn``), or, from a streaming recogniser that
 could not be reached once speech had started, the speech so far (``StreamFallback``) for the
-batch recogniser to carry on from. ``heard.heard_line`` turns any of them into the line the
+batch recogniser to carry on from. ``asr.outcome.heard_line`` turns any of them into the line the
 loop acts on.
 
 A listen can start from speech it did not record itself: a ``BargeIn`` clip that cut the last
@@ -55,7 +55,7 @@ class BargeIn:
         Returns
         -------
         list of bytes
-            One ``pcm.FRAME_BYTES`` frame each. A partial frame at the end is left out.
+            One ``capture.pcm.FRAME_BYTES`` frame each. A partial frame at the end is left out.
         """
         return take_frames(bytearray(), self.pcm)
 

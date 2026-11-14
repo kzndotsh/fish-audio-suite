@@ -135,7 +135,7 @@ class DuplexContext:
         The client Fish ASR requests share. Only hearing uses it.
     sink_latency : {"low", "high"}
         The playback buffer each reply's sink asks for, ``config.output_latency`` with
-        ``auto`` decided for this run by ``config.sink_latency``.
+        ``auto`` decided for this run by ``config.settings.sink_latency``.
     """
 
     config: VoiceCliConfig

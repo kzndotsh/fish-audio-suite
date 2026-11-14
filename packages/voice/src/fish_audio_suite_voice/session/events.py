@@ -1,7 +1,7 @@
 """What happens in a voice session, as events a display can follow.
 
 The duplex loop reports each step here and prints nothing itself. The plain terminal
-display (``console_sink``) and the full-screen app (``tui``) are both subscribers, so
+display (``cli.console_sink``) and the full-screen app (``cli.tui``) are both subscribers, so
 each sees the same facts.
 """
 

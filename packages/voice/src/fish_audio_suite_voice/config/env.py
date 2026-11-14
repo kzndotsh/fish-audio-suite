@@ -2,7 +2,7 @@
 
 Every voice setting except ``FISH_VOICE_DEBUG`` is read through one of these functions, so
 each read names its variable, its default and its range or choices in one call.
-``FISH_VOICE_DEBUG`` is read in ``debug``, which this module warns through, so it cannot
+``FISH_VOICE_DEBUG`` is read in ``logutil.debug``, which this module warns through, so it cannot
 come back here. A setting a tune also checks
 when it is built in code is declared once as an ``IntSetting``, ``FloatSetting`` or
 ``ChoiceSetting``: its ``read`` is the environment's call and its ``check`` the tune's, so

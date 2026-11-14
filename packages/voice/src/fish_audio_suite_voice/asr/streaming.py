@@ -1,6 +1,6 @@
 """Hear one turn by streaming it to a recogniser while the user is still speaking.
 
-The recogniser is the one ``SttTune.provider`` names in ``recognisers.RECOGNISERS``. Each is a
+The recogniser is the one ``SttTune.provider`` names in ``asr.backends.RECOGNISERS``. Each is a
 ``TurnStream``, and this module names none of them.
 
 The mic is gated as it always is: nothing leaves the machine until the voice detector hears
@@ -311,7 +311,7 @@ async def _hold_until_voiced(
         Voiced frames a fresh utterance needs.
     carried : BargeIn or None
         The barge-in clip the turn starts from, whose frames come first. The voice in it
-        counts in full (``listen.voice_needed``), as it does on the batch path: a short
+        counts in full (``capture.listen.voice_needed``), as it does on the batch path: a short
         interruption must not be dropped for being shorter than ``min_voiced_frames``.
 
     Returns

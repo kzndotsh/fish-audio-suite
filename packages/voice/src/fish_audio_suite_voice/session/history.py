@@ -54,10 +54,10 @@ class History:
             The system prompt for this session.
         seed : bool
             Pin one opening exchange with cues after the system message, because the model
-            copies the pattern of the replies it sees. ``config.SystemPrompt.pin_seed`` decides
-            it: the default prompt and a character file (which keeps the voice rules) get
-            it, and a prompt written out in full does not, so it stays in control of how
-            the model replies.
+            copies the pattern of the replies it sees.
+            ``config.settings.SystemPrompt.pin_seed`` decides it: the default prompt and a
+            character file (which keeps the voice rules) get it, and a prompt written out in
+            full does not, so it stays in control of how the model replies.
         turns : int
             User and assistant pairs to keep.
 

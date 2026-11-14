@@ -21,7 +21,7 @@ class Vad(Protocol):
 
     ``webrtcvad.Vad`` already has this shape. A detector may keep state between
     frames, so each listen and each barge-in watch opens its own. Its
-    ``scorer.FrameScorer`` hands it each frame at most once and in order, and only the
+    ``capture.scoring.FrameScorer`` hands it each frame at most once and in order, and only the
     frames its loudness gate asks about: a frame too quiet to be speech is never scored.
     """
 
