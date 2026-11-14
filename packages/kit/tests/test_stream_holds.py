@@ -71,3 +71,15 @@ def test_a_mood_word_after_a_blockquote_mark_is_held_like_one_after_a_heading(
     # The whole reply drops the "> " and reads "Excited," as a lead cue. Released
     # early, the word would be spoken before its comma arrives.
     assert tts_hold_at(text, lead=True, line_start=True, sentence_start=True) == held_at
+
+
+@pytest.mark.parametrize(
+    ("text", "held_at"),
+    [("happy", 0), ("hap", 0), ("  happy ", 2), ("so", 2), ("Hello", 5)],  # 2 and 5: nothing held
+)
+def test_a_lowercase_mood_word_opening_a_reply_waits_for_the_next_word(
+    text: str, held_at: int | None
+) -> None:
+    # Released alone, a cue written without brackets is spoken before the next word shows
+    # it was a cue.
+    assert tts_hold_at(text, line_start=True, sentence_start=True) == held_at

@@ -502,6 +502,22 @@ def mood_lead_hold_at(text: str, *, sentence_start: bool) -> int | None:
     return None
 
 
+def _bare_lead_hold_at(text: str, *, sentence_start: bool) -> int | None:
+    # A stream sends "happy" before " Hi". Until the next word shows whether it was a cue
+    # written without brackets, a lowercase mood word (or the start of one) that opens the
+    # line is held. With leads on, mood_lead_hold_at already holds it.
+    line_at = text.rfind("\n") + 1
+    if line_at == 0 and not sentence_start:
+        return None
+    line = text[line_at:]
+    word = line.strip(" \t")
+    if not word or not word.isalpha() or not word.islower():
+        return None
+    if any(lead.startswith(word) for lead in LEAD_WORDS):
+        return line_at + len(line) - len(line.lstrip(" \t"))
+    return None
+
+
 def sentence_closer_hold_at(text: str, *, lead: bool = False) -> int | None:
     """Return where a stop is waiting for a possible closing quote.
 
@@ -677,3 +693,5 @@ def _hold_marks(
         yield _entity_stop_hold(text)
         yield mood_lead_hold_at(text, sentence_start=sentence_start)
         yield _sentence_lead_hold(text, sentence_start=sentence_start, before=before)
+    else:
+        yield _bare_lead_hold_at(text, sentence_start=sentence_start)

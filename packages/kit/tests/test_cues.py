@@ -497,3 +497,26 @@ def test_a_mood_word_after_a_stop_inside_a_cue_is_not_a_lead() -> None:
     assert normalize_cues("(he pauses. then) Excited, hi.", lead=True) == (
         "(he pauses. then) Excited, hi."
     )
+
+
+@pytest.mark.parametrize("directed", [False, True])
+def test_a_cue_word_written_without_brackets_gets_them(directed: bool) -> None:
+    assert normalize_cues("happy Hi there.", directed=directed) == "[happy] Hi there."
+    assert normalize_cues("Okay. sad That is a shame.", directed=directed) == (
+        "Okay. [sad] That is a shame."
+    )
+    assert (
+        normalize_cues("calm\nexcited Let's go.", directed=directed) == "calm\n[excited] Let's go."
+    )
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["happy hour starts at six.", "I am happy Bob came.", "Happy Hi there.", "happy"],
+)
+def test_ordinary_words_are_not_taken_for_a_bare_cue(text: str) -> None:
+    assert normalize_cues(text) == text
+
+
+def test_a_bare_cue_word_is_left_alone_mid_sentence_in_a_stream() -> None:
+    assert normalize_cues("happy Hi there.", continued=True) == "happy Hi there."

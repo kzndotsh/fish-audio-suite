@@ -467,6 +467,25 @@ def _cue_word(inner: str) -> bool:
     return word in _CUE_ALIASES or word in LEAD_WORDS or word == CLEAR_CUE
 
 
+# A cue word the model wrote without its brackets: "happy Hi there." A lowercase mood
+# word that opens a sentence and runs straight into a capital is never ordinary English,
+# so unlike the comma lead above this is repaired whatever ``lead`` says.
+_BARE_LEAD_RE: Final = re.compile(
+    r"(?:^|(?<=\n)|(?<=[.!?\u2026\u3002\uff01\uff1f]\s))[ \t]*("
+    + "|".join(re.escape(word) for word in sorted(LEAD_WORDS, key=len, reverse=True))
+    + r")[ \t]+(?=[^\W\d_])"
+)
+
+
+def _bracket_bare_leads(text: str, *, continued: bool) -> str:
+    def fix(m: re.Match[str]) -> str:
+        if (m.start() == 0 and continued) or not text[m.end()].isupper():
+            return m.group(0)
+        return f"{m.group(0)[: m.start(1) - m.start()]}[{m.group(1)}] "
+
+    return _BARE_LEAD_RE.sub(fix, text)
+
+
 def rewrite_s1_parens(text: str) -> str:
     """Rewrite S1 ``(happy)`` tags as ``[happy]``. An unknown ``(aside)`` is left for the scrubber."""
     return _S1_PAREN_RE.sub(lambda m: _bracket(m.group(1)), text)
@@ -564,6 +583,9 @@ def normalize_cues(
 
     Notes
     -----
+    A lowercase mood word that opens a sentence and runs straight into a capital
+    (``happy Hi``) is a cue written without its brackets, and gets them in every mode.
+
     With ``lead``, a mood word becomes a cue only when it leads a sentence
     (``Happy, hello``). ``Dr. Happy`` and ``1. Excited`` are not new
     sentences. The lead list is Fish's single-word emotions, plus whispering,
@@ -576,11 +598,14 @@ def normalize_cues(
     '[whispering] shh and [happy] day'
     >>> normalize_cues("[excited] Yes! [  calm  ] ok")
     '[excited] Yes! [calm] ok'
+    >>> normalize_cues("happy Hi there. calm Take it slow.")
+    '[happy] Hi there. [calm] Take it slow.'
     >>> normalize_cues("[Barely holding it together] <whisper>fine</whisper>", directed=True)
     '[Barely holding it together] <whisper>fine</whisper>'
     """
     if not text:
         return text
+    text = _bracket_bare_leads(text, continued=continued)
     if directed:
         return rewrite_s1_parens(text)
     text = _WHISPER_XML_RE.sub(lambda m: f"[whispering] {m.group(1).strip()}", text)
