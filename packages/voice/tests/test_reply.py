@@ -70,6 +70,17 @@ def test_a_spoken_reply_records_only_audio_that_was_played(
     assert _reply(ctx) is None
     assert fatal.tts_first_audio_ms is None
 
+    # Fish refused the key after some audio played: the session ends, but the record,
+    # which is saved, keeps what the user heard.
+    ctx = _asked()
+    cut_by_fatal = make_result(
+        "hello there", bytes_played=8, got_audio=True, error_status=402, error_message="no"
+    )
+    _, code = _speak_once(monkeypatch, ctx, cut_by_fatal)
+    assert code == 2
+    assert _reply(ctx) == "Hello there"
+    assert ctx.chat.history.turns[-1].reply.interrupted  # pyright: ignore[reportOptionalMemberAccess]
+
     ctx = _asked()
     _speak_once(monkeypatch, ctx, make_result(cancelled=True))
     assert _reply(ctx) is None
