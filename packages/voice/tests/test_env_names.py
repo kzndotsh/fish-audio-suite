@@ -31,7 +31,7 @@ _CASES: list[EnvCase] = [
     EnvCase("FISH_VOICE_OUTPUT_LATENCY", " HIGH ", "high", attrgetter("output_latency")),
     EnvCase("FISH_VOICE_HISTORY_TURNS", "7", 7, attrgetter("history_turns")),
     EnvCase("FISH_VOICE_HISTORY_CUE_TURNS", "3", 3, attrgetter("history_cue_turns")),
-    EnvCase("FISH_VOICE_SYSTEM_PROMPT", "a prompt", "a prompt", attrgetter("prompt.text")),
+    EnvCase("FISH_VOICE_SYSTEM_PROMPT", "a prompt", "a prompt", attrgetter("prompt")),
     EnvCase("FISH_VOICE_STREAM_TTS", "1", True, attrgetter("stream_tts")),
     EnvCase("FISH_VOICE_REPEAT_WINDOW", "2.5", 2.5, attrgetter("repeat_window_s")),
     EnvCase("FISH_VOICE_FADE_MS", "6", 6.0, attrgetter("tts.fade_ms")),
@@ -68,14 +68,14 @@ def test_the_env_name_reaches_its_setting(monkeypatch: pytest.MonkeyPatch, case:
 
 def test_a_blank_system_prompt_means_no_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("FISH_VOICE_SYSTEM_PROMPT", "")
-    assert load_config().prompt.text == ""
+    assert load_config().prompt == ""
 
 
 def test_unset_keeps_the_defaults() -> None:
     c = load_config()
     assert c.history_turns == DEFAULT_HISTORY_TURNS
     assert c.history_cue_turns is None  # every reply keeps its cues
-    assert c.prompt.text == DEFAULT_SYSTEM_PROMPT
+    assert c.prompt == DEFAULT_SYSTEM_PROMPT
 
 
 @pytest.mark.parametrize("raw", ["-1", "two", "1.5"])

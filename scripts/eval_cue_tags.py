@@ -16,10 +16,10 @@ sent at all until you run it.
 
     uv run python scripts/eval_cue_tags.py wide.txt --model sao10k/l3.1-euryale-70b --out cues.md
 
-A prompt file is used as written, as `FISH_VOICE_SYSTEM_PROMPT` is, so it gets no opening
-example unless you pass `--seed`. The user lines are the LINES below, picked to call for different feelings;
-`-l` and `--lines-file` replace them. The LLM settings come from the environment and
-`--env-file` (default `.env`), the same variables `fish-voice` reads.
+A prompt file is used as written, as `FISH_VOICE_SYSTEM_PROMPT` is. The user lines are the
+LINES below, picked to call for different feelings; `-l` and `--lines-file` replace them.
+The LLM settings come from the environment and `--env-file` (default `.env`), the same
+variables `fish-voice` reads.
 """
 
 from __future__ import annotations
@@ -45,7 +45,6 @@ from fish_audio_suite_kit import (
     split_cues,
 )
 from fish_audio_suite_voice.config.dotenv import load_dotenv
-from fish_audio_suite_voice.config.settings import SystemPrompt
 from fish_audio_suite_voice.llm.tune import LlmTune
 
 # ---------------------------------------------------------------------------
@@ -278,7 +277,6 @@ async def evaluate(
     lines: Sequence[str],
     *,
     runs: int,
-    seed: bool = False,
     show: bool = False,
 ) -> tuple[list[CueStats], dict[str, list[eval_models.Run]]]:
     """Send every user line under every system prompt and count the cues.
@@ -293,9 +291,6 @@ async def evaluate(
         The user lines.
     runs : int
         Repeats of each line under each prompt.
-    seed : bool, optional
-        True pins the app's opening example under every prompt. False pins it as the app
-        would for a prompt written out in full: under the built-in prompt only.
     show : bool, optional
         Print each reply as it arrives.
 
@@ -321,7 +316,6 @@ async def evaluate(
             lines,
             system_prompt,
             runs=runs,
-            seed=seed or SystemPrompt.written(system_prompt).pin_seed,
             warmup=False,
             on_run=printer(name) if show else None,
         )
@@ -417,12 +411,6 @@ def _parser() -> argparse.ArgumentParser:
         default=3,
         help="Repeats of each line under each prompt (default 3).",
     )
-    parser.add_argument(
-        "--seed",
-        action="store_true",
-        help="Pin the app's opening example under every prompt, not only the built-in one. "
-        "Use it to compare a variant of the built-in prompt like for like.",
-    )
     parser.add_argument("--model", help="The chat model. Default: the one fish-voice would use.")
     parser.add_argument(
         "--temperature", type=float, help="Sampling temperature. Default FISH_LLM_TEMPERATURE."
@@ -500,9 +488,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         return 2
     eval_models.listen_for_usage()
-    stats, raw = asyncio.run(
-        evaluate(tune, prompts, lines, runs=args.runs, seed=args.seed, show=args.show)
-    )
+    stats, raw = asyncio.run(evaluate(tune, prompts, lines, runs=args.runs, show=args.show))
     report = [*table(stats), "", *cue_lists(stats)]
     if args.show:
         print()

@@ -233,7 +233,7 @@ async def _session(
             resumed=resumed,
         )
         if resumed is not None:
-            _announce("resumed", resumed, c.prompt.text)
+            _announce("resumed", resumed, c.prompt)
         turn, chat = ctx.turn_input, ctx.chat
         EVENTS.emit(chat.shown())
         last_user = ""
@@ -298,11 +298,11 @@ async def _apply(ctx: DuplexContext, command: ChatCommand) -> None:
             except ChatLoadError as exc:
                 notice(f"[cannot open that chat: {exc}]")
                 return
-            chat.history = saved.conversation.reopened(prompt.text, seed=prompt.pin_seed)
+            chat.history = saved.conversation.reopened(prompt)
             chat.file = chat_file(ctx.config, chat.history, saved)
-            _announce("opened", saved, prompt.text)
+            _announce("opened", saved, prompt)
         case NewChat():
-            chat.history = Conversation.opening(prompt.text, seed=prompt.pin_seed)
+            chat.history = Conversation(prompt)
             chat.file = chat_file(ctx.config, chat.history)
             notice("[new chat]")
         case Undo():

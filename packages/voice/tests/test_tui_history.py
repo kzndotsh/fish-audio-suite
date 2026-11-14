@@ -21,7 +21,6 @@ from voice_fakes import ScriptedMic, install_gate
 from fish_audio_suite_voice.cli.chat_screens import ChatPicker, EditReplyScreen
 from fish_audio_suite_voice.cli.history_pane import Conversation, TurnRow
 from fish_audio_suite_voice.cli.tui import VoiceApp
-from fish_audio_suite_voice.config.settings import SystemPrompt
 from fish_audio_suite_voice.session.chat_store import ChatFile, load_chat
 from fish_audio_suite_voice.session.commands import (
     ChatCommand,
@@ -365,9 +364,7 @@ def test_a_resumed_chat_is_edited_in_the_app_and_the_file_changes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     path = _save(tmp_path, "an earlier line", "2026-01-01T10:00:00+00:00")
-    config = replace(
-        quick_config(), chat_dir=tmp_path, prompt=SystemPrompt("be brief", pin_seed=False)
-    )
+    config = replace(quick_config(), chat_dir=tmp_path, prompt="be brief")
     monkeypatch.setattr(
         "fish_audio_suite_voice.session.duplex.SessionMic", lambda *_a, **_k: ScriptedMic()
     )

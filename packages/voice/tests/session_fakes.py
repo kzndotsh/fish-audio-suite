@@ -25,7 +25,7 @@ from fish_audio_suite_kit import ChatMessage
 from fish_audio_suite_voice.asr.outcome import HeardLine
 from fish_audio_suite_voice.asr.result import BargeIn
 from fish_audio_suite_voice.cli.console_sink import ConsoleSink
-from fish_audio_suite_voice.config.settings import SystemPrompt, VoiceCliConfig
+from fish_audio_suite_voice.config.settings import VoiceCliConfig
 from fish_audio_suite_voice.config.tune import DEFAULT_BARGE_RMS
 from fish_audio_suite_voice.llm.tune import LlmTune
 from fish_audio_suite_voice.session.cancel import StopFlag
@@ -55,7 +55,7 @@ def make_config() -> VoiceCliConfig:
         tts_model="s2.1-pro",
         tts=TtsTune(latency="balanced", temperature=0.7, top_p=0.7, repetition_penalty=1.2),
         playback="stdout",
-        prompt=SystemPrompt("be brief", pin_seed=False),  # as for a prompt written out in full
+        prompt="be brief",
         device=None,
         llm=LlmTune(base="https://example.test/v1", api_key="lk", model="m"),
     )

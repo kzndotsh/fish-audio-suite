@@ -91,7 +91,7 @@ from fish_audio_suite_kit.tts.cuts import (
 )
 from fish_audio_suite_kit.tts.dialogue import extract_quoted_speech
 from fish_audio_suite_kit.tts.junk import is_tts_junk
-from fish_audio_suite_kit.tts.prompt import DEFAULT_SEED_EXCHANGE, DEFAULT_SYSTEM_PROMPT
+from fish_audio_suite_kit.tts.prompt import DEFAULT_SYSTEM_PROMPT
 from fish_audio_suite_kit.tts.scrub_tts import scrub_tts
 from fish_audio_suite_kit.tts.stream_holds import tts_hold_at
 from fish_audio_suite_kit.types.catalog import (
@@ -131,7 +131,6 @@ __all__ = [
     "CLEAR_CUE",
     "DEFAULT_BACKCHANNELS",
     "DEFAULT_QUIT_PHRASES",
-    "DEFAULT_SEED_EXCHANGE",
     "DEFAULT_SHORT_WORDS",
     "DEFAULT_SYSTEM_PROMPT",
     "EMPHASIS_MARKS",

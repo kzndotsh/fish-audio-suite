@@ -21,7 +21,7 @@ from voice_fakes import install_gate
 
 from fish_audio_suite_kit import ChatMessage
 from fish_audio_suite_voice.asr.outcome import HeardLine
-from fish_audio_suite_voice.config.settings import SystemPrompt, VoiceCliConfig
+from fish_audio_suite_voice.config.settings import VoiceCliConfig
 from fish_audio_suite_voice.session.chat_store import ChatFile, list_chats, load_chat
 from fish_audio_suite_voice.session.commands import (
     ChatCommand,
@@ -99,9 +99,7 @@ def _dialogue(messages: list[ChatMessage]) -> list[str]:
 
 @pytest.fixture
 def saving(tmp_path: Path) -> VoiceCliConfig:
-    return replace(
-        quick_config(), chat_dir=tmp_path, prompt=SystemPrompt("be brief", pin_seed=False)
-    )
+    return replace(quick_config(), chat_dir=tmp_path, prompt="be brief")
 
 
 def test_an_edit_reaches_the_next_request_and_the_file(

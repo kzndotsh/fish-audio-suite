@@ -101,10 +101,6 @@ On a turn of its own, a lone "yeah", "yep" or "uh-huh" is an answer and gets a r
 
 ### Cues in replies
 
-With the default system prompt the session starts with one pinned exchange that shows several cues
-(`DEFAULT_SEED_EXCHANGE` in the kit). It costs about 40 tokens per request and is never trimmed from
-the history. A custom `FISH_VOICE_SYSTEM_PROMPT` gets no seed, so it stays in control of the replies.
-
 How Fish's S2 models read cues, from Fish's guides: a cue is square brackets around plain language, so `[warm and happy]` and `[laughing nervously]` work as well as the official names. Layered cues work (`[sad][whispering]`, at most three per sentence is advised), a sentence's emotion cue works best at its start, and sound cues can go anywhere. Follow a sound with the words of it (`[laughing] Ha ha`), use cues sparingly, and do not stack conflicting emotions. The kit keeps stacks whole, rewrites the older S1 `(parenthesis)` and alias spellings (`[laugh]` becomes `[laughing]`), and never speaks a cue. The S1 model uses parentheses and a fixed list, and the app does not write them back for it, so `FISH_TTS_MODEL=s1` is not supported for cues.
 
 `drama-3` is directed differently: long plain-language directions (`[barely holding it together, forcing a smile]`), sounds where they occur (`[shaky breath]`), and paired tags around words (`<emphasis>`, `<soft>`, `<fast>`, `<slow>`, `<stress>`, `<forceful>`, `<whisper>`). With `FISH_TTS_MODEL=drama-3` the app sends all of that as written: `FISH_TTS_CUES` is ignored, the paired tags are kept, and no mood is carried from one sentence to the next. The default prompt still asks the model for one mood word per sentence, which `drama-3` accepts; to use its full range, describe its directions and tags in your own `FISH_VOICE_SYSTEM_PROMPT`. Its experimental language tags (`<french>`) are removed like any other markup. This follows Fish's guide and has not been tuned by ear here. The proxy does the same when a request resolves to `drama-3`.
@@ -120,8 +116,7 @@ Put a character or scene in a file and point the session at it:
 ```
 
 The file is UTF-8 text, up to 64 KiB. Its text comes first, then a blank line, then the default voice
-rules (spoken replies, `[cue]` tags), and the opening cue example is pinned as usual. So a file only
-has to describe who is talking. If the file is missing, empty, too large or not UTF-8, fish-voice warns.
+rules (spoken replies, `[cue]` tags). So a file only has to describe who is talking. If the file is missing, empty, too large or not UTF-8, fish-voice warns.
 From `FISH_VOICE_SYSTEM_PROMPT_FILE` it then uses the default prompt, and from `--prompt-file` it exits 2.
 The flag beats the variable, and the file beats `FISH_VOICE_SYSTEM_PROMPT`.
 
@@ -140,7 +135,7 @@ replaced. A file without the slot keeps the old behavior: the rules come after i
 only the slot is the default prompt.
 
 To write the whole prompt yourself, set `FISH_VOICE_SYSTEM_PROMPT` instead. It is used as written, with
-no voice rules and no cue example, so ask for `[emotion]` cue tags in it if you want an expressive voice.
+no voice rules, so ask for `[emotion]` cue tags in it if you want an expressive voice.
 
 ### LLM providers
 
@@ -488,7 +483,7 @@ LLM:
 | `FISH_VOICE_SYSTEM_PROMPT` | the kit default | System prompt text, used as written. Set but blank sends no system prompt |
 | `FISH_VOICE_SYSTEM_PROMPT_FILE` | none | A character file. The voice rules follow it, or go where `{{default_prompt}}` is in the file. Beats `FISH_VOICE_SYSTEM_PROMPT`. See characters above |
 | `FISH_VOICE_HISTORY_TURNS` | `20` | User and assistant pairs kept, at least 1. Over it, the oldest quarter goes at once, so the start of the prompt stays the same for several turns and a provider's prompt cache keeps working |
-| `FISH_VOICE_HISTORY_CUE_TURNS` | unset | How many of the latest replies the model is sent with their cues. Older ones are sent without them, because the model copies the cues it sees. `0` sends none. Unset keeps the cues in every reply. The pinned opening example always keeps its cues |
+| `FISH_VOICE_HISTORY_CUE_TURNS` | unset | How many of the latest replies the model is sent with their cues. Older ones are sent without them, because the model copies the cues it sees. `0` sends none. Unset keeps the cues in every reply |
 | `FISH_VOICE_STREAM_TTS` | off | Speak the reply while the model is still writing it. See streaming above |
 | `FISH_VOICE_REPEAT_WINDOW` | `1.5` | Seconds. A line equal to the previous one is dropped only if it ends this soon after the mic opens. 0 never drops a repeat |
 | `FISH_TTS_MOOD_LEAD`, `FISH_TTS_DROP_NARRATION` | off | See roleplay helpers |
