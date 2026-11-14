@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 from session_fakes import FakeBackend, hello_tokens, quick_config, speak_with_fakes
+from textual.content import Content
 from textual.pilot import Pilot
 from textual.widgets import Input, OptionList, Static, TextArea
 from voice_fakes import ScriptedMic, install_gate
@@ -130,9 +131,9 @@ def test_the_pane_shows_every_turn_and_what_the_model_is_sent() -> None:
         harness.bus.emit(_shown(_record()))
         await pilot.pause(0.1)
         assert harness.lines() == [
-            "you ▸ one\nllm ▸ [calm] first.\nolder than the model is sent",
-            "you ▸ two\nllm ▸ second.\nhidden from the model",
-            "you ▸ three\nllm ▸ a better third.\nedited",
+            "you ▸ one\nllm ▸ [calm] first.\n      ↳ older than the model is sent",
+            "you ▸ two\nllm ▸ second.\n      ↳ hidden from the model",
+            "you ▸ three\nllm ▸ a better third.\n      ↳ edited",
         ]
         older, hidden, sent = harness.rows()
         marks = {"older", "hidden"}
@@ -253,7 +254,15 @@ def test_a_recorded_turn_takes_the_place_of_the_turn_in_progress() -> None:
         record.add_reply("fourth.", interrupted=True)
         harness.bus.emit(_shown(record, window=10))
         await pilot.pause(0.1)
-        assert harness.lines()[-2:] == ["you ▸ four\nllm ▸ fourth.\ncut off", "[after the reply]"]
+        assert harness.lines()[-2:] == [
+            "you ▸ four\nllm ▸ fourth.\n      ↳ cut off",
+            "[after the reply]",
+        ]
+        # The note is styled as a warning, not as more of the reply.
+        note = harness.rows()[-1].visual
+        assert isinstance(note, Content)
+        styles = [str(span.style) for span in note.spans]
+        assert any("$text-warning" in style for style in styles)
         assert harness.pane.border_subtitle == "model sees 3 of 4 turns"
 
     _drive(harness, scenario)

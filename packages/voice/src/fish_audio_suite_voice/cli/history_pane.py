@@ -45,6 +45,7 @@ _HEARING_TICK_S = 0.1
 _PULSE_CELLS = 5  # characters wide, two bars each
 _YOU = ("you ▸ ", "bold $text-primary")
 _LLM = ("llm ▸ ", "bold $text-accent")
+_NOTE_INDENT = " " * len(_LLM[0]) + "↳ "
 
 
 def cue_content(text: str) -> Content:
@@ -115,16 +116,22 @@ class TurnRow(Static):
         if reply is not None:
             lines.append(Content.assemble(_LLM, cue_content(reply.content)))
         notes = [
-            note
-            for note, on in (
-                ("edited", reply is not None and reply.edit is not None),
-                ("cut off", reply is not None and reply.interrupted),
-                (_SEEN_NOTES[seen], seen is not Seen.SENT),
+            (note, style)
+            for note, style, on in (
+                ("edited", "$text-accent", reply is not None and reply.edit is not None),
+                ("cut off", "$text-warning", reply is not None and reply.interrupted),
+                (_SEEN_NOTES[seen], "$text-muted", seen is not Seen.SENT),
             )
             if on
         ]
         if notes:
-            lines.append(Content.assemble((" · ".join(notes), "italic $text-muted")))
+            # Tucked under the reply text, so a note never reads as part of what was said.
+            parts: list[tuple[str, str]] = [(_NOTE_INDENT, "")]
+            for index, (note, style) in enumerate(notes):
+                if index:
+                    parts.append((" · ", "$text-muted"))
+                parts.append((note, f"dim italic {style}"))
+            lines.append(Content.assemble(*parts))
         self.update(Content("\n").join(lines))
         self.set_class(seen is Seen.HIDDEN, "hidden")
         self.set_class(seen is Seen.OLDER, "older")
