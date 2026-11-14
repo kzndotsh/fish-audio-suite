@@ -42,7 +42,7 @@ DEFAULT_SYSTEM_PROMPT: Final = (
     "Never mention, describe or explain a cue, and never treat one as something the user "
     "asked for. "
     "Every sentence starts with its own cue, and the cue is one word from this list, never a "
-    f"description of a face, a voice or an action: {', '.join(FISH_EMOTIONS)}. "
+    f"description of a face, a voice or an action: {_bracketed(FISH_EMOTIONS)}. "
     "Pick the word that fits this sentence best from the whole list, and do not fall back on "
     "the same few. "
     "Repeat the same cue to keep a feeling going, and change the cue whenever the feeling "

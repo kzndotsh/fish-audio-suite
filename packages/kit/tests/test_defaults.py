@@ -215,9 +215,11 @@ def test_env_numbers_still_accept_ordinary_decimals(
 
 
 def test_the_default_prompt_offers_every_emotion_fish_documents_and_nothing_else() -> None:
-    listed = re.search(r"or an action: ([a-z, ]+)\. Pick the word", DEFAULT_SYSTEM_PROMPT)
+    listed = re.search(r"or an action: ([a-z, \[\]]+)\. Pick the word", DEFAULT_SYSTEM_PROMPT)
     assert listed is not None
-    moods = listed.group(1).split(", ")
+    # In brackets, as a cue is written: a bare list taught models to drop the brackets.
+    moods = re.findall(r"\[([a-z ]+)\]", listed.group(1))
+    assert ", ".join(f"[{mood}]" for mood in moods) == listed.group(1)
     assert len(moods) == len(set(moods))
     assert set(moods) == set(FISH_EMOTIONS)
     # Official mode keeps every mood the prompt offers as it is.
