@@ -9,14 +9,14 @@ from pathlib import Path
 import pytest
 from loguru import logger
 
-from fish_audio_suite_voice.debug import debug, trace, warn
-from fish_audio_suite_voice.events import EVENTS, Heard, ReplyEnd
-from fish_audio_suite_voice.log_file import close_log_file, log_file_path, log_to_file
-from fish_audio_suite_voice.log_setup import (
+from fish_audio_suite_voice.logutil.debug import debug, trace, warn
+from fish_audio_suite_voice.logutil.file import close_log_file, log_file_path, log_to_file
+from fish_audio_suite_voice.logutil.setup import (
     configure_voice_logging,
     forward_logs,
     mirror_conversation,
 )
+from fish_audio_suite_voice.session.events import EVENTS, Heard, ReplyEnd
 
 
 @pytest.fixture(autouse=True)
@@ -116,7 +116,7 @@ def test_a_folder_that_cannot_be_made_is_reported_and_the_run_goes_on(
 
 def test_the_full_screen_log_pane_does_not_get_lines_only_the_file_wants(tmp_path: Path) -> None:
     configure_voice_logging(debug=False, to_stderr=False, log_dir=str(tmp_path))
-    from fish_audio_suite_voice.events import LogLine
+    from fish_audio_suite_voice.session.events import LogLine
 
     shown: list[str] = []
     stop_forwarding = forward_logs()

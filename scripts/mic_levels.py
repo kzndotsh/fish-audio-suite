@@ -4,7 +4,7 @@ It opens the default mic (or `--device`), reads it in the 30 ms frames `fish-voi
 prints one line about every 90 ms, the rate of the app's `MicLevel` events: the time, the RMS on the
 int16 scale, the level in dB below full scale and a small bar. It ends with a summary of
 what the room and your voice look like in numbers: the noise floor and speech level the app's
-waveform (`session_view.SpeechScale`) would take from them, then the average level while you
+waveform (`cli.session_view.SpeechScale`) would take from them, then the average level while you
 speak, the loudest moment and how far apart they are. The levels are the raw mic.
 The app's automatic gain and noise suppression are not applied, so with `FISH_VOICE_AGC` on
 the app hears a quiet voice louder than this shows.
@@ -30,11 +30,11 @@ import threading
 import time
 from collections.abc import Sequence
 
-from fish_audio_suite_voice.latency import percentile
-from fish_audio_suite_voice.mic import SessionMic
-from fish_audio_suite_voice.pcm import FULL_SCALE, MIC_LEVEL_EVERY_FRAMES, pcm_rms
-from fish_audio_suite_voice.portaudio import parse_device
-from fish_audio_suite_voice.session_view import noise_floor_db, speech_level_db
+from fish_audio_suite_voice.capture.mic import SessionMic
+from fish_audio_suite_voice.capture.pcm import FULL_SCALE, MIC_LEVEL_EVERY_FRAMES, pcm_rms
+from fish_audio_suite_voice.capture.portaudio import parse_device
+from fish_audio_suite_voice.cli.session_view import noise_floor_db, speech_level_db
+from fish_audio_suite_voice.session.latency import percentile
 
 _SILENCE_DB = -90.0
 _BAR_FROM_DB = -70.0  # a bar is empty at this level and full at 0 dB
@@ -157,7 +157,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     scale_speech_text = f"{scale_speech:6.1f}" if scale_speech is not None else "   n/a"
     print(
         "\nsummary (dB below full scale, 0 is the loudest the mic can record)\n"
-        "  the app's waveform (session_view.SpeechScale) would take:\n"
+        "  the app's waveform (cli.session_view.SpeechScale) would take:\n"
         f"  waveform floor   {scale_noise:6.1f}   the noise floor it measures\n"
         f"  waveform speech  {scale_speech_text}   its speech level (90th percentile of speech)\n"
         "  more about the recording:\n"

@@ -25,7 +25,7 @@ from fish_audio_suite_kit import (
     parse_flag,
     parse_number,
 )
-from fish_audio_suite_kit.cues import FISH_BREAKS, FISH_EMOTIONS, FISH_SOUNDS
+from fish_audio_suite_kit.tts.cues import FISH_BREAKS, FISH_EMOTIONS, FISH_SOUNDS
 
 
 def test_bitrate_snaps_to_documented_values() -> None:

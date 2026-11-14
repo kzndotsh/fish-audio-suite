@@ -10,8 +10,8 @@ from typing import Any, get_args
 import httpx
 import pytest
 
-from fish_audio_suite_voice.llm import open_chat_backend
-from fish_audio_suite_voice.llm_tune import (
+from fish_audio_suite_voice.llm.client import open_chat_backend
+from fish_audio_suite_voice.llm.tune import (
     EXPERIENTIAL_API_BASE,
     LLM_PROVIDERS,
     OPENROUTER_API_BASE,
@@ -20,7 +20,7 @@ from fish_audio_suite_voice.llm_tune import (
     llm_problem,
     provider_for_base,
 )
-from fish_audio_suite_voice.log_setup import configure_voice_logging
+from fish_audio_suite_voice.logutil.setup import configure_voice_logging
 
 _ENV = (
     "FISH_LLM_PROVIDER",
@@ -208,7 +208,7 @@ def _install(monkeypatch: pytest.MonkeyPatch, handler: Any) -> None:
     def factory(**kwargs: Any) -> httpx.AsyncClient:
         return real(transport=httpx.MockTransport(handler), **kwargs)
 
-    monkeypatch.setattr("fish_audio_suite_voice.transports.httpx.AsyncClient", factory)
+    monkeypatch.setattr("fish_audio_suite_voice.llm.transports.httpx.AsyncClient", factory)
 
 
 async def _collect(tune: LlmTune) -> str:

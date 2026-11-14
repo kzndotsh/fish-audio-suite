@@ -18,10 +18,10 @@ from fish_audio_suite_kit import (
     normalize_cues,
     scrub_tts,
 )
-from fish_audio_suite_voice.speaker import FishSpeaker
-from fish_audio_suite_voice.tts_text import delta_events, text_events
-from fish_audio_suite_voice.tts_tune import TtsTune
-from fish_audio_suite_voice.wire import (
+from fish_audio_suite_voice.tts.speaker import FishSpeaker
+from fish_audio_suite_voice.tts.text import delta_events, text_events
+from fish_audio_suite_voice.tts.tune import TtsTune
+from fish_audio_suite_voice.tts.websocket import (
     FlushEvent,
     TextEvent,
 )

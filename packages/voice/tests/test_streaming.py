@@ -18,22 +18,10 @@ import ormsgpack
 import pytest
 from voice_fakes import ScriptedMic
 
-from fish_audio_suite_voice import streaming
-from fish_audio_suite_voice.cancel import StopFlag
-from fish_audio_suite_voice.events import EVENTS, Event, Interim
-from fish_audio_suite_voice.mic import Mic
-from fish_audio_suite_voice.pcm import BYTES_PER_S, FRAME_BYTES
-from fish_audio_suite_voice.portaudio import PortAudioMissingError
-from fish_audio_suite_voice.recognised import BargeIn, NoTurn, StreamFallback, Transcript
-from fish_audio_suite_voice.streaming import stream_turn
-from fish_audio_suite_voice.tune import (
-    DEFAULT_BARGE_RMS,
-    DeepgramTune,
-    ListenTune,
-    SttProvider,
-    SttTune,
-)
-from fish_audio_suite_voice.turn_stream import (
+from fish_audio_suite_voice.asr import streaming
+from fish_audio_suite_voice.asr.result import BargeIn, NoTurn, StreamFallback, Transcript
+from fish_audio_suite_voice.asr.streaming import stream_turn
+from fish_audio_suite_voice.asr.turn_stream import (
     EagerTurnEnd,
     RecogniserSettings,
     StreamError,
@@ -45,6 +33,18 @@ from fish_audio_suite_voice.turn_stream import (
     TurnStarted,
     TurnUpdate,
 )
+from fish_audio_suite_voice.capture.mic import Mic
+from fish_audio_suite_voice.capture.pcm import BYTES_PER_S, FRAME_BYTES
+from fish_audio_suite_voice.capture.portaudio import PortAudioMissingError
+from fish_audio_suite_voice.config.tune import (
+    DEFAULT_BARGE_RMS,
+    DeepgramTune,
+    ListenTune,
+    SttProvider,
+    SttTune,
+)
+from fish_audio_suite_voice.session.cancel import StopFlag
+from fish_audio_suite_voice.session.events import EVENTS, Event, Interim
 
 CHUNK = BYTES_PER_S * 80 // 1000  # 80 ms of audio: the size Deepgram recommends
 FRAME = b"\x01\x00" * (FRAME_BYTES // 2)
@@ -411,7 +411,7 @@ def _energy_engine(monkeypatch: pytest.MonkeyPatch) -> str:
 def test_the_mic_gate_sends_nothing_until_speech_starts_and_then_the_pre_roll_first(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from fish_audio_suite_voice import listen
+    from fish_audio_suite_voice.capture import listen
 
     # Each quiet frame has its own level, all under the speech floor, so the pre-roll
     # can be checked frame by frame.
@@ -455,7 +455,7 @@ def test_the_mic_gate_sends_nothing_until_speech_starts_and_then_the_pre_roll_fi
 def test_the_mic_gate_returns_false_when_it_is_stopped_before_any_speech(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from fish_audio_suite_voice import listen
+    from fish_audio_suite_voice.capture import listen
 
     silence = b"\x00\x00" * (FRAME_BYTES // 2)
     stop = threading.Event()
@@ -664,7 +664,7 @@ def _first_message_sent(monkeypatch: pytest.MonkeyPatch, stream: Any) -> dict[st
 def test_fish_realtime_connects_to_the_fish_base_with_the_fish_key_and_the_eager_setting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from fish_audio_suite_voice.fish_realtime import FISH_REALTIME, FishRealtimeStream
+    from fish_audio_suite_voice.asr.fish_realtime import FISH_REALTIME, FishRealtimeStream
 
     made: list[tuple[str, str]] = []
 

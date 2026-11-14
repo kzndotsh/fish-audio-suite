@@ -8,9 +8,9 @@ from typing import Any
 import pytest
 from fishaudio.resources import realtime
 
-from fish_audio_suite_voice import ws_tap
-from fish_audio_suite_voice.log_setup import configure_voice_logging
-from fish_audio_suite_voice.ws_tap import install_fish_ws_tap
+from fish_audio_suite_voice.logutil.setup import configure_voice_logging
+from fish_audio_suite_voice.tts import ws_tap
+from fish_audio_suite_voice.tts.ws_tap import install_fish_ws_tap
 
 # The two SDK functions the tap wraps (the SDK has no public hook for its events).
 _STOP = "_should_stop"
@@ -21,7 +21,7 @@ _PROCESS = "_process_audio_event"
 def sdk(monkeypatch: pytest.MonkeyPatch) -> Iterator[ModuleType]:
     """The Fish SDK's realtime module, with the tap not yet installed.
 
-    The tap installs once per process, so ``ws_tap`` is reloaded before and after the
+    The tap installs once per process, so ``tts.ws_tap`` is reloaded before and after the
     test, and the SDK functions are put back afterwards, so no wrapper outlives the test.
     """
     for name in (_STOP, _PROCESS):

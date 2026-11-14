@@ -19,18 +19,18 @@ from session_fakes import (
     make_ctx,
 )
 
-from fish_audio_suite_voice.duplex_state import DuplexContext
-from fish_audio_suite_voice.events import EVENTS, Event, Heard
-from fish_audio_suite_voice.heard import HeardLine
-from fish_audio_suite_voice.hearing import hear_line
-from fish_audio_suite_voice.pcm import FRAME_MS
-from fish_audio_suite_voice.tune import ListenTune, TurnTune
-from fish_audio_suite_voice.turn_check import (
+from fish_audio_suite_voice.asr.outcome import HeardLine
+from fish_audio_suite_voice.asr.pipeline import hear_line
+from fish_audio_suite_voice.asr.turn_check import (
     OpenTurn,
     continuation_tune,
     first_clip_tune,
     wait_frames,
 )
+from fish_audio_suite_voice.capture.pcm import FRAME_MS
+from fish_audio_suite_voice.config.tune import ListenTune, TurnTune
+from fish_audio_suite_voice.session.events import EVENTS, Event, Heard
+from fish_audio_suite_voice.session.state import DuplexContext
 
 
 def _mic(monkeypatch: pytest.MonkeyPatch, *continuations: Recording) -> ScriptedRecordings:
@@ -275,7 +275,7 @@ def test_the_check_off_keeps_one_clip_with_the_ordinary_silence(
 def test_a_failed_mic_reopen_is_fatal_like_a_failed_first_open(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from fish_audio_suite_voice.portaudio import PortAudioMissingError
+    from fish_audio_suite_voice.capture.portaudio import PortAudioMissingError
 
     asr = _asr(monkeypatch, {b"clip1": "I wanted to say that,"})
     ScriptedRecordings(monkeypatch, b"clip1", PortAudioMissingError("gone"))

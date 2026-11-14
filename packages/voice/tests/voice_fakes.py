@@ -14,14 +14,14 @@ from typing import Any
 
 import pytest
 
-from fish_audio_suite_voice import reply
-from fish_audio_suite_voice.aec import EchoCanceller
-from fish_audio_suite_voice.barge import BargeGate
-from fish_audio_suite_voice.cancel import StopFlag
-from fish_audio_suite_voice.pcm import FRAME_BYTES
-from fish_audio_suite_voice.speaker import FishSpeaker
-from fish_audio_suite_voice.tune import DEFAULT_BARGE_RMS, AecTune, BargeTune
-from fish_audio_suite_voice.wire import TtsResult
+from fish_audio_suite_voice.capture.aec import EchoCanceller
+from fish_audio_suite_voice.capture.barge_in import BargeGate
+from fish_audio_suite_voice.capture.pcm import FRAME_BYTES
+from fish_audio_suite_voice.config.tune import DEFAULT_BARGE_RMS, AecTune, BargeTune
+from fish_audio_suite_voice.llm import reply
+from fish_audio_suite_voice.session.cancel import StopFlag
+from fish_audio_suite_voice.tts.speaker import FishSpeaker
+from fish_audio_suite_voice.tts.websocket import TtsResult
 
 
 class ScriptedMic:

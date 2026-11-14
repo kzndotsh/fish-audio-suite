@@ -22,12 +22,12 @@ from fish_audio_suite_kit import (
     FishAuthError,
     FishRateLimitError,
 )
-from fish_audio_suite_voice.cancel import is_cancel_noise
-from fish_audio_suite_voice.speaker import FishSpeaker
-from fish_audio_suite_voice.tts_text import WholeText, text_events
-from fish_audio_suite_voice.tts_tune import TtsTune
-from fish_audio_suite_voice.tts_turn import SdkSocket, run_turn
-from fish_audio_suite_voice.wire import TtsResult, TurnSpec
+from fish_audio_suite_voice.session.cancel import is_cancel_noise
+from fish_audio_suite_voice.tts.speaker import FishSpeaker
+from fish_audio_suite_voice.tts.text import WholeText, text_events
+from fish_audio_suite_voice.tts.tune import TtsTune
+from fish_audio_suite_voice.tts.turn import SdkSocket, run_turn
+from fish_audio_suite_voice.tts.websocket import TtsResult, TurnSpec
 
 
 def test_run_turn_closes_the_sink_when_start_fails(
@@ -110,8 +110,8 @@ def test_client_close_after_audio_does_not_forget_the_line(
         await original(self)
         raise BaseExceptionGroup("close", [asyncio.CancelledError()])
 
-    monkeypatch.setattr("fish_audio_suite_voice.tts_turn.SdkSocket", _OneSecond)
-    monkeypatch.setattr("fish_audio_suite_voice.tts_turn.AsyncFishAudio.close", boom_close)
+    monkeypatch.setattr("fish_audio_suite_voice.tts.turn.SdkSocket", _OneSecond)
+    monkeypatch.setattr("fish_audio_suite_voice.tts.turn.AsyncFishAudio.close", boom_close)
     tts = FishSpeaker(api_key="k", voice_id="v", tune=TtsTune(sample_rate=16_000))
 
     class Sink:
@@ -143,7 +143,7 @@ def test_run_turn_stops_when_the_api_key_cannot_be_a_header(
 ) -> None:
     opened: list[object] = []
     monkeypatch.setattr(
-        "fish_audio_suite_voice.tts_turn.AsyncFishAudio", lambda **kw: opened.append(kw)
+        "fish_audio_suite_voice.tts.turn.AsyncFishAudio", lambda **kw: opened.append(kw)
     )
     run, sink = make_run()
     spec = replace(run.spec, api_key="sk-\nbad")
@@ -168,7 +168,7 @@ def test_run_turn_retries_before_audio_and_stops_after(
         slept.append(seconds)
 
     socket = ScriptedSocket([RateLimitError(429, "slow", None)], [b"abcd"])
-    monkeypatch.setattr("fish_audio_suite_voice.pause.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("fish_audio_suite_voice.session.pause.asyncio.sleep", fake_sleep)
     run, sink = make_run()
 
     result = asyncio.run(
@@ -225,7 +225,7 @@ def test_retry_backoff_does_not_replay_after_cancel(
     async def fake_sleep(_seconds: float) -> None:
         cancel.set()
 
-    monkeypatch.setattr("fish_audio_suite_voice.pause.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("fish_audio_suite_voice.session.pause.asyncio.sleep", fake_sleep)
     run, sink = make_run()
 
     result = asyncio.run(
@@ -257,7 +257,7 @@ def test_a_keyboard_interrupt_in_a_turn_is_not_treated_as_a_fish_failure(
 
 
 def test_run_isolated_does_not_swallow_a_keyboard_interrupt_but_still_closes_the_loop() -> None:
-    from fish_audio_suite_voice.tts_turn import run_isolated
+    from fish_audio_suite_voice.tts.turn import run_isolated
 
     loops: list[asyncio.AbstractEventLoop] = []
     tasks: list[asyncio.Task[None]] = []
@@ -289,7 +289,7 @@ def _fail_every_attempt(
     async def no_wait(_seconds: float) -> None:
         return None
 
-    monkeypatch.setattr("fish_audio_suite_voice.pause.asyncio.sleep", no_wait)
+    monkeypatch.setattr("fish_audio_suite_voice.session.pause.asyncio.sleep", no_wait)
     socket = ScriptedSocket([error])
     run, sink = make_run()
     result = asyncio.run(

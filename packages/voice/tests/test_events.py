@@ -28,13 +28,17 @@ from session_fakes import (
 )
 from voice_fakes import ScriptedMic, install_gate, install_vad, make_result, set_tts
 
-from fish_audio_suite_voice import events as events_module
-from fish_audio_suite_voice.barge import BargeGate
-from fish_audio_suite_voice.cancel import StopFlag
-from fish_audio_suite_voice.console_sink import ConsoleSink
-from fish_audio_suite_voice.duplex import duplex_turns
-from fish_audio_suite_voice.duplex_state import TurnInput
-from fish_audio_suite_voice.events import (
+from fish_audio_suite_voice.asr.pipeline import HeardLine, hear_line
+from fish_audio_suite_voice.capture.barge_in import BargeGate
+from fish_audio_suite_voice.capture.listen import record_utterance
+from fish_audio_suite_voice.capture.pcm import FRAME_BYTES, MIC_LEVEL_EVERY_FRAMES
+from fish_audio_suite_voice.cli.console_sink import ConsoleSink
+from fish_audio_suite_voice.config.tune import BargeTune
+from fish_audio_suite_voice.logutil.setup import configure_voice_logging, forward_logs
+from fish_audio_suite_voice.session import events as events_module
+from fish_audio_suite_voice.session.cancel import StopFlag
+from fish_audio_suite_voice.session.duplex import duplex_turns
+from fish_audio_suite_voice.session.events import (
     DEFAULT_KEYS,
     EVENTS,
     BargedIn,
@@ -60,13 +64,9 @@ from fish_audio_suite_voice.events import (
     next_state,
     notice,
 )
-from fish_audio_suite_voice.hearing import HeardLine, hear_line
-from fish_audio_suite_voice.latency import LatencySnapshot
-from fish_audio_suite_voice.listen import record_utterance
-from fish_audio_suite_voice.log_setup import configure_voice_logging, forward_logs
-from fish_audio_suite_voice.pcm import FRAME_BYTES, MIC_LEVEL_EVERY_FRAMES
-from fish_audio_suite_voice.speaker import FishSpeaker
-from fish_audio_suite_voice.tune import BargeTune
+from fish_audio_suite_voice.session.latency import LatencySnapshot
+from fish_audio_suite_voice.session.state import TurnInput
+from fish_audio_suite_voice.tts.speaker import FishSpeaker
 
 
 @pytest.fixture

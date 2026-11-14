@@ -28,12 +28,12 @@ from fish_audio_suite_kit import (
     FishLatency,
     SuiteDefaults,
 )
-from fish_audio_suite_voice.playback import MpvSink, PlaybackSink
-from fish_audio_suite_voice.speaker import FishSpeaker
-from fish_audio_suite_voice.tts_text import WholeText, text_events
-from fish_audio_suite_voice.tts_tune import TtsTune
-from fish_audio_suite_voice.tts_turn import run_turn, turn_failure
-from fish_audio_suite_voice.wire import (
+from fish_audio_suite_voice.tts.playback import MpvSink, PlaybackSink
+from fish_audio_suite_voice.tts.speaker import FishSpeaker
+from fish_audio_suite_voice.tts.text import WholeText, text_events
+from fish_audio_suite_voice.tts.tune import TtsTune
+from fish_audio_suite_voice.tts.turn import run_turn, turn_failure
+from fish_audio_suite_voice.tts.websocket import (
     FlushEvent,
     TextEvent,
     TtsResult,
@@ -578,7 +578,7 @@ def test_the_next_chunk_is_shaped_while_the_one_before_it_plays(
         yield b"\x01\x00" * 4
         yield b"\x02\x00" * 4
 
-    monkeypatch.setattr("fish_audio_suite_voice.wire.AudioChain", Chain)
+    monkeypatch.setattr("fish_audio_suite_voice.tts.websocket.AudioChain", Chain)
     sink = FirstWriteWaits()
     asyncio.run(play_stream(chunks(), sink, threading.Event()))
     assert ready_in_time == [True]
@@ -603,7 +603,7 @@ def test_a_chunk_that_fails_to_shape_still_counts_as_audio_received(
     async def chunks() -> AsyncIterator[bytes]:
         yield b"\x01\x00" * 4
 
-    monkeypatch.setattr("fish_audio_suite_voice.wire.AudioChain", Chain)
+    monkeypatch.setattr("fish_audio_suite_voice.tts.websocket.AudioChain", Chain)
     sink = RecordingSink()
     result, _socket = asyncio.run(play_stream(chunks(), sink, threading.Event()))
     assert result.got_audio is True

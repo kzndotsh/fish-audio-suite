@@ -11,10 +11,12 @@ import pytest
 from wire_helpers import FakeOutputStream, install_fish_audio, open_sounddevice_sink
 
 from fish_audio_suite_kit import SuiteDefaults
-from fish_audio_suite_voice.events import EVENTS, Event, OutputLevel
-from fish_audio_suite_voice.log_setup import configure_voice_logging
-from fish_audio_suite_voice.pcm import write_mono_wav
-from fish_audio_suite_voice.playback import (
+from fish_audio_suite_voice.capture.pcm import write_mono_wav
+from fish_audio_suite_voice.capture.portaudio import PortAudioMissingError, missing_portaudio
+from fish_audio_suite_voice.config.playback_kind import PlaybackKind, parse_playback
+from fish_audio_suite_voice.logutil.setup import configure_voice_logging
+from fish_audio_suite_voice.session.events import EVENTS, Event, OutputLevel
+from fish_audio_suite_voice.tts.playback import (
     OUTPUT_LEVEL_EVERY_S,
     FileSink,
     MpvSink,
@@ -25,11 +27,9 @@ from fish_audio_suite_voice.playback import (
     make_sink,
     sink_format,
 )
-from fish_audio_suite_voice.playback_kind import PlaybackKind, parse_playback
-from fish_audio_suite_voice.portaudio import PortAudioMissingError, missing_portaudio
-from fish_audio_suite_voice.speaker import FishSpeaker
-from fish_audio_suite_voice.tts_tune import TtsTune
-from fish_audio_suite_voice.wire import TtsResult
+from fish_audio_suite_voice.tts.speaker import FishSpeaker
+from fish_audio_suite_voice.tts.tune import TtsTune
+from fish_audio_suite_voice.tts.websocket import TtsResult
 
 
 def test_zero_sample_rate_still_writes_a_wav(tmp_path: Path) -> None:
@@ -119,7 +119,7 @@ def test_file_sink_does_not_count_a_failed_write(
     sink = FileSink(path, sample_rate=16000, wav=True)
     sink.start()
     sink.write(b"\x00\x01" * 8)
-    monkeypatch.setattr("fish_audio_suite_voice.playback.write_mono_wav", full)
+    monkeypatch.setattr("fish_audio_suite_voice.tts.playback.write_mono_wav", full)
     with pytest.raises(OSError, match="No space left"):
         sink.finish(kill=False)
     assert sink.bytes_played() == 0
@@ -140,9 +140,11 @@ def test_duplex_playback_problem(monkeypatch: pytest.MonkeyPatch) -> None:
     assert duplex_playback_problem("sounddevice") is None
     assert duplex_playback_problem("file") == "file playback needs a path"
     assert duplex_playback_problem("nope") == "unknown playback sink 'nope'"
-    monkeypatch.setattr("fish_audio_suite_voice.playback.shutil.which", lambda _name: None)
+    monkeypatch.setattr("fish_audio_suite_voice.tts.playback.shutil.which", lambda _name: None)
     assert duplex_playback_problem("mpv") == "mpv is not on PATH"
-    monkeypatch.setattr("fish_audio_suite_voice.playback.shutil.which", lambda _name: "/bin/mpv")
+    monkeypatch.setattr(
+        "fish_audio_suite_voice.tts.playback.shutil.which", lambda _name: "/bin/mpv"
+    )
     assert duplex_playback_problem("MPV") is None
 
 

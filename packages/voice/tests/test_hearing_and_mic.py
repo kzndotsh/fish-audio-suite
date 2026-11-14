@@ -15,19 +15,19 @@ import pytest
 from session_fakes import AsrReply, ScriptedAsr, ScriptedRecordings, barge_clip, make_ctx
 from voice_fakes import ScriptedMic, install_vad
 
-from fish_audio_suite_voice import mic, pcm
-from fish_audio_suite_voice.barge import (
+from fish_audio_suite_voice.asr.outcome import HeardLine
+from fish_audio_suite_voice.asr.pipeline import hear_line
+from fish_audio_suite_voice.capture import mic, pcm
+from fish_audio_suite_voice.capture.barge_in import (
     BargeGate,
 )
-from fish_audio_suite_voice.console_sink import ConsoleSink, console_print
-from fish_audio_suite_voice.duplex_state import DuplexContext
-from fish_audio_suite_voice.events import EventBus, ExitCode, ReplyToken
-from fish_audio_suite_voice.heard import HeardLine
-from fish_audio_suite_voice.hearing import hear_line
-from fish_audio_suite_voice.log_setup import configure_voice_logging
-from fish_audio_suite_voice.mic import SessionMic
-from fish_audio_suite_voice.pcm import FRAME_BYTES, take_frames
-from fish_audio_suite_voice.portaudio import PortAudioMissingError
+from fish_audio_suite_voice.capture.mic import SessionMic
+from fish_audio_suite_voice.capture.pcm import FRAME_BYTES, take_frames
+from fish_audio_suite_voice.capture.portaudio import PortAudioMissingError
+from fish_audio_suite_voice.cli.console_sink import ConsoleSink, console_print
+from fish_audio_suite_voice.logutil.setup import configure_voice_logging
+from fish_audio_suite_voice.session.events import EventBus, ExitCode, ReplyToken
+from fish_audio_suite_voice.session.state import DuplexContext
 
 
 def _heard(
@@ -324,7 +324,7 @@ def test_a_buffer_shorter_than_a_frame_waits_and_a_zero_frame_size_yields_nothin
 def test_hear_line_logs_instead_of_printing_listening_in_debug_mode(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.debug_enabled", lambda: True)
+    monkeypatch.setattr("fish_audio_suite_voice.asr.pipeline.debug_enabled", lambda: True)
     ScriptedRecordings(monkeypatch)  # hears nothing
     assert asyncio.run(hear_line(make_ctx(), "")).kind == "noise"
     assert "listening" not in capsys.readouterr().out

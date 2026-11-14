@@ -6,8 +6,8 @@ import time
 import pytest
 
 from fish_audio_suite_kit import FISH_RETRY_ATTEMPTS
-from fish_audio_suite_voice import pause
-from fish_audio_suite_voice.pause import Retry, fish_retries, sleep_unless
+from fish_audio_suite_voice.session import pause
+from fish_audio_suite_voice.session.pause import Retry, fish_retries, sleep_unless
 
 
 @pytest.mark.perf

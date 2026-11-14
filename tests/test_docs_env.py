@@ -3,7 +3,7 @@
 The settings are found by running the code that reads them, not by listing them here: voice
 and the proxy load their settings in an empty environment while every reader call is
 recorded with what it declares (the variable, its default, and its range), and every lookup
-in ``os.environ`` is recorded too. A reader is any function in ``env_read`` or kit's ``env``
+in ``os.environ`` is recorded too. A reader is any function in ``config.env`` or kit's ``env``
 module whose first parameter is the variable name. The docs are parsed as text. Each test
 compares the two and names the variable, the file and what each side says.
 """
@@ -27,10 +27,10 @@ import pytest
 
 import fish_audio_suite_kit as kit
 from fish_audio_suite_proxy import settings as proxy_settings
-from fish_audio_suite_voice import config as voice_config
-from fish_audio_suite_voice import debug as voice_debug
-from fish_audio_suite_voice import env_read
-from fish_audio_suite_voice.llm_tune import LLM_PROVIDERS
+from fish_audio_suite_voice.config import env as env_read
+from fish_audio_suite_voice.config import settings as voice_config
+from fish_audio_suite_voice.llm.tune import LLM_PROVIDERS
+from fish_audio_suite_voice.logutil import debug as voice_debug
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGES = ("kit", "proxy", "voice")

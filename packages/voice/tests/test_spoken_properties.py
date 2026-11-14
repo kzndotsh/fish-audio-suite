@@ -6,7 +6,7 @@ import pytest
 from hypothesis import HealthCheck, given, settings
 from hypothesis import strategies as st
 
-from fish_audio_suite_voice.spoken import _word_prefix
+from fish_audio_suite_voice.tts.played_text import _word_prefix
 
 _LATIN = (
     "Hello",

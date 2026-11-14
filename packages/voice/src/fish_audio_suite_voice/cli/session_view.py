@@ -1,0 +1,480 @@
+"""A snapshot of a session, folded from its events, for a display to show."""
+
+from __future__ import annotations
+
+import math
+from collections import deque
+from collections.abc import Sequence
+from dataclasses import dataclass, field, replace
+from typing import Final
+
+from fish_audio_suite_voice.capture.pcm import FULL_SCALE
+from fish_audio_suite_voice.session.events import (
+    Bye,
+    Event,
+    ExitCode,
+    Heard,
+    ReplyEnd,
+    ReplyToken,
+    SessionState,
+    TurnEnded,
+    next_state,
+)
+from fish_audio_suite_voice.session.latency import LatencySnapshot, percentile
+
+__all__ = [
+    "Ballistics",
+    "SessionView",
+    "SpeechScale",
+    "noise_floor_db",
+    "processing_level",
+    "reduce_view",
+    "speech_level_db",
+    "split_cells",
+    "turn_timings",
+    "wave_dots",
+]
+
+# Silence, and anything quieter, reads as this many dB below full scale.
+_SILENCE_DB: Final = -90.0
+# How a level bar moves, on the bar's own scale of 0 to 1.
+BODY_RELEASE_PER_S: Final = 6.0  # a bar falls from full to empty in about a sixth of a second
+PEAK_HOLD_S: Final = 0.3  # the cap above a bar stays put this long after a peak
+PEAK_RELEASE_PER_S: Final = 60.0 / 45.0  # then falls one and a third bars per second
+# How a waveform is scaled to the signal it shows, see SpeechScale.
+SCALE_WINDOW_S: Final = 6.0  # how much recent audio the noise floor and the speech level come from
+SCALE_NOISE_FLOOR_DB: Final = -70.0  # a floor is never taken to be quieter than this
+SCALE_SPEECH_MARGIN_DB: Final = 10.0  # a block is speech when it is this far above the floor
+SCALE_SPEECH_PERCENTILE: Final = 0.9  # the speech level: loud, but not the loudest block
+SCALE_HEADROOM_DB: Final = 2.0  # the top of the bar sits this far above the speech level
+SCALE_FLOOR_GAP_DB: Final = 3.0  # the bottom sits this far above the noise floor
+SCALE_MAX_SPAN_DB: Final = 24.0  # a bar spans at most this much, or steady speech looks flat
+SCALE_MIN_SPAN_DB: Final = 18.0  # and at least this much, or a quiet room is stretched
+SCALE_MIN_SPEECH_BLOCKS: Final = 5  # speech blocks needed before the speech level is updated
+SCALE_MIN_BLOCKS: Final = 10  # blocks needed before the noise floor is measured
+_BRAILLE: Final = 0x2800  # the first Braille pattern, which has no dots
+# The bit that raises each dot of a Braille cell, by dot row (top to bottom) and column.
+_DOT_BITS: Final = ((0x01, 0x08), (0x02, 0x10), (0x04, 0x20), (0x40, 0x80))
+
+
+@dataclass(frozen=True, slots=True)
+class SessionView:
+    """What a display shows about a session, folded from its events, as one immutable value.
+
+    The level strips are not in it: a display draws each ``MicLevel`` and ``OutputLevel`` as
+    it arrives, because a strip shows every block, not only the latest.
+
+    Attributes
+    ----------
+    state : SessionState
+        What the session is doing.
+    reply : str
+        The model's reply so far, growing token by token, then the whole reply.
+    last_turn : LatencySnapshot or None
+        The timings of the last finished turn.
+    exit_code : ExitCode or None
+        Set when the session has ended. None while it runs.
+    """
+
+    state: SessionState = SessionState.IDLE
+    reply: str = ""
+    last_turn: LatencySnapshot | None = None
+    exit_code: ExitCode | None = None
+
+
+def wave_dots(
+    levels: Sequence[float], rows: int, peaks: Sequence[float] | None = None
+) -> list[str]:
+    """Draw a mirrored, dot-matrix waveform: one bar per level, two bars to a character.
+
+    Parameters
+    ----------
+    levels : Sequence[float]
+        How loud each bar is, from 0 to 1, as ``SpeechScale`` gives it, left to right.
+        Even silence draws one dot above and one below the middle, so a quiet mic still
+        shows a thin dotted line.
+    rows : int
+        How many lines tall the drawing is. Each line has four dot rows, so the middle
+        splits ``rows * 4`` dot rows into two equal halves. At least 1.
+    peaks : Sequence[float], optional
+        A held peak for each bar, from 0 to 1. A peak above its bar, with room to spare,
+        is drawn as one dot (a cap) at that height, both above and below the middle.
+
+    Returns
+    -------
+    list[str]
+        ``rows`` strings of Braille characters, each ``ceil(len(levels) / 2)`` long, top to
+        bottom. Braille draws with dots in the foreground colour only, so a cell needs no
+        background and no reversed colours.
+
+    Examples
+    --------
+    >>> wave_dots([0.0, 0.0], 1)
+    ['\u2836']
+    >>> wave_dots([1.0, 1.0], 1)
+    ['\u28ff']
+    """
+    rows = max(1, rows)
+    half = rows * 2  # dot rows above, and below, the middle
+    cells = (len(levels) + 1) // 2
+    grid = [[0] * cells for _ in range(rows)]
+    for x, level in enumerate(levels):
+        reach = max(1, round(min(1.0, max(0.0, level)) * half))
+        column = x % 2
+        steps = list(range(reach))
+        if peaks is not None and x < len(peaks):
+            cap = round(min(1.0, max(0.0, peaks[x])) * half) - 1
+            if cap > reach:  # a cap right above the bar would only make it look taller
+                steps.append(cap)
+        for step in steps:
+            for dot_row in (half - 1 - step, half + step):
+                grid[dot_row // 4][x // 2] |= _DOT_BITS[dot_row % 4][column]
+    return ["".join(chr(_BRAILLE + bits) for bits in row) for row in grid]
+
+
+def reduce_view(view: SessionView, event: Event) -> SessionView:
+    """Return the view after ``event``, leaving ``view`` as it was.
+
+    Parameters
+    ----------
+    view : SessionView
+        The view before.
+    event : Event
+        What just happened.
+
+    Returns
+    -------
+    SessionView
+        A new view, or an equal one when the event changes nothing.
+
+    Notes
+    -----
+    Call it from one thread, in event order, such as the thread that drains an
+    ``EventQueue``. Only the state, the reply, the last turn's timings and the exit code
+    are folded: the conversation, notes, levels and log lines are each drawn as their
+    event arrives.
+    """
+    moved = replace(view, state=next_state(view.state, event))
+    match event:
+        case Heard():
+            return replace(moved, reply="")
+        case ReplyToken(text=text):
+            return replace(moved, reply=view.reply + text)
+        case ReplyEnd(text=text):
+            return replace(moved, reply=text)
+        case TurnEnded(snapshot=snapshot):
+            return replace(moved, last_turn=snapshot)
+        case Bye(code=code):
+            return replace(moved, exit_code=code)
+        case _:
+            return moved
+
+
+@dataclass(frozen=True, slots=True)
+class TurnTimings:
+    """Where the wait before a reply was heard went, for a display to draw.
+
+    Attributes
+    ----------
+    wait_ms : float
+        From the end of the utterance until the first audio played.
+    total_ms : float or None
+        From the end of the utterance until the reply finished playing, when known.
+    stages : tuple[tuple[str, float], ...]
+        What the wait was spent on, in order, as ``(name, milliseconds)``. They add up to
+        ``wait_ms``. Stages that took no time are left out.
+    """
+
+    wait_ms: float
+    total_ms: float | None
+    stages: tuple[tuple[str, float], ...]
+
+
+def turn_timings(snapshot: LatencySnapshot) -> TurnTimings | None:
+    """Break a turn's wait into recognising, thinking and speaking.
+
+    Parameters
+    ----------
+    snapshot : LatencySnapshot
+        The finished turn.
+
+    Returns
+    -------
+    TurnTimings or None
+        ``None`` when the turn has no wait to break down (no ``first_audio_ms``).
+
+    Notes
+    -----
+    ``tts`` is what is left of the wait after ``asr`` and ``llm``: the time from the model's
+    first token to audio playing. It is not ``tts_first_audio_ms``, which is measured from
+    the start of the TTS turn and so includes the wait for the model.
+
+    Examples
+    --------
+    >>> t = turn_timings(LatencySnapshot(asr_ms=300, llm_first_token_ms=700, first_audio_ms=1500))
+    >>> t.stages
+    (('asr', 300), ('llm', 700), ('tts', 500))
+    >>> turn_timings(LatencySnapshot(asr_ms=300)) is None
+    True
+    """
+    wait = snapshot.first_audio_ms
+    if wait is None:
+        return None
+    known = [("asr", snapshot.asr_ms), ("llm", snapshot.llm_first_token_ms)]
+    stages = [(name, ms) for name, ms in known if ms is not None and ms > 0]
+    rest = wait - sum(ms for _, ms in stages)
+    if rest > 0:
+        stages.append(("tts", rest))
+    return TurnTimings(wait, snapshot.voice_to_voice_ms, tuple(stages))
+
+
+def split_cells(parts: Sequence[float], width: int) -> list[int]:
+    """Share ``width`` cells between ``parts`` in proportion, so a bar adds up exactly.
+
+    Parameters
+    ----------
+    parts : Sequence[float]
+        The sizes to draw. Negative sizes count as zero.
+    width : int
+        How many cells in all.
+
+    Returns
+    -------
+    list[int]
+        One count per part, adding up to ``width`` (all zeros when there is nothing to
+        draw). A part that is not zero gets at least one cell when ``width`` allows it, so
+        a short stage does not vanish.
+
+    Examples
+    --------
+    >>> split_cells([300, 700, 500], 15)
+    [3, 7, 5]
+    >>> split_cells([1, 1000], 10)
+    [1, 9]
+    """
+    sizes = [max(0.0, part) for part in parts]
+    total = sum(sizes)
+    if total <= 0 or width <= 0:
+        return [0] * len(sizes)
+    exact = [size / total * width for size in sizes]
+    cells = [int(value) for value in exact]
+    by_remainder = sorted(range(len(sizes)), key=lambda i: exact[i] - cells[i], reverse=True)
+    for i in by_remainder[: width - sum(cells)]:
+        cells[i] += 1
+    for i, size in enumerate(sizes):
+        if size > 0 and cells[i] == 0:
+            donor = max(range(len(cells)), key=lambda j: cells[j])
+            if cells[donor] > 1:
+                cells[donor] -= 1
+                cells[i] = 1
+    return cells
+
+
+@dataclass(slots=True)
+class Ballistics:
+    """How a level bar moves: up at once, down at a steady pace, with a cap that holds.
+
+    The body of a bar jumps to a louder level straight away and falls at
+    ``BODY_RELEASE_PER_S`` otherwise, so a syllable is seen whole and then fades. The peak
+    is the loudest recent level: it stays for ``PEAK_HOLD_S`` and then falls at
+    ``PEAK_RELEASE_PER_S``, fast enough not to trail a shelf behind a loud word.
+
+    Attributes
+    ----------
+    body : float
+        Where the bar is, from 0 to 1.
+    peak : float
+        Where the cap is, from 0 to 1. Never below ``body``.
+    hold_left : float
+        Seconds the peak still stays where it is.
+    """
+
+    body: float = 0.0
+    peak: float = 0.0
+    hold_left: float = 0.0
+
+    def update(self, level: float, dt: float) -> tuple[float, float]:
+        """Move on by ``dt`` seconds towards ``level``.
+
+        Parameters
+        ----------
+        level : float
+            The newest level, from 0 to 1.
+        dt : float
+            Seconds since the last update. Negative counts as zero.
+
+        Returns
+        -------
+        tuple[float, float]
+            The body and the peak to draw.
+
+        Examples
+        --------
+        >>> b = Ballistics()
+        >>> b.update(1.0, 0.06)
+        (1.0, 1.0)
+        >>> body, peak = b.update(0.0, 0.1)  # the body falls, the peak holds
+        >>> round(body, 2), peak
+        (0.4, 1.0)
+        """
+        level = min(1.0, max(0.0, level))
+        dt = max(0.0, dt)
+        self.body = level if level >= self.body else max(level, self.body - BODY_RELEASE_PER_S * dt)
+        if level >= self.peak:
+            self.peak, self.hold_left = level, PEAK_HOLD_S
+        elif self.hold_left > dt:
+            self.hold_left -= dt
+        else:
+            fall = dt - self.hold_left
+            self.hold_left = 0.0
+            self.peak = max(self.body, level, self.peak - PEAK_RELEASE_PER_S * fall)
+        return self.body, self.peak
+
+
+def processing_level(seconds: float) -> float:
+    """Return how tall a bar is at ``seconds`` into the "thinking" animation.
+
+    Parameters
+    ----------
+    seconds : float
+        Time since thinking began.
+
+    Returns
+    -------
+    float
+        From 0.05 to 1: three slow sine waves of different speeds added together, so the
+        pattern keeps changing and never repeats exactly, with no audio behind it.
+
+    Examples
+    --------
+    >>> 0.05 <= processing_level(1.234) <= 1.0
+    True
+    """
+    waves = (
+        0.25 * math.sin(seconds * 1.5)
+        + 0.2 * math.sin(seconds * 0.8)
+        + 0.15 * math.cos(seconds * 2.0)
+    )
+    return min(1.0, max(0.05, 0.2 + waves))
+
+
+@dataclass(slots=True)
+class SpeechScale:
+    """Scale a signal's level to the height of a bar, from what the signal itself is like.
+
+    A fixed dB scale suits no mic: a quiet one leaves speech at a third of a bar and a hot
+    one fills it. Scaling to the loudest block fails the other way, because one plosive or
+    bump sets the scale and shrinks every syllable after it. This measures two things from the
+    last few seconds instead, as speech tools do:
+
+    * the **noise floor**, the low end of the recent levels (the idea of "minimum
+      statistics"): the bottom of the bar sits just above it, so a quiet room is empty;
+    * the **speech level**, a high percentile of the blocks well above that floor (a cousin of
+      ITU-T P.56's "active speech level", which averages only the speech): the top of the bar
+      sits just above it. A percentile cannot be moved by a block or two, and pauses do not
+      count, so the level is kept through a pause.
+
+    Attributes
+    ----------
+    start_speech_db : float
+        The speech level to assume until enough speech has been heard.
+    start_noise_db : float
+        The noise floor to assume until enough has been heard to measure it. Once measured it
+        is kept, so the scale is not back at this guess after a pause in the audio.
+    """
+
+    start_speech_db: float = -35.0
+    start_noise_db: float = -60.0
+    _history: deque[tuple[float, float]] = field(default_factory=deque, init=False, repr=False)
+    _speech_db: float = field(default=0.0, init=False, repr=False)
+    _noise_db: float = field(default=0.0, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        """Start from the assumed speech level and noise floor."""
+        self._speech_db = self.start_speech_db
+        self._noise_db = self.start_noise_db
+
+    def update(self, rms: float, now: float) -> float:
+        """Measure one block of audio.
+
+        Parameters
+        ----------
+        rms : float
+            RMS of the block, on the int16 scale. Zero, negative or NaN count as silence.
+        now : float
+            When the block was taken, in seconds. It only has to count upwards.
+
+        Returns
+        -------
+        float
+            From 0 to 1: the height of the bar for this block.
+
+        Examples
+        --------
+        >>> scale = SpeechScale()
+        >>> 0.0 < scale.update(1000.0, 0.0) <= 1.0  # ordinary speech on a fresh scale
+        True
+        >>> scale.update(0.0, 0.1)
+        0.0
+        """
+        ratio = rms / FULL_SCALE  # a tiny rms can underflow to zero here, so test the ratio
+        db = max(_SILENCE_DB, 20 * math.log10(ratio)) if ratio > 0 else _SILENCE_DB
+        self._history.append((now, db))
+        while self._history and self._history[0][0] < now - SCALE_WINDOW_S:
+            self._history.popleft()
+        levels = [level for _, level in self._history]
+        if len(levels) >= SCALE_MIN_BLOCKS:
+            self._noise_db = noise_floor_db(levels)
+        noise = self._noise_db  # kept through a gap, so a turn that starts afresh keeps the room
+        speech = speech_level_db(levels, noise)
+        if speech is not None:
+            self._speech_db = speech
+        top = self._speech_db + SCALE_HEADROOM_DB
+        bottom = min(
+            max(noise + SCALE_FLOOR_GAP_DB, top - SCALE_MAX_SPAN_DB), top - SCALE_MIN_SPAN_DB
+        )
+        return min(1.0, max(0.0, (db - bottom) / (top - bottom)))
+
+
+def noise_floor_db(levels_db: Sequence[float]) -> float:
+    """Return the noise floor ``SpeechScale`` reads from some levels: their quiet end.
+
+    Parameters
+    ----------
+    levels_db : Sequence[float]
+        Block levels in dB below full scale. Must not be empty.
+
+    Returns
+    -------
+    float
+        The 10th percentile, but never below ``SCALE_NOISE_FLOOR_DB``.
+
+    Examples
+    --------
+    >>> noise_floor_db([-80.0, -50.0, -30.0])
+    -70.0
+    """
+    return max(percentile(levels_db, 0.1), SCALE_NOISE_FLOOR_DB)
+
+
+def speech_level_db(levels_db: Sequence[float], noise_db: float) -> float | None:
+    """Return the speech level ``SpeechScale`` reads from some levels, above a noise floor.
+
+    Parameters
+    ----------
+    levels_db : Sequence[float]
+        Block levels in dB below full scale.
+    noise_db : float
+        The noise floor, from ``noise_floor_db``.
+
+    Returns
+    -------
+    float or None
+        The ``SCALE_SPEECH_PERCENTILE`` (90th) percentile of the blocks more than
+        ``SCALE_SPEECH_MARGIN_DB`` above the floor. None with fewer than
+        ``SCALE_MIN_SPEECH_BLOCKS`` such blocks, too few to tell.
+    """
+    speech = [level for level in levels_db if level > noise_db + SCALE_SPEECH_MARGIN_DB]
+    if len(speech) < SCALE_MIN_SPEECH_BLOCKS:
+        return None
+    return percentile(speech, SCALE_SPEECH_PERCENTILE)

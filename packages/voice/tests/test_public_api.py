@@ -11,14 +11,17 @@ from typing import Any, cast
 import pytest
 
 import fish_audio_suite_voice as voice
-from fish_audio_suite_voice.debug import DebugLevel, debug_level
-from fish_audio_suite_voice.env_read import read_flag
-from fish_audio_suite_voice.listen import start_hit
-from fish_audio_suite_voice.log_setup import configure_voice_logging
+from fish_audio_suite_voice.capture.listen import start_hit
+from fish_audio_suite_voice.config.env import read_flag
+from fish_audio_suite_voice.logutil.debug import DebugLevel, debug_level
+from fish_audio_suite_voice.logutil.setup import configure_voice_logging
 
 
 def _modules() -> list[str]:
-    return sorted(info.name for info in pkgutil.iter_modules(voice.__path__))
+    return sorted(
+        info.name.removeprefix(f"{voice.__name__}.")
+        for info in pkgutil.walk_packages(voice.__path__, f"{voice.__name__}.")
+    )
 
 
 @pytest.mark.parametrize("name", _modules())

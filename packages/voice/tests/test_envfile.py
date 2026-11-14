@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from fish_audio_suite_voice.envfile import apply_cli_env_files, load_dotenv
+from fish_audio_suite_voice.config.dotenv import apply_cli_env_files, load_dotenv
 
 
 def _load(tmp_path: Path, text: str) -> None:

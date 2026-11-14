@@ -22,12 +22,12 @@ from session_fakes import (
 )
 from voice_fakes import ScriptedMic, install_gate
 
-from fish_audio_suite_voice.cancel import StopFlag
-from fish_audio_suite_voice.duplex_state import DuplexContext, TurnInput
-from fish_audio_suite_voice.events import EVENTS, Event, Heard
-from fish_audio_suite_voice.hearing import HeardLine
-from fish_audio_suite_voice.inputs import LiveInput
-from fish_audio_suite_voice.speaker import FishSpeaker
+from fish_audio_suite_voice.asr.pipeline import HeardLine
+from fish_audio_suite_voice.session.cancel import StopFlag
+from fish_audio_suite_voice.session.events import EVENTS, Event, Heard
+from fish_audio_suite_voice.session.inputs import LiveInput
+from fish_audio_suite_voice.session.state import DuplexContext, TurnInput
+from fish_audio_suite_voice.tts.speaker import FishSpeaker
 
 
 class _Mic:

@@ -10,13 +10,13 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
-from fish_audio_suite_voice.deepgram import (
+from fish_audio_suite_voice.asr.deepgram import (
     FluxStream,
     flux_base,
     flux_url,
     parse_flux_message,
 )
-from fish_audio_suite_voice.turn_stream import (
+from fish_audio_suite_voice.asr.turn_stream import (
     EagerTurnEnd,
     StreamError,
     StreamWarning,

@@ -8,9 +8,13 @@ from typing import BinaryIO
 import pytest
 
 from fish_audio_suite_kit import DEFAULT_SYSTEM_PROMPT
-from fish_audio_suite_voice.cli import main
-from fish_audio_suite_voice.config import VoiceCliConfig, load_config, system_prompt_from_file
-from fish_audio_suite_voice.history import History
+from fish_audio_suite_voice.cli.main import main
+from fish_audio_suite_voice.config.settings import (
+    VoiceCliConfig,
+    load_config,
+    system_prompt_from_file,
+)
+from fish_audio_suite_voice.session.history import History
 
 CARD = "You are Mira, a dry-witted ship's engineer. Stay in character."
 
@@ -111,7 +115,7 @@ def test_the_cli_flag_loads_the_file_and_a_bad_path_exits_2(
         seen.append(config.prompt.text)
         return 0
 
-    monkeypatch.setattr("fish_audio_suite_voice.cli.run_loop", fake_loop)
+    monkeypatch.setattr("fish_audio_suite_voice.cli.main.run_loop", fake_loop)
     monkeypatch.setenv("FISH_API_KEY", "k")
     monkeypatch.setenv("FISH_VOICE_ID", "v")
     assert main(["--env-file", str(tmp_path / ".env"), "--prompt-file", str(_card(tmp_path))]) == 0

@@ -28,15 +28,15 @@ from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 
-from fish_audio_suite_voice.envfile import apply_cli_env_files
-from fish_audio_suite_voice.events import EVENTS, Event, Interim
-from fish_audio_suite_voice.mic import SessionMic
-from fish_audio_suite_voice.portaudio import parse_device
-from fish_audio_suite_voice.recognised import NoTurn, StreamFallback, Transcript
-from fish_audio_suite_voice.recognisers import recogniser_problem
-from fish_audio_suite_voice.streaming import stream_turn
-from fish_audio_suite_voice.tune import ListenTune, SttTune
-from fish_audio_suite_voice.turn_stream import RecogniserSettings
+from fish_audio_suite_voice.asr.backends import recogniser_problem
+from fish_audio_suite_voice.asr.result import NoTurn, StreamFallback, Transcript
+from fish_audio_suite_voice.asr.streaming import stream_turn
+from fish_audio_suite_voice.asr.turn_stream import RecogniserSettings
+from fish_audio_suite_voice.capture.mic import SessionMic
+from fish_audio_suite_voice.capture.portaudio import parse_device
+from fish_audio_suite_voice.config.dotenv import apply_cli_env_files
+from fish_audio_suite_voice.config.tune import ListenTune, SttTune
+from fish_audio_suite_voice.session.events import EVENTS, Event, Interim
 
 
 async def run(turns: int, device: str | int | None) -> int:

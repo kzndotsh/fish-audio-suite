@@ -15,16 +15,16 @@ from session_fakes import (
 )
 from voice_fakes import FakeGate, install_gate, make_result, set_tts
 
-from fish_audio_suite_voice.console_sink import ConsoleSink
-from fish_audio_suite_voice.duplex_state import DuplexContext
-from fish_audio_suite_voice.events import EVENTS
-from fish_audio_suite_voice.heard import HeardLine
-from fish_audio_suite_voice.latency import LatencySnapshot
-from fish_audio_suite_voice.playback import PlaybackSink
-from fish_audio_suite_voice.portaudio import PortAudioMissingError
-from fish_audio_suite_voice.recognised import BargeIn
-from fish_audio_suite_voice.reply import collect_reply, speak_reply, stream_turn
-from fish_audio_suite_voice.wire import TtsResult
+from fish_audio_suite_voice.asr.outcome import HeardLine
+from fish_audio_suite_voice.asr.result import BargeIn
+from fish_audio_suite_voice.capture.portaudio import PortAudioMissingError
+from fish_audio_suite_voice.cli.console_sink import ConsoleSink
+from fish_audio_suite_voice.llm.reply import collect_reply, speak_reply, stream_turn
+from fish_audio_suite_voice.session.events import EVENTS
+from fish_audio_suite_voice.session.latency import LatencySnapshot
+from fish_audio_suite_voice.session.state import DuplexContext
+from fish_audio_suite_voice.tts.playback import PlaybackSink
+from fish_audio_suite_voice.tts.websocket import TtsResult
 
 
 def _speak_once(

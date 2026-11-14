@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fish_audio_suite_voice.heard import classify_transcript
+from fish_audio_suite_voice.asr.outcome import classify_transcript
 
 
 def test_classify_transcript_drops_echoes_and_keeps_a_real_line() -> None:

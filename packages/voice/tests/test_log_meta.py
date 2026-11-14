@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fish_audio_suite_voice.log_meta import public_meta, ws_event_view
+from fish_audio_suite_voice.logutil.meta import public_meta, ws_event_view
 
 
 def test_ws_event_view_strips_audio() -> None:

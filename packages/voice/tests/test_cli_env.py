@@ -7,15 +7,15 @@ from pathlib import Path
 import pytest
 from voice_fakes import make_result
 
-from fish_audio_suite_voice.cli import main, run_loop, smoke_test
-from fish_audio_suite_voice.config import load_config
-from fish_audio_suite_voice.envfile import apply_cli_env_files
-from fish_audio_suite_voice.events import ExitCode
-from fish_audio_suite_voice.llm_tune import OPENROUTER_API_BASE
-from fish_audio_suite_voice.playback import PlaybackSink
-from fish_audio_suite_voice.portaudio import parse_device
-from fish_audio_suite_voice.speaker import FishSpeaker
-from fish_audio_suite_voice.wire import TtsResult
+from fish_audio_suite_voice.capture.portaudio import parse_device
+from fish_audio_suite_voice.cli.main import main, run_loop, smoke_test
+from fish_audio_suite_voice.config.dotenv import apply_cli_env_files
+from fish_audio_suite_voice.config.settings import load_config
+from fish_audio_suite_voice.llm.tune import OPENROUTER_API_BASE
+from fish_audio_suite_voice.session.events import ExitCode
+from fish_audio_suite_voice.tts.playback import PlaybackSink
+from fish_audio_suite_voice.tts.speaker import FishSpeaker
+from fish_audio_suite_voice.tts.websocket import TtsResult
 
 
 def test_env_file_fills_missing_keys(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -287,8 +287,8 @@ def _stub_main(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, run: object) -> 
     """
     empty = tmp_path / "empty.env"
     empty.write_text("", encoding="utf-8")
-    monkeypatch.setattr("fish_audio_suite_voice.cli.configure_voice_logging", _no_log)
-    monkeypatch.setattr("fish_audio_suite_voice.cli.run_loop", run)
+    monkeypatch.setattr("fish_audio_suite_voice.cli.main.configure_voice_logging", _no_log)
+    monkeypatch.setattr("fish_audio_suite_voice.cli.main.run_loop", run)
     return ["--env-file", str(empty)]
 
 
@@ -446,7 +446,7 @@ def test_stream_tts_is_off_unless_asked(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_a_blank_llm_key_does_not_hide_the_provider_key(monkeypatch: pytest.MonkeyPatch) -> None:
-    from fish_audio_suite_voice.llm_tune import LlmTune
+    from fish_audio_suite_voice.llm.tune import LlmTune
 
     for name in ("FISH_LLM_BASE", "OPENAI_API_KEY"):
         monkeypatch.delenv(name, raising=False)
@@ -460,7 +460,7 @@ def test_a_blank_llm_key_does_not_hide_the_provider_key(monkeypatch: pytest.Monk
 def test_a_malformed_llm_base_warns_and_falls_back(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from fish_audio_suite_voice.llm_tune import LlmTune, is_openrouter_host
+    from fish_audio_suite_voice.llm.tune import LlmTune, is_openrouter_host
 
     monkeypatch.setenv("FISH_LLM_BASE", "http://[::1")
     tune = LlmTune.from_env()

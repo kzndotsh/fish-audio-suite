@@ -12,11 +12,8 @@ import openrouter
 import pytest
 from openrouter.errors import OpenRouterError
 
-from fish_audio_suite_voice.events import EVENTS, Event, Notice
-from fish_audio_suite_voice.llm import llm_token_stream
-from fish_audio_suite_voice.llm_tune import LlmTune, is_openrouter_host
-from fish_audio_suite_voice.log_setup import configure_voice_logging
-from fish_audio_suite_voice.transports import (
+from fish_audio_suite_voice.llm.client import llm_token_stream
+from fish_audio_suite_voice.llm.transports import (
     ChatChunk,
     ChatHttpError,
     ChatUnusableError,
@@ -25,6 +22,9 @@ from fish_audio_suite_voice.transports import (
     openrouter_client,
     routed_model,
 )
+from fish_audio_suite_voice.llm.tune import LlmTune, is_openrouter_host
+from fish_audio_suite_voice.logutil.setup import configure_voice_logging
+from fish_audio_suite_voice.session.events import EVENTS, Event, Notice
 
 OR_BASE = "https://openrouter.ai/api/v1"
 
@@ -163,7 +163,7 @@ def test_a_provider_error_group_is_reported(
         yield ChatChunk(text="Hello there")
         raise ExceptionGroup("llm", [RuntimeError("provider down")])
 
-    monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", lambda _call: events())
+    monkeypatch.setattr("fish_audio_suite_voice.llm.client.chat_events", lambda _call: events())
 
     async def collect() -> list[str]:
         return [
@@ -189,7 +189,7 @@ def test_a_cancel_group_does_not_warn(
         yield ChatChunk(text="Hello there")
         raise BaseExceptionGroup("cancel", [asyncio.CancelledError()])
 
-    monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", lambda _call: events())
+    monkeypatch.setattr("fish_audio_suite_voice.llm.client.chat_events", lambda _call: events())
 
     async def collect() -> list[str]:
         return [
@@ -884,8 +884,8 @@ def test_429_within_cap_retries_once(monkeypatch: pytest.MonkeyPatch) -> None:
         waits.append(seconds)
         return False
 
-    monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", events)
-    monkeypatch.setattr("fish_audio_suite_voice.llm.sleep_unless", pause)
+    monkeypatch.setattr("fish_audio_suite_voice.llm.client.chat_events", events)
+    monkeypatch.setattr("fish_audio_suite_voice.llm.client.sleep_unless", pause)
 
     seen: list[Event] = []
     unsubscribe = EVENTS.subscribe(seen.append)
@@ -914,7 +914,7 @@ def test_429_within_cap_retries_once(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_429_over_cap_returns_to_listening(monkeypatch: pytest.MonkeyPatch) -> None:
     calls, events = _events_once_429(31.0, ["back"])
-    monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", events)
+    monkeypatch.setattr("fish_audio_suite_voice.llm.client.chat_events", events)
 
     async def collect() -> list[str]:
         return [
@@ -938,14 +938,14 @@ def test_429_without_retry_after_retries_once_after_a_short_pause(
 ) -> None:
     # A shared provider pool (one OpenRouter host) sends a bare 429 that clears fast.
     calls, events = _events_once_429(None, ["back"])
-    monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", events)
+    monkeypatch.setattr("fish_audio_suite_voice.llm.client.chat_events", events)
     waits: list[float] = []
 
     async def no_sleep(seconds: float, _stopped: Callable[[], bool]) -> bool:
         waits.append(seconds)
         return False
 
-    monkeypatch.setattr("fish_audio_suite_voice.llm.sleep_unless", no_sleep)
+    monkeypatch.setattr("fish_audio_suite_voice.llm.client.sleep_unless", no_sleep)
 
     async def collect() -> list[str]:
         return [
@@ -976,7 +976,7 @@ def test_a_quota_429_is_not_retried(monkeypatch: pytest.MonkeyPatch) -> None:
 
         return gen()
 
-    monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", events)
+    monkeypatch.setattr("fish_audio_suite_voice.llm.client.chat_events", events)
 
     async def collect() -> list[str]:
         return [
@@ -1001,8 +1001,8 @@ def test_a_429_wait_cut_short_does_not_retry(monkeypatch: pytest.MonkeyPatch) ->
     async def pause(_seconds: float, _stopped: Callable[[], bool]) -> bool:
         return True  # the wait reports it was stopped
 
-    monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", events)
-    monkeypatch.setattr("fish_audio_suite_voice.llm.sleep_unless", pause)
+    monkeypatch.setattr("fish_audio_suite_voice.llm.client.chat_events", events)
+    monkeypatch.setattr("fish_audio_suite_voice.llm.client.sleep_unless", pause)
 
     async def collect() -> list[str]:
         return [
@@ -1028,8 +1028,8 @@ def test_cancel_wakes_the_429_wait(monkeypatch: pytest.MonkeyPatch) -> None:
         woken.append(stopped())
         return stopped()
 
-    monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", events)
-    monkeypatch.setattr("fish_audio_suite_voice.llm.sleep_unless", pause)
+    monkeypatch.setattr("fish_audio_suite_voice.llm.client.chat_events", events)
+    monkeypatch.setattr("fish_audio_suite_voice.llm.client.sleep_unless", pause)
 
     async def collect() -> list[str]:
         return [
@@ -1054,7 +1054,7 @@ def test_429_after_a_token_does_not_retry(monkeypatch: pytest.MonkeyPatch) -> No
 
         return gen()
 
-    monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", events)
+    monkeypatch.setattr("fish_audio_suite_voice.llm.client.chat_events", events)
 
     async def collect() -> list[str]:
         return [
@@ -1100,7 +1100,7 @@ def waits(monkeypatch: pytest.MonkeyPatch) -> list[float]:
         asked.append(seconds)
         return False
 
-    monkeypatch.setattr("fish_audio_suite_voice.llm.sleep_unless", pause)
+    monkeypatch.setattr("fish_audio_suite_voice.llm.client.sleep_unless", pause)
     return asked
 
 
@@ -1165,7 +1165,7 @@ def test_openrouter_429_header_retries_once(monkeypatch: pytest.MonkeyPatch) -> 
         return False
 
     monkeypatch.setattr(openrouter, "OpenRouter", _Client)
-    monkeypatch.setattr("fish_audio_suite_voice.llm.sleep_unless", pause)
+    monkeypatch.setattr("fish_audio_suite_voice.llm.client.sleep_unless", pause)
 
     async def collect() -> list[str]:
         return [tok async for tok in _tokens()]
@@ -1182,7 +1182,7 @@ def test_a_retry_wait_on_another_status_is_not_honoured(waits: list[float]) -> N
 
 
 def test_log_briefs_show_the_provider_and_the_token_counts() -> None:
-    from fish_audio_suite_voice.transports import provider_brief, usage_brief
+    from fish_audio_suite_voice.llm.transports import provider_brief, usage_brief
 
     assert provider_brief("available=1, selected=Venice") == "Venice"
     assert provider_brief("Venice") == "Venice"
@@ -1349,7 +1349,7 @@ def _hi() -> AsyncIterator[str]:
 def test_a_refusal_that_every_turn_would_get_stops_the_stream(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], status: int, says: str
 ) -> None:
-    monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", _refused_once(status))
+    monkeypatch.setattr("fish_audio_suite_voice.llm.client.chat_events", _refused_once(status))
     with pytest.raises(ChatUnusableError, match=says):
         asyncio.run(_drain(_hi()))
     assert says in capsys.readouterr().err
@@ -1359,7 +1359,7 @@ def test_a_refusal_that_every_turn_would_get_stops_the_stream(
 def test_a_refusal_of_one_request_ends_only_that_reply(
     monkeypatch: pytest.MonkeyPatch, status: int
 ) -> None:
-    monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", _refused_once(status))
+    monkeypatch.setattr("fish_audio_suite_voice.llm.client.chat_events", _refused_once(status))
     assert asyncio.run(_drain(_hi())) == []
 
 

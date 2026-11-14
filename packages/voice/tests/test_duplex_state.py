@@ -9,11 +9,11 @@ from session_fakes import FakeBackend, make_config
 from voice_fakes import ScriptedMic
 
 from fish_audio_suite_kit import CueStyle
-from fish_audio_suite_voice.aec import EchoCanceller
-from fish_audio_suite_voice.duplex_state import session_context, session_speaker
-from fish_audio_suite_voice.signals import DuplexSession
-from fish_audio_suite_voice.tts_tune import TtsTune
-from fish_audio_suite_voice.tune import AecTune
+from fish_audio_suite_voice.capture.aec import EchoCanceller
+from fish_audio_suite_voice.config.tune import AecTune
+from fish_audio_suite_voice.session.signals import DuplexSession
+from fish_audio_suite_voice.session.state import session_context, session_speaker
+from fish_audio_suite_voice.tts.tune import TtsTune
 
 
 def test_the_session_mic_is_cleaned_the_way_the_aec_settings_say() -> None:

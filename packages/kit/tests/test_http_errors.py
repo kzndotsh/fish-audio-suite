@@ -15,7 +15,7 @@ from fish_audio_suite_kit import (
     parse_fish_error,
     should_retry_fish_status,
 )
-from fish_audio_suite_kit.http_errors import (
+from fish_audio_suite_kit.http.http_errors import (
     FISH_BACKOFF_CAP_S,
     FISH_RETRY_AFTER_CAP_S,
 )

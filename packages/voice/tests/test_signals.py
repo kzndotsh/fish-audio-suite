@@ -7,7 +7,7 @@ from typing import Any
 
 import pytest
 
-from fish_audio_suite_voice.signals import DuplexSession, TurnSignals
+from fish_audio_suite_voice.session.signals import DuplexSession, TurnSignals
 
 
 def test_install_sigint_uses_the_loop_handler_and_runs_before_first() -> None:
@@ -59,7 +59,7 @@ def test_install_sigint_falls_back_to_signal_signal_without_loop_support(
 
         monkeypatch.setattr(loop, "add_signal_handler", refuse)
         monkeypatch.setattr(
-            "fish_audio_suite_voice.signals.signal.signal",
+            "fish_audio_suite_voice.session.signals.signal.signal",
             lambda sig, handler: installed.update(sig=sig, handler=handler),
         )
         session.install_sigint(loop)

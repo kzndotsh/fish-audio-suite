@@ -54,8 +54,8 @@ cli = [
 ]
 
 [project.scripts]
-fish-audio-suite-voice = "fish_audio_suite_voice.cli:main"
-fish-voice = "fish_audio_suite_voice.cli:main"
+fish-audio-suite-voice = "fish_audio_suite_voice.cli.main:main"
+fish-voice = "fish_audio_suite_voice.cli.main:main"
 
 [tool.uv.sources]
 fish-audio-suite-kit = { workspace = true }

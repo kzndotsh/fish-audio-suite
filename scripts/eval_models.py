@@ -45,12 +45,12 @@ from fish_audio_suite_kit import (
     CueStyle,
     is_tts_junk,
 )
-from fish_audio_suite_voice.config import SystemPrompt, prompt_from_file
-from fish_audio_suite_voice.envfile import load_dotenv
-from fish_audio_suite_voice.history import History
-from fish_audio_suite_voice.llm import open_chat_backend
-from fish_audio_suite_voice.llm_tune import LlmTune
-from fish_audio_suite_voice.log_setup import configure_voice_logging
+from fish_audio_suite_voice.config.dotenv import load_dotenv
+from fish_audio_suite_voice.config.settings import SystemPrompt, prompt_from_file
+from fish_audio_suite_voice.llm.client import open_chat_backend
+from fish_audio_suite_voice.llm.tune import LlmTune
+from fish_audio_suite_voice.logutil.setup import configure_voice_logging
+from fish_audio_suite_voice.session.history import History
 
 # ---------------------------------------------------------------------------
 # EDIT THESE. The models and prompts the script runs when you pass none.

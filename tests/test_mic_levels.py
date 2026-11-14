@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 from mic_levels import main, scale_levels, summarize, to_db
 
-from fish_audio_suite_voice.latency import percentile
-from fish_audio_suite_voice.session_view import SpeechScale
+from fish_audio_suite_voice.cli.session_view import SpeechScale
+from fish_audio_suite_voice.session.latency import percentile
 
 
 def test_a_level_is_reported_in_db_below_full_scale() -> None:

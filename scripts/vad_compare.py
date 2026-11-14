@@ -32,19 +32,19 @@ from dataclasses import replace
 from pathlib import Path
 
 from fish_audio_suite_kit import MS_PER_S
-from fish_audio_suite_voice.aec import EchoCanceller
-from fish_audio_suite_voice.barge import BargeGate
-from fish_audio_suite_voice.cancel import StopFlag
-from fish_audio_suite_voice.mic import SessionMic
-from fish_audio_suite_voice.pcm import (
+from fish_audio_suite_voice.capture.aec import EchoCanceller
+from fish_audio_suite_voice.capture.barge_in import BargeGate
+from fish_audio_suite_voice.capture.mic import SessionMic
+from fish_audio_suite_voice.capture.pcm import (
     FRAME_MS,
     SAMPLE_BYTES,
     SAMPLE_RATE,
     take_frames,
     write_mono_wav,
 )
-from fish_audio_suite_voice.tune import AecTune, BargeTune, ListenTune
-from fish_audio_suite_voice.vad import open_vad, vad_problem
+from fish_audio_suite_voice.capture.vad import open_vad, vad_problem
+from fish_audio_suite_voice.config.tune import AecTune, BargeTune, ListenTune
+from fish_audio_suite_voice.session.cancel import StopFlag
 
 _COLUMN_FRAMES = 5  # one timeline column is 150 ms
 _RULER_EVERY_S = 5

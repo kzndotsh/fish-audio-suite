@@ -13,7 +13,7 @@ from hypothesis import HealthCheck, example, given, settings
 from hypothesis import strategies as st
 
 from fish_audio_suite_kit import CueMode, CueStyle, ends_sentence
-from fish_audio_suite_voice.tts_text import delta_events, text_events
+from fish_audio_suite_voice.tts.text import delta_events, text_events
 
 # Pieces that exercise the scrubber's state machine: spans that hold text until
 # they close, line and sentence starts, cues, and the break characters it folds.

@@ -16,8 +16,9 @@ from textual.geometry import Region
 from textual.pilot import Pilot
 from textual.widgets import Input, Log, Static
 
-from fish_audio_suite_voice import tui as tui_module
-from fish_audio_suite_voice.events import (
+from fish_audio_suite_voice.cli import tui as tui_module
+from fish_audio_suite_voice.cli.tui import Conversation, Timings, VoiceApp, Waveform
+from fish_audio_suite_voice.session.events import (
     BargedIn,
     Bye,
     EventBus,
@@ -35,10 +36,9 @@ from fish_audio_suite_voice.events import (
     Speaking,
     TurnEnded,
 )
-from fish_audio_suite_voice.inputs import LiveInput
-from fish_audio_suite_voice.latency import LatencySnapshot
-from fish_audio_suite_voice.signals import DuplexSession
-from fish_audio_suite_voice.tui import Conversation, Timings, VoiceApp, Waveform
+from fish_audio_suite_voice.session.inputs import LiveInput
+from fish_audio_suite_voice.session.latency import LatencySnapshot
+from fish_audio_suite_voice.session.signals import DuplexSession
 
 
 class _SpyInput(LiveInput):
@@ -400,7 +400,7 @@ def test_the_stylesheet_ships_inside_the_package_next_to_the_app() -> None:
     assert sheet.is_file()
     assert VoiceApp.CSS_PATH == "tui.tcss"
     # Hatchling includes every file under the package directory in the wheel.
-    config = (Path(tui_module.__file__).parents[2] / "pyproject.toml").read_text(encoding="utf-8")
+    config = (Path(tui_module.__file__).parents[3] / "pyproject.toml").read_text(encoding="utf-8")
     assert 'packages = ["src/fish_audio_suite_voice"]' in config
 
 

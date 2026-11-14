@@ -229,17 +229,17 @@ max-branches = 15
     "PLR2004", # expected values are literals
 ]
 # Cue and ASR text patterns use the real unicode quotes and dashes.
-"packages/kit/src/fish_audio_suite_kit/{asr_text,_charsets,cues,cuts,dialogue,_single_pass,scrub_tts,stream_holds}.py" = ["RUF001"]
-"packages/voice/src/fish_audio_suite_voice/{spoken,tts_text}.py" = ["RUF001"]
+"packages/kit/src/fish_audio_suite_kit/{asr/asr_text,text/_charsets,tts/cues,tts/cuts,tts/dialogue,text/_single_pass,tts/scrub_tts,tts/stream_holds}.py" = ["RUF001"]
+"packages/voice/src/fish_audio_suite_voice/tts/{played_text,text}.py" = ["RUF001"]
 "packages/proxy/src/fish_audio_suite_proxy/phrases.py" = ["RUF001"]
 "packages/proxy/tests/test_proxy_asr_phrases.py" = ["RUF001"]
 "packages/kit/tests/{test_asr_text,test_cues,test_dialogue,test_scrub_tts}.py" = ["RUF001"]
 "packages/voice/tests/{test_tts_text,test_spoken_properties,test_tts_text_properties}.py" = ["RUF001"]
 # These modules import the optional extras (sounddevice, webrtcvad, pysilero_vad, pywebrtc_audio,
 # openrouter) inside functions, so the base install imports without them.
-"packages/voice/src/fish_audio_suite_voice/{aec,llm,playback,transports,vad}.py" = ["PLC0415"]
+"packages/voice/src/fish_audio_suite_voice/{capture/aec,llm/client,tts/playback,llm/transports,capture/vad}.py" = ["PLC0415"]
 # Both print to the terminal on purpose.
-"packages/voice/src/fish_audio_suite_voice/{console_sink,cli}.py" = ["T20"]
+"packages/voice/src/fish_audio_suite_voice/cli/{console_sink,main}.py" = ["T20"]
 # A command-line script prints its results, and is not a package.
 "scripts/*.py" = ["T20", "INP001"]
 "examples/*.py" = ["T20", "INP001", "D"]
@@ -290,12 +290,12 @@ containers = ["fish_audio_suite_kit"]
 # Each row may import the rows below it, never the rows above. Modules in one row may
 # import each other. A new module goes in the lowest row it fits.
 layers = [
-    "cue_style : stream_holds : junk",
-    "scrub_tts : dialogue : prompt : defaults",
-    "cues",
-    "cuts : catalog : asr_text : env : http_errors : captions : trace_context : turn",
-    "urls : _single_pass : _speech_floor : payloads",
-    "_charsets : literals : _values : timing : _version",
+    "tts.cue_style : tts.stream_holds : tts.junk",
+    "tts.scrub_tts : tts.dialogue : tts.prompt : types.defaults",
+    "tts.cues",
+    "tts.cuts : types.catalog : asr.asr_text : config.env : http.http_errors : asr.captions : http.trace_context : asr.turn",
+    "http.urls : text._single_pass : text._speech_floor : types.payloads",
+    "text._charsets : types.literals : config._values : text.timing : _version",
 ]
 
 [[tool.importlinter.contracts]]
@@ -325,13 +325,13 @@ containers = ["fish_audio_suite_voice"]
 # Each row may import the rows below it, never the rows above. Modules in one row may
 # import each other. A new module goes in the lowest row it fits.
 layers = [
-    "cli",
-    "duplex : tui",
-    "reply : hearing : streaming : inputs",
-    "listen : barge : speaker : duplex_state : speculate : tts_turn",
-    "mic : wire : llm : playback : transports : recognisers : deepgram : fish_realtime : turn_stream : asr : aec",
-    "heard : recognised : turn_check : history : scorer : floor : vad : tts_text : spoken : audio_chain : declick : loudness",
-    "config : tune : llm_tune : tts_tune : env_read : playback_kind : envfile : events : signals : latency : console_sink : session_view : debug : log_format : log_file : log_setup : log_meta : ws_tap : wording : cancel : pause : pcm : portaudio",
+    "cli.main",
+    "session.duplex : cli.tui",
+    "llm.reply : asr.pipeline : asr.streaming : session.inputs",
+    "capture.listen : capture.barge_in : tts.speaker : session.state : llm.speculate : tts.turn",
+    "capture.mic : tts.websocket : llm.client : tts.playback : llm.transports : asr.backends : asr.deepgram : asr.fish_realtime : asr.turn_stream : asr.transcribe : capture.aec",
+    "asr.outcome : asr.result : asr.turn_check : session.history : capture.scoring : capture.energy_floor : capture.vad : tts.text : tts.played_text : tts.audio_chain : tts.declick : tts.loudness",
+    "config.settings : config.tune : llm.tune : tts.tune : config.env : config.playback_kind : config.dotenv : session.events : session.signals : session.latency : cli.console_sink : cli.session_view : logutil.debug : logutil.format : logutil.file : logutil.setup : logutil.meta : tts.ws_tap : cli.wording : session.cancel : session.pause : capture.pcm : capture.portaudio",
 ]
 
 [tool.basedpyright]

@@ -54,7 +54,7 @@ Two roleplay helpers are opt-in. `normalize_cues(text, lead=True)` turns a sente
 | Errors | `FishHttpError` and its subclasses `FishAuthError`, `FishRateLimitError`, `FishUpstreamError`, `FishTimeoutError` | `FishHttpError(status, message)` returns the matching class, so callers catch by type instead of comparing status numbers. `for_unreachable()`, `for_timeout()`, `for_non_json()` and `for_non_object()` build the fixed 502 and 504 errors; an app picks `for_timeout()` or `for_unreachable()` for a transport failure, since only it knows its HTTP library. `.retryable` is true for 429 and 5xx, and `.retry_after` carries Fish's hint |
 | Types | `FishLatency`, `AudioFormat`, `AsrFormat`, `AsrModel`, `TtsModel`, `ChatRole`, `ChatMessage`, `AsrBody`, `AsrSegment`, `AsrWord`, `OpenAIErrorBody`, `OpenAIErrorDetail`, `FishErrorBody` | Closed value sets and the JSON shapes the kit reads and builds, so callers type against them instead of `str` and `dict[str, Any]` |
 | Captions | `CaptionCue`, `format_as_srt`, `format_as_vtt` | Timed text to SubRip or WebVTT |
-| Timing | `elapsed_ms`, `MS_PER_S` | Milliseconds since a `time.perf_counter` reading. The record of a voice turn's times, `LatencySnapshot`, lives in voice (`fish_audio_suite_voice.latency`), which is its only user |
+| Timing | `elapsed_ms`, `MS_PER_S` | Milliseconds since a `time.perf_counter` reading. The record of a voice turn's times, `LatencySnapshot`, lives in voice (`fish_audio_suite_voice.session.latency`), which is its only user |
 
 Docstrings on those functions are the contract, and the ones with an Examples section are run as doctests (`pytest --doctest-modules packages/kit/src`).
 

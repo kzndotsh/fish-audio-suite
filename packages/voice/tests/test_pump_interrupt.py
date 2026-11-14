@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator
 import pytest
 from wire_helpers import RecordingSink, play_stream
 
-from fish_audio_suite_voice.wire import TtsResult
+from fish_audio_suite_voice.tts.websocket import TtsResult
 
 
 def _play(stream: AsyncIterator[bytes], sink: RecordingSink | None = None) -> TtsResult:

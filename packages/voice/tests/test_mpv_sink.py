@@ -4,13 +4,13 @@ from typing import Any
 
 import pytest
 
-from fish_audio_suite_voice.playback import MpvSink
+from fish_audio_suite_voice.tts.playback import MpvSink
 
 
 def test_start_without_mpv_on_path_fails_with_a_clear_message(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("fish_audio_suite_voice.playback.shutil.which", lambda _name: None)
+    monkeypatch.setattr("fish_audio_suite_voice.tts.playback.shutil.which", lambda _name: None)
     with pytest.raises(FileNotFoundError, match="mpv is not on PATH"):
         MpvSink().start()
 
@@ -32,8 +32,10 @@ def test_start_runs_the_resolved_binary_without_a_shell(monkeypatch: pytest.Monk
         calls.append((args, kwargs))
         return Proc()
 
-    monkeypatch.setattr("fish_audio_suite_voice.playback.shutil.which", lambda _n: "/opt/bin/mpv")
-    monkeypatch.setattr("fish_audio_suite_voice.playback.subprocess.Popen", popen)
+    monkeypatch.setattr(
+        "fish_audio_suite_voice.tts.playback.shutil.which", lambda _n: "/opt/bin/mpv"
+    )
+    monkeypatch.setattr("fish_audio_suite_voice.tts.playback.subprocess.Popen", popen)
     sink = MpvSink()
     sink.start()
     args, kwargs = calls[0]

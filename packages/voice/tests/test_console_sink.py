@@ -21,10 +21,11 @@ from session_fakes import (
 )
 from voice_fakes import install_gate
 
-from fish_audio_suite_voice.console_sink import ConsoleSink
-from fish_audio_suite_voice.debug import warn
-from fish_audio_suite_voice.duplex import duplex_turns
-from fish_audio_suite_voice.events import (
+from fish_audio_suite_voice.asr.pipeline import HeardLine
+from fish_audio_suite_voice.cli.console_sink import ConsoleSink
+from fish_audio_suite_voice.logutil.debug import warn
+from fish_audio_suite_voice.session.duplex import duplex_turns
+from fish_audio_suite_voice.session.events import (
     EVENTS,
     Bye,
     Event,
@@ -37,9 +38,8 @@ from fish_audio_suite_voice.events import (
     ReplyToken,
     TurnEnded,
 )
-from fish_audio_suite_voice.hearing import HeardLine
-from fish_audio_suite_voice.latency import LatencySnapshot
-from fish_audio_suite_voice.speaker import FishSpeaker
+from fish_audio_suite_voice.session.latency import LatencySnapshot
+from fish_audio_suite_voice.tts.speaker import FishSpeaker
 
 
 def _emit(bus: EventBus, *events: Event) -> None:

@@ -1,0 +1,152 @@
+"""Pull the quoted dialogue out of roleplay text."""
+
+from __future__ import annotations
+
+import re
+from typing import Final
+
+from fish_audio_suite_kit.text._charsets import cjk_latin_counts
+from fish_audio_suite_kit.text._speech_floor import too_little_speech
+from fish_audio_suite_kit.tts.cues import cue_pattern
+
+__all__ = [
+    "extract_quoted_speech",
+]
+
+# A quote whose only content is a [cue] in this window is not speech.
+_CUE_LOOKAHEAD = 24
+# Optional [cue] glued to a quote, so dialogue extraction does not drop the cue. It reads
+# cues up to 80 characters, where the rules in ``cues`` read 200, so a longer bracket
+# before a quote is not carried with it.
+_QUOTE_CUE_CHARS: Final = 80
+_LEAD_CUE = rf"{cue_pattern(_QUOTE_CUE_CHARS)}\s*"
+_LEAD_CUE_RE = re.compile(rf"({_LEAD_CUE})")
+
+# Straight, curly, guillemet, and corner quotes. French uses «…» and German
+# »…«, so either order of angle quotes is a quote. A digit before the mark is
+# inches (5"), not dialogue.
+_ANGLE_QUOTES = "«»‹›〈〉《》"
+_QUOTE_OPEN = '"“「『' + _ANGLE_QUOTES
+_QUOTE_CLOSE = '"”」』' + _ANGLE_QUOTES
+QUOTE_RE = re.compile(f"[{_QUOTE_OPEN}{_QUOTE_CLOSE}]")
+# Each opener and the marks that may close it. A straight or curly quote also
+# closes with the other (models mix them), and the angle quotes close in either
+# direction. A quote of another style inside is part of the speech, so nested
+# dialogue does not split into fragments.
+_QUOTE_PAIRS = (
+    ('"', '"”'),
+    ("“", '”"'),
+    ("「", "」"),
+    ("『", "』"),
+    ("«", "»«"),
+    ("»", "«»"),
+    ("‹", "›‹"),
+    ("›", "‹›"),
+    ("〈", "〉"),
+    ("《", "》"),
+)
+# A closed quote, with an optional cue in front. It may wrap across lines. The
+# body may be empty so that narration around "" is not read as speech. The body
+# also stops at another opener of the same style: an unclosed opener then gives
+# up there instead of scanning to the end of the text, which would make a run of
+# unclosed quotes quadratic. A quote nested in its own style is not dialogue
+# anyway; nesting uses another style (“…「…」…”).
+_DIALOGUE_RE = re.compile(
+    rf"(?:{_LEAD_CUE})?(?<!\d)(?:"
+    + "|".join(
+        f"{re.escape(op)}([^{re.escape(cl + op)}]*){'[' + re.escape(cl) + ']'}"
+        for op, cl in _QUOTE_PAIRS
+    )
+    + ")"
+)
+# A quote opened and not yet closed. Streaming replies arrive this way. The
+# search starts after the last closed quote.
+_OPEN_DIALOGUE_RE = re.compile(
+    rf"(?:{_LEAD_CUE})?"
+    rf"(?<!\d)[{_QUOTE_OPEN}](.+)$",
+    re.DOTALL,
+)
+# Closers stripped from an unclosed quote before the speakable check.
+_CLOSE_QUOTES = '"”」』' + _ANGLE_QUOTES
+
+
+def _speakable_quote(inner: str) -> bool:
+    # A quoted one-letter line and "42" are too thin.
+    if not inner or (inner.startswith("[") and inner.endswith("]")):
+        return False
+    return not too_little_speech(inner)
+
+
+def _quote_body(match: re.Match[str]) -> str:
+    # One group per quote style, and only the one that matched is set.
+    for group in match.groups():
+        if group is not None:
+            return group.strip()
+    return ""
+
+
+def _closed_quotes(text: str) -> tuple[list[str], int]:
+    """Return the speakable closed quotes and where the last closed pair ends."""
+    parts: list[str] = []
+    end = 0
+    for m in _DIALOGUE_RE.finditer(text):
+        end = m.end()
+        if not _speakable_quote(_quote_body(m)):
+            continue
+        chunk = m.group(0).strip()
+        if chunk:
+            parts.append(chunk)
+    return parts, end
+
+
+def _trailing_open_quote(text: str, start: int, *, anchored: bool = False) -> str:
+    """Return the quote still open after ``start``, with its lead cue, or ``""``.
+
+    ``anchored`` requires the quote (after any lead cue) to begin at ``start``.
+    """
+    m = _OPEN_DIALOGUE_RE.match(text, start) if anchored else _OPEN_DIALOGUE_RE.search(text, start)
+    if m is None:
+        return ""
+    inner = (m.group(1) or "").strip().rstrip(_CLOSE_QUOTES).strip()
+    cjk, letters = cjk_latin_counts(inner)
+    cue_only = inner.startswith("[") and "]" in inner[:_CUE_LOOKAHEAD] and letters < 3 and cjk < 2
+    if not inner or too_little_speech(inner) or cue_only:
+        return ""
+    cm = _LEAD_CUE_RE.match(m.group(0))
+    cue = cm.group(1) if cm else ""
+    return f'{cue}"{inner}"'
+
+
+def extract_quoted_speech(text: str) -> str:
+    """Keep quoted dialogue (optional leading ``[cue]``); drop stage notes.
+
+    Parameters
+    ----------
+    text : str
+        A reply that mixes quoted speech with narration.
+
+    Returns
+    -------
+    str
+        The quoted lines joined by spaces. An unclosed trailing quote counts,
+        also after narration or after a quote that did close. Text with no
+        quotes is returned unchanged. A quote that is not speech (a lone cue,
+        one letter, an empty pair) returns empty rather than the narration.
+    """
+    if not text:
+        return ""
+    parts, closed_end = _closed_quotes(text)
+    opened = _trailing_open_quote(text, closed_end)
+    if not parts and not opened:
+        # A reply that opens with a quote holding only a cue name, such as
+        # '"[laughing]" hello there', is still passed through as one open quote.
+        opened = _trailing_open_quote(text.strip(), 0, anchored=True)
+    if opened:
+        parts.append(opened)
+    if parts:
+        return " ".join(parts)
+    # A closed pair that is not speech must not fall through to the stage
+    # direction. A lone inch mark is not a pair, so that sentence stays.
+    if _DIALOGUE_RE.search(text):
+        return ""
+    return text

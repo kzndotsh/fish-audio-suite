@@ -39,7 +39,7 @@ from fishaudio.core import OMIT
 
 from fish_audio_suite_kit import CueStyle, SuiteDefaults, known_latency
 from fish_audio_suite_voice import FileSink, FishSpeaker, TtsTune
-from fish_audio_suite_voice.envfile import load_dotenv
+from fish_audio_suite_voice.config.dotenv import load_dotenv
 
 # ---------------------------------------------------------------------------
 # EDIT THESE. The voices and models the script runs when you pass none.

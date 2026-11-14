@@ -6,9 +6,9 @@ from hypothesis import given
 from hypothesis import strategies as st
 from wire_helpers import RecordingSink, install_fish_audio
 
-from fish_audio_suite_voice.declick import EdgeFade
-from fish_audio_suite_voice.speaker import FishSpeaker
-from fish_audio_suite_voice.tts_tune import TtsTune
+from fish_audio_suite_voice.tts.declick import EdgeFade
+from fish_audio_suite_voice.tts.speaker import FishSpeaker
+from fish_audio_suite_voice.tts.tune import TtsTune
 
 RATE = 44100
 

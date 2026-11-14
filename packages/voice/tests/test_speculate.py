@@ -9,9 +9,9 @@ import pytest
 from session_fakes import FakeBackend, make_ctx
 
 from fish_audio_suite_kit import ChatMessage
-from fish_audio_suite_voice.duplex_state import DuplexContext
-from fish_audio_suite_voice.reply import collect_reply, start_speculation
-from fish_audio_suite_voice.speculate import Speculation
+from fish_audio_suite_voice.llm.reply import collect_reply, start_speculation
+from fish_audio_suite_voice.llm.speculate import Speculation
+from fish_audio_suite_voice.session.state import DuplexContext
 
 ASKED: list[ChatMessage] = [{"role": "user", "content": "hello there"}]
 

@@ -8,20 +8,19 @@ import types
 import pytest
 from voice_fakes import ScriptedMic, install_detector, install_vad, level_frame
 
-from fish_audio_suite_voice.aec import EchoCanceller
-from fish_audio_suite_voice.barge import (
+from fish_audio_suite_voice.asr.result import BargeIn
+from fish_audio_suite_voice.capture.aec import EchoCanceller
+from fish_audio_suite_voice.capture.barge_in import (
     BARGE_MISS_DECAY_FRAMES,
     BargeGate,
     barge_rms_need,
 )
-from fish_audio_suite_voice.cancel import StopFlag
-from fish_audio_suite_voice.listen import (
+from fish_audio_suite_voice.capture.listen import (
     cooldown_report,
     record_utterance,
 )
-from fish_audio_suite_voice.pcm import FRAME_BYTES
-from fish_audio_suite_voice.recognised import BargeIn
-from fish_audio_suite_voice.tune import (
+from fish_audio_suite_voice.capture.pcm import FRAME_BYTES
+from fish_audio_suite_voice.config.tune import (
     DEFAULT_AEC_BLEED_DELAY_S,
     DEFAULT_BARGE_HIT_FRAMES,
     DEFAULT_BARGE_PLAYING_GAIN,
@@ -32,6 +31,7 @@ from fish_audio_suite_voice.tune import (
     BargeTune,
     ListenTune,
 )
+from fish_audio_suite_voice.session.cancel import StopFlag
 
 
 class _RecordingCancel(threading.Event):
@@ -386,7 +386,7 @@ def test_the_bleed_wait_follows_whether_echo_cancellation_runs(
 
 
 def test_a_small_floor_window_still_warms_up() -> None:
-    from fish_audio_suite_voice.floor import AdaptiveFloor
+    from fish_audio_suite_voice.capture.energy_floor import AdaptiveFloor
 
     floor = AdaptiveFloor(100.0, window=10)
     assert floor.value() == 100.0

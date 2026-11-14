@@ -4,8 +4,8 @@ import asyncio
 
 import pytest
 
-from fish_audio_suite_voice.cancel import is_cancel_noise, quiet_shutdown
-from fish_audio_suite_voice.log_setup import configure_voice_logging
+from fish_audio_suite_voice.logutil.setup import configure_voice_logging
+from fish_audio_suite_voice.session.cancel import is_cancel_noise, quiet_shutdown
 
 
 def test_quiet_shutdown_cancels_leftover_tasks() -> None:

@@ -5,20 +5,8 @@ environment readers, the Fish error shape and retry policy, and W3C trace header
 No HTTP client, no audio, no API key. Unofficial. Not affiliated with Fish Audio.
 """
 
-from fish_audio_suite_kit._charsets import (
-    EMPHASIS_MARKS,
-    SENTENCE_AND_CLAUSE_MARKS,
-    SENTENCE_CLOSERS,
-    cut_at_control,
-    fold_line_breaks,
-    is_cjk,
-    is_header_safe,
-    utf8_text,
-)
-from fish_audio_suite_kit._speech_floor import DEFAULT_SHORT_WORDS
-from fish_audio_suite_kit._values import clamp_number, parse_flag, parse_number
 from fish_audio_suite_kit._version import read_version
-from fish_audio_suite_kit.asr_text import (
+from fish_audio_suite_kit.asr.asr_text import (
     DEFAULT_BACKCHANNELS,
     DEFAULT_QUIT_PHRASES,
     CleanTranscript,
@@ -35,36 +23,10 @@ from fish_audio_suite_kit.asr_text import (
     scrub_asr,
     without_watermark_segments,
 )
-from fish_audio_suite_kit.captions import CaptionCue, format_as_srt, format_as_vtt
-from fish_audio_suite_kit.catalog import (
-    FISH_ASR_MODEL_IDS,
-    FISH_TTS_MODEL_IDS,
-    PRO_ASR_MODEL,
-    TTS_RANGES,
-    TtsRanges,
-    chunk_length_hi,
-    known_latency,
-    known_mp3_bitrate,
-    known_opus_bitrate,
-    normalize_tts_model,
-    takes_directions,
-)
-from fish_audio_suite_kit.cue_style import CueMode, CueStyle
-from fish_audio_suite_kit.cues import (
-    CLEAR_CUE,
-    MoodCarry,
-    cue_pattern,
-    ensure_lead_cue,
-    last_emotion,
-    normalize_cues,
-    official_cue,
-    split_cues,
-    strip_cue_tags,
-)
-from fish_audio_suite_kit.cuts import ends_sentence, next_tts_cut, sentence_cuts, split_tts_piece
-from fish_audio_suite_kit.defaults import SuiteDefaults
-from fish_audio_suite_kit.dialogue import extract_quoted_speech
-from fish_audio_suite_kit.env import (
+from fish_audio_suite_kit.asr.captions import CaptionCue, format_as_srt, format_as_vtt
+from fish_audio_suite_kit.asr.turn import TurnJudgement, TurnReason, judge_turn
+from fish_audio_suite_kit.config._values import clamp_number, parse_flag, parse_number
+from fish_audio_suite_kit.config.env import (
     env_base,
     env_bool,
     env_float,
@@ -72,7 +34,7 @@ from fish_audio_suite_kit.env import (
     env_text,
     env_token,
 )
-from fish_audio_suite_kit.http_errors import (
+from fish_audio_suite_kit.http.http_errors import (
     FISH_ASR_PATH,
     FISH_RETRY_ATTEMPTS,
     FISH_TTS_PATH,
@@ -91,8 +53,62 @@ from fish_audio_suite_kit.http_errors import (
     retry_after_s,
     should_retry_fish_status,
 )
-from fish_audio_suite_kit.junk import is_tts_junk
-from fish_audio_suite_kit.literals import (
+from fish_audio_suite_kit.http.trace_context import (
+    ensure_trace_headers,
+    make_traceparent,
+    trace_id_of,
+)
+from fish_audio_suite_kit.http.urls import is_insecure_fish_base, strip_base
+from fish_audio_suite_kit.text._charsets import (
+    EMPHASIS_MARKS,
+    SENTENCE_AND_CLAUSE_MARKS,
+    SENTENCE_CLOSERS,
+    cut_at_control,
+    fold_line_breaks,
+    is_cjk,
+    is_header_safe,
+    utf8_text,
+)
+from fish_audio_suite_kit.text._speech_floor import DEFAULT_SHORT_WORDS
+from fish_audio_suite_kit.text.timing import MS_PER_S, elapsed_ms
+from fish_audio_suite_kit.tts.cue_style import CueMode, CueStyle
+from fish_audio_suite_kit.tts.cues import (
+    CLEAR_CUE,
+    MoodCarry,
+    cue_pattern,
+    ensure_lead_cue,
+    last_emotion,
+    normalize_cues,
+    official_cue,
+    split_cues,
+    strip_cue_tags,
+)
+from fish_audio_suite_kit.tts.cuts import (
+    ends_sentence,
+    next_tts_cut,
+    sentence_cuts,
+    split_tts_piece,
+)
+from fish_audio_suite_kit.tts.dialogue import extract_quoted_speech
+from fish_audio_suite_kit.tts.junk import is_tts_junk
+from fish_audio_suite_kit.tts.prompt import DEFAULT_SEED_EXCHANGE, DEFAULT_SYSTEM_PROMPT
+from fish_audio_suite_kit.tts.scrub_tts import scrub_tts
+from fish_audio_suite_kit.tts.stream_holds import tts_hold_at
+from fish_audio_suite_kit.types.catalog import (
+    FISH_ASR_MODEL_IDS,
+    FISH_TTS_MODEL_IDS,
+    PRO_ASR_MODEL,
+    TTS_RANGES,
+    TtsRanges,
+    chunk_length_hi,
+    known_latency,
+    known_mp3_bitrate,
+    known_opus_bitrate,
+    normalize_tts_model,
+    takes_directions,
+)
+from fish_audio_suite_kit.types.defaults import SuiteDefaults
+from fish_audio_suite_kit.types.literals import (
     AsrFormat,
     AsrModel,
     AudioFormat,
@@ -100,7 +116,7 @@ from fish_audio_suite_kit.literals import (
     FishLatency,
     TtsModel,
 )
-from fish_audio_suite_kit.payloads import (
+from fish_audio_suite_kit.types.payloads import (
     AsrBody,
     AsrSegment,
     AsrWord,
@@ -108,17 +124,6 @@ from fish_audio_suite_kit.payloads import (
     OpenAIErrorBody,
     OpenAIErrorDetail,
 )
-from fish_audio_suite_kit.prompt import DEFAULT_SEED_EXCHANGE, DEFAULT_SYSTEM_PROMPT
-from fish_audio_suite_kit.scrub_tts import scrub_tts
-from fish_audio_suite_kit.stream_holds import tts_hold_at
-from fish_audio_suite_kit.timing import MS_PER_S, elapsed_ms
-from fish_audio_suite_kit.trace_context import (
-    ensure_trace_headers,
-    make_traceparent,
-    trace_id_of,
-)
-from fish_audio_suite_kit.turn import TurnJudgement, TurnReason, judge_turn
-from fish_audio_suite_kit.urls import is_insecure_fish_base, strip_base
 
 __version__ = read_version()
 

@@ -47,7 +47,7 @@ def _root_exports(package: Path) -> frozenset[str]:
 def _imports(path: Path) -> list[tuple[str, int]]:
     """Return ``(module, line)`` for every import in a file, absolute imports only.
 
-    For kit and voice, ``from pkg import name`` also reports ``pkg.name`` when that
+    For kit and voice, ``from pkg.sub import name`` also reports ``pkg.sub.name`` when that
     is a module on disk and the root does not export something of that name, because
     it then loads the submodule just as ``import pkg.name`` does. ``scrub_tts`` is
     both a module and a root function, and the root function wins.
@@ -58,15 +58,21 @@ def _imports(path: Path) -> list[tuple[str, int]]:
             found.extend((alias.name, node.lineno) for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
             found.append((node.module, node.lineno))
-            package = _EXPANDED_ROOTS.get(node.module)
+            root, _, rest = node.module.partition(".")
+            package = _EXPANDED_ROOTS.get(root)
             if package is not None:
+                folder = package.joinpath(*rest.split(".")) if rest else package
+                exports: frozenset[str] = frozenset() if rest else _root_exports(package)
                 found.extend(
                     (f"{node.module}.{alias.name}", node.lineno)
                     for alias in node.names
-                    if (package / f"{alias.name}.py").exists()
-                    and alias.name not in _root_exports(package)
+                    if (folder / f"{alias.name}.py").exists() and alias.name not in exports
                 )
     return found
+
+
+def _in_voice(path: Path) -> str:
+    return path.relative_to(VOICE_SRC).as_posix()
 
 
 def _reads_environment(path: Path) -> list[int]:
@@ -206,40 +212,45 @@ def test_the_nixos_module_default_matches_the_proxy_graceful_shutdown() -> None:
 
 
 def test_voice_reads_the_environment_only_in_its_settings_layer() -> None:
-    """Settings are read through ``env_read``, and only by ``config`` and the tune modules.
+    """Settings are read through ``config.env``, and only by the settings and the tune modules.
 
-    The rest take arguments. ``debug``, ``log_format`` and ``envfile`` are the documented
-    exceptions: the debug level, ``NO_COLOR``, and writing a dotenv file into the environment.
+    The rest take arguments. ``logutil.debug``, ``logutil.format`` and ``config.dotenv`` are the
+    documented exceptions: the debug level, ``NO_COLOR``, and writing a dotenv file into the
+    environment.
     """
-    allowed = {"env_read.py", "debug.py", "log_format.py", "envfile.py"}
+    allowed = {"config/env.py", "logutil/debug.py", "logutil/format.py", "config/dotenv.py"}
     offenders = [
         f"{path.relative_to(ROOT)}:{line}"
         for path in _modules(VOICE_SRC)
-        if path.name not in allowed
+        if _in_voice(path) not in allowed
         for line in _reads_environment(path)
     ]
-    assert not offenders, "read settings through env_read and pass them down:\n" + "\n".join(
+    assert not offenders, "read settings through config.env and pass them down:\n" + "\n".join(
         offenders
     )
-    readers = {"config.py", "tune.py", "llm_tune.py", "tts_tune.py"}
+    readers = {"config/settings.py", "config/tune.py", "llm/tune.py", "tts/tune.py"}
     callers = [
         f"{path.relative_to(ROOT)}:{line}"
         for path in _modules(VOICE_SRC)
-        if path.name not in readers
+        if _in_voice(path) not in readers
         for module, line in _imports(path)
-        if module == "fish_audio_suite_voice.env_read"
+        if module == "fish_audio_suite_voice.config.env"
     ]
-    assert not callers, "only config and the *_tune modules read settings:\n" + "\n".join(callers)
+    assert not callers, "only config.settings and the tune modules read settings:\n" + "\n".join(
+        callers
+    )
 
 
 def test_imports_reports_a_voice_module_loaded_from_the_root(tmp_path: Path) -> None:
-    """``from fish_audio_suite_voice import env_read`` counts as importing ``env_read``."""
+    """``from fish_audio_suite_voice.config import env`` counts as importing ``config.env``."""
     source = tmp_path / "caller.py"
     source.write_text(
-        "from fish_audio_suite_voice import FishSpeaker, env_read\n", encoding="utf-8"
+        "from fish_audio_suite_voice import FishSpeaker\n"
+        "from fish_audio_suite_voice.config import env\n",
+        encoding="utf-8",
     )
     modules = [module for module, _ in _imports(source)]
-    assert "fish_audio_suite_voice.env_read" in modules
+    assert "fish_audio_suite_voice.config.env" in modules
     assert "fish_audio_suite_voice.FishSpeaker" not in modules
 
 
@@ -264,24 +275,24 @@ def _writes_to_the_terminal(path: Path) -> list[int]:
 
 
 def test_the_voice_session_reports_through_events_and_never_writes_to_the_terminal() -> None:
-    """A full-screen display owns the terminal, so session code reports through ``events``.
+    """A full-screen display owns the terminal, so session code reports through ``session.events``.
 
-    Only the plain display, the logging modules, the startup in ``cli`` and the raw
+    Only the plain display, the logging modules, the startup in ``cli.main`` and the raw
     stdout audio sink may write to a stream.
     """
     allowed = {
-        "console_sink.py",
-        "debug.py",
-        "log_format.py",
-        "log_file.py",
-        "log_setup.py",
-        "cli.py",
-        "playback.py",
+        "cli/console_sink.py",
+        "logutil/debug.py",
+        "logutil/format.py",
+        "logutil/file.py",
+        "logutil/setup.py",
+        "cli/main.py",
+        "tts/playback.py",
     }
     offenders = [
         f"{path.relative_to(ROOT)}:{line}"
         for path in _modules(VOICE_SRC)
-        if path.name not in allowed
+        if _in_voice(path) not in allowed
         for line in _writes_to_the_terminal(path)
     ]
     assert not offenders, (
@@ -333,7 +344,11 @@ def test_every_module_sits_in_exactly_one_row_of_its_layers_contract(
     """import-linter checks only the modules a layers contract lists; an unlisted one is free."""
     rows = _layer_rows(contract_id)
     listed = [name for row in rows for name in row]
-    on_disk = sorted(p.stem for p in package.glob("*.py") if p.stem != "__init__")
+    on_disk = sorted(
+        ".".join(p.relative_to(package).with_suffix("").parts)
+        for p in package.rglob("*.py")
+        if p.stem != "__init__" and "__pycache__" not in p.parts
+    )
     missing = [name for name in on_disk if name not in listed]
     twice = sorted({name for name in listed if listed.count(name) > 1})
     gone = sorted(set(listed) - set(on_disk))
