@@ -452,18 +452,18 @@ def test_a_sentence_without_a_cue_gets_the_last_mood_and_a_continued_one_does_no
         carry.apply(piece)
         for piece in (
             "[calm] I can tell. ",
-            "You sound so relaxed. ",
+            "That sounds fine. ",
             "[happy] Just perfect. ",
             "Now, why don't you tell ",  # no sentence ended before it: not a new start
-            "Mommy what you're thinking?",
+            "me what you think?",
         )
     ]
     assert sent == [
         "[calm] I can tell. ",
-        "[calm] You sound so relaxed. ",
+        "[calm] That sounds fine. ",
         "[happy] Just perfect. ",
         "[happy] Now, why don't you tell ",
-        "Mommy what you're thinking?",
+        "me what you think?",
     ]
 
 
