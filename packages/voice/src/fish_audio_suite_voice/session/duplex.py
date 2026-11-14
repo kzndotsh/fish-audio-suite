@@ -282,6 +282,8 @@ async def _apply_commands(ctx: DuplexContext, commands: list[ChatCommand]) -> No
     drop_speculation(chat)
     ctx.turn_input.carry.take_resume()
     for command in commands:
+        if isinstance(command, OpenChat | NewChat):
+            await chat.save()  # the changes so far belong to the chat being left
         await _apply(ctx, command)
     await chat.save()
     EVENTS.emit(chat.shown())

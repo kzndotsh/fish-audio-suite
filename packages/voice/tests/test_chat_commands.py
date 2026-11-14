@@ -249,6 +249,42 @@ def test_a_chat_that_cannot_be_read_is_reported_and_the_current_chat_goes_on(
     assert _dialogue(run.asked[1]) == ["one", "reply 1.", "two"]
 
 
+@pytest.mark.parametrize("switch", ["open", "new"])
+def test_an_edit_made_just_before_a_switch_is_saved_to_the_chat_it_was_made_in(
+    monkeypatch: pytest.MonkeyPatch, saving: VoiceCliConfig, tmp_path: Path, switch: str
+) -> None:
+    other = _saved_chat(tmp_path / "elsewhere", ("earlier", "an old reply."))
+    leave: ChatCommand = OpenChat(other) if switch == "open" else NewChat()
+    run = _Run(saving)
+    run.run(
+        monkeypatch,
+        heard_line("one"),
+        run.change(lambda shown: [EditReply(_ids(shown)[0], "a better reply."), leave]),
+        heard_line("two"),
+    )
+    left = next(chat for chat in list_chats(tmp_path) if chat.title == "one")
+    [turn] = load_chat(left.path).conversation.turns
+    assert turn.reply is not None
+    assert turn.reply.content == "a better reply."
+
+
+def test_a_failed_save_warns_again_for_a_new_chat(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    not_a_folder = tmp_path / "taken"
+    not_a_folder.write_text("", encoding="utf-8")
+    config = replace(quick_config(), chat_dir=not_a_folder)
+    run = _Run(config)
+    run.run(
+        monkeypatch,
+        heard_line("one"),
+        heard_line("two"),
+        run.change(lambda _shown: [NewChat()]),
+        heard_line("three"),
+    )
+    assert capsys.readouterr().err.count("cannot save the chat") == 2
+
+
 def test_a_new_chat_starts_empty_in_a_new_file(
     monkeypatch: pytest.MonkeyPatch, saving: VoiceCliConfig
 ) -> None:

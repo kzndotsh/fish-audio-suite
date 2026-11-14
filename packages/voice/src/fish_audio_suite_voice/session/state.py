@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import httpx
 
@@ -127,10 +128,10 @@ class Chat:
     view: HistoryView
     speculation: Speculation | None = None
     file: ChatFile | None = None
-    _save_failed: bool = field(default=False, repr=False, compare=False)
+    _failed_file: Path | None = field(default=None, repr=False, compare=False)
 
     async def save(self) -> None:
-        """Write the record to its file, off the event loop. A failure only warns, once.
+        """Write the record to its file, off the event loop. A failure warns once per file.
 
         Notes
         -----
@@ -145,8 +146,8 @@ class Chat:
             # A copy, so the loop can go on changing the record while the file is written.
             await asyncio.to_thread(file.save, self.history.copy())
         except OSError as exc:
-            if not self._save_failed:
-                self._save_failed = True
+            if self._failed_file != file.path:
+                self._failed_file = file.path
                 warn(f"fish-voice: cannot save the chat to {file.path}: {exc}")
 
     def shown(self) -> ChatShown:
