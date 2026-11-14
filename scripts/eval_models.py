@@ -2,7 +2,7 @@ r"""Run the same prompts through several chat models and compare how they answer
 
 It sends each prompt to each model through the same backend code `fish-voice` uses
 (the OpenRouter SDK for OpenRouter, the OpenAI-compatible client for everything
-else), with the same system prompt and the same opening example. For every reply
+else), with the same system prompt. For every reply
 it records the time to the first token and the total time, and checks how well the
 reply suits a voice: does it start with a cue, end without one, stay short, and
 avoid markdown and emoji.
@@ -46,11 +46,10 @@ from fish_audio_suite_kit import (
     is_tts_junk,
 )
 from fish_audio_suite_voice.config.dotenv import load_dotenv
-from fish_audio_suite_voice.config.settings import SystemPrompt, prompt_from_file
+from fish_audio_suite_voice.config.settings import prompt_from_file
 from fish_audio_suite_voice.llm.client import open_chat_backend
 from fish_audio_suite_voice.llm.tune import LlmTune
 from fish_audio_suite_voice.logutil.setup import configure_voice_logging
-from fish_audio_suite_voice.session.conversation import Conversation, HistoryView
 
 # ---------------------------------------------------------------------------
 # EDIT THESE. The models and prompts the script runs when you pass none.
@@ -444,7 +443,6 @@ async def evaluate(
     system_prompt: str,
     *,
     runs: int,
-    seed: bool,
     warmup: bool,
     on_run: Callable[[Run], None] | None = None,
 ) -> list[Run]:
@@ -459,11 +457,9 @@ async def evaluate(
     prompts : sequence of str
         The user lines to send.
     system_prompt : str
-        The system prompt, sent with the opening example the app pins.
+        The system prompt.
     runs : int
         Repeats of each prompt on each model.
-    seed : bool
-        Whether to pin the opening example, as ``SystemPrompt.pin_seed`` decides it.
     warmup : bool
         Send one throwaway request per model first, so connection setup is not timed.
     on_run : Callable or None, optional
@@ -483,16 +479,15 @@ async def evaluate(
         if on_run is not None:
             on_run(run)
 
+    system: ChatMessage = {"role": "system", "content": system_prompt}
     for model in models:
         model_tune = replace(tune, model=model)
         if warmup:
-            opening = HistoryView(1).messages(Conversation.opening(system_prompt, seed=seed))
             # Best effort: the real runs report the error if the model is broken.
             with contextlib.suppress(Exception):
-                await _one(model_tune, [*opening, {"role": "user", "content": "Say hi."}])
+                await _one(model_tune, [system, {"role": "user", "content": "Say hi."}])
         for index, prompt in enumerate(prompts):
-            opening = HistoryView(1).messages(Conversation.opening(system_prompt, seed=seed))
-            messages: list[ChatMessage] = [*opening, {"role": "user", "content": prompt}]
+            messages: list[ChatMessage] = [system, {"role": "user", "content": prompt}]
             for run in range(runs):
                 try:
                     text, first, total, cost, provider = await _one(model_tune, messages)
@@ -744,7 +739,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("--runs must be at least 1.", file=sys.stderr)
         return 2
     prompts = read_prompts(args.prompt, args.prompts_file)
-    prompt: SystemPrompt | None = SystemPrompt.written(DEFAULT_SYSTEM_PROMPT)
+    prompt: str | None = DEFAULT_SYSTEM_PROMPT
     if args.system_file is not None:
         prompt = prompt_from_file(str(args.system_file), required=True)
     if prompt is None:
@@ -772,9 +767,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             tune,
             models,
             prompts,
-            prompt.text,
+            prompt,
             runs=args.runs,
-            seed=prompt.pin_seed,
             warmup=args.warmup,
             on_run=None if args.quiet else lambda run: _print_run(run, len(prompts), args.runs),
         )
@@ -800,7 +794,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             }
             args.out.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
         else:
-            args.out.write_text(_markdown(summaries, runs, prompts, prompt.text), encoding="utf-8")
+            args.out.write_text(_markdown(summaries, runs, prompts, prompt), encoding="utf-8")
         print(f"wrote {args.out}", file=sys.stderr)
     return 0 if any(s.ok for s in summaries) else 2
 

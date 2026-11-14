@@ -26,7 +26,6 @@ from voice_fakes import install_gate
 from fish_audio_suite_voice.cli.main import main
 from fish_audio_suite_voice.config.settings import (
     DEFAULT_CHAT_DIR,
-    SystemPrompt,
     VoiceCliConfig,
     load_config,
 )
@@ -179,9 +178,9 @@ def test_resume_refuses_an_ambiguous_or_unknown_prefix(tmp_path: Path) -> None:
         ("[" * 100_000, "cannot read"),  # nested past the parser's recursion limit
         ("[]", "no JSON object"),
         (json.dumps({"version": 2, "id": "a"}), "newer fish-voice"),
-        (json.dumps({"version": 1, "id": "a", "system": "s", "seed": [], "turns": 3}), "turns is"),
+        (json.dumps({"version": 1, "id": "a", "system": "s", "turns": 3}), "turns is"),
         (
-            json.dumps({"version": 1, "id": "a", "system": "s", "seed": [], "turns": []}),
+            json.dumps({"version": 1, "id": "a", "system": "s", "turns": []}),
             "started is",
         ),
     ],
@@ -295,7 +294,7 @@ def _session(
 
 
 def _saving(folder: Path, prompt: str = "be brief") -> VoiceCliConfig:
-    return replace(quick_config(), chat_dir=folder, prompt=SystemPrompt(prompt, pin_seed=False))
+    return replace(quick_config(), chat_dir=folder, prompt=prompt)
 
 
 def test_a_session_saves_each_turn_it_records(

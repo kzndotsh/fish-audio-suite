@@ -11,7 +11,6 @@ from fishaudio.types import TTSConfig
 from fish_audio_suite_voice.asr.turn_stream import RecogniserSettings
 from fish_audio_suite_voice.cli.wording import with_detail
 from fish_audio_suite_voice.config.settings import (
-    SystemPrompt,
     VoiceCliConfig,
     warn_if_insecure_base,
 )
@@ -39,7 +38,7 @@ def _config(
         tts_model="s2.1-pro",
         tts=TtsTune(latency="balanced", temperature=0.7, top_p=0.7, repetition_penalty=1.2),
         playback="stdout",
-        prompt=SystemPrompt("be brief", pin_seed=True),
+        prompt="be brief",
         device=None,
         llm=llm or LlmTune(base="https://llm.example/v1", api_key=SECRET, model="m"),
     )

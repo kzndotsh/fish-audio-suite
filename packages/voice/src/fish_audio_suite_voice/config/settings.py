@@ -43,7 +43,6 @@ __all__ = [
     "TTS_CUE_MODES",
     "OutputLatency",
     "SinkLatency",
-    "SystemPrompt",
     "TtsCues",
     "VoiceCliConfig",
     "fish_problem",
@@ -90,40 +89,6 @@ _REPEAT_WINDOW = FloatSetting(
 
 
 @dataclass(frozen=True, slots=True)
-class SystemPrompt:
-    """The session's system prompt, and whether the opening exchange is pinned after it.
-
-    Attributes
-    ----------
-    text : str
-        The system prompt.
-    pin_seed : bool
-        Pin the opening exchange that shows several cues. It is pinned for the default
-        prompt and for a character file, which keeps the voice rules. A prompt written
-        out in full is left alone. This is the one place that decides it.
-    """
-
-    text: str
-    pin_seed: bool
-
-    @classmethod
-    def written(cls, text: str) -> SystemPrompt:
-        """Take a prompt written out in full, such as ``FISH_VOICE_SYSTEM_PROMPT``.
-
-        Parameters
-        ----------
-        text : str
-            The whole system prompt.
-
-        Returns
-        -------
-        SystemPrompt
-            Pinned only when it is the default prompt.
-        """
-        return cls(text, pin_seed=text == DEFAULT_SYSTEM_PROMPT)
-
-
-@dataclass(frozen=True, slots=True)
 class VoiceCliConfig:
     """Duplex settings read from the process environment. No YAML.
 
@@ -143,8 +108,8 @@ class VoiceCliConfig:
         Which speech recognition hears the user.
     turn : TurnTune
         The end-of-turn check on the Fish path. Off by default.
-    prompt : SystemPrompt
-        The system prompt, and whether the opening exchange is pinned after it.
+    prompt : str
+        The system prompt.
     hear_tone : bool
         Keep the tone Fish ASR hears in the voice (``[laughter]``) and give the model a short
         note about it for that turn. Experimental, and off by default.
@@ -188,7 +153,7 @@ class VoiceCliConfig:
     fish_asr_language: str
     tts_model: str
     playback: str
-    prompt: SystemPrompt
+    prompt: str
     device: str | None
     output_latency: OutputLatency = "auto"
     asr_model: str = PRO_ASR_MODEL
@@ -460,10 +425,10 @@ def system_prompt_from_file(path: str, default: str) -> str | None:
 
 
 @overload
-def prompt_from_file(path: str, *, required: Literal[True]) -> SystemPrompt | None: ...
+def prompt_from_file(path: str, *, required: Literal[True]) -> str | None: ...
 @overload
-def prompt_from_file(path: str, *, required: Literal[False]) -> SystemPrompt: ...
-def prompt_from_file(path: str, *, required: bool) -> SystemPrompt | None:
+def prompt_from_file(path: str, *, required: Literal[False]) -> str: ...
+def prompt_from_file(path: str, *, required: bool) -> str | None:
     """Build the system prompt from a character file, with the voice rules.
 
     Parameters
@@ -477,16 +442,16 @@ def prompt_from_file(path: str, *, required: bool) -> SystemPrompt | None:
 
     Returns
     -------
-    SystemPrompt or None
-        The file and the voice rules, with the opening exchange pinned.
+    str or None
+        The file and the voice rules.
     """
     composed = system_prompt_from_file(path, DEFAULT_SYSTEM_PROMPT)
-    if composed is not None:
-        return SystemPrompt(composed, pin_seed=True)
-    return None if required else SystemPrompt.written(DEFAULT_SYSTEM_PROMPT)
+    if composed is None and not required:
+        return DEFAULT_SYSTEM_PROMPT
+    return composed
 
 
-def _system_prompt() -> SystemPrompt:
+def _system_prompt() -> str:
     file = read_text(_PROMPT_FILE_ENV)
     # Read as written: a prompt set but blank means "no system prompt", so unlike the other
     # keys a blank value still counts here.
@@ -495,4 +460,4 @@ def _system_prompt() -> SystemPrompt:
         if inline is not None:
             warn(f"fish-voice: {_PROMPT_FILE_ENV} is set, so {_PROMPT_ENV} is ignored")
         return prompt_from_file(file, required=False)
-    return SystemPrompt.written(DEFAULT_SYSTEM_PROMPT if inline is None else inline)
+    return DEFAULT_SYSTEM_PROMPT if inline is None else inline

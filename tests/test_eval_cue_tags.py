@@ -164,7 +164,7 @@ def test_main_reports_what_is_missing_and_fails_when_no_request_worked(
     assert "| `default` | 0/3 |" in capsys.readouterr().out
 
 
-def test_the_seed_flag_pins_the_opening_example_under_a_prompt_file_too(
+def test_each_request_is_the_system_prompt_and_one_user_line(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     seen: list[tuple[str, int]] = []
@@ -179,7 +179,4 @@ def test_the_seed_flag_pins_the_opening_example_under_a_prompt_file_too(
     wide.write_text("Use many cues.", encoding="utf-8")
     args = [str(wide), "-l", "a", "-n", "1", "--model", "m", "--env-file", str(tmp_path / "x")]
     assert eval_cue_tags.main(args) == 0
-    assert dict(seen) == {DEFAULT_SYSTEM_PROMPT: 4, "Use many cues.": 2}  # system, example, line
-    seen.clear()
-    assert eval_cue_tags.main([*args, "--seed"]) == 0
-    assert dict(seen) == {DEFAULT_SYSTEM_PROMPT: 4, "Use many cues.": 4}
+    assert dict(seen) == {DEFAULT_SYSTEM_PROMPT: 2, "Use many cues.": 2}

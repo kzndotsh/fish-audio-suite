@@ -86,7 +86,6 @@ def test_every_model_and_prompt_runs_and_failures_do_not_stop_the_sweep() -> Non
             ["one", "two"],
             "system",
             runs=2,
-            seed=True,
             warmup=True,
         )
     )
@@ -107,7 +106,6 @@ def test_the_summary_counts_only_successful_runs() -> None:
             ["one"],
             "system",
             runs=3,
-            seed=True,
             warmup=False,
         )
     )

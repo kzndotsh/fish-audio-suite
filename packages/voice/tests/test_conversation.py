@@ -8,7 +8,7 @@ import json
 import pytest
 
 from fish_audio_suite_kit import DEFAULT_SYSTEM_PROMPT, ChatMessage
-from fish_audio_suite_voice.config.settings import DEFAULT_HISTORY_TURNS, SystemPrompt
+from fish_audio_suite_voice.config.settings import DEFAULT_HISTORY_TURNS
 from fish_audio_suite_voice.session.conversation import Conversation, HistoryView
 
 HISTORY_TURNS = DEFAULT_HISTORY_TURNS
@@ -157,35 +157,6 @@ def test_an_interrupted_reply_is_marked() -> None:
     assert reply.interrupted
 
 
-def _opening(text: str) -> Conversation:
-    """Open a conversation for a prompt written out in full, as the config decides it."""
-    prompt = SystemPrompt.written(text)
-    return Conversation.opening(prompt.text, seed=prompt.pin_seed)
-
-
-def test_the_default_prompt_starts_with_a_pinned_multi_cue_exchange() -> None:
-    sent = HistoryView(HISTORY_TURNS).messages(_opening(DEFAULT_SYSTEM_PROMPT))
-    assert [m["role"] for m in sent] == ["system", "user", "assistant"]
-    assert sent[2]["content"].count("[") >= 2
-
-
-def test_a_custom_prompt_gets_no_seed_exchange() -> None:
-    sent = HistoryView(HISTORY_TURNS).messages(_opening("You are a pirate."))
-    assert sent == [{"role": "system", "content": "You are a pirate."}]
-
-
-def test_dropping_turns_never_drops_the_pinned_seed() -> None:
-    conversation = _opening(DEFAULT_SYSTEM_PROMPT)
-    view = HistoryView(3)
-    opening = view.messages(conversation)
-    for index in range(30):
-        _talk(conversation, (f"question {index}", f"[calm] answer {index}"))
-    sent = view.messages(conversation)
-    assert sent[: len(opening)] == opening
-    assert len(sent) == len(opening) + 3 * 2
-    assert sent[-2]["content"] == "question 29"
-
-
 def test_a_hidden_turn_stays_in_the_record_but_is_not_sent() -> None:
     conversation = _talk(Conversation("s"), ("one", "first"), ("two", "second"), ("three", "third"))
     view = HistoryView(HISTORY_TURNS)
@@ -292,7 +263,9 @@ def test_turn_ids_are_unique_and_survive_edits() -> None:
 
 
 def test_the_record_round_trips_through_json() -> None:
-    conversation = _talk(_opening(DEFAULT_SYSTEM_PROMPT), ("one", "[calm] first"), ("two", None))
+    conversation = _talk(
+        Conversation(DEFAULT_SYSTEM_PROMPT), ("one", "[calm] first"), ("two", None)
+    )
     conversation.add_reply("Half", interrupted=True)
     conversation.edit_reply(conversation.turns[0].id, "first, edited")
     conversation.set_hidden(conversation.turns[1].id, hidden=True)
@@ -301,6 +274,13 @@ def test_the_record_round_trips_through_json() -> None:
     assert back == conversation
     view = HistoryView(HISTORY_TURNS)
     assert view.messages(back) == view.messages(conversation)
+
+
+def test_a_chat_saved_with_the_old_opening_example_loads_without_it() -> None:
+    saved = {**Conversation("s").to_json(), "seed": [["Hi there!", "[happy] Oh, hey."]]}
+    assert HistoryView(HISTORY_TURNS).messages(Conversation.from_json(saved)) == [
+        {"role": "system", "content": "s"}
+    ]
 
 
 def test_json_names_its_schema_version() -> None:
@@ -362,11 +342,10 @@ def test_older_replies_lose_their_cues_when_the_setting_says_so() -> None:
     ]
 
 
-def test_every_reply_keeps_its_cues_by_default_and_the_seed_always_does() -> None:
-    conversation = _talk(_opening(DEFAULT_SYSTEM_PROMPT), ("one", "[calm] First."))
+def test_every_reply_keeps_its_cues_by_default() -> None:
+    conversation = _talk(Conversation("s"), ("one", "[calm] First."))
     assert _contents(HistoryView(HISTORY_TURNS).messages(conversation))[-1] == "[calm] First."
     sent = HistoryView(HISTORY_TURNS, cue_turns=0).messages(conversation)
-    assert sent[2]["content"].count("[") >= 2  # the pinned example is how cues are taught
     assert sent[-1]["content"] == "First."
 
 
@@ -389,10 +368,9 @@ def test_the_id_is_kept_by_a_copy_json_and_a_reopened_record() -> None:
     conversation = _talk(Conversation("old prompt"), ("one", "First."))
     assert conversation.copy().id == conversation.id
     assert Conversation.from_json(conversation.to_json()).id == conversation.id
-    reopened = conversation.reopened(DEFAULT_SYSTEM_PROMPT, seed=True)
+    reopened = conversation.reopened(DEFAULT_SYSTEM_PROMPT)
     assert (reopened.id, reopened.turns) == (conversation.id, conversation.turns)
     assert reopened.system == DEFAULT_SYSTEM_PROMPT
-    assert reopened.seed  # the seed follows the prompt set now
     assert Conversation("s").id != Conversation("s").id
 
 

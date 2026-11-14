@@ -4,10 +4,10 @@
 the part the user heard, and the user's edits. It converts to and from plain JSON. Turns
 can be edited, hidden, deleted, and each change undone.
 
-``HistoryView`` builds the request from it: the system prompt, the pinned opening exchange,
-then the last visible turns with edits applied. It drops old turns in blocks, so the start
-of the prompt stays the same over several turns, and it can strip the cues from older
-replies, because the model copies the cues it sees in its own history.
+``HistoryView`` builds the request from it: the system prompt, then the last visible turns
+with edits applied. It drops old turns in blocks, so the start of the prompt stays the
+same over several turns, and it can strip the cues from older replies, because the model
+copies the cues it sees in its own history.
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ from dataclasses import dataclass, field
 from typing import Final, Self
 
 from fish_audio_suite_kit import (
-    DEFAULT_SEED_EXCHANGE,
     ChatMessage,
     is_same_utterance,
     strip_cue_tags,
@@ -100,14 +99,12 @@ class _Undo:
 
 @dataclass(slots=True)
 class Conversation:
-    """A session's conversation: the prompt, the pinned opening exchange, and every turn.
+    """A session's conversation: the prompt and every turn.
 
     Attributes
     ----------
     system : str
         The system prompt.
-    seed : tuple of (str, str)
-        The opening user and assistant exchange pinned after the system prompt.
     turns : list of Turn
         Every turn, oldest first, hidden ones included. ``HistoryView`` decides which the
         model is sent.
@@ -122,32 +119,9 @@ class Conversation:
     """
 
     system: str
-    seed: tuple[tuple[str, str], ...] = ()
     turns: list[Turn] = field(default_factory=list[Turn])
     id: str = field(default_factory=lambda: uuid.uuid4().hex, kw_only=True)
     _undo: list[_Undo] = field(default_factory=list[_Undo], repr=False, compare=False)
-
-    @classmethod
-    def opening(cls, system_prompt: str, *, seed: bool) -> Self:
-        """Start a session's conversation.
-
-        Parameters
-        ----------
-        system_prompt : str
-            The system prompt for this session.
-        seed : bool
-            Pin one opening exchange with cues after the system message, because the model
-            copies the pattern of the replies it sees.
-            ``config.settings.SystemPrompt.pin_seed`` decides it: the default prompt and a
-            character file (which keeps the voice rules) get it, and a prompt written out in
-            full does not, so it stays in control of how the model replies.
-
-        Returns
-        -------
-        Conversation
-            No turns yet.
-        """
-        return cls(system_prompt, DEFAULT_SEED_EXCHANGE if seed else ())
 
     def copy(self) -> Conversation:
         """Return a copy whose turns can change without touching this one.
@@ -158,25 +132,22 @@ class Conversation:
             The same id and turns, which are immutable, in a new list, with no undo
             history.
         """
-        return Conversation(self.system, self.seed, list(self.turns), id=self.id)
+        return Conversation(self.system, list(self.turns), id=self.id)
 
-    def reopened(self, system_prompt: str, *, seed: bool) -> Conversation:
+    def reopened(self, system_prompt: str) -> Conversation:
         """Return this record under another system prompt, to go on with a saved chat.
 
         Parameters
         ----------
         system_prompt : str
             The prompt the session runs with now, which may differ from the saved one.
-        seed : bool
-            Pin the opening exchange, as in ``opening``.
 
         Returns
         -------
         Conversation
-            The same id and turns, the given prompt and seed, and no undo history.
+            The same id and turns, the given prompt, and no undo history.
         """
-        fresh = Conversation.opening(system_prompt, seed=seed)
-        return Conversation(fresh.system, fresh.seed, list(self.turns), id=self.id)
+        return Conversation(system_prompt, list(self.turns), id=self.id)
 
     def last_user(self) -> str:
         """Return the line the next reply answers, or ``""`` when the last turn has a reply."""
@@ -306,14 +277,12 @@ class Conversation:
         Returns
         -------
         dict
-            ``version``, ``id``, ``system``, ``seed`` and ``turns``. ``from_json`` reads it
-            back.
+            ``version``, ``id``, ``system`` and ``turns``. ``from_json`` reads it back.
         """
         return {
             "version": SCHEMA_VERSION,
             "id": self.id,
             "system": self.system,
-            "seed": [[user, assistant] for user, assistant in self.seed],
             "turns": [_turn_json(turn) for turn in self.turns],
         }
 
@@ -343,14 +312,13 @@ class Conversation:
             raise ValueError(
                 f"conversation version {data.get('version')!r} is not {SCHEMA_VERSION}"
             )
-        seed = tuple(_pair(item) for item in _list(data, "seed"))
         turns = [_turn(item) for item in _list(data, "turns")]
         if len({turn.id for turn in turns}) != len(turns):
             raise ValueError("two turns share an id")
         record_id = _str(data, "id")
         if not record_id.strip():
             raise ValueError("the conversation id is blank")
-        return cls(_str(data, "system"), seed, turns, id=record_id)
+        return cls(_str(data, "system"), turns, id=record_id)
 
     def _open_turn(self) -> Turn | None:
         # A hidden turn takes no more lines: the user could not see them join it.
@@ -405,14 +373,11 @@ class HistoryView:
         Returns
         -------
         list of ChatMessage
-            The system prompt, the pinned exchange, then the visible turns the cap keeps,
+            The system prompt, then the visible turns the cap keeps,
             with edits applied. Roles alternate: a visible turn with no reply before the
             last one joins its line to the next.
         """
         out: list[ChatMessage] = [{"role": "system", "content": conversation.system}]
-        for user, assistant in conversation.seed:
-            out.append({"role": "user", "content": user})
-            out.append({"role": "assistant", "content": assistant})
         out.extend(self._turn_messages(self.sent(conversation)))
         return _with_tone_hint(out, tone)
 
@@ -511,14 +476,6 @@ def _reply(item: object) -> Reply:
     if edit is not None and not edit.strip():
         raise ValueError("a reply edit is blank: remove it, or hide or delete the turn")
     return Reply(_str(data, "text"), _bool(data, "interrupted"), edit)
-
-
-def _pair(item: object) -> tuple[str, str]:
-    match item:
-        case [str(user), str(assistant)]:
-            return user, assistant
-        case _:
-            raise TypeError(f"a seed exchange is {item!r}, not a user and assistant pair")
 
 
 def _object(item: object, what: str) -> Mapping[str, object]:

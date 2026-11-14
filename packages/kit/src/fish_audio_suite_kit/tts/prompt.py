@@ -1,4 +1,4 @@
-"""The voice loop's default system prompt and the opening exchange pinned under it.
+"""The voice loop's default system prompt.
 
 The cue words the prompt offers come from the cue tables in ``cues``, so a cue added
 there reaches the prompt and the prompt never names a cue the normalizer drops.
@@ -11,7 +11,6 @@ from typing import Final
 from fish_audio_suite_kit.tts.cues import FISH_BREAKS, FISH_EMOTIONS
 
 __all__ = [
-    "DEFAULT_SEED_EXCHANGE",
     "DEFAULT_SYSTEM_PROMPT",
 ]
 
@@ -56,16 +55,4 @@ DEFAULT_SYSTEM_PROMPT: Final = (
     "middle of a sentence, never beside a period, question mark or exclamation mark, and most "
     "replies need none. A whisper only if the user asks you to whisper. "
     "Write for the ear: no dashes, semicolons or parentheses, just commas and periods. "
-)
-
-# One opening exchange that shows several cues in a reply. In a test on two
-# models a conversation drifted to one cue per reply even though the system
-# prompt asks for more, apparently because the model copies its own earlier
-# replies. With this pinned, the default model went from 1.1 to 2.2 cues per
-# reply and Claude Haiku 4.5 from 1.0 to 1.9.
-DEFAULT_SEED_EXCHANGE: Final[tuple[tuple[str, str], ...]] = (
-    (
-        "Hi there!",
-        "[happy] Oh, hey, it's so good to hear you. [calm] I'm all yours.",
-    ),
 )

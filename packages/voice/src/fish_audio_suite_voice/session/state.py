@@ -297,23 +297,21 @@ def session_context(
         ``output_latency``.
     resumed : SavedChat or None, optional
         A saved chat to go on with. Its turns and id are kept, and so is its file, which
-        the session keeps writing to. The prompt and seed are the ones in ``config``.
+        the session keeps writing to. The prompt is the one in ``config``.
 
     Returns
     -------
     DuplexContext
-        The context with the opening conversation: the system prompt, the pinned seed
-        exchange when the prompt asks for one, and the resumed turns. The chat has a file
-        when ``config`` saves chats.
+        The context with the opening conversation: the system prompt and the resumed
+        turns. The chat has a file when ``config`` saves chats.
     """
     # One input for the whole session, so nothing is lost between listens. The echo
     # canceller lives with it: the mic cleans every frame and the speaker feeds it.
     mic = open_mic(EchoCanceller(config.aec))
-    prompt = config.prompt
     if resumed is None:
-        history = Conversation.opening(prompt.text, seed=prompt.pin_seed)
+        history = Conversation(config.prompt)
     else:
-        history = resumed.conversation.reopened(prompt.text, seed=prompt.pin_seed)
+        history = resumed.conversation.reopened(config.prompt)
     return DuplexContext(
         config=config,
         device=device,

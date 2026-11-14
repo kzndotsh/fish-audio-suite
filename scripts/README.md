@@ -73,7 +73,7 @@ uv run python scripts/eval_cue_tags.py wide.txt strict.txt -n 5
 uv run python scripts/eval_cue_tags.py wide.txt --model sao10k/l3.1-euryale-70b --out cues.md
 ```
 
-A prompt file is the whole system prompt, used as written (as `FISH_VOICE_SYSTEM_PROMPT` is), so it gets no opening example. The user lines are `LINES` at the top of the script, twelve lines that each call for a different feeling. `-l` and `--lines-file` replace them.
+A prompt file is the whole system prompt, used as written (as `FISH_VOICE_SYSTEM_PROMPT` is). The user lines are `LINES` at the top of the script, twelve lines that each call for a different feeling. `-l` and `--lines-file` replace them.
 
 | Column | Meaning |
 | --- | --- |
@@ -95,7 +95,6 @@ Under the table it lists each prompt's most used cues with their counts.
 | `--model` | The chat model. Default: the one `fish-voice` would use |
 | `--temperature` | Sampling temperature. Default `FISH_LLM_TEMPERATURE` |
 | `-l`, `--lines-file` | User lines, in place of the built-in ones |
-| `--seed` | Pin the app's opening example under every prompt, not only the built-in one. Use it to compare a variant of the built-in prompt like for like |
 | `--no-default` | Leave the built-in prompt out |
 | `--show` | Print each reply as it arrives |
 | `--out` | Write a report: `.md` for the table, `.json` for the stats and every reply |
