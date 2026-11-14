@@ -34,21 +34,25 @@ from fish_audio_suite_voice.tts.speaker import FishSpeaker
 class _Mic:
     """A listen that waits for its stop flag, or returns a scripted result."""
 
-    def __init__(self, result: HeardLine | None = None) -> None:
+    def __init__(
+        self, result: HeardLine | None = None, *, wrapped: HeardLine | None = None
+    ) -> None:
         self.result = result
+        self.wrapped = wrapped or HeardLine("noise")
         self.opened = threading.Event()
         self.stopped = threading.Event()
         self.calls = 0
 
-    async def hear(self, stop: StopFlag) -> HeardLine:
+    async def hear(self, stop: StopFlag, wrap_up: StopFlag) -> HeardLine:
         self.calls += 1
         self.opened.set()
         if self.result is not None:
             return self.result
-        while not stop.is_set():
+        while not stop.is_set() and not wrap_up.is_set():
             await asyncio.to_thread(time.sleep, 0.005)
         self.stopped.set()
-        return HeardLine("noise")
+        # A wrap-up keeps what the recogniser heard; a stop drops it.
+        return self.wrapped if wrap_up.is_set() else HeardLine("noise")
 
     def then(self, *steps: Callable[[], object]) -> threading.Thread:
         """Once the recording is open, run each step in a thread, in order."""
@@ -63,7 +67,7 @@ class _Mic:
         return thread
 
 
-async def _no_listen(_stop: StopFlag) -> HeardLine:
+async def _no_listen(_stop: StopFlag, _wrap_up: StopFlag) -> HeardLine:
     raise AssertionError("the mic was not expected to listen")
 
 
@@ -149,6 +153,16 @@ def test_muting_during_a_recording_stops_it() -> None:
     heard = _turn(source, make_ctx(), mic)
     assert stopped_by_mute == [True]
     assert heard.text == "now typing"
+
+
+def test_muting_after_words_were_heard_answers_them() -> None:
+    mic = _Mic(wrapped=HeardLine("line", text="Hello there."))
+    source = LiveInput()
+    mic.then(source.mute)
+    heard = _turn(source, make_ctx(), mic)
+    assert heard.kind == "line"
+    assert heard.text == "Hello there."
+    assert source.muted  # the mic stays off; only the turn was kept
 
 
 def test_quit_ends_a_muted_wait_and_a_recording() -> None:

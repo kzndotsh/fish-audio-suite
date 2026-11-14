@@ -24,8 +24,12 @@ __all__ = [
     "TurnSource",
 ]
 
-type Hear = Callable[[StopFlag], Awaitable[HeardLine]]
-"""Listen for one turn with the mic, stopping early when the flag is set."""
+type Hear = Callable[[StopFlag, StopFlag], Awaitable[HeardLine]]
+"""Listen for one turn with the mic, given two flags.
+
+The first drops what was heard when set; the second ends the turn and keeps the words heard
+so far.
+"""
 
 
 class TurnSource(Protocol):
@@ -88,6 +92,8 @@ class LiveInput:
         self._muted = False
         # Set to stop a recording in progress: a typed line, or a change of mute.
         self._interrupt = threading.Event()
+        # Set by a mute mid-listen: the turn ends there, and words already heard are kept.
+        self._wrap_up = threading.Event()
         # Seen on the first turn, so a typed line can stop the reply in flight and
         # muting can close the device at once.
         self._session: DuplexSession | None = None
@@ -183,7 +189,7 @@ class LiveInput:
 
     def _after_mute(self, muted: bool) -> None:
         if muted:
-            self._interrupt.set()
+            self._wrap_up.set()
             # The session's input stays open between readers, so muting closes it
             # here rather than waiting for the reply in flight to end.
             release = self._mic_release
@@ -272,13 +278,16 @@ class LiveInput:
                 await changed.wait()
                 continue
             self._interrupt.clear()
+            self._wrap_up.clear()
             if self._has_typed() or self._has_commands() or self._muted:
                 continue
-            heard = await hear(self._interrupt)
+            heard = await hear(self._interrupt, self._wrap_up)
             if self._interrupt.is_set() and not quit_requested.is_set():
-                # A typed line or a mute cut the recording short, so what the
-                # mic caught is dropped.
+                # A typed line or a change to the chat cut the recording short, so what
+                # the mic caught is dropped.
                 continue
+            if self._wrap_up.is_set() and heard.kind != "line" and not quit_requested.is_set():
+                continue  # muted before any words came through: wait out the mute
             return heard
 
     def _typed_line(self, turn: TurnInput, text: str) -> HeardLine:

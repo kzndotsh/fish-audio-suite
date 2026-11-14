@@ -148,7 +148,7 @@ class ScriptedTurns:
         if isinstance(step, HeardLine):
             return step
         if isinstance(step, str):
-            return await hear(threading.Event())
+            return await hear(threading.Event(), threading.Event())
         got = step(turn)
         return await got if inspect.isawaitable(got) else got
 

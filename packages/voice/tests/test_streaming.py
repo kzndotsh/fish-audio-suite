@@ -520,6 +520,36 @@ def test_a_knock_or_a_cough_is_dropped_before_anything_is_connected_or_sent() ->
         assert fake.sent == []
 
 
+def test_a_wrap_up_after_words_ends_the_turn_with_them() -> None:
+    wrap_up = threading.Event()
+
+    def answers(total: int) -> list[TurnMessage]:
+        if total == CHUNK:
+            return [TurnUpdate("Hello there.")]
+        if total == CHUNK * 2:
+            wrap_up.set()  # the user mutes once the words are in
+        return []
+
+    fake = _FakeFlux(answers, on_force=[TurnEnded("Hello there.", 0.7, "forced")])
+    result = _run(fake, _mic(6), wrap_up=wrap_up)
+    assert isinstance(result, Transcript)
+    assert result.text == "Hello there."
+    assert fake.forced == 1  # the recogniser was asked to end the turn there
+
+
+def test_a_wrap_up_before_any_words_is_a_stop() -> None:
+    wrap_up = threading.Event()
+
+    def answers(total: int) -> list[TurnMessage]:
+        if total == CHUNK:
+            wrap_up.set()
+        return []
+
+    fake = _FakeFlux(answers)
+    assert _run(fake, _mic(6), wrap_up=wrap_up) == NoTurn("stopped")
+    assert fake.forced == 0
+
+
 def test_stopping_while_the_first_frames_are_held_is_not_noise() -> None:
     stop = threading.Event()
     stop.set()

@@ -239,7 +239,7 @@ uv run --package fish-audio-suite-voice --extra cli --extra tui fish-voice --tui
 | --- | --- |
 | Enter | Send the typed line |
 | Escape | Stop the reply (only while the model is thinking or the reply is playing) |
-| F2 | Mute or unmute the mic. Muted, the mic stays closed: no listening between turns and no barge-in watch during a reply. Typing or Esc still interrupts. Unmuting during a reply applies from the next reply |
+| F2 | Mute or unmute the mic. Muted, the mic stays closed: no listening between turns and no barge-in watch during a reply. Typing or Esc still interrupts. Unmuting during a reply applies from the next reply. Muting while you speak ends your turn there: with a streaming recogniser, words it already heard are answered, and with none heard yet the turn is dropped |
 | Ctrl+O | List the saved chats, to open one or start a new chat. See [Editing the chat](#editing-the-chat) |
 | Tab | Move between the input line, the conversation and the log. The conversation keys below work only while it has focus |
 | Ctrl+Q | Quit |

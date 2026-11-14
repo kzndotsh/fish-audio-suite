@@ -53,7 +53,11 @@ __all__ = ["hear_line"]
 
 
 async def hear_line(
-    ctx: DuplexContext, last_user: str, *, stop: StopFlag | None = None
+    ctx: DuplexContext,
+    last_user: str,
+    *,
+    stop: StopFlag | None = None,
+    wrap_up: StopFlag | None = None,
 ) -> HeardLine:
     """Listen for one turn and return what was heard.
 
@@ -64,8 +68,11 @@ async def hear_line(
     last_user : str
         The previous user line, to drop a stale copy of it.
     stop : StopFlag or None, optional
-        Also ends the recording when set, such as a typed line or mute. The session's quit
-        flag always does.
+        Also ends the recording when set, such as a typed line. The session's quit flag
+        always does.
+    wrap_up : StopFlag or None, optional
+        Ends the turn when set, such as a mute, keeping the words the streaming recogniser
+        has heard so far. On the Fish ASR path it ends the recording like ``stop``.
 
     Returns
     -------
@@ -85,7 +92,7 @@ async def hear_line(
     outcome: Transcript | NoTurn | None = None
     ended = opened
     if recogniser(ctx.config.stt.provider) is not None:
-        streamed = await _hear_streaming(ctx, barge, stopper)
+        streamed = await _hear_streaming(ctx, barge, stopper, wrap_up)
         ended = time.monotonic()
         if isinstance(streamed, StreamFallback):
             # The streaming recogniser failed once speech had started. The batch recogniser
@@ -97,7 +104,9 @@ async def hear_line(
                 mark_turn()
     if outcome is None:
         drop_speculation(ctx.chat)
-        outcome, ended = await _hear_batch(ctx, carried, stopper)
+        outcome, ended = await _hear_batch(
+            ctx, carried, stopper if wrap_up is None else any_of(stopper, wrap_up)
+        )
     line = heard_line(
         outcome,
         Circumstances(
@@ -114,7 +123,9 @@ async def hear_line(
     return line
 
 
-async def _hear_streaming(ctx: DuplexContext, barge: BargeIn | None, stop: StopFlag) -> Recognised:
+async def _hear_streaming(
+    ctx: DuplexContext, barge: BargeIn | None, stop: StopFlag, wrap_up: StopFlag | None
+) -> Recognised:
     """Hear one turn through the streaming recogniser, from the barge-in clip if there is one."""
     eager = ctx.config.stt.eager
     return await stream_turn(
@@ -125,6 +136,7 @@ async def _hear_streaming(ctx: DuplexContext, barge: BargeIn | None, stop: StopF
         mic=ctx.turn_input.mic,
         quit_requested=ctx.turn_input.session.quit_requested,
         stop=stop,
+        wrap_up=wrap_up,
         carried=barge,
         on_eager=functools.partial(start_speculation, ctx.chat) if eager else None,
         on_resumed=functools.partial(drop_speculation, ctx.chat) if eager else None,

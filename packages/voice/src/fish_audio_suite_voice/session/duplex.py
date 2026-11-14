@@ -333,7 +333,7 @@ async def _next_turn(ctx: DuplexContext, source: TurnSource | None, last_user: s
     if source is None:
         return await hear_line(ctx, last_user)
 
-    async def hear(stop: StopFlag) -> HeardLine:
-        return await hear_line(ctx, last_user, stop=stop)
+    async def hear(stop: StopFlag, wrap_up: StopFlag) -> HeardLine:
+        return await hear_line(ctx, last_user, stop=stop, wrap_up=wrap_up)
 
     return await source.next_turn(ctx.turn_input, hear)

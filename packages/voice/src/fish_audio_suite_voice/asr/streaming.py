@@ -366,6 +366,7 @@ async def _stream_until_decided(
     capture: _Capture,
     turn: _Turn,
     tasks: list[asyncio.Task[None]],
+    wrap_up: StopFlag | None = None,
 ) -> bool:
     """Send the speech and read the answer until the turn is decided.
 
@@ -390,9 +391,13 @@ async def _stream_until_decided(
     if reader.done():
         return False
     # The mic side finished first. Either the silence limit was reached, or it was stopped.
-    # At the limit, ask the recogniser to end the turn and give it a moment.
+    # At the limit, ask the recogniser to end the turn and give it a moment. A wrap-up
+    # (the user muted) after words came back ends the turn the same way.
     await sender
     local_end = await capture.pump
+    if not local_end and wrap_up is not None and wrap_up.is_set() and turn.text.strip():
+        debug("stt.wrap_up the mic stopped after {!r}, so the turn ends there", turn.text)
+        local_end = True
     if local_end:
         await stream.force_end_turn()
         with contextlib.suppress(TimeoutError):
@@ -437,6 +442,7 @@ async def stream_turn(
     mic: Mic,
     quit_requested: StopFlag,
     stop: StopFlag,
+    wrap_up: StopFlag | None = None,
     carried: BargeIn | None = None,
     make_stream: Callable[[str, str], TurnStream] | None = None,
     listen_fn: Callable[..., bool] = stream_utterance,
@@ -457,6 +463,9 @@ async def stream_turn(
         Set when the session is ending.
     stop : StopFlag
         Set to end the turn early, such as when a line is typed.
+    wrap_up : StopFlag or None, optional
+        Set to end the turn now and keep the words heard so far, such as on a mute. With
+        no words yet it ends like ``stop``.
     carried : BargeIn or None, optional
         The barge-in clip that interrupted the previous reply. Sent first, and the mic is
         read on from the position after it. None reads from now.
@@ -497,7 +506,7 @@ async def stream_turn(
         listen_fn,
         mic=mic,
         quit_requested=quit_requested,
-        stop=stop,
+        stop=stop if wrap_up is None else any_of(stop, wrap_up),
         carried=carried,
         listen=listen,
     )
@@ -514,7 +523,7 @@ async def stream_turn(
             return quiet
         if (failed := await _connect(stream, capture, carried)) is not None:
             return failed
-        local_end = await _stream_until_decided(stream, capture, turn, tasks)
+        local_end = await _stream_until_decided(stream, capture, turn, tasks, wrap_up)
         capture.decided()
         reader_done = tasks[0].done()
         return _outcome(turn, local_end=local_end, reader_done=reader_done)
