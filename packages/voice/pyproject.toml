@@ -43,9 +43,9 @@ aec = ["pywebrtc-audio>=0.2"]
 tui = ["textual>=8.2.8"]
 # Streaming speech recognition through Deepgram (FISH_VOICE_STT=deepgram). The new asyncio
 # client (websockets.asyncio) starts at 14. Keep the bound equal to the root test group's.
-deepgram = ["websockets>=14"]
+deepgram = ["websockets>=17.4"]
 # Fish's realtime speech to text (FISH_VOICE_STT=fish-realtime), over the same client.
-fish-realtime = ["websockets>=14"]
+fish-realtime = ["websockets>=17.4"]
 cli = [
     "sounddevice>=0.5",
     "webrtcvad-wheels>=2.0.14",
