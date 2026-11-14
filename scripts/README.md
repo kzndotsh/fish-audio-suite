@@ -6,8 +6,7 @@ packages and are not published.
 ## eval_models.py
 
 Sends the same prompts to several chat models and compares how they answer, through
-the same backend code `fish-voice` uses, with the same system prompt and opening
-example. For each reply it records the time to the first token and the total time,
+the same backend code `fish-voice` uses, with the same system prompt. For each reply it records the time to the first token and the total time,
 and checks how well it suits a voice: an opening cue, no trailing cue, a short
 length, no markdown and no emoji. The table also shows what each reply cost and which
 provider served it, as OpenRouter reports them (other servers report no cost, and the
