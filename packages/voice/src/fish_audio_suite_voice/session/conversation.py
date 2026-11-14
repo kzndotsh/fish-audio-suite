@@ -336,8 +336,8 @@ class Conversation:
         TypeError
             When a field is missing or has the wrong type.
         ValueError
-            When the version is not ``SCHEMA_VERSION``, the id is blank, or two turns
-            share an id.
+            When the version is not ``SCHEMA_VERSION``, the id is blank, two turns share
+            an id, or a reply's edit is blank.
         """
         if data.get("version") != SCHEMA_VERSION:
             raise ValueError(
@@ -508,6 +508,8 @@ def _reply(item: object) -> Reply:
     edit = data.get("edit")
     if edit is not None and not isinstance(edit, str):
         raise TypeError(f"reply edit is {type(edit).__name__}, not a string or null")
+    if edit is not None and not edit.strip():
+        raise ValueError("a reply edit is blank: remove it, or hide or delete the turn")
     return Reply(_str(data, "text"), _bool(data, "interrupted"), edit)
 
 
