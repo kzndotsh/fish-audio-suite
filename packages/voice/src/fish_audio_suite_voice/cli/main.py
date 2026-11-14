@@ -277,7 +277,12 @@ async def run_tui(c: VoiceCliConfig, *, debug: DebugLevel, resumed: SavedChat | 
                     f"voice {c.fish_voice_id[:8]}"
                 )
                 app = VoiceApp(
-                    runner, live=live, session=run.session, info=info, chat_dir=c.chat_dir
+                    runner,
+                    live=live,
+                    session=run.session,
+                    info=info,
+                    chat_dir=c.chat_dir,
+                    shape=c.cue_style.shape,
                 )
                 code = await app.run_async()
             finally:

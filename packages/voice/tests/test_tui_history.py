@@ -19,6 +19,7 @@ from textual.pilot import Pilot
 from textual.widgets import Input, OptionList, Static, TextArea
 from voice_fakes import ScriptedMic, install_gate
 
+from fish_audio_suite_kit import CueStyle
 from fish_audio_suite_voice.cli.chat_screens import ChatPicker, EditReplyScreen
 from fish_audio_suite_voice.cli.history_pane import Conversation, TurnRow
 from fish_audio_suite_voice.cli.tui import VoiceApp
@@ -69,7 +70,9 @@ class _SpyInput(LiveInput):
 
 
 class _Harness:
-    def __init__(self, chat_dir: Path | None = None) -> None:
+    def __init__(
+        self, chat_dir: Path | None = None, shape: Callable[[str], str] | None = None
+    ) -> None:
         self.bus = EventBus()
         self.session = DuplexSession()
         self.live = _SpyInput()
@@ -79,6 +82,7 @@ class _Harness:
             session=self.session,
             bus=self.bus,
             chat_dir=chat_dir,
+            shape=shape,
         )
 
     async def _until_quit(self) -> int:
@@ -281,6 +285,23 @@ def test_a_line_in_progress_starts_in_the_same_column_as_a_recorded_turn() -> No
         assert str(live.content) == "you ▸ four"
         # Otherwise the line jumps sideways once its turn is recorded.
         assert live.content_region.x == recorded.content_region.x
+
+    _drive(harness, scenario)
+
+
+def test_a_turn_in_progress_is_laid_out_as_its_recorded_turn_will_be() -> None:
+    harness = _Harness(shape=CueStyle.for_model("drama-3", official=True, lead=False).shape)
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        harness.bus.emit(Heard("hello", 0.0))
+        harness.bus.emit(ReplyToken("happy Hi"))
+        harness.bus.emit(ReplyToken(" there."))
+        await pilot.pause(0.1)
+        you, llm = [child for child in harness.pane.children if isinstance(child, Static)][-2:]
+        # Shown as it is spoken and recorded, cue in brackets, not as the model wrote it.
+        assert str(llm.content) == "llm ▸ [happy] Hi there."
+        # No blank line between the user's line and the reply, as in a recorded turn.
+        assert llm.region.y == you.region.y + you.region.height
 
     _drive(harness, scenario)
 

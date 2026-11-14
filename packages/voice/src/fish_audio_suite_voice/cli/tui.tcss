@@ -84,11 +84,15 @@ Screen {
 #conversation {
     border-subtitle-color: $text-muted;
 
-    /* Every row keeps the column the selection bar uses, so a live line does not shift
-       when its recorded turn takes its place. */
+    /* Every row keeps the column the selection bar uses, and a live "you" line sits right
+       on its reply, so nothing shifts when the recorded turn takes their place. */
     .message {
         padding: 0 1 0 0;
         border-left: blank;
+    }
+
+    .message.you {
+        margin-bottom: 0;
     }
 
     .turn.hidden {

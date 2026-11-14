@@ -128,8 +128,10 @@ class _FakeApp:
         session: DuplexSession,
         info: str = "",
         chat_dir: Path | None = None,
+        shape: Callable[[str], str] | None = None,
     ) -> None:
         self.runner = runner
+        self.shape = shape
         self.live = live
         self.session = session
         self.info = info

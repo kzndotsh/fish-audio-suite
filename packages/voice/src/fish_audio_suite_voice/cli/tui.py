@@ -389,6 +389,10 @@ class VoiceApp(App[int]):
     chat_dir : Path or None, optional
         The folder of saved chats the chat list shows. None lists none, so only a new chat
         can be started.
+    shape : Callable or None, optional
+        Cleans a reply the way it is cleaned before it is spoken (``CueStyle.shape``). The
+        reply is shown that way as it streams, so it reads and wraps as its recorded turn
+        will. None shows the model's text as written.
     """
 
     TITLE: str | None = "fish-voice"
@@ -412,6 +416,7 @@ class VoiceApp(App[int]):
         bus: EventBus = EVENTS,
         info: str = "",
         chat_dir: Path | None = None,
+        shape: Callable[[str], str] | None = None,
     ) -> None:
         super().__init__()
         self._runner = runner
@@ -419,6 +424,7 @@ class VoiceApp(App[int]):
         self._session = session
         self._info = info
         self._chat_dir = chat_dir
+        self._shape = shape
         self._chat_file: Path | None = None
         self._view = SessionView()
         self._wake_pending = threading.Event()
@@ -521,7 +527,8 @@ class VoiceApp(App[int]):
                 conversation.add_user(text)
             case ReplyToken() | ReplyEnd():
                 # The view has already folded the tokens into the reply so far.
-                conversation.show_reply(self._view.reply)
+                reply = self._view.reply
+                conversation.show_reply(self._shape(reply) if self._shape else reply)
             case BargedIn():
                 conversation.add_note("(interrupted)")
             case Notice(text=text):
