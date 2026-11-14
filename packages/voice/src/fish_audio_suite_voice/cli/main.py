@@ -276,7 +276,9 @@ async def run_tui(c: VoiceCliConfig, *, debug: DebugLevel, resumed: SavedChat | 
                     f"{c.llm.provider}:{short_model(c.llm.model)} | tts {c.tts_model} | "
                     f"voice {c.fish_voice_id[:8]}"
                 )
-                app = VoiceApp(runner, live=live, session=run.session, info=info)
+                app = VoiceApp(
+                    runner, live=live, session=run.session, info=info, chat_dir=c.chat_dir
+                )
                 code = await app.run_async()
             finally:
                 sys.setswitchinterval(switch_interval)

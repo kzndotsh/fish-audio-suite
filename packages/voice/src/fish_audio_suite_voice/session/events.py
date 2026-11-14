@@ -12,10 +12,12 @@ from collections import deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import IntEnum, StrEnum
+from pathlib import Path
 from time import monotonic
 from typing import Final, Literal
 
 from fish_audio_suite_voice.logutil.debug import warn
+from fish_audio_suite_voice.session.conversation import Turn
 from fish_audio_suite_voice.session.latency import LatencySnapshot
 
 __all__ = [
@@ -23,6 +25,7 @@ __all__ = [
     "EVENTS",
     "BargedIn",
     "Bye",
+    "ChatShown",
     "Event",
     "EventBus",
     "EventQueue",
@@ -259,6 +262,38 @@ class TurnEnded:
     at: float = field(default_factory=_now, compare=False, kw_only=True)
 
 
+@dataclass(frozen=True, slots=True)
+class ChatShown:
+    """The chat's record as it stands between turns, for a display to draw whole.
+
+    Attributes
+    ----------
+    chat_id : str
+        The conversation's id. A new id means another chat was opened.
+    turns : tuple of Turn
+        Every turn, oldest first, hidden ones included. Turns are immutable, so this is a
+        snapshot the session can go on changing behind.
+    sent : frozenset of str
+        The ids of the turns the next request sends the model. A turn not in it is hidden,
+        or older than ``FISH_VOICE_HISTORY_TURNS`` keeps.
+    file : Path or None
+        Where the chat is saved. None when chats are not saved.
+    at : float
+        ``time.monotonic()`` when the event was made. Not part of equality.
+
+    Notes
+    -----
+    The session sends it when it starts, after each turn is recorded, and after each change
+    the user asks for.
+    """
+
+    chat_id: str
+    turns: tuple[Turn, ...]
+    sent: frozenset[str]
+    file: Path | None = None
+    at: float = field(default_factory=_now, compare=False, kw_only=True)
+
+
 class ExitCode(IntEnum):
     """How a session ended, as the process exit code ``fish-voice`` returns."""
 
@@ -332,6 +367,7 @@ type Event = (
     | LogLine
     | Notice
     | TurnEnded
+    | ChatShown
     | Bye
 )
 

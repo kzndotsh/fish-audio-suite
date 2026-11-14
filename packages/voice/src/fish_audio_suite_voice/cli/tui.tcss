@@ -79,6 +79,63 @@ Screen {
     opacity: 70%;
 }
 
+/* Recorded turns (cli/history_pane.py). A turn the model is not sent is dimmed; the note
+   under it says whether it is hidden or older than the model is sent. */
+#conversation {
+    border-subtitle-color: $text-muted;
+
+    .turn {
+        padding: 0 1 0 0;
+        border-left: blank;
+    }
+
+    .turn.hidden {
+        opacity: 50%;
+    }
+
+    .turn.older {
+        opacity: 75%;
+    }
+
+    &:focus .turn.selected {
+        border-left: thick $primary;
+        background: $boost;
+    }
+}
+
+/* The dialogs (cli/chat_screens.py). */
+EditReplyScreen,
+ChatPicker {
+    align: center middle;
+}
+
+#edit-box,
+#picker-box {
+    width: 80%;
+    max-width: 100;
+    height: auto;
+    max-height: 80%;
+    border: round $primary;
+    border-title-color: $text-primary;
+    background: $surface;
+    padding: 0 1;
+
+    .dialog-hint {
+        color: $text-muted;
+        margin-bottom: 1;
+    }
+}
+
+#edit-text {
+    height: 12;
+}
+
+#chats {
+    height: auto;
+    max-height: 20;
+    border: none;
+}
+
 /* Responsive: the screen carries .narrow, .short or .tiny (see VoiceApp.on_resize). */
 #too-small {
     display: none;

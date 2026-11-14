@@ -43,6 +43,7 @@ from fish_audio_suite_voice.session.events import (
     EVENTS,
     BargedIn,
     Bye,
+    ChatShown,
     Event,
     EventBus,
     EventQueue,
@@ -152,7 +153,15 @@ def test_a_turn_reports_the_reply_as_it_streams_then_the_timings_then_bye(
     speak_with_fakes(monkeypatch, tts)
     source = ScriptedTurns(heard_line("hi there"))
     assert run_session(quick_config(), tts, hello_tokens, source=source) == 0
-    assert [type(e) for e in seen] == [ReplyToken, ReplyToken, ReplyEnd, TurnEnded, Bye]
+    assert [type(e) for e in seen] == [
+        ChatShown,
+        ReplyToken,
+        ReplyToken,
+        ReplyEnd,
+        TurnEnded,
+        ChatShown,
+        Bye,
+    ]
     assert [e.text for e in seen if isinstance(e, ReplyToken)] == ["Hello ", "there friend."]
     assert ReplyEnd("Hello there friend.") in seen
     ended = next(e for e in seen if isinstance(e, TurnEnded))
@@ -411,6 +420,7 @@ _ONE_OF_EACH: tuple[Event, ...] = (
     LogLine("DEBUG", "tts", "x"),
     Notice("x"),
     TurnEnded(LatencySnapshot()),
+    ChatShown("chat", (), frozenset()),
     Bye(),
 )
 

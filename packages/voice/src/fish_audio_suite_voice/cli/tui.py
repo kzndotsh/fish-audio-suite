@@ -1,35 +1,38 @@
 """The full-screen terminal app for ``fish-voice``, built on Textual.
 
 It follows a session through its events, shows it as one ``SessionView``, and drives it
-with typed lines, mute and interrupt. It owns no audio or network code: the session runs
-as a worker and reports through ``session.events``, so everything here happens on the app's own
-thread.
+with typed lines, mute, interrupt and changes to the chat. It owns no audio or network code:
+the session runs as a worker and reports through ``session.events``, so everything here
+happens on the app's own thread. The conversation pane is ``cli.history_pane`` and the
+dialogs are ``cli.chat_screens``.
 """
 
 from __future__ import annotations
 
-import math
 import threading
 import time
-import unicodedata
 from collections import deque
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
-from typing import Any, ClassVar
+from pathlib import Path
+from typing import ClassVar
 
+from textual.actions import SkipAction
 from textual.app import App, ComposeResult, RenderResult
 from textual.binding import Binding, BindingType
-from textual.containers import Horizontal, Vertical, VerticalGroup, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalGroup
 from textual.content import Content
 from textual.events import Resize
 from textual.message import Message
+from textual.screen import ModalScreen, Screen
 from textual.timer import Timer
 from textual.types import CSSPathType
 from textual.widget import Widget
 from textual.widgets import Footer, Header, Input, Log, Static
 from textual.worker import Worker, WorkerState
 
-from fish_audio_suite_kit import split_cues
+from fish_audio_suite_voice.cli.chat_screens import ChatPicker
+from fish_audio_suite_voice.cli.history_pane import Conversation, printable
 from fish_audio_suite_voice.cli.session_view import (
     Ballistics,
     SessionView,
@@ -40,11 +43,13 @@ from fish_audio_suite_voice.cli.session_view import (
     turn_timings,
     wave_dots,
 )
+from fish_audio_suite_voice.session.commands import ChatCommand
 from fish_audio_suite_voice.session.events import (
     DEFAULT_KEYS,
     EVENTS,
     BargedIn,
     Bye,
+    ChatShown,
     Event,
     EventBus,
     EventQueue,
@@ -91,28 +96,8 @@ _QUIT_GRACE_S = 3.0
 _NARROW_BELOW = 72  # columns: under this the side column keeps only the state and the mic
 _SHORT_BELOW = 22  # rows: under this the timings panel goes too
 _MIN_SIZE = (50, 14)  # under this nothing fits, so the app says so and keeps quit working
-_HEARING_HOLD_S = 3.0  # how long "you" keeps pulsing after the last loud moment, with no transcript
-_HEARING_TICK_S = 0.1
-_PULSE_CELLS = 5  # characters wide, two bars each
 _NO_TURNS = "no turns yet"
-
-
-def _printable(text: str) -> str:
-    """Return ``text`` without control characters, which would reach the terminal as escapes.
-
-    Replies, transcripts and log lines are untrusted: an ESC in one could clear the screen
-    or retitle the window. A newline and a tab are kept.
-    """
-    return "".join(ch for ch in text if ch in "\n\t" or unicodedata.category(ch) != "Cc")
-
-
-def _cue_content(text: str) -> Content:
-    """Return ``text`` as content with each ``[cue]`` styled and nothing read as markup."""
-    parts: list[tuple[str, str] | str] = [
-        (piece, "italic $text-accent") if is_cue else piece
-        for piece, is_cue in split_cues(_printable(text))
-    ]
-    return Content.assemble(*parts)
+_CHATS_KEY = "ctrl+o"  # a control key, so it works while typing; Ctrl+O reaches the app in raw mode
 
 
 class Waveform(Widget):
@@ -384,114 +369,6 @@ def _legend_parts(
     return parts
 
 
-class Conversation(VerticalScroll):
-    """The conversation: what you said, the reply as it streams in, and short notes.
-
-    The app tells it what happened and it keeps the rest to itself, including which
-    widget is the reply being written, so the app holds no widget state for it.
-    """
-
-    BORDER_TITLE: ClassVar[str] = "conversation"
-
-    def __init__(self, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-        self._reply: Static | None = None
-        self._pending: Static | None = None
-        self._words = ""
-        self._pulse: Timer | None = None
-        self._expiry: Timer | None = None
-        self._phase = 0
-
-    def show_hearing(self) -> None:
-        """Show that the user is speaking: a pulsing "you" line, until the words arrive.
-
-        Call it on every loud moment. The line is added on the first call, and goes away
-        by itself if no words follow, as after a cough.
-        """
-        if self._pending is None:
-            self._phase = 0
-            self._pending = self._add("you pending", self._pulse_content())
-            if self.app.animation_level != "none":  # Textual's reduced-motion setting
-                self._pulse = self.set_interval(_HEARING_TICK_S, self._advance_pulse)
-            self.scroll_end(animate=False)
-        if self._expiry is not None:
-            self._expiry.stop()
-        self._expiry = self.set_timer(_HEARING_HOLD_S, self._drop_pending)
-
-    def show_words(self, text: str) -> None:
-        """Show what the user has said so far, on the line that is about to become their words.
-
-        Parameters
-        ----------
-        text : str
-            Everything recognised in the turn up to now. Each call replaces the last.
-        """
-        self._words = _printable(text).strip()
-        self.show_hearing()
-        if self._pending is not None:
-            self._pending.update(self._pulse_content())
-
-    def _pulse_content(self) -> Content:
-        levels = [(math.sin(self._phase * 0.7 + i * 0.6) + 1) / 2 for i in range(_PULSE_CELLS * 2)]
-        (dots,) = wave_dots(levels, 1)
-        label = ("you ▸ ", "bold $text-primary")
-        if self._words:
-            return Content.assemble(label, (dots, "$text-success"), " ", self._words)
-        return Content.assemble(label, (dots, "$text-success"))
-
-    def _advance_pulse(self) -> None:
-        if self._pending is not None:
-            self._phase += 1
-            self._pending.update(self._pulse_content())
-
-    def _stop_pending(self) -> Static | None:
-        pending, self._pending = self._pending, None
-        self._words = ""
-        for timer in (self._pulse, self._expiry):
-            if timer is not None:
-                timer.stop()
-        self._pulse = self._expiry = None
-        return pending
-
-    def _drop_pending(self) -> None:
-        pending = self._stop_pending()
-        if pending is not None:
-            pending.remove()
-
-    def add_user(self, text: str) -> None:
-        """Add a line the user said or typed. The reply that follows starts fresh.
-
-        If the "you" line was pulsing, it becomes this line where it stands.
-        """
-        self._reply = None
-        content = Content.assemble(("you ▸ ", "bold $text-primary"), _printable(text))
-        pending = self._stop_pending()
-        if pending is None:
-            self._add("you", content)
-        else:
-            pending.remove_class("pending")
-            pending.update(content)
-
-    def add_note(self, text: str) -> None:
-        """Add a dim status line, such as a retry or an interruption."""
-        self._add("note", Content.assemble((_printable(text), "dim")))
-
-    def show_reply(self, text: str) -> None:
-        """Show the reply so far, adding its line on the first call and updating it after."""
-        if self._reply is None and not text:
-            return
-        content = Content.assemble(("llm ▸ ", "bold $text-accent"), _cue_content(text))
-        if self._reply is None:
-            self._reply = self._add("llm", content)
-        else:
-            self._reply.update(content)
-
-    def _add(self, role: str, content: Content) -> Static:
-        message = Static(content, classes=f"message {role}")
-        self.mount(message)
-        return message
-
-
 class VoiceApp(App[int]):
     """Conversation, status, mic meter, timings and log of one ``fish-voice`` session.
 
@@ -501,13 +378,17 @@ class VoiceApp(App[int]):
         Runs the session and returns its exit code. It is started as a worker once the
         screen is up and should report through ``bus``.
     live : LiveInput
-        The turn source the session uses. Typed lines, mute and interrupt go to it.
+        The turn source the session uses. Typed lines, mute, interrupt and changes to the
+        chat go to it.
     session : DuplexSession
         The running session, so quit can stop it cleanly.
     bus : EventBus, optional
         Where the session reports. The session-wide ``EVENTS`` by default.
     info : str, optional
         What to show next to the title, such as the model and voice.
+    chat_dir : Path or None, optional
+        The folder of saved chats the chat list shows. None lists none, so only a new chat
+        can be started.
     """
 
     TITLE: str | None = "fish-voice"
@@ -516,6 +397,7 @@ class VoiceApp(App[int]):
         Binding(DEFAULT_KEYS[SessionAction.INTERRUPT], "interrupt", "Stop", priority=True),
         Binding(DEFAULT_KEYS[SessionAction.MUTE], "toggle_mute", "Mute", priority=True),
         Binding(DEFAULT_KEYS[SessionAction.QUIT], "quit_session", "Quit", priority=True),
+        Binding(_CHATS_KEY, "chats", "Chats", priority=True),
     ]
 
     class Wake(Message):
@@ -529,12 +411,15 @@ class VoiceApp(App[int]):
         session: DuplexSession,
         bus: EventBus = EVENTS,
         info: str = "",
+        chat_dir: Path | None = None,
     ) -> None:
         super().__init__()
         self._runner = runner
         self._live = live
         self._session = session
         self._info = info
+        self._chat_dir = chat_dir
+        self._chat_file: Path | None = None
         self._view = SessionView()
         self._wake_pending = threading.Event()
         # Subscribed now, so nothing the session says before the screen is up is lost.
@@ -549,7 +434,7 @@ class VoiceApp(App[int]):
         """Lay out the conversation, the side panels, the input line and the footer."""
         yield Header()
         with Horizontal(id="body"):
-            yield Conversation(id="conversation")
+            yield Conversation(id="conversation", send=self._live.send)
             with Vertical(id="side"):
                 with VerticalGroup(id="status-box") as status_box:
                     status_box.border_title = "state"
@@ -571,13 +456,13 @@ class VoiceApp(App[int]):
             f"Terminal too small. Make it at least {_MIN_SIZE[0]}x{_MIN_SIZE[1]}, or Ctrl+Q to quit.",
             id="too-small",
         )
-        yield Input(placeholder="type a line and press Enter", id="line")
+        yield Input(placeholder="type a line and press Enter · Tab to edit the chat", id="line")
         yield Footer()
 
     def on_resize(self, event: Resize) -> None:
         """Drop the secondary panels as the terminal shrinks, and say so when nothing fits."""
         width, height = event.size
-        screen = self.screen
+        screen = self._main
         screen.set_class(width < _NARROW_BELOW, "narrow")
         screen.set_class(height < _SHORT_BELOW, "short")
         screen.set_class(width < _MIN_SIZE[0] or height < _MIN_SIZE[1], "tiny")
@@ -592,6 +477,11 @@ class VoiceApp(App[int]):
     async def _run(self) -> int:
         return await self._runner()
 
+    @property
+    def _main(self) -> Screen[object]:
+        # The screen under any dialog: a query from the app looks only at the top screen.
+        return self.screen_stack[0]
+
     def _wake(self) -> None:
         # Called from whichever thread emitted the event. One message at a time is
         # enough: the handler drains everything that arrived.
@@ -605,23 +495,23 @@ class VoiceApp(App[int]):
         self._apply(self._queue.drain())
 
     def _apply(self, events: list[Event]) -> None:
-        conversation = next(iter(self.query(Conversation)), None)
+        stack = self.screen_stack
+        conversation = next(iter(stack[0].query(Conversation)), None) if stack else None
         if conversation is None or not conversation.is_attached:
             return  # the screen is already gone: a wake that arrived while the app was closing
         for event in events:
             self._view = reduce_view(self._view, event)
-            self._side_effects(event)
+            self._side_effects(event, conversation)
         if events:
             self._render_view()
-            self.query_one(Conversation).scroll_end(animate=False)
+            conversation.follow()
 
-    def _side_effects(self, event: Event) -> None:
-        conversation = self.query_one(Conversation)
+    def _side_effects(self, event: Event, conversation: Conversation) -> None:
         speaking = self._view.state is SessionState.SPEAKING
         if isinstance(event, MicLevel) and not speaking:
-            self.query_one(Waveform).push(0.0 if self._live.muted else event.rms, event.need)
+            self._main.query_one(Waveform).push(0.0 if self._live.muted else event.rms, event.need)
         elif isinstance(event, OutputLevel) and speaking:
-            self.query_one(Waveform).push_speaker(event.rms)
+            self._main.query_one(Waveform).push_speaker(event.rms)
         match event:
             case MicLevel(rms=rms, need=need, source="listen") if rms >= need > 0.0:
                 conversation.show_hearing()
@@ -636,8 +526,13 @@ class VoiceApp(App[int]):
                 conversation.add_note("(interrupted)")
             case Notice(text=text):
                 conversation.add_note(text)
+            case ChatShown(file=file):
+                self._chat_file = file
+                conversation.show_record(event)
             case LogLine(level=level, tag=tag, text=text):
-                self.query_one("#log", Log).write_line(_printable(f"{level[:1]} {tag:<6} {text}"))
+                self._main.query_one("#log", Log).write_line(
+                    printable(f"{level[:1]} {tag:<6} {text}")
+                )
             case Bye(code=code):
                 self._on_bye(code)
             case _:
@@ -656,7 +551,8 @@ class VoiceApp(App[int]):
 
     def _render_view(self) -> None:
         view = self._view
-        status = self.query_one("#status", Static)
+        main = self._main
+        status = main.query_one("#status", Static)
         label = view.state.value
         if self._live.muted:
             label += " · muted"
@@ -664,10 +560,10 @@ class VoiceApp(App[int]):
             label = f"ended (code {self._exit_code()})"
         status.update(Content(label))
         status.set_classes("ended" if self._ended else f"state-{view.state.value}")
-        self.query_one(Waveform).set_mood(self._wave_mood(view))
+        main.query_one(Waveform).set_mood(self._wave_mood(view))
         speaking = view.state is SessionState.SPEAKING and not self._ended
-        self.query_one("#mic-box").border_title = "speaker" if speaking else "mic"
-        self.query_one(Timings).show(view.last_turn)
+        main.query_one("#mic-box").border_title = "speaker" if speaking else "mic"
+        main.query_one(Timings).show(view.last_turn)
         self.refresh_bindings()
 
     def _wave_mood(self, view: SessionView) -> str:
@@ -695,8 +591,27 @@ class VoiceApp(App[int]):
         event.input.value = ""
 
     def action_interrupt(self) -> None:
-        """Stop the reply that is playing."""
+        """Stop the reply that is playing, or let a dialog have Escape to close it.
+
+        Raises
+        ------
+        SkipAction
+            While a dialog is open, so the key goes on to it.
+        """
+        if isinstance(self.screen, ModalScreen):
+            raise SkipAction
         self._live.stop_reply()
+
+    def action_chats(self) -> None:
+        """Open the list of saved chats, to go on with one or start a new one."""
+        if isinstance(self.screen, ModalScreen):
+            return
+
+        def chosen(command: ChatCommand | None) -> None:
+            if command is not None:
+                self._live.send(command)
+
+        self.push_screen(ChatPicker(self._chat_dir, self._chat_file), chosen)
 
     def action_toggle_mute(self) -> None:
         """Mute or unmute the mic."""
@@ -716,7 +631,9 @@ class VoiceApp(App[int]):
         """Show a session that stopped with an error, or leave when it ended normally."""
         if event.state is WorkerState.ERROR:
             self._view = replace(self._view, exit_code=ExitCode.CRASH)
-            self.query_one(Conversation).add_note(f"the session stopped: {event.worker.error!r}")
+            self._main.query_one(Conversation).add_note(
+                f"the session stopped: {event.worker.error!r}"
+            )
             self._render_view()
         elif event.state is WorkerState.SUCCESS and not self._ended:
             self.exit(int(event.worker.result or ExitCode.OK))

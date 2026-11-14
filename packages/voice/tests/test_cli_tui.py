@@ -7,6 +7,7 @@ import gc
 import sys
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -126,11 +127,13 @@ class _FakeApp:
         live: LiveInput,
         session: DuplexSession,
         info: str = "",
+        chat_dir: Path | None = None,
     ) -> None:
         self.runner = runner
         self.live = live
         self.session = session
         self.info = info
+        self.chat_dir = chat_dir
         self.code: int | None = 0
         self.switch_interval = 0.0
         self.gc_threshold = (0, 0, 0)

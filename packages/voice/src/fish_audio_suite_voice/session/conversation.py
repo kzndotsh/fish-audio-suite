@@ -413,10 +413,25 @@ class HistoryView:
         for user, assistant in conversation.seed:
             out.append({"role": "user", "content": user})
             out.append({"role": "assistant", "content": assistant})
-        visible = [turn for turn in conversation.turns if not turn.hidden]
-        kept = visible[_window_start(len(visible), self.turns) :]
-        out.extend(self._turn_messages(kept))
+        out.extend(self._turn_messages(self.sent(conversation)))
         return _with_tone_hint(out, tone)
+
+    def sent(self, conversation: Conversation) -> list[Turn]:
+        """Return the turns a request sends the model, oldest first.
+
+        Parameters
+        ----------
+        conversation : Conversation
+            The record. It is not changed.
+
+        Returns
+        -------
+        list of Turn
+            The visible turns the cap keeps. A turn left out is hidden or older than the
+            window.
+        """
+        visible = [turn for turn in conversation.turns if not turn.hidden]
+        return visible[_window_start(len(visible), self.turns) :]
 
     def _turn_messages(self, turns: Sequence[Turn]) -> Iterator[ChatMessage]:
         replies = sum(1 for turn in turns if turn.reply is not None)

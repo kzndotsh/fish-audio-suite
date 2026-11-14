@@ -19,6 +19,7 @@ from fish_audio_suite_voice.logutil.debug import warn
 from fish_audio_suite_voice.session.cancel import never
 from fish_audio_suite_voice.session.chat_store import ChatFile, SavedChat
 from fish_audio_suite_voice.session.conversation import Conversation, HistoryView
+from fish_audio_suite_voice.session.events import ChatShown
 from fish_audio_suite_voice.session.signals import DuplexSession
 from fish_audio_suite_voice.tts.played_text import Unheard
 from fish_audio_suite_voice.tts.speaker import FishSpeaker
@@ -28,6 +29,7 @@ __all__ = [
     "Chat",
     "DuplexContext",
     "TurnInput",
+    "chat_file",
     "session_context",
     "session_speaker",
 ]
@@ -147,6 +149,18 @@ class Chat:
                 self._save_failed = True
                 warn(f"fish-voice: cannot save the chat to {file.path}: {exc}")
 
+    def shown(self) -> ChatShown:
+        """Return the record as a display draws it, with which turns the model is sent.
+
+        Returns
+        -------
+        ChatShown
+            Every turn, the ids ``view`` sends, and the file.
+        """
+        sent = frozenset(turn.id for turn in self.view.sent(self.history))
+        path = None if self.file is None else self.file.path
+        return ChatShown(self.history.id, tuple(self.history.turns), sent, path)
+
     def messages(self, tone: tuple[str, ...] = ()) -> list[ChatMessage]:
         """Return the messages the next reply is asked for with.
 
@@ -193,6 +207,30 @@ class DuplexContext:
     tts: FishSpeaker
     asr_http: httpx.AsyncClient
     sink_latency: SinkLatency
+
+
+def chat_file(
+    config: VoiceCliConfig, history: Conversation, saved: SavedChat | None = None
+) -> ChatFile | None:
+    """Say where a chat is saved.
+
+    Parameters
+    ----------
+    config : VoiceCliConfig
+        ``save_chats`` and ``chat_dir`` decide whether chats are saved, and where.
+    history : Conversation
+        The chat, whose id a new file is named for.
+    saved : SavedChat or None, optional
+        The saved chat it was opened from, whose file it keeps.
+
+    Returns
+    -------
+    ChatFile or None
+        The saved chat's file, or a new one in ``chat_dir``. None when chats are not saved.
+    """
+    if not config.save_chats or config.chat_dir is None:
+        return None
+    return saved.file if saved is not None else ChatFile.new(config.chat_dir, history)
 
 
 def session_speaker(config: VoiceCliConfig) -> FishSpeaker:
@@ -275,9 +313,6 @@ def session_context(
         history = Conversation.opening(prompt.text, seed=prompt.pin_seed)
     else:
         history = resumed.conversation.reopened(prompt.text, seed=prompt.pin_seed)
-    file = None
-    if config.save_chats and config.chat_dir is not None:
-        file = resumed.file if resumed is not None else ChatFile.new(config.chat_dir, history)
     return DuplexContext(
         config=config,
         device=device,
@@ -286,7 +321,7 @@ def session_context(
             backend,
             history,
             HistoryView(config.history_turns, config.history_cue_turns),
-            file=file,
+            file=chat_file(config, history, resumed),
         ),
         tts=tts,
         asr_http=asr_http,

@@ -89,6 +89,8 @@ Each file is written to a temporary file first and then renamed over the old one
 
 `--resume` goes on with the most recently updated chat. `--resume 3f9c` goes on with the chat whose id starts with `3f9c`, and `--resume PATH` with that file. The chat keeps its turns and keeps writing to the same file. It runs with the system prompt you have set now, not the one it was saved with, and a notice says so when the two differ. A file that cannot be read, or that a newer `fish-voice` wrote, stops the run with an error before the session starts.
 
+In the [full-screen app](#the-full-screen-app), Ctrl+O lists the saved chats, newest first, and opens one or starts a new chat, and the conversation pane lets you rewrite, hide or delete turns. See [Editing the chat](#editing-the-chat).
+
 ### History after a barge-in
 
 The chat history gets only what you probably heard. For PCM that is a word-aligned estimate from the bytes played, the speed, and the device buffer. Encoded playback (`mpv`) cannot be cut by length, so an interrupted or failed reply is left out of history. It keeps the reply as the model wrote it: the `[calm]` lead and the mood carried into each streamed sentence are sent to Fish but not kept, so the model does not learn to open every reply the same way.
@@ -243,7 +245,27 @@ uv run --package fish-audio-suite-voice --extra cli --extra tui fish-voice --tui
 | Enter | Send the typed line |
 | Escape | Stop the reply (only while the model is thinking or the reply is playing) |
 | F2 | Mute or unmute the mic. Muted, the mic stays closed: no listening between turns and no barge-in watch during a reply. Typing or Esc still interrupts. Unmuting during a reply applies from the next reply |
+| Ctrl+O | List the saved chats, to open one or start a new chat. See [Editing the chat](#editing-the-chat) |
+| Tab | Move between the input line, the conversation and the log. The conversation keys below work only while it has focus |
 | Ctrl+Q | Quit |
+
+#### Editing the chat
+
+The conversation pane shows the whole chat, including the turns of a chat you resumed or opened. Under the pane's border, `model sees 12 of 30 turns` says how many turns the next request sends the model. A turn the model is not sent is dimmed and says why: `hidden from the model` (you hid it) or `older than the model is sent` (it is older than the last `FISH_VOICE_HISTORY_TURNS` visible turns). A reply you rewrote says `edited`, and one you did not hear to the end says `cut off`.
+
+Press Tab until the conversation has focus. The newest turn is selected, and the footer shows the keys:
+
+| Key | Does |
+| --- | --- |
+| Up, Down (or K, J) | Select the turn before or after |
+| E | Rewrite the selected reply in a dialog. Ctrl+S saves, Escape keeps it as it was. A blank reply is refused: hide or delete the turn instead |
+| H | Hide the selected turn from the model, or show it again. The chat keeps it |
+| D or Delete | Delete the selected turn |
+| U | Undo the last edit, hide or delete in this chat |
+
+The model is sent your version from the next request on. What it first wrote is kept in the file, so undo can put it back, but undo does not survive a restart or opening another chat. A change is applied between turns: during a reply it waits until the reply is recorded, and while the mic listens it stops the listen, so speech it had started to hear is dropped. Each change is saved to the chat's file at once.
+
+Ctrl+O lists the saved chats in `FISH_VOICE_CHAT_DIR`, newest first, with the first line, when each started and was last saved, and how many turns it has. The chat open now is marked. Enter on a chat goes on with it between turns, under the system prompt you have set now, and keeps writing to its file. `+ new chat` starts an empty chat in a new file. A file that is not a chat is left out of the list, and one that cannot be read when you open it is reported in the conversation while the current chat goes on.
 
 While it runs, the app asks the sound card for a bigger playback buffer (`FISH_VOICE_OUTPUT_LATENCY`, `high` in `--tui` by default), lets the playback thread in sooner, and collects garbage less often, because drawing the screen shares a process with playback and otherwise makes it click. Ctrl+C is not quit here, because the app uses it to copy. Without the `tui` extra, `fish-voice --tui` says how to install it and exits 2. The panels shrink with the terminal: under 72 columns the timings and the log go, under 22 rows the timings go, and under 50x14 it asks for a bigger window (typing and Ctrl+Q still work). With no terminal on stdin or stdout, `--tui` falls back to the plain loop. `NO_COLOR` is honoured, and `TEXTUAL_ANIMATIONS=none` stops the pulsing "you" line, the listening cursor and the thinking wave from moving. A modern terminal works best; macOS's Terminal.app is limited to 256 colors, so use iTerm2, Kitty, WezTerm or Ghostty there.
 
