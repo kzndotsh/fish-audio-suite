@@ -261,7 +261,7 @@ async def send_turn(socket: FishSocket, events: AsyncIterator[Any], run: TurnRun
 
 def _note_first_audio(
     audio: AudioArrival,
-    chunk: bytes,
+    size: int,
     t0: float,
     on_first_audio: Callable[[], None] | None = None,
 ) -> None:
@@ -272,7 +272,7 @@ def _note_first_audio(
     debug(
         "tts.first_audio {:.0f}ms after tts.start ({} bytes)",
         audio.tts_first_audio_ms,
-        len(chunk),
+        size,
     )
     if on_first_audio is not None:
         on_first_audio()
@@ -284,13 +284,28 @@ _STREAM_END: Final = object()
 _REAP_TIMEOUT_S: Final = 2.0
 
 
-async def _read_stream(stream: AsyncIterator[Any], queue: asyncio.Queue[Any]) -> None:
+async def _read_stream(
+    stream: AsyncIterator[Any],
+    queue: asyncio.Queue[Any],
+    chain: AudioChain,
+    arrived: Callable[[int], None],
+) -> None:
     # One task owns the whole iterator. The SDK holds an anyio task group
     # inside the generator, and exiting it from a task other than the one
     # that entered it raises "cancel scope in a different task".
     try:
         async for chunk in stream:
-            await queue.put(chunk)
+            if not chunk:
+                continue
+            # Before shaping, so the first-audio time is Fish's alone and a chunk that
+            # fails to shape still counts as audio received.
+            arrived(len(chunk))
+            # Fade and level each chunk as it arrives, while the one before it is
+            # still playing. Done only once the device asked for it, this work left
+            # the speaker dry for 50 to 120 ms between two chunks.
+            shaped = chain.process(chunk)
+            if shaped:
+                await queue.put(shaped)
     except asyncio.CancelledError:
         raise
     except (Exception, BaseExceptionGroup) as exc:  # noqa: BLE001 - handed to the pump, which re-raises it
@@ -309,7 +324,6 @@ async def _pump_ws_audio(
     # One chunk of lookahead. A reader that runs ahead of playback keeps the
     # rest of a long reply in memory.
     queue: asyncio.Queue[Any] = asyncio.Queue(maxsize=1)
-    reader = asyncio.create_task(_read_stream(aiter(stream), queue))
     spec = run.spec
     chain = AudioChain(
         pcm=spec.audio_format == "pcm",
@@ -317,6 +331,11 @@ async def _pump_ws_audio(
         fade_ms=spec.fade_ms,
         loudness_db=spec.loudness_db,
     )
+
+    def arrived(size: int) -> None:
+        _note_first_audio(run.audio, size, run.t0, run.on_first_audio)
+
+    reader = asyncio.create_task(_read_stream(aiter(stream), queue, chain, arrived))
     cancelled, stop_watching = _watch_cancel(run.cancel)
     cancel_wait = asyncio.ensure_future(cancelled.wait())
     get: asyncio.Future[Any] | None = None
@@ -348,15 +367,10 @@ async def _pump_ws_audio(
                 return
             if isinstance(item, BaseException):
                 raise item
-            if not item:
-                continue
-            _note_first_audio(run.audio, item, run.t0, run.on_first_audio)
             if run.cancel.is_set():
                 await close_client()
                 return
-            chunk = chain.process(item)
-            if chunk:
-                await _play(run.sink, chunk)
+            await _play(run.sink, item)
     finally:
         stop_watching.set()
         for waiter in (get, cancel_wait):
