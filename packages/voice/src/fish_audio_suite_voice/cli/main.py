@@ -44,6 +44,12 @@ from fish_audio_suite_voice.logutil.setup import (
     forward_logs,
     mirror_conversation,
 )
+from fish_audio_suite_voice.session.chat_store import (
+    ChatLoadError,
+    SavedChat,
+    find_chat,
+    load_chat,
+)
 from fish_audio_suite_voice.session.duplex import duplex_turns
 from fish_audio_suite_voice.session.events import EVENTS, ExitCode
 from fish_audio_suite_voice.session.inputs import LiveInput
@@ -158,13 +164,15 @@ def _start(c: VoiceCliConfig) -> _Runtime | None:
     )
 
 
-async def run_loop(c: VoiceCliConfig) -> int:
+async def run_loop(c: VoiceCliConfig, *, resumed: SavedChat | None = None) -> int:
     """Run duplex until quit, after checking the keys, model, sink and voice detector.
 
     Parameters
     ----------
     c : VoiceCliConfig
         Environment snapshot.
+    resumed : SavedChat or None, optional
+        A saved chat to go on with (``--resume``).
 
     Returns
     -------
@@ -199,12 +207,14 @@ async def run_loop(c: VoiceCliConfig) -> int:
         run.session.install_sigint(asyncio.get_running_loop(), before=before_quit)
         try:
             async with run.chat() as backend:
-                return await duplex_turns(c, run.tts, run.device, backend, run.session)
+                return await duplex_turns(
+                    c, run.tts, run.device, backend, run.session, resumed=resumed
+                )
         except ChatUnusableError:
             return ExitCode.FATAL
 
 
-async def run_tui(c: VoiceCliConfig, *, debug: DebugLevel) -> int:
+async def run_tui(c: VoiceCliConfig, *, debug: DebugLevel, resumed: SavedChat | None = None) -> int:
     """Run the same session inside the full-screen app, until it ends.
 
     Parameters
@@ -213,6 +223,8 @@ async def run_tui(c: VoiceCliConfig, *, debug: DebugLevel) -> int:
         Environment snapshot.
     debug : DebugLevel
         The log level chosen on the command line, kept when logging moves into the app.
+    resumed : SavedChat or None, optional
+        A saved chat to go on with (``--resume``).
 
     Returns
     -------
@@ -250,7 +262,14 @@ async def run_tui(c: VoiceCliConfig, *, debug: DebugLevel) -> int:
 
                 async def runner() -> int:
                     return await duplex_turns(
-                        c, run.tts, run.device, backend, run.session, source=live, full_screen=True
+                        c,
+                        run.tts,
+                        run.device,
+                        backend,
+                        run.session,
+                        source=live,
+                        full_screen=True,
+                        resumed=resumed,
                     )
 
                 info = (
@@ -315,6 +334,15 @@ def _parser() -> argparse.ArgumentParser:
         "(needs the tui extra)",
     )
     p.add_argument(
+        "--resume",
+        nargs="?",
+        const="",
+        default=None,
+        metavar="CHAT",
+        help="go on with a saved chat: the most recent one, or the one whose id starts with "
+        "CHAT, or the file CHAT. It keeps writing to the same file",
+    )
+    p.add_argument(
         "--debug",
         action="store_true",
         help="stderr event log: listen, ASR, LLM, TTS and barge-in steps (or FISH_VOICE_DEBUG=1)",
@@ -325,6 +353,15 @@ def _parser() -> argparse.ArgumentParser:
         help="--debug plus mic heartbeats, raw audio events and HTTP lines (or FISH_VOICE_DEBUG=2)",
     )
     return p
+
+
+def _resumed_chat(c: VoiceCliConfig, ref: str) -> SavedChat | None:
+    """Read the chat ``--resume`` names, or say why it cannot be and return None."""
+    try:
+        return load_chat(find_chat(c.chat_dir, ref))
+    except ChatLoadError as exc:
+        warn(f"fish-voice --resume: {exc}")
+        return None
 
 
 def _quit_line() -> int:
@@ -394,7 +431,6 @@ def main(argv: list[str] | None = None) -> int:
     if loaded:
         print("env: " + " ".join(str(p) for p in loaded), flush=True)
     level = _start_logging(args)
-    debug = level >= DebugLevel.EVENTS
     c = load_config()
     warn_if_insecure_base(c)
     if args.playback:
@@ -410,17 +446,27 @@ def main(argv: list[str] | None = None) -> int:
             return asyncio.run(smoke_test(c, args.out))
         except KeyboardInterrupt:
             return _quit_line()
+    return _run_session(args, c, level)
+
+
+def _run_session(args: argparse.Namespace, c: VoiceCliConfig, level: DebugLevel) -> int:
+    """Read the chat ``--resume`` names, then run the full-screen app or the plain loop."""
+    resumed = None
+    if args.resume is not None:
+        resumed = _resumed_chat(c, args.resume)
+        if resumed is None:
+            return ExitCode.FATAL
     try:
         if args.tui:
-            return asyncio.run(run_tui(c, debug=level))
-        return asyncio.run(run_loop(c))
+            return asyncio.run(run_tui(c, debug=level, resumed=resumed))
+        return asyncio.run(run_loop(c, resumed=resumed))
     except KeyboardInterrupt:
         return _quit_line()
     except asyncio.CancelledError:
         # run_loop returns on quit. A cancel that gets here is a bug, so say
         # so instead of restarting with the same state.
         warn("fish-voice: loop cancelled unexpectedly")
-        if debug:
+        if level >= DebugLevel.EVENTS:
             traceback.print_exc()
         return ExitCode.FATAL
 

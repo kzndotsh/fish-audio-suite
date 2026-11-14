@@ -81,6 +81,14 @@ The barge floor follows the room: it is the quiet-percentile of recent mic frame
 
 If talking over the bot does nothing, your voice may be reaching the gate quietly after echo cancellation. `scripts/mic_levels.py` prints your noise floor and speaking level, and raising the mic's own gain (not only software volume) helps more than lowering the thresholds. See [Troubleshooting](../../docs/TROUBLESHOOTING.md#soft-speech-is-missed-or-talking-over-the-bot-does-nothing-because-the-mic-is-quiet) for the numbers and the order to fix things in.
 
+### Saved chats
+
+Each chat is saved, so you can go back to it. After every turn, `fish-voice` writes the whole conversation to one JSON file in `$XDG_DATA_HOME/fish-audio-suite/chats` (`~/.local/share/fish-audio-suite/chats` when `XDG_DATA_HOME` is unset), or in `FISH_VOICE_CHAT_DIR`. The file is named for when the chat started and the start of its id, such as `20261114-124055-3f9c0a1b.json`. It holds what you said, what the model wrote of each reply you heard, and your edits, and only you can read it. A chat with no turns is not saved. Set `FISH_VOICE_SAVE_CHATS=0` to save nothing.
+
+Each file is written to a temporary file first and then renamed over the old one, so a crash leaves the last good copy. If a save fails (a full disk, a folder you cannot write), you get one warning and the session goes on.
+
+`--resume` goes on with the most recently updated chat. `--resume 3f9c` goes on with the chat whose id starts with `3f9c`, and `--resume PATH` with that file. The chat keeps its turns and keeps writing to the same file. It runs with the system prompt you have set now, not the one it was saved with, and a notice says so when the two differ. A file that cannot be read, or that a newer `fish-voice` wrote, stops the run with an error before the session starts.
+
 ### History after a barge-in
 
 The chat history gets only what you probably heard. For PCM that is a word-aligned estimate from the bytes played, the speed, and the device buffer. Encoded playback (`mpv`) cannot be cut by length, so an interrupted or failed reply is left out of history. It keeps the reply as the model wrote it: the `[calm]` lead and the mood carried into each streamed sentence are sent to Fish but not kept, so the model does not learn to open every reply the same way.
@@ -394,6 +402,7 @@ To compare detectors on your own room and keyboard, record once and play it thro
 | `--debug` | Event log on stderr. Same as `FISH_VOICE_DEBUG=1` |
 | `--trace` | `--debug` plus mic heartbeats, raw audio events and HTTP lines. Same as `FISH_VOICE_DEBUG=2` |
 | `--log-dir DIR` | Write a complete log of the run to a new file in `DIR`. Overrides `FISH_VOICE_LOG_DIR` |
+| `--resume [CHAT]` | Go on with a [saved chat](#saved-chats): the most recent one, or the one whose id starts with `CHAT`, or the file `CHAT` |
 
 `fish-voice` exits 0 on quit. `--smoke` exits 1 when Fish fails or sends less than 1 kB of audio. Exit 2 means the run could not start or cannot go on:
 
@@ -401,6 +410,7 @@ To compare detectors on your own room and keyboard, record once and play it thro
 - the playback sink cannot play a reply (`file`, an unknown name, or `mpv` not on `PATH`),
 - the voice detector cannot load, or Deepgram is chosen without its key or extra,
 - `--prompt-file` cannot be read, or `--tui` is used without the `tui` extra,
+- `--resume` finds no chat, more than one, or a file it cannot read,
 - PortAudio is missing,
 - Fish ASR or TTS answers 401, 402 or 403,
 - the LLM answers 401, 402 or 404, or no provider serves the model.
@@ -509,6 +519,8 @@ Listen and interrupt. Times are approximate at 30 ms frames.
 | `FISH_VOICE_BARGE_RMS` | `220` | Barge floor seed, above 0. It follows the room, never below this. With automatic gain on, typing can pass 220 ([#58](https://github.com/kzndotsh/fish-audio-suite/issues/58)) |
 | `FISH_VOICE_BARGE_PLAYING_GAIN` | `2.2` | Floor multiplier while the speaker plays and AEC is off. At least 1 |
 | `FISH_VOICE_DEBUG` | off | `1` or `--debug` logs events. `2`, `trace` or `--trace` adds mic heartbeats, raw audio events, HTTP lines and each raw chat event (`llm event`) |
+| `FISH_VOICE_SAVE_CHATS` | on | Save each chat to a file, so `--resume` can go on with it. `0` saves nothing. See [Saved chats](#saved-chats) |
+| `FISH_VOICE_CHAT_DIR` | unset: `$XDG_DATA_HOME/fish-audio-suite/chats` | The folder chats are saved in and `--resume` looks in. Unset, it is under `XDG_DATA_HOME`, or `~/.local/share/fish-audio-suite/chats` when that is unset or not an absolute path. Made readable only by you |
 | `FISH_VOICE_LOG_DIR` | unset | A folder. Each run writes a complete log to a new `fish-voice-<time>.log` there, at the most detailed level (events, mic heartbeats, raw traffic), whatever the screen shows. It also holds what you said and what the model answered, and is readable only by you. `--log-dir DIR` does the same |
 
 `dev.sh` also reads `FISH_VOICE_ENV_FILE` (env file path), `FISH_VOICE_PORTAUDIO_LIB` (library directories), and `FISH_VOICE_NIX=1` (build PortAudio with nix on a host that is not NixOS).

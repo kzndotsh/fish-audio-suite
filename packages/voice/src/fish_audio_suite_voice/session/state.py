@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
@@ -14,7 +15,9 @@ from fish_audio_suite_voice.capture.mic import Mic
 from fish_audio_suite_voice.config.settings import SinkLatency, VoiceCliConfig, sink_latency
 from fish_audio_suite_voice.llm.client import ChatBackend
 from fish_audio_suite_voice.llm.speculate import Speculation
+from fish_audio_suite_voice.logutil.debug import warn
 from fish_audio_suite_voice.session.cancel import never
+from fish_audio_suite_voice.session.chat_store import ChatFile, SavedChat
 from fish_audio_suite_voice.session.conversation import Conversation, HistoryView
 from fish_audio_suite_voice.session.signals import DuplexSession
 from fish_audio_suite_voice.tts.played_text import Unheard
@@ -113,12 +116,36 @@ class Chat:
     speculation : Speculation or None
         A reply being written for a turn the recogniser thinks is probably over. Hearing
         starts it, and the reply uses it if the same words are confirmed.
+    file : ChatFile or None
+        Where ``save`` writes the record. None when chats are not saved.
     """
 
     backend: ChatBackend
     history: Conversation
     view: HistoryView
     speculation: Speculation | None = None
+    file: ChatFile | None = None
+    _save_failed: bool = field(default=False, repr=False, compare=False)
+
+    async def save(self) -> None:
+        """Write the record to its file, off the event loop. A failure only warns, once.
+
+        Notes
+        -----
+        Call it after each turn and after each edit, from the session loop only, one save
+        at a time, so there is one writer. A chat with no turns is not written unless its
+        file is already there, as it is for a resumed chat whose turns were all deleted.
+        """
+        file = self.file
+        if file is None or (not self.history.turns and not file.path.exists()):
+            return
+        try:
+            # A copy, so the loop can go on changing the record while the file is written.
+            await asyncio.to_thread(file.save, self.history.copy())
+        except OSError as exc:
+            if not self._save_failed:
+                self._save_failed = True
+                warn(f"fish-voice: cannot save the chat to {file.path}: {exc}")
 
     def messages(self, tone: tuple[str, ...] = ()) -> list[ChatMessage]:
         """Return the messages the next reply is asked for with.
@@ -202,6 +229,7 @@ def session_context(
     device: str | int | None = None,
     muted: Callable[[], bool] = never,
     full_screen: bool = False,
+    resumed: SavedChat | None = None,
 ) -> DuplexContext:
     """Assemble one session's context from its settings and what it holds open.
 
@@ -228,24 +256,37 @@ def session_context(
     full_screen : bool, optional
         Whether the session runs in the full-screen app, which decides an ``auto``
         ``output_latency``.
+    resumed : SavedChat or None, optional
+        A saved chat to go on with. Its turns and id are kept, and so is its file, which
+        the session keeps writing to. The prompt and seed are the ones in ``config``.
 
     Returns
     -------
     DuplexContext
-        The context with the opening conversation: the system prompt, and the pinned seed
-        exchange when the prompt asks for one.
+        The context with the opening conversation: the system prompt, the pinned seed
+        exchange when the prompt asks for one, and the resumed turns. The chat has a file
+        when ``config`` saves chats.
     """
     # One input for the whole session, so nothing is lost between listens. The echo
     # canceller lives with it: the mic cleans every frame and the speaker feeds it.
     mic = open_mic(EchoCanceller(config.aec))
+    prompt = config.prompt
+    if resumed is None:
+        history = Conversation.opening(prompt.text, seed=prompt.pin_seed)
+    else:
+        history = resumed.conversation.reopened(prompt.text, seed=prompt.pin_seed)
+    file = None
+    if config.save_chats and config.chat_dir is not None:
+        file = resumed.file if resumed is not None else ChatFile.new(config.chat_dir, history)
     return DuplexContext(
         config=config,
         device=device,
         turn_input=TurnInput(session=session, mic=mic, muted=muted),
         chat=Chat(
             backend,
-            Conversation.opening(config.prompt.text, seed=config.prompt.pin_seed),
+            history,
             HistoryView(config.history_turns, config.history_cue_turns),
+            file=file,
         ),
         tts=tts,
         asr_http=asr_http,

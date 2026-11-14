@@ -374,3 +374,19 @@ def test_an_edited_reply_is_sent_by_the_same_cue_rule() -> None:
     conversation.edit_reply(conversation.turns[0].id, "[happy] First, edited.")
     sent = HistoryView(HISTORY_TURNS, cue_turns=1).messages(conversation)
     assert _contents(sent)[2] == "First, edited."
+
+
+def test_the_id_is_kept_by_a_copy_json_and_a_reopened_record() -> None:
+    conversation = _talk(Conversation("old prompt"), ("one", "First."))
+    assert conversation.copy().id == conversation.id
+    assert Conversation.from_json(conversation.to_json()).id == conversation.id
+    reopened = conversation.reopened(DEFAULT_SYSTEM_PROMPT, seed=True)
+    assert (reopened.id, reopened.turns) == (conversation.id, conversation.turns)
+    assert reopened.system == DEFAULT_SYSTEM_PROMPT
+    assert reopened.seed  # the seed follows the prompt set now
+    assert Conversation("s").id != Conversation("s").id
+
+
+def test_json_with_a_blank_id_is_refused() -> None:
+    with pytest.raises(ValueError, match="id is blank"):
+        Conversation.from_json({**Conversation("s").to_json(), "id": " "})

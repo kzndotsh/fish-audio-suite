@@ -74,6 +74,7 @@ DOC_ONLY = {
 # They are still documented in the README of the package that reads them.
 ENV_EXAMPLE_SKIP = {
     "WEB_CONCURRENCY": "the standard uvicorn fallback for FISH_PROXY_WORKERS",
+    "XDG_DATA_HOME": "the desktop's data folder, which voice saves chats under unless told",
 }
 # Strings that look like a variable name but are not one, with the reason. Empty today.
 NOT_ENV: dict[str, str] = {}

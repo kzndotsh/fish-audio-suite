@@ -111,6 +111,9 @@ class Conversation:
     turns : list of Turn
         Every turn, oldest first, hidden ones included. ``HistoryView`` decides which the
         model is sent.
+    id : str
+        Stable for the life of the record, saved with it, so a saved chat can be named
+        and found again.
 
     Notes
     -----
@@ -121,6 +124,7 @@ class Conversation:
     system: str
     seed: tuple[tuple[str, str], ...] = ()
     turns: list[Turn] = field(default_factory=list[Turn])
+    id: str = field(default_factory=lambda: uuid.uuid4().hex, kw_only=True)
     _undo: list[_Undo] = field(default_factory=list[_Undo], repr=False, compare=False)
 
     @classmethod
@@ -151,9 +155,28 @@ class Conversation:
         Returns
         -------
         Conversation
-            The same turns, which are immutable, in a new list, with no undo history.
+            The same id and turns, which are immutable, in a new list, with no undo
+            history.
         """
-        return Conversation(self.system, self.seed, list(self.turns))
+        return Conversation(self.system, self.seed, list(self.turns), id=self.id)
+
+    def reopened(self, system_prompt: str, *, seed: bool) -> Conversation:
+        """Return this record under another system prompt, to go on with a saved chat.
+
+        Parameters
+        ----------
+        system_prompt : str
+            The prompt the session runs with now, which may differ from the saved one.
+        seed : bool
+            Pin the opening exchange, as in ``opening``.
+
+        Returns
+        -------
+        Conversation
+            The same id and turns, the given prompt and seed, and no undo history.
+        """
+        fresh = Conversation.opening(system_prompt, seed=seed)
+        return Conversation(fresh.system, fresh.seed, list(self.turns), id=self.id)
 
     def last_user(self) -> str:
         """Return the line the next reply answers, or ``""`` when the last turn has a reply."""
@@ -283,10 +306,12 @@ class Conversation:
         Returns
         -------
         dict
-            ``version``, ``system``, ``seed`` and ``turns``. ``from_json`` reads it back.
+            ``version``, ``id``, ``system``, ``seed`` and ``turns``. ``from_json`` reads it
+            back.
         """
         return {
             "version": SCHEMA_VERSION,
+            "id": self.id,
             "system": self.system,
             "seed": [[user, assistant] for user, assistant in self.seed],
             "turns": [_turn_json(turn) for turn in self.turns],
@@ -311,7 +336,8 @@ class Conversation:
         TypeError
             When a field is missing or has the wrong type.
         ValueError
-            When the version is not ``SCHEMA_VERSION``, or two turns share an id.
+            When the version is not ``SCHEMA_VERSION``, the id is blank, or two turns
+            share an id.
         """
         if data.get("version") != SCHEMA_VERSION:
             raise ValueError(
@@ -321,7 +347,10 @@ class Conversation:
         turns = [_turn(item) for item in _list(data, "turns")]
         if len({turn.id for turn in turns}) != len(turns):
             raise ValueError("two turns share an id")
-        return cls(_str(data, "system"), seed, turns)
+        record_id = _str(data, "id")
+        if not record_id.strip():
+            raise ValueError("the conversation id is blank")
+        return cls(_str(data, "system"), seed, turns, id=record_id)
 
     def _open_turn(self) -> Turn | None:
         # A hidden turn takes no more lines: the user could not see them join it.

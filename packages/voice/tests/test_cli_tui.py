@@ -68,11 +68,11 @@ def test_the_tui_flag_without_the_extra_says_how_to_install_it(
 def test_the_tui_flag_runs_the_app_and_not_the_plain_loop(monkeypatch: pytest.MonkeyPatch) -> None:
     seen: dict[str, Any] = {}
 
-    async def fake_tui(c: object, *, debug: DebugLevel) -> int:
+    async def fake_tui(c: object, *, debug: DebugLevel, **_kwargs: object) -> int:
         seen["tui"] = (c, debug)
         return 7
 
-    async def fake_loop(_c: object) -> int:
+    async def fake_loop(_c: object, **_kwargs: object) -> int:
         raise AssertionError("the plain loop must not run")
 
     monkeypatch.setattr("fish_audio_suite_voice.cli.main.apply_cli_env_files", lambda *_a, **_k: [])
@@ -89,10 +89,10 @@ def test_the_tui_flag_runs_the_app_and_not_the_plain_loop(monkeypatch: pytest.Mo
 
 
 def test_the_plain_loop_is_still_the_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    async def fake_loop(_c: object) -> int:
+    async def fake_loop(_c: object, **_kwargs: object) -> int:
         return 3
 
-    async def fake_tui(_c: object, *, debug: DebugLevel) -> int:
+    async def fake_tui(_c: object, *, debug: DebugLevel, **_kwargs: object) -> int:
         raise AssertionError("the app must not start without --tui")
 
     monkeypatch.setattr("fish_audio_suite_voice.cli.main.apply_cli_env_files", lambda *_a, **_k: [])
@@ -257,10 +257,10 @@ def test_run_tui_returns_the_code_the_app_reports(monkeypatch: pytest.MonkeyPatc
 def test_the_tui_flag_falls_back_to_the_plain_loop_without_a_terminal(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    async def fake_tui(_c: object, *, debug: DebugLevel) -> int:
+    async def fake_tui(_c: object, *, debug: DebugLevel, **_kwargs: object) -> int:
         raise AssertionError("no terminal, so no full-screen app")
 
-    async def fake_loop(_c: object) -> int:
+    async def fake_loop(_c: object, **_kwargs: object) -> int:
         return 3
 
     monkeypatch.setattr("fish_audio_suite_voice.cli.main.apply_cli_env_files", lambda *_a, **_k: [])
@@ -283,11 +283,11 @@ def test_the_tui_flag_falls_back_to_the_plain_loop_without_a_terminal(
 def test_the_app_starts_only_with_both_ends_on_a_tty(
     monkeypatch: pytest.MonkeyPatch, *, stdin_tty: bool, stdout_tty: bool, screen: bool
 ) -> None:
-    async def fake_tui(_c: object, *, debug: DebugLevel) -> int:
+    async def fake_tui(_c: object, *, debug: DebugLevel, **_kwargs: object) -> int:
         del debug
         return 7
 
-    async def fake_loop(_c: object) -> int:
+    async def fake_loop(_c: object, **_kwargs: object) -> int:
         return 3
 
     monkeypatch.setattr("fish_audio_suite_voice.cli.main.apply_cli_env_files", lambda *_a, **_k: [])

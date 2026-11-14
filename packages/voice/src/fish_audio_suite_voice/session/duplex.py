@@ -19,7 +19,8 @@ from fish_audio_suite_voice.llm.reply import collect_reply, speak_reply, stream_
 from fish_audio_suite_voice.llm.transports import ChatUnusableError
 from fish_audio_suite_voice.logutil.debug import debug, debug_enabled
 from fish_audio_suite_voice.session.cancel import StopFlag, never
-from fish_audio_suite_voice.session.events import EVENTS, Bye, ExitCode, TurnEnded
+from fish_audio_suite_voice.session.chat_store import SavedChat
+from fish_audio_suite_voice.session.events import EVENTS, Bye, ExitCode, TurnEnded, notice
 from fish_audio_suite_voice.session.inputs import TurnSource
 from fish_audio_suite_voice.session.latency import LatencySnapshot
 from fish_audio_suite_voice.session.signals import DuplexSession
@@ -124,6 +125,7 @@ async def duplex_turns(
     *,
     source: TurnSource | None = None,
     full_screen: bool = False,
+    resumed: SavedChat | None = None,
 ) -> ExitCode:
     """Run turns until quit: mic, speech to text, LLM, then one TTS turn per reply.
 
@@ -145,6 +147,9 @@ async def duplex_turns(
     full_screen : bool, optional
         Whether the session runs in the full-screen app, which decides an ``auto``
         ``output_latency`` (see ``config.settings.sink_latency``). False by default.
+    resumed : SavedChat or None, optional
+        A saved chat to go on with, under the prompt in ``c``. A notice says so when the
+        chat was saved with another prompt.
 
     Returns
     -------
@@ -160,6 +165,7 @@ async def duplex_turns(
     by Fish ASR and the TTS websocket for that turn. One mic stream, with the echo
     canceller that cleans it, stays open for the whole session. Barge-in keeps the
     audio that tripped the gate and skips the post-reply cooldown.
+    When ``c`` saves chats, the record is written to its file after each turn.
     ``session.request_quit`` cancels the in-flight reply and ends the loop. A ``Bye``
     event carrying the exit code is sent once however the session ends, with
     ``ExitCode.CRASH`` when the session raises.
@@ -168,7 +174,14 @@ async def duplex_turns(
     code = ExitCode.CRASH  # replaced below unless the session raises
     try:
         code = await _session(
-            c, tts, device, backend, session=session, source=source, full_screen=full_screen
+            c,
+            tts,
+            device,
+            backend,
+            session=session,
+            source=source,
+            full_screen=full_screen,
+            resumed=resumed,
         )
         return code
     finally:
@@ -184,6 +197,7 @@ async def _session(
     session: DuplexSession,
     source: TurnSource | None,
     full_screen: bool,
+    resumed: SavedChat | None,
 ) -> ExitCode:
     async with AsyncExitStack() as stack:
         asr_http = await stack.enter_async_context(asr_client())
@@ -197,8 +211,11 @@ async def _session(
             device=device,
             muted=(lambda: source.muted) if source is not None else never,
             full_screen=full_screen,
+            resumed=resumed,
         )
-        turn, history = ctx.turn_input, ctx.chat.history
+        if resumed is not None:
+            _announce_resume(resumed, c.prompt.text)
+        turn, chat = ctx.turn_input, ctx.chat
         last_user = ""
         while True:
             heard = await _next_turn(ctx, source, last_user)
@@ -213,15 +230,24 @@ async def _session(
                 rest = turn.carry.take_resume()
                 if rest is not None:
                     code = await _resume_reply(ctx, rest)
+                    await chat.save()
                     if code is not None:
                         return code
                 continue
             turn.carry.take_resume()  # real speech, so the cut reply stays cut
             last_user = heard.text
-            history.add_user_line(heard.text)
+            chat.history.add_user_line(heard.text)
             code = await _answer_line(ctx, heard)
+            await chat.save()
             if code is not None:
                 return code
+
+
+def _announce_resume(resumed: SavedChat, prompt: str) -> None:
+    turns = len(resumed.conversation.turns)
+    notice(f"[resumed {resumed.file.path.name}: {turns} turn{'' if turns == 1 else 's'}]")
+    if resumed.conversation.system != prompt:
+        notice("[this chat was saved with another system prompt; the current one is used]")
 
 
 async def _next_turn(ctx: DuplexContext, source: TurnSource | None, last_user: str) -> HeardLine:

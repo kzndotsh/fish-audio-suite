@@ -111,7 +111,7 @@ def test_the_cli_flag_loads_the_file_and_a_bad_path_exits_2(
 ) -> None:
     seen: list[str] = []
 
-    async def fake_loop(config: VoiceCliConfig) -> int:
+    async def fake_loop(config: VoiceCliConfig, **_kwargs: object) -> int:
         seen.append(config.prompt.text)
         return 0
 
