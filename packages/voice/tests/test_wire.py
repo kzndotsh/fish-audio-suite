@@ -563,7 +563,7 @@ def test_the_next_chunk_is_shaped_while_the_one_before_it_plays(
             self.seen += 1
             if self.seen == 2:
                 shaped_second.set()
-            return chunk
+            return chunk[::-1]
 
         def finish(self) -> bytes:
             return b""
@@ -582,7 +582,33 @@ def test_the_next_chunk_is_shaped_while_the_one_before_it_plays(
     sink = FirstWriteWaits()
     asyncio.run(play_stream(chunks(), sink, threading.Event()))
     assert ready_in_time == [True]
-    assert sink.chunks == [b"\x01\x00" * 4, b"\x02\x00" * 4]
+    # The sink gets what the chain returned, not what Fish sent.
+    assert sink.chunks == [b"\x00\x01" * 4, b"\x00\x02" * 4]
+
+
+def test_a_chunk_that_fails_to_shape_still_counts_as_audio_received(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A turn that got audio is not retried, so the user never hears a reply start twice.
+    class Chain:
+        def __init__(self, **_: object) -> None:
+            pass
+
+        def process(self, chunk: bytes) -> bytes:
+            raise ValueError("cannot shape this")
+
+        def finish(self) -> bytes:
+            return b""
+
+    async def chunks() -> AsyncIterator[bytes]:
+        yield b"\x01\x00" * 4
+
+    monkeypatch.setattr("fish_audio_suite_voice.wire.AudioChain", Chain)
+    sink = RecordingSink()
+    result, _socket = asyncio.run(play_stream(chunks(), sink, threading.Event()))
+    assert result.got_audio is True
+    assert result.tts_first_audio_ms is not None
+    assert not sink.chunks
 
 
 @pytest.mark.perf

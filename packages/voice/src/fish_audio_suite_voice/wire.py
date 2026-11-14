@@ -285,18 +285,27 @@ _REAP_TIMEOUT_S: Final = 2.0
 
 
 async def _read_stream(
-    stream: AsyncIterator[Any], queue: asyncio.Queue[Any], chain: AudioChain
+    stream: AsyncIterator[Any],
+    queue: asyncio.Queue[Any],
+    chain: AudioChain,
+    arrived: Callable[[int], None],
 ) -> None:
     # One task owns the whole iterator. The SDK holds an anyio task group
     # inside the generator, and exiting it from a task other than the one
     # that entered it raises "cancel scope in a different task".
     try:
         async for chunk in stream:
-            if chunk:
-                # Fade and level each chunk as it arrives, while the one before it is
-                # still playing. Done only once the device asked for it, this work left
-                # the speaker dry for 50 to 120 ms between two chunks.
-                await queue.put((len(chunk), chain.process(chunk)))
+            if not chunk:
+                continue
+            # Before shaping, so the first-audio time is Fish's alone and a chunk that
+            # fails to shape still counts as audio received.
+            arrived(len(chunk))
+            # Fade and level each chunk as it arrives, while the one before it is
+            # still playing. Done only once the device asked for it, this work left
+            # the speaker dry for 50 to 120 ms between two chunks.
+            shaped = chain.process(chunk)
+            if shaped:
+                await queue.put(shaped)
     except asyncio.CancelledError:
         raise
     except (Exception, BaseExceptionGroup) as exc:  # noqa: BLE001 - handed to the pump, which re-raises it
@@ -322,7 +331,11 @@ async def _pump_ws_audio(
         fade_ms=spec.fade_ms,
         loudness_db=spec.loudness_db,
     )
-    reader = asyncio.create_task(_read_stream(aiter(stream), queue, chain))
+
+    def arrived(size: int) -> None:
+        _note_first_audio(run.audio, size, run.t0, run.on_first_audio)
+
+    reader = asyncio.create_task(_read_stream(aiter(stream), queue, chain, arrived))
     cancelled, stop_watching = _watch_cancel(run.cancel)
     cancel_wait = asyncio.ensure_future(cancelled.wait())
     get: asyncio.Future[Any] | None = None
@@ -354,13 +367,10 @@ async def _pump_ws_audio(
                 return
             if isinstance(item, BaseException):
                 raise item
-            size, chunk = item
-            _note_first_audio(run.audio, size, run.t0, run.on_first_audio)
             if run.cancel.is_set():
                 await close_client()
                 return
-            if chunk:
-                await _play(run.sink, chunk)
+            await _play(run.sink, item)
     finally:
         stop_watching.set()
         for waiter in (get, cancel_wait):
