@@ -134,7 +134,7 @@ def test_chats_saved_in_one_second_still_list_newest_first(
 
     class Clock(datetime):
         @classmethod
-        def now(cls, tz: tzinfo | None = None) -> Clock:  # noqa: ARG003
+        def now(cls, tz: tzinfo | None = None) -> Clock:
             return cast("Clock", next(times))
 
     monkeypatch.setattr(chat_store, "datetime", Clock)
