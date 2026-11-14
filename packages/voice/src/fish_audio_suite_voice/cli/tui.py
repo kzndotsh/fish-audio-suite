@@ -31,8 +31,8 @@ from textual.widget import Widget
 from textual.widgets import Footer, Header, Input, Log, Static
 from textual.worker import Worker, WorkerState
 
-from fish_audio_suite_voice.cli.chat_screens import ChatPicker
-from fish_audio_suite_voice.cli.history_pane import Conversation, printable
+from fish_audio_suite_voice.cli.chat_screens import ChatPicker, printable
+from fish_audio_suite_voice.cli.history_pane import Conversation
 from fish_audio_suite_voice.cli.session_view import (
     Ballistics,
     SessionView,

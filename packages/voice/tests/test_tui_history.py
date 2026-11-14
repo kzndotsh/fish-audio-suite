@@ -324,6 +324,22 @@ def test_the_chat_list_opens_a_saved_chat_or_starts_a_new_one(tmp_path: Path) ->
     _drive(harness, scenario)
 
 
+def test_the_chat_list_drops_control_characters_from_a_title(tmp_path: Path) -> None:
+    # A title comes from a file, which could hold a terminal escape that clears the screen.
+    _save(tmp_path, "evil\x1b[2Jtitle", "2026-01-01T10:00:00+00:00")
+    harness = _Harness(chat_dir=tmp_path)
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        await pilot.press("ctrl+o")
+        await pilot.pause(0.2)
+        options = harness.app.screen.query_one(OptionList)
+        title = str(options.get_option_at_index(1).prompt).split("\n")[0]
+        assert title == "evil[2Jtitle"
+        await pilot.press("escape")
+
+    _drive(harness, scenario)
+
+
 def test_with_no_chat_folder_the_list_offers_only_a_new_chat() -> None:
     harness = _Harness()
 

@@ -10,7 +10,6 @@ the pane redraws only from the record the session sends back.
 from __future__ import annotations
 
 import math
-import unicodedata
 from collections.abc import Callable
 from enum import StrEnum
 from typing import Any, ClassVar
@@ -22,7 +21,7 @@ from textual.timer import Timer
 from textual.widgets import Static
 
 from fish_audio_suite_kit import split_cues
-from fish_audio_suite_voice.cli.chat_screens import EditReplyScreen
+from fish_audio_suite_voice.cli.chat_screens import EditReplyScreen, printable
 from fish_audio_suite_voice.cli.session_view import wave_dots
 from fish_audio_suite_voice.session.commands import (
     ChatCommand,
@@ -39,7 +38,6 @@ __all__ = [
     "Seen",
     "TurnRow",
     "cue_content",
-    "printable",
 ]
 
 _HEARING_HOLD_S = 3.0  # how long "you" keeps pulsing after the last loud moment, with no transcript
@@ -47,23 +45,6 @@ _HEARING_TICK_S = 0.1
 _PULSE_CELLS = 5  # characters wide, two bars each
 _YOU = ("you ▸ ", "bold $text-primary")
 _LLM = ("llm ▸ ", "bold $text-accent")
-
-
-def printable(text: str) -> str:
-    """Return ``text`` without control characters, which would reach the terminal as escapes.
-
-    Parameters
-    ----------
-    text : str
-        A reply, transcript or log line, which is untrusted: an ESC in one could clear the
-        screen or retitle the window.
-
-    Returns
-    -------
-    str
-        The text with every control character but newline and tab removed.
-    """
-    return "".join(ch for ch in text if ch in "\n\t" or unicodedata.category(ch) != "Cc")
 
 
 def cue_content(text: str) -> Content:

@@ -7,6 +7,7 @@ session as a ``ChatCommand``.
 from __future__ import annotations
 
 import asyncio
+import unicodedata
 from datetime import datetime
 from pathlib import Path
 from typing import ClassVar
@@ -25,6 +26,7 @@ from fish_audio_suite_voice.session.commands import ChatCommand, NewChat, OpenCh
 __all__ = [
     "ChatPicker",
     "EditReplyScreen",
+    "printable",
 ]
 
 _NEW = "new"
@@ -77,6 +79,23 @@ class EditReplyScreen(ModalScreen[str | None]):
         self.dismiss(None)
 
 
+def printable(text: str) -> str:
+    """Return ``text`` without control characters, which would reach the terminal as escapes.
+
+    Parameters
+    ----------
+    text : str
+        A reply, transcript or log line, which is untrusted: an ESC in one could clear the
+        screen or retitle the window.
+
+    Returns
+    -------
+    str
+        The text with every control character but newline and tab removed.
+    """
+    return "".join(ch for ch in text if ch in "\n\t" or unicodedata.category(ch) != "Cc")
+
+
 def _when(moment: datetime) -> str:
     return f"{moment:%Y-%m-%d %H:%M}"
 
@@ -84,7 +103,7 @@ def _when(moment: datetime) -> str:
 def _label(chat: ChatSummary, *, current: bool) -> Content:
     turns = f"{chat.turns} turn{'' if chat.turns == 1 else 's'}"
     detail = f"started {_when(chat.started)} · updated {_when(chat.updated)} · {turns}"
-    title = chat.title or "(no turns yet)"
+    title = printable(chat.title) or "(no turns yet)"
     parts: list[tuple[str, str] | str] = [(title, "bold")]
     if current:
         parts.append(("  open now", "$text-success"))
