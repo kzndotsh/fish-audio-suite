@@ -297,7 +297,7 @@ def test_main_exits_2_on_an_unexpected_cancel_without_restarting(
 ) -> None:
     calls = {"n": 0}
 
-    async def run(_config: object) -> int:
+    async def run(_config: object, **_kwargs: object) -> int:
         calls["n"] += 1
         raise asyncio.CancelledError
 
@@ -310,7 +310,7 @@ def test_main_exits_2_on_an_unexpected_cancel_without_restarting(
 def test_main_says_bye_on_ctrl_c(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    async def run(_config: object) -> int:
+    async def run(_config: object, **_kwargs: object) -> int:
         raise KeyboardInterrupt
 
     argv = _stub_main(monkeypatch, tmp_path, run)
@@ -472,7 +472,7 @@ def test_a_malformed_llm_base_warns_and_falls_back(
 def test_main_warns_once_for_each_key_sent_over_plain_http(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    async def run(_config: object) -> int:
+    async def run(_config: object, **_kwargs: object) -> int:
         raise KeyboardInterrupt
 
     monkeypatch.setenv("FISH_API_KEY", "fish-key")

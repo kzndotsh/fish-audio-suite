@@ -23,15 +23,18 @@ from voice_fakes import install_gate
 from fish_audio_suite_kit import ChatMessage, normalize_cues, scrub_tts
 from fish_audio_suite_voice.asr.pipeline import HeardLine, hear_line
 from fish_audio_suite_voice.config.tune import TurnTune
-from fish_audio_suite_voice.session.history import with_tone_hint
+from fish_audio_suite_voice.session.conversation import Conversation, HistoryView
 from fish_audio_suite_voice.tts.speaker import FishSpeaker
 
-HISTORY: list[ChatMessage] = [
-    {"role": "system", "content": "be brief"},
-    {"role": "user", "content": "hello"},
-    {"role": "assistant", "content": "hi"},
-    {"role": "user", "content": "tell me a joke"},
-]
+VIEW = HistoryView(20)
+
+
+def _asking() -> Conversation:
+    conversation = Conversation("be brief")
+    conversation.add_user_line("hello")
+    conversation.add_reply("hi", interrupted=False)
+    conversation.add_user_line("tell me a joke")
+    return conversation
 
 
 def test_the_heard_line_carries_the_tone_and_the_clean_text(
@@ -64,12 +67,12 @@ def test_tone_from_every_clip_of_a_turn_reaches_the_line(monkeypatch: pytest.Mon
     assert heard.tone == ("tired", "laughter")
 
 
-def test_the_hint_is_on_a_copy_of_the_last_user_line_only() -> None:
-    before = [dict(m) for m in HISTORY]
-    out = with_tone_hint(HISTORY, ("laughter", "tired"))
-    assert before == HISTORY
-    assert out is not HISTORY
-    assert out[:-1] == HISTORY[:-1]
+def test_the_hint_is_on_the_last_user_line_of_one_request_only() -> None:
+    conversation = _asking()
+    plain = VIEW.messages(conversation)
+    out = VIEW.messages(conversation, ("laughter", "tired"))
+    assert VIEW.messages(conversation) == plain
+    assert out[:-1] == plain[:-1]
     last = out[-1]
     assert last["role"] == "user"
     assert last["content"].startswith("tell me a joke\n\n(")
@@ -77,15 +80,16 @@ def test_the_hint_is_on_a_copy_of_the_last_user_line_only() -> None:
     assert "never write it as a [cue]" in last["content"]
 
 
-def test_no_tone_or_no_user_line_means_the_history_itself() -> None:
-    assert with_tone_hint(HISTORY, ()) is HISTORY
-    ended: list[ChatMessage] = [*HISTORY, {"role": "assistant", "content": "ha"}]
-    assert with_tone_hint(ended, ("tired",)) is ended
-    assert with_tone_hint([], ("tired",)) == []
+def test_no_tone_or_no_user_line_means_no_hint() -> None:
+    conversation = _asking()
+    assert VIEW.messages(conversation, ())[-1]["content"] == "tell me a joke"
+    conversation.add_reply("ha", interrupted=False)
+    assert VIEW.messages(conversation, ("tired",)) == VIEW.messages(conversation)
+    assert VIEW.messages(Conversation("s"), ("tired",)) == [{"role": "system", "content": "s"}]
 
 
 def test_a_model_that_echoes_the_hint_is_not_heard_saying_it() -> None:
-    hint = with_tone_hint(HISTORY, ("laughter", "tired"))[-1]["content"].split("\n\n", 1)[1]
+    hint = VIEW.messages(_asking(), ("laughter", "tired"))[-1]["content"].split("\n\n", 1)[1]
     for echoed in (f"Sure. {hint} Here is one.", f"{hint} Sure. Here is one."):
         spoken = normalize_cues(scrub_tts(echoed), official=True)
         assert "laughter" not in spoken

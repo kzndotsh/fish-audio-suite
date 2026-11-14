@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from operator import attrgetter
 from typing import Any, NamedTuple
 
@@ -29,6 +30,7 @@ _CASES: list[EnvCase] = [
     EnvCase("FISH_TTS_CUES", " Free ", "free", attrgetter("tts_cues")),
     EnvCase("FISH_VOICE_OUTPUT_LATENCY", " HIGH ", "high", attrgetter("output_latency")),
     EnvCase("FISH_VOICE_HISTORY_TURNS", "7", 7, attrgetter("history_turns")),
+    EnvCase("FISH_VOICE_HISTORY_CUE_TURNS", "3", 3, attrgetter("history_cue_turns")),
     EnvCase("FISH_VOICE_SYSTEM_PROMPT", "a prompt", "a prompt", attrgetter("prompt.text")),
     EnvCase("FISH_VOICE_STREAM_TTS", "1", True, attrgetter("stream_tts")),
     EnvCase("FISH_VOICE_REPEAT_WINDOW", "2.5", 2.5, attrgetter("repeat_window_s")),
@@ -72,7 +74,27 @@ def test_a_blank_system_prompt_means_no_prompt(monkeypatch: pytest.MonkeyPatch) 
 def test_unset_keeps_the_defaults() -> None:
     c = load_config()
     assert c.history_turns == DEFAULT_HISTORY_TURNS
+    assert c.history_cue_turns is None  # every reply keeps its cues
     assert c.prompt.text == DEFAULT_SYSTEM_PROMPT
+
+
+@pytest.mark.parametrize("raw", ["-1", "two", "1.5"])
+def test_an_unusable_cue_turn_count_keeps_every_cue(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], raw: str
+) -> None:
+    monkeypatch.setenv("FISH_VOICE_HISTORY_CUE_TURNS", raw)
+    assert load_config().history_cue_turns is None
+    assert "FISH_VOICE_HISTORY_CUE_TURNS" in capsys.readouterr().err
+
+
+def test_zero_cue_turns_sends_every_reply_without_cues(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FISH_VOICE_HISTORY_CUE_TURNS", "0")
+    assert load_config().history_cue_turns == 0
+
+
+def test_a_negative_cue_turn_count_in_code_is_refused() -> None:
+    with pytest.raises(ValueError, match="history_cue_turns"):
+        replace(load_config(), history_cue_turns=-1)
 
 
 def test_an_unknown_output_latency_is_ignored_and_auto_means_low_outside_the_screen(

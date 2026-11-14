@@ -8,6 +8,7 @@ the device, minus what was still buffered, cut back to a finished word.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from typing import Final
 
 from fish_audio_suite_kit import (
@@ -21,7 +22,10 @@ from fish_audio_suite_kit import (
 from fish_audio_suite_voice.capture.pcm import SAMPLE_BYTES
 
 __all__ = [
+    "Unheard",
+    "heard_written",
     "spoken_prefix",
+    "unheard",
     "unspoken_text",
 ]
 
@@ -225,7 +229,15 @@ def _folded(text: str) -> tuple[str, list[int]]:
     return "".join(keys), origin
 
 
-def unspoken_text(sent: str, heard: str) -> str:
+def _heard_end(text: str, origin: list[int], count: int) -> int:
+    """Return where the ``count`` heard letters of ``text`` end, with the stops after them."""
+    cut = origin[count - 1] + 1
+    while cut < len(text) and text[cut] in _CLOSERS:
+        cut += 1
+    return cut
+
+
+def unspoken_text(sent: str, heard: str, *, lead: bool = True) -> str:
     """Return the part of a reply that was cut off, ready to be spoken again.
 
     Parameters
@@ -235,12 +247,14 @@ def unspoken_text(sent: str, heard: str) -> str:
     heard : str
         What the listener probably heard of it, from ``spoken_prefix``: a
         word-aligned prefix with the cues removed.
+    lead : bool, optional
+        Lead the rest with the last cue before the cut, so the mood carries on. Default
+        True. False gives the rest as written.
 
     Returns
     -------
     str
-        The text after ``heard``, led by the last cue before the cut so the
-        mood carries on. Empty when ``heard`` is not a prefix of ``sent``
+        The text after ``heard``. Empty when ``heard`` is not a prefix of ``sent``
         (the estimate cannot be trusted), or when too little is left to be
         worth speaking.
 
@@ -250,6 +264,8 @@ def unspoken_text(sent: str, heard: str) -> str:
     '[warm] How was your day?'
     >>> unspoken_text("[calm] Hello there. [warm] How was your day?", "Hello")
     '[calm] there. [warm] How was your day?'
+    >>> unspoken_text("[calm] Hello there. How was your day?", "Hello there.", lead=False)
+    'How was your day?'
     """
     keys, origin = _folded(sent)
     heard_key, _ = _folded(strip_cue_tags(heard))
@@ -258,15 +274,92 @@ def unspoken_text(sent: str, heard: str) -> str:
         return ""
     cut = 0
     if count:
-        last = origin[count - 1]
-        if origin[count] == last:
+        if origin[count] == origin[count - 1]:
             return ""  # the cut falls inside one character's folding, such as "ß"
-        cut = last + 1
-        while cut < len(sent) and sent[cut] in _CLOSERS:
-            cut += 1
+        cut = _heard_end(sent, origin, count)
     rest = sent[cut:].lstrip()
-    if not rest.startswith("["):
+    if lead and not rest.startswith("["):
         before = [m for m in _CUE_SPAN_RE.finditer(sent) if m.end() <= cut]
         if before:
             rest = f"{before[-1].group()} {rest}"
     return rest
+
+
+def heard_written(written: str, heard: str) -> str:
+    """Return what the model wrote of the part the listener heard.
+
+    Parameters
+    ----------
+    written : str
+        The reply as the model wrote it, shaped for Fish but before any cue was added for
+        Fish: the mood a sentence carries over, or the default lead.
+    heard : str
+        What was heard of the text Fish was sent, from ``spoken_prefix``.
+
+    Returns
+    -------
+    str
+        The prefix of ``written`` with the same words as ``heard``, with the cues the model
+        wrote in it and none of the cues added for Fish, its spaces collapsed and without
+        ``[clear]``. All of ``written`` when every word was heard. When ``heard`` is not a
+        prefix of ``written`` (the stream shaped a piece differently), ``heard`` with every
+        cue removed, so no added cue is kept.
+
+    Examples
+    --------
+    >>> heard_written(
+    ...     "[calm] A one. B two. C three.", "[calm] A one. [calm] B two. [calm] C three."
+    ... )
+    '[calm] A one. B two. C three.'
+    >>> heard_written("[calm] A one. B two. C three.", "A one. B")
+    '[calm] A one. B'
+    """
+    keys, origin = _folded(written)
+    heard_key, _ = _folded(heard)
+    count = len(heard_key)
+    if not count:
+        return ""
+    if not keys.startswith(heard_key):
+        return strip_cue_tags(heard)
+    cut = len(written) if count == len(keys) else _heard_end(written, origin, count)
+    return " ".join(_without_clear(written[:cut]).split())
+
+
+@dataclass(frozen=True, slots=True)
+class Unheard:
+    """The rest of a cut-off reply, spoken again if the interrupt was only noise.
+
+    Attributes
+    ----------
+    sent : str
+        The rest as Fish is sent it, led by the mood cue from before the cut.
+    written : str
+        The same rest as the model wrote it, which the conversation records once heard.
+    """
+
+    sent: str
+    written: str
+
+
+def unheard(sent: str, written: str, heard: str) -> Unheard | None:
+    """Return the rest of a reply the listener did not hear, if it is worth speaking.
+
+    Parameters
+    ----------
+    sent : str
+        The reply as sent to Fish, cues included.
+    written : str
+        The same reply before any cue was added for Fish (see ``heard_written``).
+    heard : str
+        What was heard of ``sent``, from ``spoken_prefix``.
+
+    Returns
+    -------
+    Unheard or None
+        None when ``unspoken_text`` finds nothing to speak again. When ``heard`` is not a
+        prefix of ``written``, the written rest is the sent rest with every cue removed.
+    """
+    rest = unspoken_text(sent, heard)
+    if not rest:
+        return None
+    return Unheard(rest, unspoken_text(written, heard, lead=False) or strip_cue_tags(rest))

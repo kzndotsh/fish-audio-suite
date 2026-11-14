@@ -2,20 +2,27 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import httpx
 
+from fish_audio_suite_kit import ChatMessage
 from fish_audio_suite_voice.asr.result import BargeIn
 from fish_audio_suite_voice.capture.aec import EchoCanceller
 from fish_audio_suite_voice.capture.mic import Mic
 from fish_audio_suite_voice.config.settings import SinkLatency, VoiceCliConfig, sink_latency
 from fish_audio_suite_voice.llm.client import ChatBackend
 from fish_audio_suite_voice.llm.speculate import Speculation
+from fish_audio_suite_voice.logutil.debug import warn
 from fish_audio_suite_voice.session.cancel import never
-from fish_audio_suite_voice.session.history import History
+from fish_audio_suite_voice.session.chat_store import ChatFile, SavedChat
+from fish_audio_suite_voice.session.conversation import Conversation, HistoryView
+from fish_audio_suite_voice.session.events import ChatShown
 from fish_audio_suite_voice.session.signals import DuplexSession
+from fish_audio_suite_voice.tts.played_text import Unheard
 from fish_audio_suite_voice.tts.speaker import FishSpeaker
 
 __all__ = [
@@ -23,6 +30,7 @@ __all__ = [
     "Chat",
     "DuplexContext",
     "TurnInput",
+    "chat_file",
     "session_context",
     "session_speaker",
 ]
@@ -41,14 +49,14 @@ class CarryOver:
     """
 
     clip: BargeIn | None = None
-    resume: str = ""
+    resume: Unheard | None = None
 
     @property
     def barged(self) -> bool:
         """Whether a barge-in left speech for the next listen."""
         return self.clip is not None
 
-    def keep(self, clip: BargeIn, resume: str) -> None:
+    def keep(self, clip: BargeIn, resume: Unheard | None) -> None:
         """Hold the clip that cut a reply off, and what of the reply was not heard.
 
         Parameters
@@ -56,8 +64,9 @@ class CarryOver:
         clip : BargeIn
             The speech that tripped the barge-in, where the mic was after it, and the
             level the gate admitted it at.
-        resume : str
-            The unheard rest of the reply. Empty when none of it played.
+        resume : Unheard or None
+            The unheard rest of the reply. None when none of it played, or too little is
+            left to speak again.
         """
         self.clip = clip
         self.resume = resume
@@ -67,9 +76,9 @@ class CarryOver:
         clip, self.clip = self.clip, None
         return clip
 
-    def take_resume(self) -> str:
+    def take_resume(self) -> Unheard | None:
         """Return the unheard rest of the cut reply and forget it."""
-        resume, self.resume = self.resume, ""
+        resume, self.resume = self.resume, None
         return resume
 
 
@@ -97,22 +106,76 @@ class TurnInput:
 
 @dataclass(slots=True)
 class Chat:
-    """The conversation with the model: the backend, the history, and a reply written ahead.
+    """The conversation with the model: the backend, the record, and a reply written ahead.
 
     Attributes
     ----------
     backend : ChatBackend
         Streams the model's replies.
-    history : History
-        What was said so far.
+    history : Conversation
+        Every turn so far, as the user heard it.
+    view : HistoryView
+        Which of those turns a request sends, and how much of their cues.
     speculation : Speculation or None
         A reply being written for a turn the recogniser thinks is probably over. Hearing
         starts it, and the reply uses it if the same words are confirmed.
+    file : ChatFile or None
+        Where ``save`` writes the record. None when chats are not saved.
     """
 
     backend: ChatBackend
-    history: History
+    history: Conversation
+    view: HistoryView
     speculation: Speculation | None = None
+    file: ChatFile | None = None
+    _failed_file: Path | None = field(default=None, repr=False, compare=False)
+
+    async def save(self) -> None:
+        """Write the record to its file, off the event loop. A failure warns once per file.
+
+        Notes
+        -----
+        Call it after each turn and after each edit, from the session loop only, one save
+        at a time, so there is one writer. A chat with no turns is not written unless its
+        file is already there, as it is for a resumed chat whose turns were all deleted.
+        """
+        file = self.file
+        if file is None or (not self.history.turns and not file.path.exists()):
+            return
+        try:
+            # A copy, so the loop can go on changing the record while the file is written.
+            await asyncio.to_thread(file.save, self.history.copy())
+        except OSError as exc:
+            if self._failed_file != file.path:
+                self._failed_file = file.path
+                warn(f"fish-voice: cannot save the chat to {file.path}: {exc}")
+
+    def shown(self) -> ChatShown:
+        """Return the record as a display draws it, with which turns the model is sent.
+
+        Returns
+        -------
+        ChatShown
+            Every turn, the ids ``view`` sends, and the file.
+        """
+        sent = frozenset(turn.id for turn in self.view.sent(self.history))
+        path = None if self.file is None else self.file.path
+        return ChatShown(self.history.id, tuple(self.history.turns), sent, path)
+
+    def messages(self, tone: tuple[str, ...] = ()) -> list[ChatMessage]:
+        """Return the messages the next reply is asked for with.
+
+        Parameters
+        ----------
+        tone : tuple of str, optional
+            How the last line sounded. It goes into this request only, never into the record.
+
+        Returns
+        -------
+        list of ChatMessage
+            ``view`` applied to ``history``.
+        """
+        return self.view.messages(self.history, tone)
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,6 +208,30 @@ class DuplexContext:
     tts: FishSpeaker
     asr_http: httpx.AsyncClient
     sink_latency: SinkLatency
+
+
+def chat_file(
+    config: VoiceCliConfig, history: Conversation, saved: SavedChat | None = None
+) -> ChatFile | None:
+    """Say where a chat is saved.
+
+    Parameters
+    ----------
+    config : VoiceCliConfig
+        ``save_chats`` and ``chat_dir`` decide whether chats are saved, and where.
+    history : Conversation
+        The chat, whose id a new file is named for.
+    saved : SavedChat or None, optional
+        The saved chat it was opened from, whose file it keeps.
+
+    Returns
+    -------
+    ChatFile or None
+        The saved chat's file, or a new one in ``chat_dir``. None when chats are not saved.
+    """
+    if not config.save_chats or config.chat_dir is None:
+        return None
+    return saved.file if saved is not None else ChatFile.new(config.chat_dir, history)
 
 
 def session_speaker(config: VoiceCliConfig) -> FishSpeaker:
@@ -181,6 +268,7 @@ def session_context(
     device: str | int | None = None,
     muted: Callable[[], bool] = never,
     full_screen: bool = False,
+    resumed: SavedChat | None = None,
 ) -> DuplexContext:
     """Assemble one session's context from its settings and what it holds open.
 
@@ -207,25 +295,34 @@ def session_context(
     full_screen : bool, optional
         Whether the session runs in the full-screen app, which decides an ``auto``
         ``output_latency``.
+    resumed : SavedChat or None, optional
+        A saved chat to go on with. Its turns and id are kept, and so is its file, which
+        the session keeps writing to. The prompt and seed are the ones in ``config``.
 
     Returns
     -------
     DuplexContext
-        The context with the opening history: the system prompt, and the pinned seed
-        exchange when the prompt asks for one.
+        The context with the opening conversation: the system prompt, the pinned seed
+        exchange when the prompt asks for one, and the resumed turns. The chat has a file
+        when ``config`` saves chats.
     """
     # One input for the whole session, so nothing is lost between listens. The echo
     # canceller lives with it: the mic cleans every frame and the speaker feeds it.
     mic = open_mic(EchoCanceller(config.aec))
+    prompt = config.prompt
+    if resumed is None:
+        history = Conversation.opening(prompt.text, seed=prompt.pin_seed)
+    else:
+        history = resumed.conversation.reopened(prompt.text, seed=prompt.pin_seed)
     return DuplexContext(
         config=config,
         device=device,
         turn_input=TurnInput(session=session, mic=mic, muted=muted),
         chat=Chat(
             backend,
-            History.opening(
-                config.prompt.text, seed=config.prompt.pin_seed, turns=config.history_turns
-            ),
+            history,
+            HistoryView(config.history_turns, config.history_cue_turns),
+            file=chat_file(config, history, resumed),
         ),
         tts=tts,
         asr_http=asr_http,

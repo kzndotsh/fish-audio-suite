@@ -14,7 +14,7 @@ from fish_audio_suite_voice.config.settings import (
     load_config,
     system_prompt_from_file,
 )
-from fish_audio_suite_voice.session.history import History
+from fish_audio_suite_voice.session.conversation import Conversation, HistoryView
 
 CARD = "You are Mira, a dry-witted ship's engineer. Stay in character."
 
@@ -41,9 +41,8 @@ def test_a_character_file_comes_first_and_keeps_the_voice_rules(
 
 
 def test_a_character_file_still_pins_the_cue_example() -> None:
-    opened = History.opening(f"{CARD}\n\n{DEFAULT_SYSTEM_PROMPT}", seed=True, turns=1)
-    assert opened.pinned == 3
-    assert opened.messages[1]["role"] == "user"
+    opened = Conversation.opening(f"{CARD}\n\n{DEFAULT_SYSTEM_PROMPT}", seed=True)
+    assert [m["role"] for m in HistoryView(1).messages(opened)] == ["system", "user", "assistant"]
 
 
 def test_an_inline_prompt_is_used_whole_and_gets_no_cue_example(
@@ -53,7 +52,8 @@ def test_an_inline_prompt_is_used_whole_and_gets_no_cue_example(
     config = load_config()
     assert config.prompt.text == "Answer in one word."
     assert not config.prompt.pin_seed
-    assert History.opening(config.prompt.text, seed=config.prompt.pin_seed, turns=1).pinned == 1
+    opened = Conversation.opening(config.prompt.text, seed=config.prompt.pin_seed)
+    assert HistoryView(1).messages(opened) == [{"role": "system", "content": "Answer in one word."}]
 
 
 def test_a_blank_inline_prompt_still_means_no_system_prompt(
@@ -111,7 +111,7 @@ def test_the_cli_flag_loads_the_file_and_a_bad_path_exits_2(
 ) -> None:
     seen: list[str] = []
 
-    async def fake_loop(config: VoiceCliConfig) -> int:
+    async def fake_loop(config: VoiceCliConfig, **_kwargs: object) -> int:
         seen.append(config.prompt.text)
         return 0
 

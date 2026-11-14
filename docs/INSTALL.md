@@ -263,4 +263,5 @@ This works for both the proxy and `fish-voice`. A self-hosted server allows `chu
 - **`uv tool`:** `uv tool uninstall fish-audio-suite-voice` (or `fish-audio-suite-proxy`).
 - **Docker:** `docker rm -f fish-proxy && docker rmi fish-audio-suite-proxy:latest`.
 - **NixOS:** set `enable = false`, or remove the module, and rebuild.
-- **A clone:** delete the directory. Nothing is written outside it except your `.env`.
+- **A clone:** delete the directory. Nothing is written outside it except your `.env` and the saved chats.
+- **Saved chats:** `fish-voice` keeps them in `~/.local/share/fish-audio-suite/chats` (or `FISH_VOICE_CHAT_DIR`). Delete that folder to remove them.

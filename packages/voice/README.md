@@ -81,9 +81,19 @@ The barge floor follows the room: it is the quiet-percentile of recent mic frame
 
 If talking over the bot does nothing, your voice may be reaching the gate quietly after echo cancellation. `scripts/mic_levels.py` prints your noise floor and speaking level, and raising the mic's own gain (not only software volume) helps more than lowering the thresholds. See [Troubleshooting](../../docs/TROUBLESHOOTING.md#soft-speech-is-missed-or-talking-over-the-bot-does-nothing-because-the-mic-is-quiet) for the numbers and the order to fix things in.
 
+### Saved chats
+
+Each chat is saved, so you can go back to it. After every turn, `fish-voice` writes the whole conversation to one JSON file in `$XDG_DATA_HOME/fish-audio-suite/chats` (`~/.local/share/fish-audio-suite/chats` when `XDG_DATA_HOME` is unset), or in `FISH_VOICE_CHAT_DIR`. The file is named for when the chat started and the start of its id, such as `20261114-124055-3f9c0a1b.json`. It holds what you said, what the model wrote of each reply you heard, and your edits, and only you can read it. A chat with no turns is not saved. Set `FISH_VOICE_SAVE_CHATS=0` to save nothing.
+
+Each file is written to a temporary file first and then renamed over the old one, so a crash leaves the last good copy. If a save fails (a full disk, a folder you cannot write), you get one warning and the session goes on.
+
+`--resume` goes on with the most recently updated chat. `--resume 3f9c` goes on with the chat whose id starts with `3f9c`, and `--resume PATH` with that file. The chat keeps its turns and keeps writing to the same file. It runs with the system prompt you have set now, not the one it was saved with, and a notice says so when the two differ. A file that cannot be read, or that a newer `fish-voice` wrote, stops the run with an error before the session starts.
+
+In the [full-screen app](#the-full-screen-app), Ctrl+O lists the saved chats, newest first, and opens one or starts a new chat, and the conversation pane lets you rewrite, hide or delete turns. See [Editing the chat](#editing-the-chat).
+
 ### History after a barge-in
 
-The chat history gets only what you probably heard. For PCM that is a word-aligned estimate from the bytes played, the speed, and the device buffer. Encoded playback (`mpv`) cannot be cut by length, so an interrupted or failed reply is left out of history.
+The chat history gets only what you probably heard. For PCM that is a word-aligned estimate from the bytes played, the speed, and the device buffer. Encoded playback (`mpv`) cannot be cut by length, so an interrupted or failed reply is left out of history. It keeps the reply as the model wrote it: the `[calm]` lead and the mood carried into each streamed sentence are sent to Fish but not kept, so the model does not learn to open every reply the same way.
 
 If the interrupt turns out not to be speech (Fish hears no words, a backchannel such as "mm-hmm", or a clip too short to keep), the rest of the reply is spoken again from where it was cut, and joins the same history message. A real line drops the rest. Only text the model had already written is resumed.
 
@@ -235,7 +245,27 @@ uv run --package fish-audio-suite-voice --extra cli --extra tui fish-voice --tui
 | Enter | Send the typed line |
 | Escape | Stop the reply (only while the model is thinking or the reply is playing) |
 | F2 | Mute or unmute the mic. Muted, the mic stays closed: no listening between turns and no barge-in watch during a reply. Typing or Esc still interrupts. Unmuting during a reply applies from the next reply |
+| Ctrl+O | List the saved chats, to open one or start a new chat. See [Editing the chat](#editing-the-chat) |
+| Tab | Move between the input line, the conversation and the log. The conversation keys below work only while it has focus |
 | Ctrl+Q | Quit |
+
+#### Editing the chat
+
+The conversation pane shows the whole chat, including the turns of a chat you resumed or opened. Under the pane's border, `model sees 12 of 30 turns` says how many turns the next request sends the model. A turn the model is not sent is dimmed and says why: `hidden from the model` (you hid it) or `older than the model is sent` (it is older than the last `FISH_VOICE_HISTORY_TURNS` visible turns). A reply you rewrote says `edited`, and one you did not hear to the end says `cut off`.
+
+Press Tab until the conversation has focus. The newest turn is selected, and the footer shows the keys:
+
+| Key | Does |
+| --- | --- |
+| Up, Down (or K, J) | Select the turn before or after |
+| E | Rewrite the selected reply in a dialog. Ctrl+S saves, Escape keeps it as it was. A blank reply is refused: hide or delete the turn instead |
+| H | Hide the selected turn from the model, or show it again. The chat keeps it |
+| D or Delete | Delete the selected turn |
+| U | Undo the last edit, hide or delete in this chat |
+
+The model is sent your version from the next request on. What it first wrote is kept in the file, so undo can put it back, but undo does not survive a restart or opening another chat. A change is applied between turns: during a reply it waits until the reply is recorded, and while the mic listens it stops the listen, so speech it had started to hear is dropped. Each change is saved to the chat's file at once.
+
+Ctrl+O lists the saved chats in `FISH_VOICE_CHAT_DIR`, newest first, with the first line, when each started and was last saved, and how many turns it has. The chat open now is marked. Enter on a chat goes on with it between turns, under the system prompt you have set now, and keeps writing to its file. `+ new chat` starts an empty chat in a new file. A file that is not a chat is left out of the list, and one that cannot be read when you open it is reported in the conversation while the current chat goes on.
 
 While it runs, the app asks the sound card for a bigger playback buffer (`FISH_VOICE_OUTPUT_LATENCY`, `high` in `--tui` by default), lets the playback thread in sooner, and collects garbage less often, because drawing the screen shares a process with playback and otherwise makes it click. Ctrl+C is not quit here, because the app uses it to copy. Without the `tui` extra, `fish-voice --tui` says how to install it and exits 2. The panels shrink with the terminal: under 72 columns the timings and the log go, under 22 rows the timings go, and under 50x14 it asks for a bigger window (typing and Ctrl+Q still work). With no terminal on stdin or stdout, `--tui` falls back to the plain loop. `NO_COLOR` is honoured, and `TEXTUAL_ANIMATIONS=none` stops the pulsing "you" line, the listening cursor and the thinking wave from moving. A modern terminal works best; macOS's Terminal.app is limited to 256 colors, so use iTerm2, Kitty, WezTerm or Ghostty there.
 
@@ -394,6 +424,7 @@ To compare detectors on your own room and keyboard, record once and play it thro
 | `--debug` | Event log on stderr. Same as `FISH_VOICE_DEBUG=1` |
 | `--trace` | `--debug` plus mic heartbeats, raw audio events and HTTP lines. Same as `FISH_VOICE_DEBUG=2` |
 | `--log-dir DIR` | Write a complete log of the run to a new file in `DIR`. Overrides `FISH_VOICE_LOG_DIR` |
+| `--resume [CHAT]` | Go on with a [saved chat](#saved-chats): the most recent one, or the one whose id starts with `CHAT`, or the file `CHAT` |
 
 `fish-voice` exits 0 on quit. `--smoke` exits 1 when Fish fails or sends less than 1 kB of audio. Exit 2 means the run could not start or cannot go on:
 
@@ -401,6 +432,7 @@ To compare detectors on your own room and keyboard, record once and play it thro
 - the playback sink cannot play a reply (`file`, an unknown name, or `mpv` not on `PATH`),
 - the voice detector cannot load, or Deepgram is chosen without its key or extra,
 - `--prompt-file` cannot be read, or `--tui` is used without the `tui` extra,
+- `--resume` finds no chat, more than one, or a file it cannot read,
 - PortAudio is missing,
 - Fish ASR or TTS answers 401, 402 or 403,
 - the LLM answers 401, 402 or 404, or no provider serves the model.
@@ -456,6 +488,7 @@ LLM:
 | `FISH_VOICE_SYSTEM_PROMPT` | the kit default | System prompt text, used as written. Set but blank sends no system prompt |
 | `FISH_VOICE_SYSTEM_PROMPT_FILE` | none | A character file. The voice rules follow it, or go where `{{default_prompt}}` is in the file. Beats `FISH_VOICE_SYSTEM_PROMPT`. See characters above |
 | `FISH_VOICE_HISTORY_TURNS` | `20` | User and assistant pairs kept, at least 1. Over it, the oldest quarter goes at once, so the start of the prompt stays the same for several turns and a provider's prompt cache keeps working |
+| `FISH_VOICE_HISTORY_CUE_TURNS` | unset | How many of the latest replies the model is sent with their cues. Older ones are sent without them, because the model copies the cues it sees. `0` sends none. Unset keeps the cues in every reply. The pinned opening example always keeps its cues |
 | `FISH_VOICE_STREAM_TTS` | off | Speak the reply while the model is still writing it. See streaming above |
 | `FISH_VOICE_REPEAT_WINDOW` | `1.5` | Seconds. A line equal to the previous one is dropped only if it ends this soon after the mic opens. 0 never drops a repeat |
 | `FISH_TTS_MOOD_LEAD`, `FISH_TTS_DROP_NARRATION` | off | See roleplay helpers |
@@ -508,6 +541,8 @@ Listen and interrupt. Times are approximate at 30 ms frames.
 | `FISH_VOICE_BARGE_RMS` | `220` | Barge floor seed, above 0. It follows the room, never below this. With automatic gain on, typing can pass 220 ([#58](https://github.com/kzndotsh/fish-audio-suite/issues/58)) |
 | `FISH_VOICE_BARGE_PLAYING_GAIN` | `2.2` | Floor multiplier while the speaker plays and AEC is off. At least 1 |
 | `FISH_VOICE_DEBUG` | off | `1` or `--debug` logs events. `2`, `trace` or `--trace` adds mic heartbeats, raw audio events, HTTP lines and each raw chat event (`llm event`) |
+| `FISH_VOICE_SAVE_CHATS` | on | Save each chat to a file, so `--resume` can go on with it. `0` saves nothing. See [Saved chats](#saved-chats) |
+| `FISH_VOICE_CHAT_DIR` | unset: `$XDG_DATA_HOME/fish-audio-suite/chats` | The folder chats are saved in and `--resume` looks in. Unset, it is under `XDG_DATA_HOME`, or `~/.local/share/fish-audio-suite/chats` when that is unset or not an absolute path. Made readable only by you |
 | `FISH_VOICE_LOG_DIR` | unset | A folder. Each run writes a complete log to a new `fish-voice-<time>.log` there, at the most detailed level (events, mic heartbeats, raw traffic), whatever the screen shows. It also holds what you said and what the model answered, and is readable only by you. `--log-dir DIR` does the same |
 
 `dev.sh` also reads `FISH_VOICE_ENV_FILE` (env file path), `FISH_VOICE_PORTAUDIO_LIB` (library directories), and `FISH_VOICE_NIX=1` (build PortAudio with nix on a host that is not NixOS).

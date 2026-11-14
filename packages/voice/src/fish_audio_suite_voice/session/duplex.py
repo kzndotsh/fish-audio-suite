@@ -6,6 +6,7 @@ import asyncio
 import threading
 import time
 from contextlib import AsyncExitStack
+from typing import assert_never
 
 from fish_audio_suite_voice.asr.outcome import HeardLine
 from fish_audio_suite_voice.asr.pipeline import hear_line
@@ -15,15 +16,32 @@ from fish_audio_suite_voice.capture.mic import SessionMic
 from fish_audio_suite_voice.capture.vad import open_vad
 from fish_audio_suite_voice.config.settings import VoiceCliConfig
 from fish_audio_suite_voice.llm.client import ChatBackend
-from fish_audio_suite_voice.llm.reply import collect_reply, speak_reply, stream_turn
+from fish_audio_suite_voice.llm.reply import (
+    collect_reply,
+    drop_speculation,
+    speak_reply,
+    stream_turn,
+)
 from fish_audio_suite_voice.llm.transports import ChatUnusableError
 from fish_audio_suite_voice.logutil.debug import debug, debug_enabled
 from fish_audio_suite_voice.session.cancel import StopFlag, never
-from fish_audio_suite_voice.session.events import EVENTS, Bye, ExitCode, TurnEnded
+from fish_audio_suite_voice.session.chat_store import ChatLoadError, SavedChat, load_chat
+from fish_audio_suite_voice.session.commands import (
+    ChatCommand,
+    DeleteTurn,
+    EditReply,
+    NewChat,
+    OpenChat,
+    SetHidden,
+    Undo,
+)
+from fish_audio_suite_voice.session.conversation import Conversation
+from fish_audio_suite_voice.session.events import EVENTS, Bye, ExitCode, TurnEnded, notice
 from fish_audio_suite_voice.session.inputs import TurnSource
 from fish_audio_suite_voice.session.latency import LatencySnapshot
 from fish_audio_suite_voice.session.signals import DuplexSession
-from fish_audio_suite_voice.session.state import DuplexContext, session_context
+from fish_audio_suite_voice.session.state import DuplexContext, chat_file, session_context
+from fish_audio_suite_voice.tts.played_text import Unheard
 from fish_audio_suite_voice.tts.speaker import FishSpeaker
 
 __all__ = [
@@ -101,20 +119,13 @@ def _log_cooldown(ctx: DuplexContext, since: int) -> None:
     debug("listen.cooldown {}", cooldown_report(ctx.turn_input.mic.recent(since), tune, vad))
 
 
-async def _resume_reply(ctx: DuplexContext) -> ExitCode | None:
+async def _resume_reply(ctx: DuplexContext, rest: Unheard) -> ExitCode | None:
     """Speak again what a false barge-in cut off."""
-    text = ctx.turn_input.carry.take_resume()
-    debug("barge.resume {} chars", len(text))
+    debug("barge.resume {} chars", len(rest.sent))
     cancel = threading.Event()
     ctx.turn_input.session.turn.bind(cancel, asyncio.Event())
     _, fatal = await speak_reply(
-        ctx,
-        text,
-        cancel,
-        LatencySnapshot(),
-        started=time.perf_counter(),
-        trace_id=None,
-        resumes=True,
+        ctx, rest, cancel, LatencySnapshot(), started=time.perf_counter(), trace_id=None
     )
     if fatal is not None:
         return fatal
@@ -130,6 +141,7 @@ async def duplex_turns(
     *,
     source: TurnSource | None = None,
     full_screen: bool = False,
+    resumed: SavedChat | None = None,
 ) -> ExitCode:
     """Run turns until quit: mic, speech to text, LLM, then one TTS turn per reply.
 
@@ -151,6 +163,9 @@ async def duplex_turns(
     full_screen : bool, optional
         Whether the session runs in the full-screen app, which decides an ``auto``
         ``output_latency`` (see ``config.settings.sink_latency``). False by default.
+    resumed : SavedChat or None, optional
+        A saved chat to go on with, under the prompt in ``c``. A notice says so when the
+        chat was saved with another prompt.
 
     Returns
     -------
@@ -166,6 +181,10 @@ async def duplex_turns(
     by Fish ASR and the TTS websocket for that turn. One mic stream, with the echo
     canceller that cleans it, stays open for the whole session. Barge-in keeps the
     audio that tripped the gate and skips the post-reply cooldown.
+    When ``c`` saves chats, the record is written to its file after each turn.
+    Changes to the chat that ``source`` passes on (``TurnSource.take_commands``) are
+    applied between turns, never during a reply, then saved. A ``ChatShown`` event carries
+    the record when the session starts and after each turn and each change.
     ``session.request_quit`` cancels the in-flight reply and ends the loop. A ``Bye``
     event carrying the exit code is sent once however the session ends, with
     ``ExitCode.CRASH`` when the session raises.
@@ -174,7 +193,14 @@ async def duplex_turns(
     code = ExitCode.CRASH  # replaced below unless the session raises
     try:
         code = await _session(
-            c, tts, device, backend, session=session, source=source, full_screen=full_screen
+            c,
+            tts,
+            device,
+            backend,
+            session=session,
+            source=source,
+            full_screen=full_screen,
+            resumed=resumed,
         )
         return code
     finally:
@@ -190,6 +216,7 @@ async def _session(
     session: DuplexSession,
     source: TurnSource | None,
     full_screen: bool,
+    resumed: SavedChat | None,
 ) -> ExitCode:
     async with AsyncExitStack() as stack:
         asr_http = await stack.enter_async_context(asr_client())
@@ -203,10 +230,17 @@ async def _session(
             device=device,
             muted=(lambda: source.muted) if source is not None else never,
             full_screen=full_screen,
+            resumed=resumed,
         )
-        turn, history = ctx.turn_input, ctx.chat.history
+        if resumed is not None:
+            _announce("resumed", resumed, c.prompt.text)
+        turn, chat = ctx.turn_input, ctx.chat
+        EVENTS.emit(chat.shown())
         last_user = ""
         while True:
+            commands = source.take_commands() if source is not None else []
+            if commands:
+                await _apply_commands(ctx, commands)
             heard = await _next_turn(ctx, source, last_user)
             if heard.kind == "bye":
                 return ExitCode.OK
@@ -216,17 +250,83 @@ async def _session(
                 continue
             if heard.kind == "noise":
                 # The interrupt was not speech, so the cut-off reply goes on.
-                if turn.carry.resume:
-                    code = await _resume_reply(ctx)
+                rest = turn.carry.take_resume()
+                if rest is not None:
+                    code = await _resume_reply(ctx, rest)
+                    await chat.save()
+                    EVENTS.emit(chat.shown())
                     if code is not None:
                         return code
                 continue
             turn.carry.take_resume()  # real speech, so the cut reply stays cut
             last_user = heard.text
-            history.remember_user(heard.text)
+            chat.history.add_user_line(heard.text)
             code = await _answer_line(ctx, heard)
+            await chat.save()
+            EVENTS.emit(chat.shown())
             if code is not None:
                 return code
+
+
+def _announce(verb: str, saved: SavedChat, prompt: str) -> None:
+    turns = len(saved.conversation.turns)
+    notice(f"[{verb} {saved.file.path.name}: {turns} turn{'' if turns == 1 else 's'}]")
+    if saved.conversation.system != prompt:
+        notice("[this chat was saved with another system prompt; the current one is used]")
+
+
+async def _apply_commands(ctx: DuplexContext, commands: list[ChatCommand]) -> None:
+    """Apply the user's changes to the chat, between turns, then save and show it."""
+    chat = ctx.chat
+    # A reply written ahead, or the unheard rest of a cut one, belongs to the chat as it was.
+    drop_speculation(chat)
+    ctx.turn_input.carry.take_resume()
+    for command in commands:
+        if isinstance(command, OpenChat | NewChat):
+            await chat.save()  # the changes so far belong to the chat being left
+        await _apply(ctx, command)
+    await chat.save()
+    EVENTS.emit(chat.shown())
+
+
+async def _apply(ctx: DuplexContext, command: ChatCommand) -> None:
+    chat, prompt = ctx.chat, ctx.config.prompt
+    match command:
+        case OpenChat(path=path):
+            try:
+                saved = await asyncio.to_thread(load_chat, path)
+            except ChatLoadError as exc:
+                notice(f"[cannot open that chat: {exc}]")
+                return
+            chat.history = saved.conversation.reopened(prompt.text, seed=prompt.pin_seed)
+            chat.file = chat_file(ctx.config, chat.history, saved)
+            _announce("opened", saved, prompt.text)
+        case NewChat():
+            chat.history = Conversation.opening(prompt.text, seed=prompt.pin_seed)
+            chat.file = chat_file(ctx.config, chat.history)
+            notice("[new chat]")
+        case Undo():
+            if not chat.history.undo():
+                notice("[nothing to undo]")
+        case EditReply() | DeleteTurn() | SetHidden():
+            _edit(chat.history, command)
+        case _:
+            assert_never(command)
+
+
+def _edit(history: Conversation, command: EditReply | DeleteTurn | SetHidden) -> None:
+    try:
+        match command:
+            case EditReply(turn_id=turn_id, text=text):
+                history.edit_reply(turn_id, text)
+            case DeleteTurn(turn_id=turn_id):
+                history.delete_turn(turn_id)
+            case SetHidden(turn_id=turn_id, hidden=hidden):
+                history.set_hidden(turn_id, hidden=hidden)
+    except KeyError:
+        notice("[that turn is no longer in the chat]")
+    except ValueError:
+        notice("[a reply cannot be blank: hide or delete the turn instead]")
 
 
 async def _next_turn(ctx: DuplexContext, source: TurnSource | None, last_user: str) -> HeardLine:

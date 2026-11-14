@@ -24,6 +24,7 @@ from voice_fakes import ScriptedMic, install_gate
 
 from fish_audio_suite_voice.asr.pipeline import HeardLine
 from fish_audio_suite_voice.session.cancel import StopFlag
+from fish_audio_suite_voice.session.commands import DeleteTurn, Undo
 from fish_audio_suite_voice.session.events import EVENTS, Event, Heard
 from fish_audio_suite_voice.session.inputs import LiveInput
 from fish_audio_suite_voice.session.state import DuplexContext, TurnInput
@@ -73,7 +74,7 @@ def _turn(source: LiveInput, ctx: DuplexContext, mic: _Mic | None = None) -> Hea
 
 def test_a_typed_line_is_answered_like_a_spoken_one() -> None:
     ctx = make_ctx()
-    ctx.turn_input.carry.keep(barge_clip(), "")
+    ctx.turn_input.carry.keep(barge_clip(), None)
     seen: list[Event] = []
     unsubscribe = EVENTS.subscribe(seen.append)
     source = LiveInput()
@@ -315,3 +316,43 @@ def test_a_session_muted_before_its_first_turn_keeps_the_mic_closed() -> None:
     threading.Timer(0.05, lambda: source.submit("typed")).start()
     assert _turn(source, ctx).text == "typed"
     assert mic.released >= 1
+
+
+def test_a_change_to_the_chat_stops_the_listen_so_the_loop_can_apply_it() -> None:
+    ctx = make_ctx()
+    source = LiveInput()
+    mic = _Mic()
+    mic.then(lambda: source.send(Undo()))
+    assert _turn(source, ctx, mic).kind == "again"
+    assert mic.stopped.is_set()
+    assert source.take_commands() == [Undo()]
+    assert source.take_commands() == []
+
+
+def test_a_change_to_the_chat_waits_for_the_reply_instead_of_stopping_it() -> None:
+    ctx = make_ctx()
+    source = LiveInput()
+    source.submit("first")
+    _turn(source, ctx)
+    cancel, _ = _bound_turn(ctx)
+    source.send(DeleteTurn("t1"))
+    source.send(Undo())
+    assert not cancel.is_set()
+    assert _turn(source, ctx).kind == "again"
+    assert source.take_commands() == [DeleteTurn("t1"), Undo()]
+
+
+def test_a_change_wakes_a_muted_wait() -> None:
+    ctx = make_ctx()
+    source = LiveInput()
+    source.mute()
+    mic = _Mic()
+
+    async def run() -> HeardLine:
+        waiting = asyncio.create_task(source.next_turn(ctx.turn_input, mic.hear))
+        await asyncio.sleep(0.05)
+        source.send(Undo())
+        return await asyncio.wait_for(waiting, 5)
+
+    assert asyncio.run(run()).kind == "again"
+    assert mic.calls == 0

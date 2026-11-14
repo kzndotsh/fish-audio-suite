@@ -29,6 +29,7 @@ from fish_audio_suite_voice.config.settings import SystemPrompt, VoiceCliConfig
 from fish_audio_suite_voice.config.tune import DEFAULT_BARGE_RMS
 from fish_audio_suite_voice.llm.tune import LlmTune
 from fish_audio_suite_voice.session.cancel import StopFlag
+from fish_audio_suite_voice.session.commands import ChatCommand
 from fish_audio_suite_voice.session.duplex import duplex_turns
 from fish_audio_suite_voice.session.events import EVENTS
 from fish_audio_suite_voice.session.inputs import Hear, TurnSource
@@ -127,13 +128,19 @@ class ScriptedTurns:
     real listen, with the mic and Fish ASR scripted at their boundaries), or a function of
     the session's ``TurnInput`` that returns one, to act on the mic side first: keep a
     barge-in clip, leave a reply to resume, quit. ``asked`` counts the turns the loop asked
-    for, and ``muted`` is the mute switch the session reads.
+    for, and ``muted`` is the mute switch the session reads. A step may add to ``commands``,
+    the changes to the chat the loop takes before it asks for the next turn.
     """
 
     def __init__(self, *turns: ScriptedTurn) -> None:
         self._turns = list(turns)
         self.asked = 0
         self.muted = False
+        self.commands: list[ChatCommand] = []
+
+    def take_commands(self) -> list[ChatCommand]:
+        commands, self.commands = self.commands, []
+        return commands
 
     async def next_turn(self, turn: TurnInput, hear: Hear) -> HeardLine:
         self.asked += 1

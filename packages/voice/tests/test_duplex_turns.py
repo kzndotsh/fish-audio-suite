@@ -39,6 +39,7 @@ from fish_audio_suite_voice.session.duplex import duplex_turns
 from fish_audio_suite_voice.session.events import ExitCode
 from fish_audio_suite_voice.session.signals import DuplexSession
 from fish_audio_suite_voice.session.state import TurnInput
+from fish_audio_suite_voice.tts.played_text import Unheard
 from fish_audio_suite_voice.tts.speaker import FishSpeaker
 from fish_audio_suite_voice.tts.websocket import TtsResult
 
@@ -61,13 +62,33 @@ def test_a_heard_line_is_answered_by_the_llm_and_spoken_then_the_loop_says_bye(
     assert run_session(quick_config(stream=stream), tts, tokens, source=source) == 0
     # Only the whole-reply path gives the line a lead cue itself. A stream gets one from the scrubber.
     assert said == ["Hello there friend." if stream else "[calm] Hello there friend."] * 2
-    # The next request carries the line and what was spoken of its reply.
+    # The next request carries the line and what the model wrote of its reply, without the
+    # lead cue only Fish was sent.
     assert asked[1][-3:] == [
         {"role": "user", "content": "hi there"},
-        {"role": "assistant", "content": said[0]},
+        {"role": "assistant", "content": "Hello there friend."},
         {"role": "user", "content": "and then?"},
     ]
     assert "first audio" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(("cue_turns", "sent"), [(None, "[sad] Hi."), (1, "[sad] Hi."), (0, "Hi.")])
+def test_older_replies_reach_the_model_without_cues_when_the_setting_says_so(
+    monkeypatch: pytest.MonkeyPatch, cue_turns: int | None, sent: str
+) -> None:
+    tts = FishSpeaker(api_key="k", voice_id="voice")
+    install_gate(monkeypatch)
+    speak_with_fakes(monkeypatch, tts)
+    asked: list[list[ChatMessage]] = []
+
+    async def tokens(messages: list[ChatMessage], **_kwargs: object) -> AsyncIterator[str]:
+        asked.append(copy.deepcopy(messages))
+        yield "[sad] Hi."
+
+    source = ScriptedTurns(heard_line("hello"), heard_line("and then?"))
+    config = replace(quick_config(), history_cue_turns=cue_turns)
+    assert run_session(config, tts, tokens, source=source) == 0
+    assert asked[1][-2] == {"role": "assistant", "content": sent}
 
 
 def test_each_listen_step_is_told_the_previous_line(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -168,7 +189,7 @@ def test_a_barge_in_skips_the_cooldown(monkeypatch: pytest.MonkeyPatch) -> None:
     speak_with_fakes(monkeypatch, tts)
 
     def barged(turn: TurnInput) -> HeardLine:
-        turn.carry.keep(barge_clip(), "")  # the user spoke over the reply
+        turn.carry.keep(barge_clip(), None)  # the user spoke over the reply
         return heard_line("hello")
 
     # A 30 s cooldown would trip the 5 s timeout in run_session if it were waited out.
@@ -185,7 +206,7 @@ def test_a_failing_resume_ends_the_loop_with_code_2(monkeypatch: pytest.MonkeyPa
     set_tts(monkeypatch, tts, speak=broken)
 
     def interrupted_by_noise(turn: TurnInput) -> HeardLine:
-        turn.carry.resume = "the rest of the reply"
+        turn.carry.resume = Unheard("the rest of the reply", "the rest of the reply")
         return HeardLine("noise")
 
     assert run_session(quick_config(), tts, source=ScriptedTurns(interrupted_by_noise)) == 2
@@ -257,7 +278,7 @@ def _logged_cooldowns(
 
     def first_turn(turn: TurnInput) -> HeardLine:
         if barged:
-            turn.carry.keep(barge_clip(), "")  # the user spoke over the reply
+            turn.carry.keep(barge_clip(), None)  # the user spoke over the reply
         return heard_line("hi there")
 
     quiet = b"\x00\x00" * 480

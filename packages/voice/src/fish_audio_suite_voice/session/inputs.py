@@ -1,4 +1,4 @@
-"""Where the next turn comes from: the mic, or text typed into a display."""
+"""Where the next turn comes from: the mic, or text typed into a display, and the display's edits."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from typing import Protocol
 from fish_audio_suite_voice.asr.outcome import HeardLine
 from fish_audio_suite_voice.logutil.debug import mark_turn
 from fish_audio_suite_voice.session.cancel import StopFlag
+from fish_audio_suite_voice.session.commands import ChatCommand
 from fish_audio_suite_voice.session.events import EVENTS, Heard
 from fish_audio_suite_voice.session.signals import DuplexSession
 from fish_audio_suite_voice.session.state import TurnInput
@@ -35,6 +36,16 @@ class TurnSource(Protocol):
         """Whether the user has muted the mic, with its device closed."""
         ...
 
+    def take_commands(self) -> list[ChatCommand]:
+        """Return the changes to the chat asked for since the last call, and forget them.
+
+        Returns
+        -------
+        list of ChatCommand
+            Oldest first. Empty when there are none, as from a source with no display.
+        """
+        ...
+
     async def next_turn(self, turn: TurnInput, hear: Hear) -> HeardLine:
         """Wait for the next turn.
 
@@ -55,11 +66,11 @@ class TurnSource(Protocol):
 
 
 class LiveInput:
-    """The mic, plus typed lines and a mute switch, for a display to drive.
+    """The mic, plus typed lines, a mute switch and edits to the chat, for a display to drive.
 
     Notes
     -----
-    ``submit``, ``mute``, ``unmute`` and ``toggle_mute`` are safe to call from any
+    ``submit``, ``send``, ``mute``, ``unmute`` and ``toggle_mute`` are safe to call from any
     thread. A typed line stops the mic at once and is answered like a spoken one.
     Muting closes the mic device at once, and the session then waits for a typed
     line, ``unmute`` or quit. There is no barge-in watch while muted. A reply that
@@ -73,6 +84,7 @@ class LiveInput:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._typed: deque[str] = deque()
+        self._commands: deque[ChatCommand] = deque()
         self._muted = False
         # Set to stop a recording in progress: a typed line, or a change of mute.
         self._interrupt = threading.Event()
@@ -110,6 +122,38 @@ class LiveInput:
         self._note_change()
         if interrupt:
             self.stop_reply()
+
+    def send(self, command: ChatCommand) -> None:
+        """Ask the session to change the chat between turns.
+
+        Parameters
+        ----------
+        command : ChatCommand
+            The change.
+
+        Notes
+        -----
+        A reply in flight is not stopped: the change waits until it is recorded. While the
+        session is listening, the listen stops so the change is applied at once, and speech
+        it had started to hear is dropped, as for a typed line.
+        """
+        with self._lock:
+            self._commands.append(command)
+        self._interrupt.set()
+        self._note_change()
+
+    def take_commands(self) -> list[ChatCommand]:
+        """Return the changes asked for since the last call, and forget them.
+
+        Returns
+        -------
+        list of ChatCommand
+            Oldest first.
+        """
+        with self._lock:
+            commands = list(self._commands)
+            self._commands.clear()
+        return commands
 
     def mute(self) -> None:
         """Close the mic device now, and stop a recording in progress."""
@@ -173,6 +217,10 @@ class LiveInput:
         with self._lock:
             return bool(self._typed)
 
+    def _has_commands(self) -> bool:
+        with self._lock:
+            return bool(self._commands)
+
     def _join(self, turn: TurnInput) -> asyncio.Event:
         """Meet the session on its first turn: its loop, its mic and its quit."""
         loop = asyncio.get_running_loop()
@@ -198,11 +246,14 @@ class LiveInput:
         Returns
         -------
         HeardLine
-            The typed line or the heard one, ``bye`` on quit.
+            The typed line or the heard one, ``bye`` on quit, ``again`` when a change to
+            the chat is waiting, so the loop applies it.
         """
         changed = self._join(turn)
         quit_requested = turn.session.quit_requested
         while True:
+            if self._has_commands():
+                return HeardLine("again")
             typed = self._take_typed()
             if typed is not None:
                 return self._typed_line(turn, typed)
@@ -211,12 +262,17 @@ class LiveInput:
             if self._muted:
                 turn.mic.release()  # muted before the first turn: nothing had it yet
                 changed.clear()
-                if not self._muted or self._has_typed() or quit_requested.is_set():
+                if (
+                    not self._muted
+                    or self._has_typed()
+                    or self._has_commands()
+                    or quit_requested.is_set()
+                ):
                     continue
                 await changed.wait()
                 continue
             self._interrupt.clear()
-            if self._has_typed() or self._muted:
+            if self._has_typed() or self._has_commands() or self._muted:
                 continue
             heard = await hear(self._interrupt)
             if self._interrupt.is_set() and not quit_requested.is_set():

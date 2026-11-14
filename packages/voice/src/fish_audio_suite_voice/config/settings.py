@@ -19,8 +19,10 @@ from fish_audio_suite_kit import (
     strip_base,
 )
 from fish_audio_suite_voice.config.env import (
+    IGNORED,
     FloatSetting,
     IntSetting,
+    check_range,
     read_choice,
     read_flag,
     read_text,
@@ -34,6 +36,7 @@ from fish_audio_suite_voice.logutil.debug import warn
 from fish_audio_suite_voice.tts.tune import TtsTune
 
 __all__ = [
+    "DEFAULT_CHAT_DIR",
     "DEFAULT_HISTORY_TURNS",
     "DEFAULT_REPEAT_WINDOW_S",
     "OUTPUT_LATENCIES",
@@ -73,8 +76,14 @@ _PROMPT_ENV: Final = "FISH_VOICE_SYSTEM_PROMPT"
 _PROMPT_FILE_ENV: Final = "FISH_VOICE_SYSTEM_PROMPT_FILE"
 # An unknown word for these keeps the default and says which words there are.
 _USE_ONE_OF: Final = "fish-voice: ignoring {name}={value!r}, use {one_of}"
+# Where chats are saved when neither FISH_VOICE_CHAT_DIR nor XDG_DATA_HOME is set. ``~`` is
+# expanded where the folder is used, so nothing here reads the home directory.
+DEFAULT_CHAT_DIR: Final = Path("~/.local/share/fish-audio-suite/chats")
+_CHAT_DIR_UNDER_DATA: Final = Path("fish-audio-suite", "chats")
 # Read by ``load_config`` and checked by ``VoiceCliConfig`` with the same range.
 _HISTORY_TURNS = IntSetting("FISH_VOICE_HISTORY_TURNS", DEFAULT_HISTORY_TURNS, lo=_HISTORY_TURNS_LO)
+# Unset, every reply the model is sent keeps its cues.
+_HISTORY_CUE_TURNS_ENV: Final = "FISH_VOICE_HISTORY_CUE_TURNS"
 _REPEAT_WINDOW = FloatSetting(
     "FISH_VOICE_REPEAT_WINDOW", DEFAULT_REPEAT_WINDOW_S, lo=_REPEAT_WINDOW_LO_S
 )
@@ -141,6 +150,9 @@ class VoiceCliConfig:
         note about it for that turn. Experimental, and off by default.
     history_turns : int
         User and assistant pairs kept in the chat history.
+    history_cue_turns : int or None
+        How many of the latest replies the model is sent with their cues. Older ones are
+        sent without. None keeps the cues in every reply.
     repeat_window_s : float
         A transcript equal to the previous line is dropped only when it ends
         within this many seconds of the mic opening. 0 never drops a repeat.
@@ -157,6 +169,11 @@ class VoiceCliConfig:
         The sound card's playback buffer: ``"low"`` or ``"high"`` (bigger, so a busy moment
         does not make it run dry and click). ``"auto"`` is decided by ``sink_latency`` when
         the session starts.
+    chat_dir : Path or None
+        The folder chats are saved in and ``--resume`` looks in. ``~`` is expanded where it
+        is used. None, as in a config built in code, saves nothing.
+    save_chats : bool
+        Save each chat to ``chat_dir``. Off, ``--resume`` still reads from it.
 
     Notes
     -----
@@ -184,11 +201,14 @@ class VoiceCliConfig:
     turn: TurnTune = field(default_factory=TurnTune)
     hear_tone: bool = False
     history_turns: int = DEFAULT_HISTORY_TURNS
+    history_cue_turns: int | None = None
     repeat_window_s: float = DEFAULT_REPEAT_WINDOW_S
     mood_lead: bool = False
     tts_cues: TtsCues = "official"
     drop_narration: bool = False
     stream_tts: bool = False
+    chat_dir: Path | None = None
+    save_chats: bool = True
 
     def __post_init__(self) -> None:
         """Reject a history or repeat window ``load_config`` would not give.
@@ -196,9 +216,12 @@ class VoiceCliConfig:
         Raises
         ------
         ValueError
-            When ``history_turns`` is under 1 or ``repeat_window_s`` is negative.
+            When ``history_turns`` is under 1, ``history_cue_turns`` or ``repeat_window_s``
+            is negative.
         """
         _HISTORY_TURNS.check("VoiceCliConfig.history_turns", self.history_turns)
+        if self.history_cue_turns is not None:
+            check_range("VoiceCliConfig.history_cue_turns", self.history_cue_turns, lo=0)
         _REPEAT_WINDOW.check("VoiceCliConfig.repeat_window_s", self.repeat_window_s)
 
     @property
@@ -346,12 +369,38 @@ def load_config() -> VoiceCliConfig:
         turn=TurnTune.from_env(),
         hear_tone=read_flag("FISH_VOICE_HEAR_TONE", default=False),
         history_turns=_HISTORY_TURNS.read(),
+        history_cue_turns=_history_cue_turns(),
         repeat_window_s=_REPEAT_WINDOW.read(),
         mood_lead=read_flag("FISH_TTS_MOOD_LEAD", default=False),
         tts_cues=read_choice("FISH_TTS_CUES", "official", TTS_CUE_MODES, warning=_USE_ONE_OF),
         drop_narration=read_flag("FISH_TTS_DROP_NARRATION", default=False),
         stream_tts=read_flag("FISH_VOICE_STREAM_TTS", default=False),
+        chat_dir=_chat_dir(),
+        save_chats=read_flag("FISH_VOICE_SAVE_CHATS", default=True),
     )
+
+
+def _chat_dir() -> Path:
+    """Read where chats are saved: the setting, else under the XDG data folder."""
+    chosen = read_text("FISH_VOICE_CHAT_DIR")
+    if chosen:
+        return Path(chosen)
+    # The XDG spec says a relative XDG_DATA_HOME is ignored.
+    data_home = read_text("XDG_DATA_HOME")
+    if data_home and Path(data_home).is_absolute():
+        return Path(data_home) / _CHAT_DIR_UNDER_DATA
+    return DEFAULT_CHAT_DIR
+
+
+def _history_cue_turns() -> int | None:
+    """Read how many of the latest replies keep their cues, or None for all of them."""
+    raw = read_text(_HISTORY_CUE_TURNS_ENV)
+    if not raw:
+        return None
+    if raw.isascii() and raw.isdigit():
+        return int(raw)
+    warn(IGNORED.format(name=_HISTORY_CUE_TURNS_ENV, value=raw, default="the cues in every reply"))
+    return None
 
 
 # A character card is a few KB. This stops a wrong path (a log, a binary) from

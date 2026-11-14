@@ -16,8 +16,10 @@ from textual.geometry import Region
 from textual.pilot import Pilot
 from textual.widgets import Input, Log, Static
 
+from fish_audio_suite_voice.cli import history_pane
 from fish_audio_suite_voice.cli import tui as tui_module
-from fish_audio_suite_voice.cli.tui import Conversation, Timings, VoiceApp, Waveform
+from fish_audio_suite_voice.cli.history_pane import Conversation
+from fish_audio_suite_voice.cli.tui import Timings, VoiceApp, Waveform
 from fish_audio_suite_voice.session.events import (
     BargedIn,
     Bye,
@@ -429,7 +431,7 @@ class _ConversationApp(App[None]):
     """Hosts a ``Conversation`` alone, to test it without a session."""
 
     def compose(self) -> ComposeResult:
-        yield Conversation()
+        yield Conversation(send=lambda _command: None)
 
 
 def _conversation_lines(conversation: Conversation) -> list[str]:
@@ -547,7 +549,7 @@ async def _settled(pilot: Pilot[int], check: Callable[[], bool], timeout_s: floa
 
 
 def test_the_pulsing_line_goes_away_when_no_words_follow(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(tui_module, "_HEARING_HOLD_S", 0.2)
+    monkeypatch.setattr(history_pane, "_HEARING_HOLD_S", 0.2)
     harness = _Harness()
 
     async def scenario(pilot: Pilot[int]) -> None:
@@ -1332,7 +1334,7 @@ def test_the_words_appear_on_the_you_line_as_they_are_recognised_then_become_the
 def test_words_that_are_never_confirmed_do_not_stay_on_screen(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(tui_module, "_HEARING_HOLD_S", 0.2)
+    monkeypatch.setattr(history_pane, "_HEARING_HOLD_S", 0.2)
     harness = _Harness()
 
     async def scenario(pilot: Pilot[int]) -> None:

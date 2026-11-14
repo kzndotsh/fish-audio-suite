@@ -105,7 +105,7 @@ def test_a_batch_turn_reports_the_silence_it_waited_out(monkeypatch: pytest.Monk
 def test_a_barge_in_clip_is_never_a_stale_copy(monkeypatch: pytest.MonkeyPatch) -> None:
     ctx = make_ctx(asr=ScriptedAsr(monkeypatch, "hello there friend"))
     clip = barge_clip(b"clip", since=42)
-    ctx.turn_input.carry.keep(clip, "")
+    ctx.turn_input.carry.keep(clip, None)
     recordings = ScriptedRecordings(monkeypatch, b"wav")
     heard = asyncio.run(hear_line(ctx, "hello there friend"))
     # The listen starts from the clip and reads on after it.
@@ -430,7 +430,7 @@ def test_hear_line_answers_a_yeah_unless_it_was_said_over_the_reply(
 ) -> None:
     ctx = make_ctx(asr=ScriptedAsr(monkeypatch, "Yeah."))
     if barge_prefix:
-        ctx.turn_input.carry.keep(barge_clip(barge_prefix), "")
+        ctx.turn_input.carry.keep(barge_clip(barge_prefix), None)
     ScriptedRecordings(monkeypatch, b"RIFFwav")
     assert asyncio.run(hear_line(ctx, "")).kind == kind
 
