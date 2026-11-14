@@ -30,11 +30,11 @@ import threading
 import time
 from collections.abc import Sequence
 
-from fish_audio_suite_voice.latency import percentile
-from fish_audio_suite_voice.mic import SessionMic
-from fish_audio_suite_voice.pcm import FULL_SCALE, MIC_LEVEL_EVERY_FRAMES, pcm_rms
-from fish_audio_suite_voice.portaudio import parse_device
-from fish_audio_suite_voice.session_view import noise_floor_db, speech_level_db
+from fish_audio_suite_voice.capture.mic import SessionMic
+from fish_audio_suite_voice.capture.pcm import FULL_SCALE, MIC_LEVEL_EVERY_FRAMES, pcm_rms
+from fish_audio_suite_voice.capture.portaudio import parse_device
+from fish_audio_suite_voice.cli.session_view import noise_floor_db, speech_level_db
+from fish_audio_suite_voice.session.latency import percentile
 
 _SILENCE_DB = -90.0
 _BAR_FROM_DB = -70.0  # a bar is empty at this level and full at 0 dB

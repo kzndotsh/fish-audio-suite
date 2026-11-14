@@ -10,16 +10,16 @@ import numpy as np
 import pytest
 from wire_helpers import FakeOutputStream, open_sounddevice_sink
 
-from fish_audio_suite_voice.aec import EchoCanceller, FarEndTap, resample_int16
-from fish_audio_suite_voice.floor import AdaptiveFloor
-from fish_audio_suite_voice.pcm import pcm_rms
-from fish_audio_suite_voice.playback import (
+from fish_audio_suite_voice.capture.aec import EchoCanceller, FarEndTap, resample_int16
+from fish_audio_suite_voice.capture.energy_floor import AdaptiveFloor
+from fish_audio_suite_voice.capture.pcm import pcm_rms
+from fish_audio_suite_voice.config.tune import AecTune
+from fish_audio_suite_voice.tts.playback import (
     SounddeviceSink,
     dac_slice_bytes,
     iter_pcm_slices,
     make_sink,
 )
-from fish_audio_suite_voice.tune import AecTune
 
 
 def test_resample_44100_to_16000_length() -> None:
@@ -253,7 +253,7 @@ def test_sounddevice_sink_records_output_latency(monkeypatch: pytest.MonkeyPatch
         def RawOutputStream(**_kwargs: object) -> Stream:  # noqa: N802
             return Stream()
 
-    monkeypatch.setattr("fish_audio_suite_voice.playback.load_sounddevice", lambda: Sd)
+    monkeypatch.setattr("fish_audio_suite_voice.tts.playback.load_sounddevice", lambda: Sd)
     sink = SounddeviceSink(aec=aec)
     sink.start()
     assert aec.output_latency_s == 0.04
@@ -276,7 +276,7 @@ def test_the_sounddevice_sink_asks_for_the_buffer_size_it_was_given(
             asked.append(kwargs)
             return Stream()
 
-    monkeypatch.setattr("fish_audio_suite_voice.playback.load_sounddevice", lambda: Sd)
+    monkeypatch.setattr("fish_audio_suite_voice.tts.playback.load_sounddevice", lambda: Sd)
     for latency in ("low", "high"):
         sink = make_sink("sounddevice", latency=latency)
         assert isinstance(sink, SounddeviceSink)

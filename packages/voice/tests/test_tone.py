@@ -21,10 +21,10 @@ from session_fakes import (
 from voice_fakes import install_gate
 
 from fish_audio_suite_kit import ChatMessage, normalize_cues, scrub_tts
-from fish_audio_suite_voice.hearing import HeardLine, hear_line
-from fish_audio_suite_voice.history import with_tone_hint
-from fish_audio_suite_voice.speaker import FishSpeaker
-from fish_audio_suite_voice.tune import TurnTune
+from fish_audio_suite_voice.asr.pipeline import HeardLine, hear_line
+from fish_audio_suite_voice.config.tune import TurnTune
+from fish_audio_suite_voice.session.history import with_tone_hint
+from fish_audio_suite_voice.tts.speaker import FishSpeaker
 
 HISTORY: list[ChatMessage] = [
     {"role": "system", "content": "be brief"},

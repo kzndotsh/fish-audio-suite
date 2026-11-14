@@ -4,7 +4,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from fish_audio_suite_voice.spoken import unspoken_text
+from fish_audio_suite_voice.tts.played_text import unspoken_text
 
 SENT = "[curious] Oh, really? [surprised] I'd love to help you with that. [whispering] Tell me more about it."
 

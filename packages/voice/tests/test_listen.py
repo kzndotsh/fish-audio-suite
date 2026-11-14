@@ -11,8 +11,8 @@ import wave
 import pytest
 from voice_fakes import ScriptedMic, install_detector, level_frame
 
-from fish_audio_suite_voice.cancel import StopFlag
-from fish_audio_suite_voice.listen import (
+from fish_audio_suite_voice.asr.result import BargeIn, StreamFallback
+from fish_audio_suite_voice.capture.listen import (
     listen_reject_reason,
     record_utterance,
     spike_start_allowed,
@@ -22,9 +22,8 @@ from fish_audio_suite_voice.listen import (
     trailing_start_hits,
     voice_needed,
 )
-from fish_audio_suite_voice.pcm import FRAME_BYTES, SAMPLE_RATE
-from fish_audio_suite_voice.recognised import BargeIn, StreamFallback
-from fish_audio_suite_voice.tune import (
+from fish_audio_suite_voice.capture.pcm import FRAME_BYTES, SAMPLE_RATE
+from fish_audio_suite_voice.config.tune import (
     DEFAULT_BARGE_HIT_FRAMES,
     DEFAULT_BARGE_RMS,
     DEFAULT_END_SILENCE_FRAMES,
@@ -34,6 +33,7 @@ from fish_audio_suite_voice.tune import (
     MAX_UTTERANCE_FRAMES,
     ListenTune,
 )
+from fish_audio_suite_voice.session.cancel import StopFlag
 
 
 def _stream(

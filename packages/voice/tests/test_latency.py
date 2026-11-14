@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fish_audio_suite_voice.latency import LatencySnapshot
+from fish_audio_suite_voice.session.latency import LatencySnapshot
 
 
 def test_the_timing_line_names_only_the_known_times() -> None:

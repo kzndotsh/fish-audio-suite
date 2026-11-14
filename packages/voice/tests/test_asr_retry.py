@@ -10,9 +10,9 @@ import httpx
 import pytest
 
 from fish_audio_suite_kit import FishHttpError
-from fish_audio_suite_voice.asr import AsrResult
-from fish_audio_suite_voice.asr import fish_asr as fish_asr_result
-from fish_audio_suite_voice.log_setup import configure_voice_logging
+from fish_audio_suite_voice.asr.transcribe import AsrResult
+from fish_audio_suite_voice.asr.transcribe import fish_asr as fish_asr_result
+from fish_audio_suite_voice.logutil.setup import configure_voice_logging
 
 
 async def fish_asr(*args: Any, **kwargs: Any) -> str:
@@ -59,7 +59,7 @@ class _FakeAsrClient:
 @pytest.fixture
 def sleeps(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:
     mock = AsyncMock()
-    monkeypatch.setattr("fish_audio_suite_voice.pause.asyncio.sleep", mock)
+    monkeypatch.setattr("fish_audio_suite_voice.session.pause.asyncio.sleep", mock)
     return mock
 
 
@@ -72,7 +72,9 @@ def test_asr_language_cannot_inject_a_form_part(monkeypatch: pytest.MonkeyPatch)
             return await super().post(*_args, **kwargs)
 
     client = _RecordingClient([_FakeAsrResponse(200, payload={"text": "hello there"})])
-    monkeypatch.setattr("fish_audio_suite_voice.asr.httpx.AsyncClient", lambda **_kwargs: client)
+    monkeypatch.setattr(
+        "fish_audio_suite_voice.asr.transcribe.httpx.AsyncClient", lambda **_kwargs: client
+    )
     heard = asyncio.run(
         fish_asr(
             b"wav",
@@ -93,7 +95,7 @@ def test_asr_connect_timeout_is_shorter_than_read(monkeypatch: pytest.MonkeyPatc
             super().__init__([_FakeAsrResponse(200, payload={"text": "hi"})])
             seen.update(kwargs)
 
-    monkeypatch.setattr("fish_audio_suite_voice.asr.httpx.AsyncClient", _RecordingClient)
+    monkeypatch.setattr("fish_audio_suite_voice.asr.transcribe.httpx.AsyncClient", _RecordingClient)
     assert asyncio.run(fish_asr(b"wav", "key", base="https://api.fish.audio")) == "hi"
     timeout = seen["timeout"]
     assert isinstance(timeout, httpx.Timeout)
@@ -107,7 +109,7 @@ def _install_asr(
 ) -> _FakeAsrClient:
     client = _FakeAsrClient(outcomes)
     monkeypatch.setattr(
-        "fish_audio_suite_voice.asr.httpx.AsyncClient",
+        "fish_audio_suite_voice.asr.transcribe.httpx.AsyncClient",
         lambda **_kwargs: client,
     )
     return client
@@ -215,7 +217,7 @@ def test_asr_retry_does_not_post_again_after_quit(monkeypatch: pytest.MonkeyPatc
     async def fake_sleep(_seconds: float) -> None:
         stop.set()
 
-    monkeypatch.setattr("fish_audio_suite_voice.pause.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("fish_audio_suite_voice.session.pause.asyncio.sleep", fake_sleep)
     client = _install_asr(
         monkeypatch,
         [
@@ -245,7 +247,7 @@ def test_asr_429_waits_at_least_retry_after(monkeypatch: pytest.MonkeyPatch) -> 
     async def fake_sleep(seconds: float) -> None:
         slept.append(seconds)
 
-    monkeypatch.setattr("fish_audio_suite_voice.pause.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("fish_audio_suite_voice.session.pause.asyncio.sleep", fake_sleep)
     slow = _FakeAsrResponse(429, text='{"message": "slow down", "status": 429}')
     slow.headers = {"retry-after": "3"}
     _install_asr(monkeypatch, [slow, _FakeAsrResponse(200, payload={"text": "hello there"})])
@@ -261,7 +263,7 @@ def test_asr_ignores_an_unusable_retry_after(monkeypatch: pytest.MonkeyPatch, hi
     async def fake_sleep(seconds: float) -> None:
         slept.append(seconds)
 
-    monkeypatch.setattr("fish_audio_suite_voice.pause.asyncio.sleep", fake_sleep)
+    monkeypatch.setattr("fish_audio_suite_voice.session.pause.asyncio.sleep", fake_sleep)
     slow = _FakeAsrResponse(429, text='{"message": "slow down", "status": 429}')
     slow.headers = {"retry-after": hint}
     _install_asr(monkeypatch, [slow, _FakeAsrResponse(200, payload={"text": "hello there"})])
@@ -386,7 +388,9 @@ def test_asr_sends_the_chosen_model_and_strips_cues(monkeypatch: pytest.MonkeyPa
 
     payload = {"text": "<|speaker:0|> open the door [laughter] please"}
     client = _RecordingClient([_FakeAsrResponse(200, payload=payload)])
-    monkeypatch.setattr("fish_audio_suite_voice.asr.httpx.AsyncClient", lambda **_kwargs: client)
+    monkeypatch.setattr(
+        "fish_audio_suite_voice.asr.transcribe.httpx.AsyncClient", lambda **_kwargs: client
+    )
     heard = asyncio.run(
         fish_asr(b"wav", "key", base="https://api.fish.audio", model="transcribe-1-pro")
     )
@@ -423,7 +427,9 @@ def test_default_model_is_pro_and_its_markers_never_reach_the_llm(
             return await super().post(*_args, **kwargs)
 
     client = _RecordingClient([_FakeAsrResponse(200, payload=_PRO_BODY)])
-    monkeypatch.setattr("fish_audio_suite_voice.asr.httpx.AsyncClient", lambda **_kwargs: client)
+    monkeypatch.setattr(
+        "fish_audio_suite_voice.asr.transcribe.httpx.AsyncClient", lambda **_kwargs: client
+    )
     heard = asyncio.run(fish_asr(b"wav", "key", base="https://api.fish.audio"))
     assert seen["headers"]["model"] == "transcribe-1-pro"
     # What fish_asr returns is the user line the LLM gets: no speaker marker, no cue.
@@ -453,7 +459,9 @@ def test_asr_language_is_reduced_to_a_two_letter_code(
             return await super().post(*_args, **kwargs)
 
     client = _RecordingClient([_FakeAsrResponse(200, payload={"text": "hello there"})])
-    monkeypatch.setattr("fish_audio_suite_voice.asr.httpx.AsyncClient", lambda **_kwargs: client)
+    monkeypatch.setattr(
+        "fish_audio_suite_voice.asr.transcribe.httpx.AsyncClient", lambda **_kwargs: client
+    )
     asyncio.run(fish_asr(b"wav", "key", base="https://api.fish.audio", language=hint))
     assert seen["data"] == sent
 
@@ -507,7 +515,9 @@ _TONE_BODY: dict[str, Any] = {
 
 def _tone_client(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _FakeAsrClient([_FakeAsrResponse(200, payload=_TONE_BODY)])
-    monkeypatch.setattr("fish_audio_suite_voice.asr.httpx.AsyncClient", lambda **_kwargs: client)
+    monkeypatch.setattr(
+        "fish_audio_suite_voice.asr.transcribe.httpx.AsyncClient", lambda **_kwargs: client
+    )
 
 
 def test_tone_is_kept_beside_the_unchanged_text_when_asked(monkeypatch: pytest.MonkeyPatch) -> None:

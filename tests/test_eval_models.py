@@ -15,9 +15,9 @@ from chat_fakes import install_chat
 from loguru import logger
 
 from fish_audio_suite_kit import ChatMessage
-from fish_audio_suite_voice import llm
-from fish_audio_suite_voice.llm_tune import LlmTune
-from fish_audio_suite_voice.log_setup import configure_voice_logging
+from fish_audio_suite_voice.llm import client as llm
+from fish_audio_suite_voice.llm.tune import LlmTune
+from fish_audio_suite_voice.logutil.setup import configure_voice_logging
 
 if TYPE_CHECKING:
     from loguru import Message

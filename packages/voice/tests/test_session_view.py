@@ -10,7 +10,14 @@ from hypothesis import given
 from hypothesis import strategies as st
 from real_mic import BLOCK_S, QUIET_BELOW, RMS, SPEECH_FROM
 
-from fish_audio_suite_voice.events import (
+from fish_audio_suite_voice.cli.session_view import (
+    SessionView,
+    SpeechScale,
+    reduce_view,
+    turn_timings,
+    wave_dots,
+)
+from fish_audio_suite_voice.session.events import (
     BargedIn,
     Bye,
     Event,
@@ -26,14 +33,7 @@ from fish_audio_suite_voice.events import (
     Speaking,
     TurnEnded,
 )
-from fish_audio_suite_voice.latency import LatencySnapshot
-from fish_audio_suite_voice.session_view import (
-    SessionView,
-    SpeechScale,
-    reduce_view,
-    turn_timings,
-    wave_dots,
-)
+from fish_audio_suite_voice.session.latency import LatencySnapshot
 
 
 def _fold(*events: Event, start: SessionView | None = None) -> SessionView:
@@ -283,7 +283,7 @@ def test_a_scale_keeps_the_noise_floor_it_measured_through_a_gap_in_the_audio() 
 
 
 def test_the_turn_summary_leads_with_the_wait_since_the_last_word() -> None:
-    from fish_audio_suite_voice.latency import turn_summary
+    from fish_audio_suite_voice.session.latency import turn_summary
 
     line = turn_summary(LatencySnapshot(first_audio_ms=900.0, end_wait_ms=360.0))
     assert line.startswith("since you stopped 1.26s · first audio 0.90s")

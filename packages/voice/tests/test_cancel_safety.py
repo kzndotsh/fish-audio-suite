@@ -7,10 +7,10 @@ from typing import Any
 
 import pytest
 
-from fish_audio_suite_voice.cancel import is_own_cancel, reap
-from fish_audio_suite_voice.llm import llm_token_stream
-from fish_audio_suite_voice.llm_tune import LlmTune
-from fish_audio_suite_voice.transports import ChatChunk
+from fish_audio_suite_voice.llm.client import llm_token_stream
+from fish_audio_suite_voice.llm.transports import ChatChunk
+from fish_audio_suite_voice.llm.tune import LlmTune
+from fish_audio_suite_voice.session.cancel import is_own_cancel, reap
 
 
 def test_is_own_cancel_needs_a_set_flag() -> None:
@@ -128,7 +128,7 @@ def _stream(
     events: Any,
     cancel: asyncio.Event | None,
 ) -> AsyncIterator[str]:
-    monkeypatch.setattr("fish_audio_suite_voice.llm.chat_events", lambda _call: events)
+    monkeypatch.setattr("fish_audio_suite_voice.llm.client.chat_events", lambda _call: events)
     return llm_token_stream(
         [{"role": "user", "content": "hi"}],
         tune=LlmTune(

@@ -22,27 +22,27 @@ import pytest
 from voice_fakes import ScriptedMic, make_result, set_tts
 
 from fish_audio_suite_kit import ChatMessage
-from fish_audio_suite_voice.cancel import StopFlag
-from fish_audio_suite_voice.config import SystemPrompt, VoiceCliConfig
-from fish_audio_suite_voice.console_sink import ConsoleSink
-from fish_audio_suite_voice.duplex import duplex_turns
-from fish_audio_suite_voice.duplex_state import (
+from fish_audio_suite_voice.asr.outcome import HeardLine
+from fish_audio_suite_voice.asr.result import BargeIn
+from fish_audio_suite_voice.cli.console_sink import ConsoleSink
+from fish_audio_suite_voice.config.settings import SystemPrompt, VoiceCliConfig
+from fish_audio_suite_voice.config.tune import DEFAULT_BARGE_RMS
+from fish_audio_suite_voice.llm.tune import LlmTune
+from fish_audio_suite_voice.session.cancel import StopFlag
+from fish_audio_suite_voice.session.duplex import duplex_turns
+from fish_audio_suite_voice.session.events import EVENTS
+from fish_audio_suite_voice.session.inputs import Hear, TurnSource
+from fish_audio_suite_voice.session.signals import DuplexSession
+from fish_audio_suite_voice.session.state import (
     DuplexContext,
     TurnInput,
     session_context,
     session_speaker,
 )
-from fish_audio_suite_voice.events import EVENTS
-from fish_audio_suite_voice.heard import HeardLine
-from fish_audio_suite_voice.inputs import Hear, TurnSource
-from fish_audio_suite_voice.llm_tune import LlmTune
-from fish_audio_suite_voice.playback import PlaybackSink
-from fish_audio_suite_voice.recognised import BargeIn
-from fish_audio_suite_voice.signals import DuplexSession
-from fish_audio_suite_voice.speaker import FishSpeaker
-from fish_audio_suite_voice.tts_tune import TtsTune
-from fish_audio_suite_voice.tune import DEFAULT_BARGE_RMS
-from fish_audio_suite_voice.wire import TtsResult
+from fish_audio_suite_voice.tts.playback import PlaybackSink
+from fish_audio_suite_voice.tts.speaker import FishSpeaker
+from fish_audio_suite_voice.tts.tune import TtsTune
+from fish_audio_suite_voice.tts.websocket import TtsResult
 
 
 def make_config() -> VoiceCliConfig:
@@ -191,7 +191,7 @@ class ScriptedRecordings:
         self._steps = list(steps)
         self._then = then
         self.calls: list[dict[str, Any]] = []
-        monkeypatch.setattr("fish_audio_suite_voice.hearing.record_utterance", self._record)
+        monkeypatch.setattr("fish_audio_suite_voice.asr.pipeline.record_utterance", self._record)
 
     def _record(self, mic: object, stop: StopFlag, **kwargs: Any) -> bytes | None:
         del mic
@@ -234,7 +234,9 @@ class ScriptedAsr:
         self._delay_s = delay_s
         self._monkeypatch = monkeypatch
         self.clips: list[bytes] = []
-        monkeypatch.setattr("fish_audio_suite_voice.pause.fish_backoff_s", lambda *_a, **_k: 0.0)
+        monkeypatch.setattr(
+            "fish_audio_suite_voice.session.pause.fish_backoff_s", lambda *_a, **_k: 0.0
+        )
 
     async def _answer(self, request: httpx.Request) -> httpx.Response:
         clip = _clip_in(request.content)
@@ -259,7 +261,7 @@ class ScriptedAsr:
 
     def serve_sessions(self) -> None:
         """Answer the ASR client that a session run through ``duplex_turns`` opens."""
-        self._monkeypatch.setattr("fish_audio_suite_voice.duplex.asr_client", self.client)
+        self._monkeypatch.setattr("fish_audio_suite_voice.session.duplex.asr_client", self.client)
 
 
 def _clip_in(body: bytes) -> bytes:

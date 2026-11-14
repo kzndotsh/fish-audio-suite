@@ -14,15 +14,15 @@ import pytest
 from session_fakes import FakeBackend
 from voice_fakes import ScriptedMic
 
-from fish_audio_suite_voice import cli
-from fish_audio_suite_voice.cli import main, run_loop, run_tui
-from fish_audio_suite_voice.config import VoiceCliConfig, load_config
-from fish_audio_suite_voice.debug import DebugLevel
-from fish_audio_suite_voice.duplex_state import session_context, session_speaker
-from fish_audio_suite_voice.events import EVENTS, ExitCode, Listening
-from fish_audio_suite_voice.inputs import LiveInput
-from fish_audio_suite_voice.signals import DuplexSession
-from fish_audio_suite_voice.transports import unusable
+from fish_audio_suite_voice.cli import main as cli
+from fish_audio_suite_voice.cli.main import main, run_loop, run_tui
+from fish_audio_suite_voice.config.settings import VoiceCliConfig, load_config
+from fish_audio_suite_voice.llm.transports import unusable
+from fish_audio_suite_voice.logutil.debug import DebugLevel
+from fish_audio_suite_voice.session.events import EVENTS, ExitCode, Listening
+from fish_audio_suite_voice.session.inputs import LiveInput
+from fish_audio_suite_voice.session.signals import DuplexSession
+from fish_audio_suite_voice.session.state import session_context, session_speaker
 
 
 def _configured(monkeypatch: pytest.MonkeyPatch) -> VoiceCliConfig:
@@ -75,12 +75,14 @@ def test_the_tui_flag_runs_the_app_and_not_the_plain_loop(monkeypatch: pytest.Mo
     async def fake_loop(_c: object) -> int:
         raise AssertionError("the plain loop must not run")
 
-    monkeypatch.setattr("fish_audio_suite_voice.cli.apply_cli_env_files", lambda *_a, **_k: [])
-    monkeypatch.setattr("fish_audio_suite_voice.cli.configure_voice_logging", lambda **_k: None)
-    monkeypatch.setattr("fish_audio_suite_voice.cli.load_config", object)
-    monkeypatch.setattr("fish_audio_suite_voice.cli.warn_if_insecure_base", lambda _c: False)
-    monkeypatch.setattr("fish_audio_suite_voice.cli.run_tui", fake_tui)
-    monkeypatch.setattr("fish_audio_suite_voice.cli.run_loop", fake_loop)
+    monkeypatch.setattr("fish_audio_suite_voice.cli.main.apply_cli_env_files", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        "fish_audio_suite_voice.cli.main.configure_voice_logging", lambda **_k: None
+    )
+    monkeypatch.setattr("fish_audio_suite_voice.cli.main.load_config", object)
+    monkeypatch.setattr("fish_audio_suite_voice.cli.main.warn_if_insecure_base", lambda _c: False)
+    monkeypatch.setattr("fish_audio_suite_voice.cli.main.run_tui", fake_tui)
+    monkeypatch.setattr("fish_audio_suite_voice.cli.main.run_loop", fake_loop)
     _terminal(monkeypatch, stdin=True, stdout=True)
     assert main(["--tui", "--debug"]) == 7
     assert seen["tui"][1] >= DebugLevel.EVENTS
@@ -93,12 +95,14 @@ def test_the_plain_loop_is_still_the_default(monkeypatch: pytest.MonkeyPatch) ->
     async def fake_tui(_c: object, *, debug: DebugLevel) -> int:
         raise AssertionError("the app must not start without --tui")
 
-    monkeypatch.setattr("fish_audio_suite_voice.cli.apply_cli_env_files", lambda *_a, **_k: [])
-    monkeypatch.setattr("fish_audio_suite_voice.cli.configure_voice_logging", lambda **_k: None)
-    monkeypatch.setattr("fish_audio_suite_voice.cli.load_config", object)
-    monkeypatch.setattr("fish_audio_suite_voice.cli.warn_if_insecure_base", lambda _c: False)
-    monkeypatch.setattr("fish_audio_suite_voice.cli.run_loop", fake_loop)
-    monkeypatch.setattr("fish_audio_suite_voice.cli.run_tui", fake_tui)
+    monkeypatch.setattr("fish_audio_suite_voice.cli.main.apply_cli_env_files", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        "fish_audio_suite_voice.cli.main.configure_voice_logging", lambda **_k: None
+    )
+    monkeypatch.setattr("fish_audio_suite_voice.cli.main.load_config", object)
+    monkeypatch.setattr("fish_audio_suite_voice.cli.main.warn_if_insecure_base", lambda _c: False)
+    monkeypatch.setattr("fish_audio_suite_voice.cli.main.run_loop", fake_loop)
+    monkeypatch.setattr("fish_audio_suite_voice.cli.main.run_tui", fake_tui)
     assert main([]) == 3
 
 
@@ -154,7 +158,7 @@ class _Backend:
 
 def _patch_session(monkeypatch: pytest.MonkeyPatch, calls: dict[str, Any]) -> None:
     _FakeApp.instances = []
-    monkeypatch.setattr("fish_audio_suite_voice.tui.VoiceApp", _FakeApp)
+    monkeypatch.setattr("fish_audio_suite_voice.cli.tui.VoiceApp", _FakeApp)
     monkeypatch.setattr(cli, "open_chat_backend", _Backend)
 
     async def fake_duplex(*args: Any, **kwargs: Any) -> int:
@@ -246,7 +250,7 @@ def test_run_tui_returns_the_code_the_app_reports(monkeypatch: pytest.MonkeyPatc
             super().__init__(*args, **kwargs)
             self.code = 2
 
-    monkeypatch.setattr("fish_audio_suite_voice.tui.VoiceApp", _Failing)
+    monkeypatch.setattr("fish_audio_suite_voice.cli.tui.VoiceApp", _Failing)
     assert asyncio.run(run_tui(c, debug=DebugLevel.OFF)) == 2
 
 
@@ -259,12 +263,14 @@ def test_the_tui_flag_falls_back_to_the_plain_loop_without_a_terminal(
     async def fake_loop(_c: object) -> int:
         return 3
 
-    monkeypatch.setattr("fish_audio_suite_voice.cli.apply_cli_env_files", lambda *_a, **_k: [])
-    monkeypatch.setattr("fish_audio_suite_voice.cli.configure_voice_logging", lambda **_k: None)
-    monkeypatch.setattr("fish_audio_suite_voice.cli.load_config", object)
-    monkeypatch.setattr("fish_audio_suite_voice.cli.warn_if_insecure_base", lambda _c: False)
-    monkeypatch.setattr("fish_audio_suite_voice.cli.run_tui", fake_tui)
-    monkeypatch.setattr("fish_audio_suite_voice.cli.run_loop", fake_loop)
+    monkeypatch.setattr("fish_audio_suite_voice.cli.main.apply_cli_env_files", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        "fish_audio_suite_voice.cli.main.configure_voice_logging", lambda **_k: None
+    )
+    monkeypatch.setattr("fish_audio_suite_voice.cli.main.load_config", object)
+    monkeypatch.setattr("fish_audio_suite_voice.cli.main.warn_if_insecure_base", lambda _c: False)
+    monkeypatch.setattr("fish_audio_suite_voice.cli.main.run_tui", fake_tui)
+    monkeypatch.setattr("fish_audio_suite_voice.cli.main.run_loop", fake_loop)
     _terminal(monkeypatch, stdin=True, stdout=False)
     assert main(["--tui"]) == 3
     assert "needs a terminal" in capsys.readouterr().err
@@ -284,12 +290,14 @@ def test_the_app_starts_only_with_both_ends_on_a_tty(
     async def fake_loop(_c: object) -> int:
         return 3
 
-    monkeypatch.setattr("fish_audio_suite_voice.cli.apply_cli_env_files", lambda *_a, **_k: [])
-    monkeypatch.setattr("fish_audio_suite_voice.cli.configure_voice_logging", lambda **_k: None)
-    monkeypatch.setattr("fish_audio_suite_voice.cli.load_config", object)
-    monkeypatch.setattr("fish_audio_suite_voice.cli.warn_if_insecure_base", lambda _c: False)
-    monkeypatch.setattr("fish_audio_suite_voice.cli.run_tui", fake_tui)
-    monkeypatch.setattr("fish_audio_suite_voice.cli.run_loop", fake_loop)
+    monkeypatch.setattr("fish_audio_suite_voice.cli.main.apply_cli_env_files", lambda *_a, **_k: [])
+    monkeypatch.setattr(
+        "fish_audio_suite_voice.cli.main.configure_voice_logging", lambda **_k: None
+    )
+    monkeypatch.setattr("fish_audio_suite_voice.cli.main.load_config", object)
+    monkeypatch.setattr("fish_audio_suite_voice.cli.main.warn_if_insecure_base", lambda _c: False)
+    monkeypatch.setattr("fish_audio_suite_voice.cli.main.run_tui", fake_tui)
+    monkeypatch.setattr("fish_audio_suite_voice.cli.main.run_loop", fake_loop)
     _terminal(monkeypatch, stdin=stdin_tty, stdout=stdout_tty)
     assert main(["--tui"]) == (7 if screen else 3)
 
@@ -303,7 +311,7 @@ def _starts(monkeypatch: pytest.MonkeyPatch, c: VoiceCliConfig) -> int:
 def test_choosing_deepgram_needs_its_key_and_its_extra(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from fish_audio_suite_voice.tune import DeepgramTune, SttTune
+    from fish_audio_suite_voice.config.tune import DeepgramTune, SttTune
 
     base = _configured(monkeypatch)
     fish = replace(base, stt=SttTune(provider="fish"))
@@ -325,7 +333,7 @@ def test_choosing_deepgram_needs_its_key_and_its_extra(
 def test_choosing_fish_realtime_needs_only_its_extra(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from fish_audio_suite_voice.tune import SttTune
+    from fish_audio_suite_voice.config.tune import SttTune
 
     ready = replace(_configured(monkeypatch), stt=SttTune(provider="fish-realtime"))
     # The Fish key is already required, and it is the only one.
@@ -340,7 +348,7 @@ def test_choosing_fish_realtime_needs_only_its_extra(
 def test_a_voice_detector_that_cannot_load_stops_the_start(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    from fish_audio_suite_voice.tune import ListenTune
+    from fish_audio_suite_voice.config.tune import ListenTune
 
     base = _configured(monkeypatch)
     silero = replace(base, listen=ListenTune(vad_engine="silero"))

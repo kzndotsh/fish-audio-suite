@@ -9,13 +9,13 @@ from typing import Any
 import ormsgpack
 import pytest
 
-from fish_audio_suite_voice.fish_realtime import (
+from fish_audio_suite_voice.asr.fish_realtime import (
     FishRealtimeStream,
     parse_realtime_message,
     realtime_config,
     realtime_url,
 )
-from fish_audio_suite_voice.turn_stream import (
+from fish_audio_suite_voice.asr.turn_stream import (
     EagerTurnEnd,
     StreamError,
     StreamWarning,

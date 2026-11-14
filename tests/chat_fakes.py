@@ -10,7 +10,7 @@ import eval_models
 import pytest
 
 from fish_audio_suite_kit import ChatMessage
-from fish_audio_suite_voice.llm_tune import LlmTune
+from fish_audio_suite_voice.llm.tune import LlmTune
 
 type Reply = Callable[[str, list[ChatMessage]], AsyncIterator[str]]
 """Streams the answer a model (the first argument) gives to the messages."""

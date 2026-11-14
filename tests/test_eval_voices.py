@@ -13,7 +13,7 @@ import pytest
 from voice_fakes import make_result
 
 from fish_audio_suite_voice import FileSink
-from fish_audio_suite_voice.wire import TtsResult
+from fish_audio_suite_voice.tts.websocket import TtsResult
 
 
 class _FakeSpeaker:

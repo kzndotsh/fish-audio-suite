@@ -7,8 +7,8 @@ import sys
 
 import pytest
 
-from fish_audio_suite_voice.console_sink import ConsoleSink
-from fish_audio_suite_voice.debug import (
+from fish_audio_suite_voice.cli.console_sink import ConsoleSink
+from fish_audio_suite_voice.logutil.debug import (
     debug,
     debug_enabled,
     debug_level,
@@ -16,8 +16,8 @@ from fish_audio_suite_voice.debug import (
     mark_turn,
     trace,
 )
-from fish_audio_suite_voice.events import EventBus, Heard, ReplyEnd, ReplyToken
-from fish_audio_suite_voice.log_setup import configure_voice_logging
+from fish_audio_suite_voice.logutil.setup import configure_voice_logging
+from fish_audio_suite_voice.session.events import EventBus, Heard, ReplyEnd, ReplyToken
 
 
 def conversation(role: str, text: str) -> None:

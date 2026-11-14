@@ -11,9 +11,9 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 from wire_helpers import RecordingSink, install_fish_audio
 
-from fish_audio_suite_voice.loudness import LoudnessMatch
-from fish_audio_suite_voice.speaker import FishSpeaker
-from fish_audio_suite_voice.tts_tune import TtsTune
+from fish_audio_suite_voice.tts.loudness import LoudnessMatch
+from fish_audio_suite_voice.tts.speaker import FishSpeaker
+from fish_audio_suite_voice.tts.tune import TtsTune
 
 RATE = 44100
 CEILING = 0.98 * 32768 + 1  # rounding to a whole sample
@@ -174,7 +174,7 @@ def test_the_cli_hands_the_configured_level_to_each_turn(
 ) -> None:
     from session_fakes import make_config
 
-    from fish_audio_suite_voice.cli import smoke_test
+    from fish_audio_suite_voice.cli.main import smoke_test
 
     opened = install_fish_audio(monkeypatch, [])
     config = replace(make_config(), tts=TtsTune(loudness_db=-16.0))

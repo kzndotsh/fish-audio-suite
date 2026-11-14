@@ -44,9 +44,9 @@ from fish_audio_suite_kit import (
     sentence_cuts,
     split_cues,
 )
-from fish_audio_suite_voice.config import SystemPrompt
-from fish_audio_suite_voice.envfile import load_dotenv
-from fish_audio_suite_voice.llm_tune import LlmTune
+from fish_audio_suite_voice.config.dotenv import load_dotenv
+from fish_audio_suite_voice.config.settings import SystemPrompt
+from fish_audio_suite_voice.llm.tune import LlmTune
 
 # ---------------------------------------------------------------------------
 # EDIT THESE. The user lines sent under every prompt when you pass none. Each one

@@ -7,10 +7,10 @@ from typing import Any
 import httpx
 import pytest
 
-from fish_audio_suite_voice.asr import asr_client
-from fish_audio_suite_voice.llm import ChatBackend, open_chat_backend
-from fish_audio_suite_voice.llm_tune import LlmTune
-from fish_audio_suite_voice.transports import chat_completions_url, http_client
+from fish_audio_suite_voice.asr.transcribe import asr_client
+from fish_audio_suite_voice.llm.client import ChatBackend, open_chat_backend
+from fish_audio_suite_voice.llm.transports import chat_completions_url, http_client
+from fish_audio_suite_voice.llm.tune import LlmTune
 
 SSE = (
     'data: {"choices":[{"delta":{"content":"Hello"}}]}\n\n'
@@ -39,7 +39,7 @@ def _install_transport(
         made.append(client)
         return client
 
-    monkeypatch.setattr("fish_audio_suite_voice.transports.httpx.AsyncClient", factory)
+    monkeypatch.setattr("fish_audio_suite_voice.llm.transports.httpx.AsyncClient", factory)
 
 
 def test_openai_backend_streams_and_sends_no_attribution_headers(

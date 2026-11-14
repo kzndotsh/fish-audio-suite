@@ -7,10 +7,8 @@ from operator import attrgetter
 
 import pytest
 
-from fish_audio_suite_voice.llm_tune import LlmTune
-from fish_audio_suite_voice.recognisers import RECOGNISERS
-from fish_audio_suite_voice.tts_tune import TtsTune
-from fish_audio_suite_voice.tune import (
+from fish_audio_suite_voice.asr.backends import RECOGNISERS
+from fish_audio_suite_voice.config.tune import (
     DEFAULT_DEEPGRAM_MODEL,
     DEFAULT_EOT_THRESHOLD,
     IMPULSE_START_EXTRA,
@@ -22,6 +20,8 @@ from fish_audio_suite_voice.tune import (
     SttTune,
     TurnTune,
 )
+from fish_audio_suite_voice.llm.tune import LlmTune
+from fish_audio_suite_voice.tts.tune import TtsTune
 
 _KEYS = (
     "FISH_VOICE_STT",

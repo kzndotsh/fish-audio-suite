@@ -8,15 +8,19 @@ import httpx
 import pytest
 from fishaudio.types import TTSConfig
 
-from fish_audio_suite_voice.config import SystemPrompt, VoiceCliConfig, warn_if_insecure_base
-from fish_audio_suite_voice.llm_tune import LlmTune
-from fish_audio_suite_voice.speaker import FishSpeaker
-from fish_audio_suite_voice.tts_tune import TtsTune
-from fish_audio_suite_voice.tts_turn import turn_failure
-from fish_audio_suite_voice.tune import DeepgramTune, SttTune
-from fish_audio_suite_voice.turn_stream import RecogniserSettings
-from fish_audio_suite_voice.wire import TurnSpec
-from fish_audio_suite_voice.wording import with_detail
+from fish_audio_suite_voice.asr.turn_stream import RecogniserSettings
+from fish_audio_suite_voice.cli.wording import with_detail
+from fish_audio_suite_voice.config.settings import (
+    SystemPrompt,
+    VoiceCliConfig,
+    warn_if_insecure_base,
+)
+from fish_audio_suite_voice.config.tune import DeepgramTune, SttTune
+from fish_audio_suite_voice.llm.tune import LlmTune
+from fish_audio_suite_voice.tts.speaker import FishSpeaker
+from fish_audio_suite_voice.tts.tune import TtsTune
+from fish_audio_suite_voice.tts.turn import turn_failure
+from fish_audio_suite_voice.tts.websocket import TurnSpec
 
 SECRET = "sk-very-secret-value"
 

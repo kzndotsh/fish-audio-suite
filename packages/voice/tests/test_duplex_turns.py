@@ -29,18 +29,18 @@ from session_fakes import (
 from voice_fakes import FakeGate, ScriptedMic, install_gate, install_vad, set_tts
 
 from fish_audio_suite_kit import ChatMessage
-from fish_audio_suite_voice import reply
-from fish_audio_suite_voice.duplex import duplex_turns
-from fish_audio_suite_voice.duplex_state import TurnInput
-from fish_audio_suite_voice.events import ExitCode
-from fish_audio_suite_voice.heard import HeardLine
-from fish_audio_suite_voice.log_setup import configure_voice_logging
-from fish_audio_suite_voice.portaudio import PortAudioMissingError
-from fish_audio_suite_voice.signals import DuplexSession
-from fish_audio_suite_voice.speaker import FishSpeaker
-from fish_audio_suite_voice.transports import ChatUnusableError
-from fish_audio_suite_voice.tune import ListenTune
-from fish_audio_suite_voice.wire import TtsResult
+from fish_audio_suite_voice.asr.outcome import HeardLine
+from fish_audio_suite_voice.capture.portaudio import PortAudioMissingError
+from fish_audio_suite_voice.config.tune import ListenTune
+from fish_audio_suite_voice.llm import reply
+from fish_audio_suite_voice.llm.transports import ChatUnusableError
+from fish_audio_suite_voice.logutil.setup import configure_voice_logging
+from fish_audio_suite_voice.session.duplex import duplex_turns
+from fish_audio_suite_voice.session.events import ExitCode
+from fish_audio_suite_voice.session.signals import DuplexSession
+from fish_audio_suite_voice.session.state import TurnInput
+from fish_audio_suite_voice.tts.speaker import FishSpeaker
+from fish_audio_suite_voice.tts.websocket import TtsResult
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -263,7 +263,7 @@ def _logged_cooldowns(
     quiet = b"\x00\x00" * 480
     echo = (300).to_bytes(2, "little", signed=True) * 480
     monkeypatch.setattr(
-        "fish_audio_suite_voice.duplex.SessionMic",
+        "fish_audio_suite_voice.session.duplex.SessionMic",
         lambda *_a, **_k: ScriptedMic([quiet, echo, echo, quiet]),
     )
     install_vad(monkeypatch, _LoudVad)
@@ -318,7 +318,8 @@ def test_a_detector_that_fails_in_the_cooldown_log_does_not_end_the_session(
     install_gate(monkeypatch)
     speak_with_fakes(monkeypatch, tts)
     monkeypatch.setattr(
-        "fish_audio_suite_voice.duplex.SessionMic", lambda *_a, **_k: ScriptedMic([b"\x00" * 960])
+        "fish_audio_suite_voice.session.duplex.SessionMic",
+        lambda *_a, **_k: ScriptedMic([b"\x00" * 960]),
     )
     config = quick_config()
     broken = replace(config, listen=replace(config.listen, vad_engine="not-an-engine"))
@@ -326,8 +327,8 @@ def test_a_detector_that_fails_in_the_cooldown_log_does_not_end_the_session(
 
 
 def test_the_cooldown_report_judges_frames_against_the_adaptive_floor() -> None:
-    from fish_audio_suite_voice.listen import cooldown_report
-    from fish_audio_suite_voice.tune import ListenTune
+    from fish_audio_suite_voice.capture.listen import cooldown_report
+    from fish_audio_suite_voice.config.tune import ListenTune
 
     def level(rms: int) -> bytes:
         return rms.to_bytes(2, "little", signed=True) * 480

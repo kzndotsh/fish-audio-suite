@@ -11,12 +11,12 @@ import pytest
 from session_fakes import FakeBackend, ScriptedAsr, ScriptedRecordings, barge_clip, make_ctx
 
 from fish_audio_suite_kit import ChatMessage
-from fish_audio_suite_voice.duplex_state import DuplexContext
-from fish_audio_suite_voice.events import EVENTS, Event, ExitCode, Heard
-from fish_audio_suite_voice.heard import HeardLine
-from fish_audio_suite_voice.hearing import hear_line
-from fish_audio_suite_voice.recognised import NoTurn, StreamFallback, Transcript
-from fish_audio_suite_voice.tune import DeepgramTune, SttProvider, SttTune
+from fish_audio_suite_voice.asr.outcome import HeardLine
+from fish_audio_suite_voice.asr.pipeline import hear_line
+from fish_audio_suite_voice.asr.result import NoTurn, StreamFallback, Transcript
+from fish_audio_suite_voice.config.tune import DeepgramTune, SttProvider, SttTune
+from fish_audio_suite_voice.session.events import EVENTS, Event, ExitCode, Heard
+from fish_audio_suite_voice.session.state import DuplexContext
 
 
 def _ctx(asr: ScriptedAsr | None = None, provider: SttProvider = "deepgram") -> DuplexContext:
@@ -34,7 +34,7 @@ def _stream_returns(monkeypatch: pytest.MonkeyPatch, outcome: object) -> list[di
         calls.append(kwargs)
         return outcome
 
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.stream_turn", fake)
+    monkeypatch.setattr("fish_audio_suite_voice.asr.pipeline.stream_turn", fake)
     return calls
 
 
@@ -163,7 +163,7 @@ def test_an_early_end_of_turn_starts_a_reply_that_the_speaker_resuming_throws_aw
         kwargs["on_eager"]("what is the weather today")
         return _turn("what is the weather today")
 
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.stream_turn", fake)
+    monkeypatch.setattr("fish_audio_suite_voice.asr.pipeline.stream_turn", fake)
     heard = asyncio.run(hear_line(ctx, ""))
     assert heard.kind == "line"
     assert seen["started"] is not None
@@ -186,7 +186,7 @@ def test_a_reply_started_early_is_dropped_when_the_turn_turns_out_to_be_nothing(
         kwargs["on_eager"]("hmm")
         return NoTurn("noise")
 
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.stream_turn", fake)
+    monkeypatch.setattr("fish_audio_suite_voice.asr.pipeline.stream_turn", fake)
     assert asyncio.run(hear_line(ctx, "")) == HeardLine("noise")
     assert ctx.chat.speculation is None
 
@@ -242,7 +242,7 @@ def test_a_reply_started_early_never_edits_an_unanswered_line_in_the_history(
         await asyncio.sleep(0.01)
         return _turn("what is the weather")
 
-    monkeypatch.setattr("fish_audio_suite_voice.hearing.stream_turn", fake)
+    monkeypatch.setattr("fish_audio_suite_voice.asr.pipeline.stream_turn", fake)
     heard = asyncio.run(hear_line(ctx, ""))
     assert heard.kind == "line"
     assert ctx.chat.history.messages[-1] == {"role": "user", "content": "are you there"}

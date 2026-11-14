@@ -4,8 +4,9 @@ from collections.abc import Iterator
 
 import pytest
 
-from fish_audio_suite_voice import debug as voice_debug
-from fish_audio_suite_voice import log_format, speaker
+from fish_audio_suite_voice.logutil import debug as voice_debug
+from fish_audio_suite_voice.logutil import format as log_format
+from fish_audio_suite_voice.tts import speaker
 
 
 def _no_display() -> None:

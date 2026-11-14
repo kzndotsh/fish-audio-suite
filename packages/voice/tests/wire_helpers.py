@@ -10,12 +10,12 @@ import pytest
 from fishaudio.types import Prosody, TTSConfig
 
 from fish_audio_suite_kit import CueStyle
-from fish_audio_suite_voice.playback import PlaybackSink, SounddeviceSink
-from fish_audio_suite_voice.speaker import FishSpeaker
-from fish_audio_suite_voice.tts_text import WholeText, delta_events, text_events
-from fish_audio_suite_voice.tts_tune import TtsTune
-from fish_audio_suite_voice.tts_turn import run_turn
-from fish_audio_suite_voice.wire import (
+from fish_audio_suite_voice.tts.playback import PlaybackSink, SounddeviceSink
+from fish_audio_suite_voice.tts.speaker import FishSpeaker
+from fish_audio_suite_voice.tts.text import WholeText, delta_events, text_events
+from fish_audio_suite_voice.tts.tune import TtsTune
+from fish_audio_suite_voice.tts.turn import run_turn
+from fish_audio_suite_voice.tts.websocket import (
     AudioArrival,
     FlushEvent,
     SentText,
@@ -173,7 +173,7 @@ def install_output_device(monkeypatch: pytest.MonkeyPatch, stream: FakeOutputStr
             stream.opened_with = kwargs
             return stream
 
-    monkeypatch.setattr("fish_audio_suite_voice.playback.load_sounddevice", lambda: Sd)
+    monkeypatch.setattr("fish_audio_suite_voice.tts.playback.load_sounddevice", lambda: Sd)
 
 
 def open_sounddevice_sink(
@@ -238,7 +238,7 @@ def install_fish_audio(monkeypatch: pytest.MonkeyPatch, chunks: Sequence[bytes])
         async def close(self) -> None:
             return None
 
-    monkeypatch.setattr("fish_audio_suite_voice.tts_turn.SdkSocket", Socket)
+    monkeypatch.setattr("fish_audio_suite_voice.tts.turn.SdkSocket", Socket)
     return seen
 
 

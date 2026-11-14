@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fish_audio_suite_voice.wording import short_model
+from fish_audio_suite_voice.cli.wording import short_model
 
 
 def test_short_model_drops_only_the_vendor_prefix() -> None:

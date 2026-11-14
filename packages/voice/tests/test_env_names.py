@@ -9,7 +9,7 @@ from typing import Any, NamedTuple
 import pytest
 
 from fish_audio_suite_kit import DEFAULT_SYSTEM_PROMPT
-from fish_audio_suite_voice.config import (
+from fish_audio_suite_voice.config.settings import (
     DEFAULT_HISTORY_TURNS,
     VoiceCliConfig,
     load_config,

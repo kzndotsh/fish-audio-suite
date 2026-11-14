@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from fish_audio_suite_voice.spoken import CHARS_PER_S
-from fish_audio_suite_voice.spoken import spoken_prefix as _spoken_prefix
+from fish_audio_suite_voice.tts.played_text import CHARS_PER_S
+from fish_audio_suite_voice.tts.played_text import spoken_prefix as _spoken_prefix
 
 _RATE = 16_000
 # Bytes of 16 kHz int16 audio that play one character at the estimated speaking rate.

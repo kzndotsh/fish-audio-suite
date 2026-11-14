@@ -109,7 +109,7 @@ A setting read only when another one is set needs that environment added to
 
 ## Adding an LLM provider
 
-Providers live in one table, `LLM_PROVIDERS` in `packages/voice/src/fish_audio_suite_voice/llm_tune.py`:
+Providers live in one table, `LLM_PROVIDERS` in `packages/voice/src/fish_audio_suite_voice/llm/tune.py`:
 a name, a default base, a host, a key variable and a model variable. To add one:
 
 1. Add a row to the table.

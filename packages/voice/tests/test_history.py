@@ -5,8 +5,8 @@ from __future__ import annotations
 import itertools
 
 from fish_audio_suite_kit import ChatMessage
-from fish_audio_suite_voice.config import DEFAULT_HISTORY_TURNS, SystemPrompt
-from fish_audio_suite_voice.history import History, trim_history
+from fish_audio_suite_voice.config.settings import DEFAULT_HISTORY_TURNS, SystemPrompt
+from fish_audio_suite_voice.session.history import History, trim_history
 
 HISTORY_TURNS = DEFAULT_HISTORY_TURNS
 
