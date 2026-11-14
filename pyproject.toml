@@ -330,7 +330,7 @@ layers = [
     "llm.reply : asr.pipeline : asr.streaming : session.inputs",
     "capture.listen : capture.barge_in : tts.speaker : session.state : llm.speculate : tts.turn",
     "capture.mic : tts.websocket : llm.client : tts.playback : llm.transports : asr.backends : asr.deepgram : asr.fish_realtime : asr.turn_stream : asr.transcribe : capture.aec",
-    "asr.outcome : asr.result : asr.turn_check : session.history : capture.scoring : capture.energy_floor : capture.vad : tts.text : tts.played_text : tts.audio_chain : tts.declick : tts.loudness",
+    "asr.outcome : asr.result : asr.turn_check : session.conversation : capture.scoring : capture.energy_floor : capture.vad : tts.text : tts.played_text : tts.audio_chain : tts.declick : tts.loudness",
     "config.settings : config.tune : llm.tune : tts.tune : config.env : config.playback_kind : config.dotenv : session.events : session.signals : session.latency : cli.console_sink : cli.session_view : logutil.debug : logutil.format : logutil.file : logutil.setup : logutil.meta : tts.ws_tap : cli.wording : session.cancel : session.pause : capture.pcm : capture.portaudio",
 ]
 

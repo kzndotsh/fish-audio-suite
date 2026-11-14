@@ -73,7 +73,7 @@ def _turn(source: LiveInput, ctx: DuplexContext, mic: _Mic | None = None) -> Hea
 
 def test_a_typed_line_is_answered_like_a_spoken_one() -> None:
     ctx = make_ctx()
-    ctx.turn_input.carry.keep(barge_clip(), "")
+    ctx.turn_input.carry.keep(barge_clip(), None)
     seen: list[Event] = []
     unsubscribe = EVENTS.subscribe(seen.append)
     source = LiveInput()

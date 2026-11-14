@@ -24,6 +24,7 @@ from fish_audio_suite_voice.session.inputs import TurnSource
 from fish_audio_suite_voice.session.latency import LatencySnapshot
 from fish_audio_suite_voice.session.signals import DuplexSession
 from fish_audio_suite_voice.session.state import DuplexContext, session_context
+from fish_audio_suite_voice.tts.played_text import Unheard
 from fish_audio_suite_voice.tts.speaker import FishSpeaker
 
 __all__ = [
@@ -101,20 +102,13 @@ def _log_cooldown(ctx: DuplexContext, since: int) -> None:
     debug("listen.cooldown {}", cooldown_report(ctx.turn_input.mic.recent(since), tune, vad))
 
 
-async def _resume_reply(ctx: DuplexContext) -> ExitCode | None:
+async def _resume_reply(ctx: DuplexContext, rest: Unheard) -> ExitCode | None:
     """Speak again what a false barge-in cut off."""
-    text = ctx.turn_input.carry.take_resume()
-    debug("barge.resume {} chars", len(text))
+    debug("barge.resume {} chars", len(rest.sent))
     cancel = threading.Event()
     ctx.turn_input.session.turn.bind(cancel, asyncio.Event())
     _, fatal = await speak_reply(
-        ctx,
-        text,
-        cancel,
-        LatencySnapshot(),
-        started=time.perf_counter(),
-        trace_id=None,
-        resumes=True,
+        ctx, rest, cancel, LatencySnapshot(), started=time.perf_counter(), trace_id=None
     )
     if fatal is not None:
         return fatal
@@ -216,14 +210,15 @@ async def _session(
                 continue
             if heard.kind == "noise":
                 # The interrupt was not speech, so the cut-off reply goes on.
-                if turn.carry.resume:
-                    code = await _resume_reply(ctx)
+                rest = turn.carry.take_resume()
+                if rest is not None:
+                    code = await _resume_reply(ctx, rest)
                     if code is not None:
                         return code
                 continue
             turn.carry.take_resume()  # real speech, so the cut reply stays cut
             last_user = heard.text
-            history.remember_user(heard.text)
+            history.add_user_line(heard.text)
             code = await _answer_line(ctx, heard)
             if code is not None:
                 return code

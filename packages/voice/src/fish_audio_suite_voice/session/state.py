@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 import httpx
 
+from fish_audio_suite_kit import ChatMessage
 from fish_audio_suite_voice.asr.result import BargeIn
 from fish_audio_suite_voice.capture.aec import EchoCanceller
 from fish_audio_suite_voice.capture.mic import Mic
@@ -14,8 +15,9 @@ from fish_audio_suite_voice.config.settings import SinkLatency, VoiceCliConfig, 
 from fish_audio_suite_voice.llm.client import ChatBackend
 from fish_audio_suite_voice.llm.speculate import Speculation
 from fish_audio_suite_voice.session.cancel import never
-from fish_audio_suite_voice.session.history import History
+from fish_audio_suite_voice.session.conversation import Conversation, HistoryView
 from fish_audio_suite_voice.session.signals import DuplexSession
+from fish_audio_suite_voice.tts.played_text import Unheard
 from fish_audio_suite_voice.tts.speaker import FishSpeaker
 
 __all__ = [
@@ -41,14 +43,14 @@ class CarryOver:
     """
 
     clip: BargeIn | None = None
-    resume: str = ""
+    resume: Unheard | None = None
 
     @property
     def barged(self) -> bool:
         """Whether a barge-in left speech for the next listen."""
         return self.clip is not None
 
-    def keep(self, clip: BargeIn, resume: str) -> None:
+    def keep(self, clip: BargeIn, resume: Unheard | None) -> None:
         """Hold the clip that cut a reply off, and what of the reply was not heard.
 
         Parameters
@@ -56,8 +58,9 @@ class CarryOver:
         clip : BargeIn
             The speech that tripped the barge-in, where the mic was after it, and the
             level the gate admitted it at.
-        resume : str
-            The unheard rest of the reply. Empty when none of it played.
+        resume : Unheard or None
+            The unheard rest of the reply. None when none of it played, or too little is
+            left to speak again.
         """
         self.clip = clip
         self.resume = resume
@@ -67,9 +70,9 @@ class CarryOver:
         clip, self.clip = self.clip, None
         return clip
 
-    def take_resume(self) -> str:
+    def take_resume(self) -> Unheard | None:
         """Return the unheard rest of the cut reply and forget it."""
-        resume, self.resume = self.resume, ""
+        resume, self.resume = self.resume, None
         return resume
 
 
@@ -97,22 +100,40 @@ class TurnInput:
 
 @dataclass(slots=True)
 class Chat:
-    """The conversation with the model: the backend, the history, and a reply written ahead.
+    """The conversation with the model: the backend, the record, and a reply written ahead.
 
     Attributes
     ----------
     backend : ChatBackend
         Streams the model's replies.
-    history : History
-        What was said so far.
+    history : Conversation
+        Every turn so far, as the user heard it.
+    view : HistoryView
+        Which of those turns a request sends, and how much of their cues.
     speculation : Speculation or None
         A reply being written for a turn the recogniser thinks is probably over. Hearing
         starts it, and the reply uses it if the same words are confirmed.
     """
 
     backend: ChatBackend
-    history: History
+    history: Conversation
+    view: HistoryView
     speculation: Speculation | None = None
+
+    def messages(self, tone: tuple[str, ...] = ()) -> list[ChatMessage]:
+        """Return the messages the next reply is asked for with.
+
+        Parameters
+        ----------
+        tone : tuple of str, optional
+            How the last line sounded. It goes into this request only, never into the record.
+
+        Returns
+        -------
+        list of ChatMessage
+            ``view`` applied to ``history``.
+        """
+        return self.view.messages(self.history, tone)
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,7 +232,7 @@ def session_context(
     Returns
     -------
     DuplexContext
-        The context with the opening history: the system prompt, and the pinned seed
+        The context with the opening conversation: the system prompt, and the pinned seed
         exchange when the prompt asks for one.
     """
     # One input for the whole session, so nothing is lost between listens. The echo
@@ -223,9 +244,8 @@ def session_context(
         turn_input=TurnInput(session=session, mic=mic, muted=muted),
         chat=Chat(
             backend,
-            History.opening(
-                config.prompt.text, seed=config.prompt.pin_seed, turns=config.history_turns
-            ),
+            Conversation.opening(config.prompt.text, seed=config.prompt.pin_seed),
+            HistoryView(config.history_turns, config.history_cue_turns),
         ),
         tts=tts,
         asr_http=asr_http,

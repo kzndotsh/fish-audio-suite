@@ -19,8 +19,10 @@ from fish_audio_suite_kit import (
     strip_base,
 )
 from fish_audio_suite_voice.config.env import (
+    IGNORED,
     FloatSetting,
     IntSetting,
+    check_range,
     read_choice,
     read_flag,
     read_text,
@@ -75,6 +77,8 @@ _PROMPT_FILE_ENV: Final = "FISH_VOICE_SYSTEM_PROMPT_FILE"
 _USE_ONE_OF: Final = "fish-voice: ignoring {name}={value!r}, use {one_of}"
 # Read by ``load_config`` and checked by ``VoiceCliConfig`` with the same range.
 _HISTORY_TURNS = IntSetting("FISH_VOICE_HISTORY_TURNS", DEFAULT_HISTORY_TURNS, lo=_HISTORY_TURNS_LO)
+# Unset, every reply the model is sent keeps its cues.
+_HISTORY_CUE_TURNS_ENV: Final = "FISH_VOICE_HISTORY_CUE_TURNS"
 _REPEAT_WINDOW = FloatSetting(
     "FISH_VOICE_REPEAT_WINDOW", DEFAULT_REPEAT_WINDOW_S, lo=_REPEAT_WINDOW_LO_S
 )
@@ -141,6 +145,9 @@ class VoiceCliConfig:
         note about it for that turn. Experimental, and off by default.
     history_turns : int
         User and assistant pairs kept in the chat history.
+    history_cue_turns : int or None
+        How many of the latest replies the model is sent with their cues. Older ones are
+        sent without. None keeps the cues in every reply.
     repeat_window_s : float
         A transcript equal to the previous line is dropped only when it ends
         within this many seconds of the mic opening. 0 never drops a repeat.
@@ -184,6 +191,7 @@ class VoiceCliConfig:
     turn: TurnTune = field(default_factory=TurnTune)
     hear_tone: bool = False
     history_turns: int = DEFAULT_HISTORY_TURNS
+    history_cue_turns: int | None = None
     repeat_window_s: float = DEFAULT_REPEAT_WINDOW_S
     mood_lead: bool = False
     tts_cues: TtsCues = "official"
@@ -196,9 +204,12 @@ class VoiceCliConfig:
         Raises
         ------
         ValueError
-            When ``history_turns`` is under 1 or ``repeat_window_s`` is negative.
+            When ``history_turns`` is under 1, ``history_cue_turns`` or ``repeat_window_s``
+            is negative.
         """
         _HISTORY_TURNS.check("VoiceCliConfig.history_turns", self.history_turns)
+        if self.history_cue_turns is not None:
+            check_range("VoiceCliConfig.history_cue_turns", self.history_cue_turns, lo=0)
         _REPEAT_WINDOW.check("VoiceCliConfig.repeat_window_s", self.repeat_window_s)
 
     @property
@@ -346,12 +357,24 @@ def load_config() -> VoiceCliConfig:
         turn=TurnTune.from_env(),
         hear_tone=read_flag("FISH_VOICE_HEAR_TONE", default=False),
         history_turns=_HISTORY_TURNS.read(),
+        history_cue_turns=_history_cue_turns(),
         repeat_window_s=_REPEAT_WINDOW.read(),
         mood_lead=read_flag("FISH_TTS_MOOD_LEAD", default=False),
         tts_cues=read_choice("FISH_TTS_CUES", "official", TTS_CUE_MODES, warning=_USE_ONE_OF),
         drop_narration=read_flag("FISH_TTS_DROP_NARRATION", default=False),
         stream_tts=read_flag("FISH_VOICE_STREAM_TTS", default=False),
     )
+
+
+def _history_cue_turns() -> int | None:
+    """Read how many of the latest replies keep their cues, or None for all of them."""
+    raw = read_text(_HISTORY_CUE_TURNS_ENV)
+    if not raw:
+        return None
+    if raw.isascii() and raw.isdigit():
+        return int(raw)
+    warn(IGNORED.format(name=_HISTORY_CUE_TURNS_ENV, value=raw, default="the cues in every reply"))
+    return None
 
 
 # A character card is a few KB. This stops a wrong path (a log, a binary) from

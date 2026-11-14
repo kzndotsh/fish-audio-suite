@@ -9,6 +9,7 @@ import time
 from collections.abc import AsyncIterator, Callable
 
 import pytest
+from fishaudio import TextEvent
 from session_fakes import (
     cut_off_speech,
     make_ctx,
@@ -24,7 +25,22 @@ from fish_audio_suite_voice.session.events import EVENTS
 from fish_audio_suite_voice.session.latency import LatencySnapshot
 from fish_audio_suite_voice.session.state import DuplexContext
 from fish_audio_suite_voice.tts.playback import PlaybackSink
+from fish_audio_suite_voice.tts.played_text import Unheard, spoken_prefix
+from fish_audio_suite_voice.tts.text import delta_events
 from fish_audio_suite_voice.tts.websocket import TtsResult
+
+
+def _asked(tokens: Callable[..., AsyncIterator[str]] | None = None) -> DuplexContext:
+    """A context whose user said "hi", so the reply has a turn to land in."""
+    ctx = make_ctx(tokens)
+    ctx.chat.history.add_user_line("hi")
+    return ctx
+
+
+def _reply(ctx: DuplexContext) -> str | None:
+    """What the conversation recorded of the last turn's reply."""
+    reply = ctx.chat.history.turns[-1].reply
+    return None if reply is None else reply.content
 
 
 def _speak_once(
@@ -48,17 +64,17 @@ def test_a_spoken_reply_records_only_audio_that_was_played(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     install_gate(monkeypatch)
-    ctx = make_ctx()
+    ctx = _asked()
     fatal, code = _speak_once(monkeypatch, ctx, make_result(error_status=401, error_message="no"))
     assert code == 2
-    assert len(ctx.chat.history.messages) == 1
+    assert _reply(ctx) is None
     assert fatal.tts_first_audio_ms is None
 
-    ctx = make_ctx()
+    ctx = _asked()
     _speak_once(monkeypatch, ctx, make_result(cancelled=True))
-    assert len(ctx.chat.history.messages) == 1
+    assert _reply(ctx) is None
 
-    ctx = make_ctx()
+    ctx = _asked()
     heard_part = make_result(
         "hello",
         bytes_played=8,
@@ -69,11 +85,11 @@ def test_a_spoken_reply_records_only_audio_that_was_played(
     )
     updated, code = _speak_once(monkeypatch, ctx, heard_part)
     assert code is None
-    assert ctx.chat.history.messages[-1] == {"role": "assistant", "content": "hello"}
+    assert _reply(ctx) == "Hello"  # as the model wrote it
     assert updated.tts_first_audio_ms == 12.0
 
     ctx = make_ctx()
-    ctx.chat.history.messages.append({"role": "user", "content": "Hey! Can you hear me?"})
+    ctx.chat.history.add_user_line("Hey! Can you hear me?")
     echo = make_result(
         "Hey! Can you hear me?",
         bytes_played=8,
@@ -82,7 +98,7 @@ def test_a_spoken_reply_records_only_audio_that_was_played(
         tts_first_text_ms=4.0,
     )
     _speak_once(monkeypatch, ctx, echo)
-    assert ctx.chat.history.messages[-1]["role"] == "user"
+    assert _reply(ctx) is None
     answer = make_result(
         "Yeah. What's up?",
         bytes_played=8,
@@ -91,7 +107,7 @@ def test_a_spoken_reply_records_only_audio_that_was_played(
         tts_first_text_ms=4.0,
     )
     _speak_once(monkeypatch, ctx, answer)
-    assert ctx.chat.history.messages[-1] == {"role": "assistant", "content": "Yeah. What's up?"}
+    assert _reply(ctx) == "Yeah. What's up?"
 
 
 class _ClosedStdout:
@@ -180,7 +196,7 @@ def test_collect_reply_lets_asyncio_timeout_fire() -> None:
 def test_speak_reply_exits_when_playback_cannot_open(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ctx = make_ctx()
+    ctx = _asked()
     install_gate(monkeypatch)
 
     def speak(*_args: object, **_kwargs: object) -> TtsResult:
@@ -198,13 +214,13 @@ def test_speak_reply_exits_when_playback_cannot_open(
         )
     )
     assert code == 2
-    assert len(ctx.chat.history.messages) == 1
+    assert _reply(ctx) is None
 
 
 def test_cancelled_speak_keeps_the_audio_that_tripped_barge(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ctx = make_ctx()
+    ctx = _asked()
 
     gate = FakeGate(captured=b"clip", resume_at=42, min_rms=90.0)  # FISH_VOICE_BARGE_RMS=90
     install_gate(monkeypatch, gate)
@@ -240,13 +256,13 @@ def test_cancelled_speak_keeps_the_audio_that_tripped_barge(
     assert code is None
     # The next listen reads on from just after the clip, scoring it at the gate's own level.
     assert ctx.turn_input.carry.clip == BargeIn(b"clip", 42, 90.0)
-    assert ctx.chat.history.messages[-1]["content"] == "hello"
+    assert _reply(ctx) == "Hello"
 
 
 def test_speak_reply_releases_the_mic_before_returning(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ctx = make_ctx()
+    ctx = _asked()
     gate = install_gate(monkeypatch, FakeGate(hold=True))
 
     def speak(*_args: object, **_kwargs: object) -> TtsResult:
@@ -270,7 +286,7 @@ def test_speak_reply_releases_the_mic_before_returning(
         )
     )
     assert code is None
-    assert ctx.chat.history.messages[-1]["content"] == "hello there"
+    assert _reply(ctx) == "Hello there"
     # The watcher waits up to 30 s for the cancel flag, and the caller only joins
     # for about a second, so a thread that is already finished proves the caller
     # set the flag before it returned.
@@ -331,7 +347,7 @@ async def _two_tokens(*_args: object, **_kwargs: object) -> AsyncIterator[str]:
 def test_stream_turn_feeds_tokens_to_tts_and_arms_barge_at_first_audio(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ctx = make_ctx(_two_tokens)
+    ctx = _asked(_two_tokens)
     gate = install_gate(monkeypatch)
     heard_tokens: list[str] = []
     armed_before_audio: list[int] = []
@@ -373,13 +389,13 @@ def test_stream_turn_feeds_tokens_to_tts_and_arms_barge_at_first_audio(
     assert gate.armed == 1
     assert snapshot.first_audio_ms is not None
     assert snapshot.llm_first_token_ms is not None
-    assert ctx.chat.history.messages[-1] == {"role": "assistant", "content": "Hello there friend."}
+    assert _reply(ctx) == "Hello there friend."
 
 
 def test_stream_turn_speaks_the_finished_reply_when_fish_fails_before_audio(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ctx = make_ctx(_two_tokens)
+    ctx = _asked(_two_tokens)
     install_gate(monkeypatch)
     spoken: list[str] = []
 
@@ -425,7 +441,7 @@ def test_stream_turn_speaks_the_finished_reply_when_fish_fails_before_audio(
     assert code is None
     assert len(spoken) == 1
     assert "Hello" in spoken[0]
-    assert ctx.chat.history.messages[-1]["role"] == "assistant"
+    assert _reply(ctx) == "Hello there friend."
 
 
 @pytest.mark.parametrize(("status", "stops_the_model"), [(401, True), (503, False)])
@@ -477,7 +493,7 @@ def test_stream_turn_with_an_empty_reply_speaks_nothing_and_reports_nothing(
         if False:
             yield ""
 
-    ctx = make_ctx(no_tokens)
+    ctx = _asked(no_tokens)
     install_gate(monkeypatch)
     seen_cancel: list[bool] = []
 
@@ -500,7 +516,7 @@ def test_stream_turn_with_an_empty_reply_speaks_nothing_and_reports_nothing(
         raise AssertionError("an empty reply must not be spoken")
 
     set_tts(monkeypatch, ctx.tts, speak=never, speak_stream=speak_stream)
-    history_before = list(ctx.chat.history.messages)
+    history_before = ctx.chat.messages()
     _snapshot, code = asyncio.run(
         stream_turn(
             ctx,
@@ -511,7 +527,7 @@ def test_stream_turn_with_an_empty_reply_speaks_nothing_and_reports_nothing(
     )
     assert code is None
     assert seen_cancel == [True]
-    assert ctx.chat.history.messages == history_before
+    assert ctx.chat.messages() == history_before
     assert "silent" not in capsys.readouterr().out
 
 
@@ -586,4 +602,53 @@ def test_a_cut_off_reply_is_remembered_for_resuming(monkeypatch: pytest.MonkeyPa
             trace_id=None,
         )
     )
-    assert ctx.turn_input.carry.resume == "[calm] How was your day today?"
+    # Fish is sent the rest led by the mood from before the cut; the record gets it as written.
+    assert ctx.turn_input.carry.resume == Unheard(
+        "[calm] How was your day today?", "How was your day today?"
+    )
+
+
+def test_a_streamed_reply_is_recorded_as_written_though_fish_got_the_mood_in_each_sentence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def tokens(*_a: object, **_k: object) -> AsyncIterator[str]:
+        for token in ("[calm] The first thing. ", "The second thing. ", "The third thing."):
+            yield token
+
+    ctx = _asked(tokens)
+    install_gate(monkeypatch)
+    sent: list[str] = []
+
+    def speak_stream(
+        deltas: AsyncIterator[str],
+        sink: PlaybackSink,
+        cancel: threading.Event,
+        on_first_audio: Callable[[], None] | None = None,
+        trace_headers: object = None,
+    ) -> TtsResult:
+        async def pieces() -> None:
+            events = delta_events(deltas, cancel, partial_chars=20, style=ctx.config.cue_style)
+            sent.extend([ev.text async for ev in events if isinstance(ev, TextEvent)])
+
+        asyncio.run(pieces())
+        heard = spoken_prefix(
+            "".join(sent),
+            bytes_played=4,
+            sample_rate=16_000,
+            audio_format="pcm",
+            got_audio=True,
+            cancelled=False,
+        )
+        return make_result(heard, bytes_played=4, got_audio=True)
+
+    set_tts(monkeypatch, ctx.tts, speak_stream=speak_stream)
+    asyncio.run(
+        stream_turn(
+            ctx,
+            HeardLine("line", text="hi", started=time.perf_counter()),
+            threading.Event(),
+            asyncio.Event(),
+        )
+    )
+    assert "".join(sent).count("[calm]") == 3
+    assert _reply(ctx) == "[calm] The first thing. The second thing. The third thing."

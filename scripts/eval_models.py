@@ -50,7 +50,7 @@ from fish_audio_suite_voice.config.settings import SystemPrompt, prompt_from_fil
 from fish_audio_suite_voice.llm.client import open_chat_backend
 from fish_audio_suite_voice.llm.tune import LlmTune
 from fish_audio_suite_voice.logutil.setup import configure_voice_logging
-from fish_audio_suite_voice.session.history import History
+from fish_audio_suite_voice.session.conversation import Conversation, HistoryView
 
 # ---------------------------------------------------------------------------
 # EDIT THESE. The models and prompts the script runs when you pass none.
@@ -486,12 +486,12 @@ async def evaluate(
     for model in models:
         model_tune = replace(tune, model=model)
         if warmup:
-            opening = History.opening(system_prompt, seed=seed, turns=1).messages
+            opening = HistoryView(1).messages(Conversation.opening(system_prompt, seed=seed))
             # Best effort: the real runs report the error if the model is broken.
             with contextlib.suppress(Exception):
                 await _one(model_tune, [*opening, {"role": "user", "content": "Say hi."}])
         for index, prompt in enumerate(prompts):
-            opening = History.opening(system_prompt, seed=seed, turns=1).messages
+            opening = HistoryView(1).messages(Conversation.opening(system_prompt, seed=seed))
             messages: list[ChatMessage] = [*opening, {"role": "user", "content": prompt}]
             for run in range(runs):
                 try:

@@ -111,7 +111,7 @@ def test_a_streamed_transcript_is_judged_like_a_batch_one(monkeypatch: pytest.Mo
     _stream_returns(monkeypatch, _turn("mm-hmm"))
     ctx = _ctx()
     ctx.turn_input.carry.keep(
-        barge_clip(b"\x01\x00" * 100), ""
+        barge_clip(b"\x01\x00" * 100), None
     )  # said over the reply: "mm-hmm" is "go on"
     assert asyncio.run(hear_line(ctx, "")) == HeardLine("noise")
     _stream_returns(monkeypatch, _turn("what is the weather"))
@@ -124,7 +124,7 @@ def test_the_barge_prefix_is_handed_to_the_stream_and_cleared(
     calls = _stream_returns(monkeypatch, _turn())
     ctx = _ctx()
     clip = barge_clip(b"\x02\x00" * 50, since=42)
-    ctx.turn_input.carry.keep(clip, "")
+    ctx.turn_input.carry.keep(clip, None)
     asyncio.run(hear_line(ctx, ""))
     assert calls[0]["carried"] == clip
     assert ctx.turn_input.carry.clip is None
@@ -135,8 +135,8 @@ def _eager_ctx() -> DuplexContext:
     ctx = replace(
         ctx, config=replace(ctx.config, stt=replace(ctx.config.stt, eager_eot_threshold=0.5))
     )
-    ctx.chat.history.messages.append({"role": "user", "content": "earlier"})
-    ctx.chat.history.messages.append({"role": "assistant", "content": "reply"})
+    ctx.chat.history.add_user_line("earlier")
+    ctx.chat.history.add_reply("reply", interrupted=False)
     return ctx
 
 
@@ -170,7 +170,7 @@ def test_an_early_end_of_turn_starts_a_reply_that_the_speaker_resuming_throws_aw
     assert seen["after_resume"] is None
     assert ctx.chat.speculation is not None  # the confirmed turn keeps the latest one for the reply
     assert ctx.chat.speculation.text == "what is the weather today"
-    assert [m["content"] for m in ctx.chat.history.messages] == [
+    assert [m["content"] for m in ctx.chat.messages()] == [
         "be brief",
         "earlier",
         "reply",
@@ -228,7 +228,7 @@ def test_a_reply_started_early_never_edits_an_unanswered_line_in_the_history(
     # request did that merge in the session's own message, and the confirmed line was
     # merged a second time on top.
     ctx = _eager_ctx()
-    ctx.chat.history.messages.append({"role": "user", "content": "are you there"})
+    ctx.chat.history.add_user_line("are you there")
     asked: list[list[ChatMessage]] = []
 
     async def tokens(messages: list[ChatMessage], **_kwargs: object) -> AsyncIterator[str]:
@@ -245,5 +245,5 @@ def test_a_reply_started_early_never_edits_an_unanswered_line_in_the_history(
     monkeypatch.setattr("fish_audio_suite_voice.asr.pipeline.stream_turn", fake)
     heard = asyncio.run(hear_line(ctx, ""))
     assert heard.kind == "line"
-    assert ctx.chat.history.messages[-1] == {"role": "user", "content": "are you there"}
+    assert ctx.chat.messages()[-1] == {"role": "user", "content": "are you there"}
     assert asked[0][-1]["content"] == "are you there\nwhat is the weather"

@@ -11,7 +11,6 @@ from dataclasses import replace
 from typing import Final
 
 from fish_audio_suite_kit import (
-    ChatMessage,
     elapsed_ms,
     ensure_lead_cue,
     is_tts_junk,
@@ -20,7 +19,6 @@ from fish_audio_suite_kit import (
 from fish_audio_suite_voice.asr.outcome import HeardLine
 from fish_audio_suite_voice.capture.barge_in import BargeGate
 from fish_audio_suite_voice.capture.portaudio import PortAudioMissingError
-from fish_audio_suite_voice.config.settings import VoiceCliConfig
 from fish_audio_suite_voice.llm.speculate import Speculation
 from fish_audio_suite_voice.llm.transports import ChatUnusableError
 from fish_audio_suite_voice.logutil.debug import debug, warn
@@ -33,11 +31,10 @@ from fish_audio_suite_voice.session.events import (
     Speaking,
     notice,
 )
-from fish_audio_suite_voice.session.history import History, with_tone_hint
 from fish_audio_suite_voice.session.latency import LatencySnapshot
 from fish_audio_suite_voice.session.state import Chat, DuplexContext
 from fish_audio_suite_voice.tts.playback import PlaybackSink, make_sink
-from fish_audio_suite_voice.tts.played_text import unspoken_text
+from fish_audio_suite_voice.tts.played_text import Unheard, heard_written, unheard
 from fish_audio_suite_voice.tts.websocket import TtsResult
 
 __all__ = [
@@ -108,14 +105,6 @@ class _TokenPipe:
                 yield item
 
 
-def _request(history: History, tone: tuple[str, ...]) -> list[ChatMessage]:
-    """Return the messages a reply is asked for with: the chat so far, ending with the line.
-
-    ``tone`` is how the line sounded. It goes into this request only, never into history.
-    """
-    return with_tone_hint(history.messages, tone)
-
-
 def start_speculation(chat: Chat, text: str) -> None:
     """Start writing the reply for ``text``, which the recogniser thinks is probably the whole turn.
 
@@ -129,16 +118,16 @@ def start_speculation(chat: Chat, text: str) -> None:
 
     Notes
     -----
-    The request is built the way the reply's own is, from a copy of the history with the
-    line added. A streaming recogniser hears no tone, so there is no tone hint, and the
+    The request is built the way the reply's own is, from a copy of the conversation with
+    the line added. A streaming recogniser hears no tone, so there is no tone hint, and the
     turn's trace id does not exist yet. The reply is tagged with the user's whole last
     message, which joins ``text`` to an earlier line that got no reply, because that is
     what the confirmed turn is checked against.
     """
     drop_speculation(chat)
     asked = chat.history.copy()
-    asked.remember_user(text)
-    chat.speculation = Speculation(chat.backend, _request(asked, ()), asked.last_user())
+    asked.add_user_line(text)
+    chat.speculation = Speculation(chat.backend, chat.view.messages(asked), asked.last_user())
 
 
 def drop_speculation(chat: Chat) -> None:
@@ -169,7 +158,7 @@ def _tokens_for(
     if ahead is not None:
         debug("llm.speculate miss: the words changed, asking again")
         ahead.cancel()
-    return chat.backend.stream(_request(chat.history, tone), cancel=llm_cancel, trace_id=trace_id)
+    return chat.backend.stream(chat.messages(tone), cancel=llm_cancel, trace_id=trace_id)
 
 
 async def collect_reply(
@@ -220,15 +209,11 @@ def _after_speech(
     snapshot: LatencySnapshot,
     result: TtsResult,
     *,
+    written: str,
     started: float,
     first_audio_at: float | None = None,
-    resumes: bool = False,
 ) -> tuple[LatencySnapshot, ExitCode | None]:
-    """Record what was heard in history and fold the TTS result into the timings.
-
-    With ``resumes``, the spoken text continues the last assistant message
-    instead of starting a new one.
-    """
+    """Record what was heard of ``written`` and fold the TTS result into the timings."""
     c = ctx.config
     notes = ["cancelled" if result.cancelled else "", "no audio" if not result.got_audio else ""]
     if result.failed:
@@ -246,8 +231,12 @@ def _after_speech(
     elif not result.got_audio and not result.failed:
         notice(f"  [tts silent] voice={c.fish_voice_id} model={c.tts_model}")
     if result.got_audio or not result.cancelled:
-        # History holds the heard part of the text Fish was sent (``spoken_so_far``).
-        ctx.chat.history.remember_assistant(result.spoken_so_far, resumes=resumes)
+        # Fish was sent cues the model never wrote: the mood carried into each sentence and
+        # the default lead. Kept, they would teach the model to open every reply the same way.
+        ctx.chat.history.add_reply(
+            heard_written(written, result.spoken_so_far),
+            interrupted=result.cancelled or result.failed,
+        )
     return (
         replace(
             snapshot,
@@ -280,38 +269,43 @@ def _trace(trace_id: str | None) -> dict[str, str]:
     return {"traceparent": make_traceparent(trace_id=trace_id)}
 
 
-def _prepared(reply: str, c: VoiceCliConfig) -> str:
-    """Shape a whole reply the way the session's TTS model takes it, led by a cue."""
-    return ensure_lead_cue(c.cue_style.shape(reply), default="calm")
+def _led(written: str) -> str:
+    """Return a shaped reply as Fish is sent it whole: led by a cue."""
+    return ensure_lead_cue(written, default="calm")
 
 
-def _keep_for_resume(ctx: DuplexContext, sent: str, result: TtsResult, barge: BargeGate) -> None:
+def _keep_for_resume(
+    ctx: DuplexContext, sent: str, written: str, result: TtsResult, barge: BargeGate
+) -> None:
     # A barge-in keeps the clip that tripped it. If that clip turns out to be
     # noise, the rest of the reply is spoken again.
     clip = barge.clip()
     if result.cancelled and clip is not None:
         ctx.turn_input.carry.keep(
-            clip, unspoken_text(sent, result.spoken_so_far) if result.got_audio else ""
+            clip, unheard(sent, written, result.spoken_so_far) if result.got_audio else None
         )
 
 
 async def speak_reply(
     ctx: DuplexContext,
-    reply: str,
+    reply: str | Unheard,
     cancel: threading.Event,
     snapshot: LatencySnapshot,
     *,
     started: float,
     trace_id: str | None,
-    resumes: bool = False,
 ) -> tuple[LatencySnapshot, ExitCode | None]:
     """Speak a finished reply through one TTS turn on a private loop.
 
-    With ``resumes``, ``reply`` is the rest of a reply a false barge-in cut
-    off, and it joins the last assistant message in history.
+    ``reply`` is the model's text, or the rest of a reply a false barge-in cut off, which
+    joins the reply it came from in the conversation.
     """
     c = ctx.config
-    prepared = _prepared(reply, c)
+    if isinstance(reply, Unheard):
+        written, prepared = reply.written, _led(c.cue_style.shape(reply.sent))
+    else:
+        written = c.cue_style.shape(reply)
+        prepared = _led(written)
     if is_tts_junk(prepared, drop_narration=c.drop_narration):
         notice("  (skip junk TTS)")
         return snapshot, None
@@ -334,14 +328,14 @@ async def speak_reply(
         except PortAudioMissingError as exc:
             warn(str(exc))
             return snapshot, ExitCode.FATAL
-        _keep_for_resume(ctx, prepared, result, barge)
+        _keep_for_resume(ctx, prepared, written, result, barge)
         return _after_speech(
             ctx,
             snapshot,
             result,
+            written=written,
             started=started,
             first_audio_at=first_audio[0] if first_audio else None,
-            resumes=resumes,
         )
     finally:
         # The barge watch reads the mic until this is set. The next listen
@@ -452,9 +446,10 @@ async def stream_turn(
         except PortAudioMissingError as exc:
             warn(str(exc))
             return snapshot, ExitCode.FATAL
-        # Not the pieces the stream sent: the resumed rest is cut from the reply shaped
-        # whole, as the reply would have been spoken without streaming.
-        _keep_for_resume(ctx, _prepared(reply, c), result, barge)
+        # Not the pieces the stream sent: the resumed rest and what the conversation records
+        # are cut from the reply shaped whole, as it would have been spoken without streaming.
+        written = c.cue_style.shape(reply)
+        _keep_for_resume(ctx, _led(written), written, result, barge)
     finally:
         cancel.set()
         for thread in barge_threads:
@@ -479,6 +474,7 @@ async def stream_turn(
         ctx,
         snapshot,
         result,
+        written=written,
         started=heard.started,
         first_audio_at=first_audio[0] if first_audio else None,
     )
