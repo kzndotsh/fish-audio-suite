@@ -193,11 +193,8 @@ def test_env_bool_takes_its_default_by_keyword_only() -> None:
 
 
 def _kit_modules() -> list[str]:
-    return sorted(
-        info.name
-        for info in pkgutil.walk_packages(kit.__path__, f"{kit.__name__}.")
-        if not info.ispkg
-    )
+    # Subpackages too: each __init__ declares an __all__, even an empty one.
+    return sorted(info.name for info in pkgutil.walk_packages(kit.__path__, f"{kit.__name__}."))
 
 
 @pytest.mark.parametrize("name", _kit_modules())
