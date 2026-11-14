@@ -331,6 +331,15 @@ def test_json_with_two_turns_of_one_id_is_refused() -> None:
         Conversation.from_json({**Conversation("s").to_json(), "turns": [turn, turn]})
 
 
+@pytest.mark.parametrize("edit", ["", "  \n"])
+def test_json_with_a_blank_edit_is_refused_as_edit_reply_refuses_it(edit: str) -> None:
+    # Read as written, it would be sent as an empty assistant message.
+    reply = {"text": "x", "interrupted": False, "edit": edit}
+    turn = {"id": "a", "user": "hi", "reply": reply, "hidden": False}
+    with pytest.raises(ValueError, match="blank"):
+        Conversation.from_json({**Conversation("s").to_json(), "turns": [turn]})
+
+
 def test_older_replies_lose_their_cues_when_the_setting_says_so() -> None:
     conversation = _talk(
         Conversation("s"),
