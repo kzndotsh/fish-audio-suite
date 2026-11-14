@@ -224,12 +224,6 @@ def _after_speech(
         result.bytes_played // 1000,
         " ".join(note for note in notes if note),
     )
-    if result.fatal:
-        return snapshot, ExitCode.FATAL
-    if not result.got_audio and result.cancelled:
-        notice("  [tts cancelled before audio]")
-    elif not result.got_audio and not result.failed:
-        notice(f"  [tts silent] voice={c.fish_voice_id} model={c.tts_model}")
     if result.got_audio or not result.cancelled:
         # Fish was sent cues the model never wrote: the mood carried into each sentence and
         # the default lead. Kept, they would teach the model to open every reply the same way.
@@ -237,6 +231,12 @@ def _after_speech(
             heard_written(written, result.spoken_so_far),
             interrupted=result.cancelled or result.failed,
         )
+    if result.fatal:
+        return snapshot, ExitCode.FATAL
+    if not result.got_audio and result.cancelled:
+        notice("  [tts cancelled before audio]")
+    elif not result.got_audio and not result.failed:
+        notice(f"  [tts silent] voice={c.fish_voice_id} model={c.tts_model}")
     return (
         replace(
             snapshot,
