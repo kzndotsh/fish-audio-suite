@@ -32,7 +32,8 @@ uv run pytest
 under the floors in `.github/verifytypes-floors.json` (`just types-public`).
 `lint-imports` checks the import contracts in `pyproject.toml` (`just layers`): the proxy
 and voice never import each other, kit imports neither, and voice modules import only
-their own layer and the layers below it. A new voice module goes in the lowest layer it fits.
+their own layer and the layers below it. Kit modules do the same under `kit-layers`. A new
+module goes in the lowest layer it fits.
 `pytest` also runs the `>>>` examples in kit and voice docstrings as doctests. `just check` runs
 the tests through `just cov`, which adds branch coverage and the CI floors.
 
@@ -161,6 +162,9 @@ git diff packages/kit/tests/golden/kit_api.json
 - A new voice module goes in the subpackage for its domain (`tts`, `asr`, `capture`,
   `session`, `llm`, `config`, `logutil`, `cli`), and in the lowest row of the
   `voice-direction` contract in `pyproject.toml` that it fits.
+- A new kit module goes in the subpackage for its domain (`tts`, `asr`, `types`, `http`,
+  `config`, `text`), and in the lowest row of `kit-layers` that it fits. Kit keeps its
+  module names when they move: group, do not rename.
 - Public names are only those in the package root's `__all__`. A new module is internal
   unless its names are exported from the root.
 

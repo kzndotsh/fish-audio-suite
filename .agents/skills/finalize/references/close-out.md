@@ -12,7 +12,7 @@ gaps, and scoped doc accuracy. Not a full-repo audit.
   optional extras in voice (`sounddevice`, `webrtcvad`, `pysilero_vad`, `pywebrtc_audio`,
   `openrouter`, `websockets` and `certifi` for Deepgram, and the `cli.tui` module for `textual`).
 - No file over 1600 lines; split rather than land bloat.
-- A new voice module goes in the subpackage for its domain, and in the lowest layer of
+- A new voice or kit module goes in the subpackage for its domain, and in the lowest layer of
   `[tool.importlinter]` in `pyproject.toml` that it fits, and `just layers` passes.
 - Stay in the requested scope — no drive-by refactors.
 - Do not add a `CHANGELOG.md`; this repo does not keep one.
