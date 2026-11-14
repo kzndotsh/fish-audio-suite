@@ -259,6 +259,23 @@ def test_a_recorded_turn_takes_the_place_of_the_turn_in_progress() -> None:
     _drive(harness, scenario)
 
 
+def test_a_line_in_progress_starts_in_the_same_column_as_a_recorded_turn() -> None:
+    harness = _Harness()
+    record = _record()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        harness.bus.emit(_shown(record, window=10))
+        harness.bus.emit(Heard("four", 0.0))
+        await pilot.pause(0.1)
+        recorded = harness.rows()[-1]
+        live = [child for child in harness.pane.children if isinstance(child, Static)][-1]
+        assert str(live.content) == "you ▸ four"
+        # Otherwise the line jumps sideways once its turn is recorded.
+        assert live.content_region.x == recorded.content_region.x
+
+    _drive(harness, scenario)
+
+
 def test_another_chat_replaces_everything_in_the_pane() -> None:
     harness = _Harness()
 
