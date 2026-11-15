@@ -85,6 +85,7 @@ class _Harness:
             session=self.session,
             bus=self.bus,
             info="model / voice",
+            models="chat-model · tts-model",
             shape=shape,
         )
 
@@ -168,7 +169,7 @@ def test_a_turn_is_shown_as_it_happens_without_its_cues() -> None:
         harness.bus.emit(TurnEnded(snapshot))
         harness.bus.emit(Listening())
         await pilot.pause(0.1)
-        assert harness.state_line() == "● Listening  just talk, or type below"
+        assert harness.state_line() == "● Listening"
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
@@ -303,13 +304,13 @@ def test_the_mute_key_turns_the_mic_off_and_the_state_line_says_so() -> None:
         await pilot.press("f2")
         await pilot.pause(0.05)
         assert harness.live.muted
-        assert harness.state_line() == "○ Mic off  F2 turns it back on"
+        assert harness.state_line() == "○ Mic off"
         assert harness.footer_actions() >= {"unmute"}
         assert "mute" not in harness.footer_actions()
         await pilot.press("f2")
         await pilot.pause(0.05)
         assert not harness.live.muted
-        assert harness.state_line() == "● Listening  just talk, or type below"
+        assert harness.state_line() == "● Listening"
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
@@ -507,6 +508,8 @@ def test_the_header_names_the_chat_or_else_the_app() -> None:
     async def scenario(pilot: Pilot[int]) -> None:
         assert harness.text("#title") == "fish-voice"
         assert harness.text("#keys-hint") == "? keys"
+        # The chat model and the TTS model stay in view, beside the keys hint.
+        assert harness.text("#models") == "chat-model · tts-model"
         record = Record("be brief")
         record.add_user_line("What should the cat be called?")
         title = chat_title(record)

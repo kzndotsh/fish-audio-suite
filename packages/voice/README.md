@@ -235,12 +235,12 @@ uv run --package fish-audio-suite-voice --extra cli --extra tui fish-voice --tui
 
 `--tui` runs the same session in a full-screen terminal app (built on [Textual](https://textual.textualize.io)). The chat screen shows only what you need while talking, top to bottom:
 
-- **The title line**: the chat's name, or else its first line (or `fish-voice` before there is one), and `? keys` on the right.
+- **The title line**: the chat's name, or else its first line (or `fish-voice` before there is one), then on the right the chat model and the TTS model (`grok-4.20 · drama-3`) and `? keys`.
 - **The conversation**: your lines start with `›`, and each reply sits indented under them as you hear it, without its `[cue]` tags, live as it streams and once it is recorded. While you talk a pulsing line shows you are heard, and turns into your words once they are transcribed. While a reply plays, the words you have not heard yet are dim (with the default PortAudio playback only); a reply you cut off keeps only the words you heard and ends in `…`. A turn you hid says `hidden from AI` and is dimmed, and a reply you rewrote says `edited`.
-- **The state line**: a symbol and a word, never colour alone, then a plain hint. `● Listening` (just talk, or type below), `◌ Thinking…`, `▶ Speaking` (talk to interrupt, or press Esc), `○ Mic off` (F2 turns it back on) and `✕ Session ended` with the exit code. While it listens or speaks, a small meter in dots shows the mic's level, or the reply's (for the default PortAudio playback only). The mic and the speaker are scaled the same way, from the last few seconds of the signal itself (its noise floor and its speech level), so they look alike whatever their volume, a quiet room stays flat and one loud bump does not shrink the speech after it.
+- **The state line**: a symbol and a word, never colour alone, with a hint only where it adds something. `● Listening`, `◌ Thinking…`, `▶ Speaking` (talk to interrupt, or press Esc), `○ Mic off` (the footer shows F2 to turn it on) and `✕ Session ended` with the exit code. While it listens or speaks, a small meter in dots shows the mic's level, or the reply's (for the default PortAudio playback only). The mic and the speaker are scaled the same way, from the last few seconds of the signal itself (its noise floor and its speech level), so they look alike whatever their volume, a quiet room stays flat and one loud bump does not shrink the speech after it.
 - **The composer**, where you type instead of talking, and the keys that work now.
 
-Timings, models, the log and the reply as Fish read it are on the Diagnostics screen (F12), not on the chat screen. See [Diagnostics](#diagnostics).
+Timings, the provider and voice, the log and the reply as Fish read it are on the Diagnostics screen (F12), not on the chat screen. See [Diagnostics](#diagnostics).
 
 The footer shows only the keys that do something now: Stop appears only while a reply can be stopped, and Mic off or Mic on, whichever applies.
 

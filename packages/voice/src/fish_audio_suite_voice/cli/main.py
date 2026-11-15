@@ -282,6 +282,7 @@ async def run_tui(c: VoiceCliConfig, *, debug: DebugLevel, resumed: SavedChat | 
                     live=live,
                     session=run.session,
                     info=info,
+                    models=f"{short_model(c.llm.model)} · {c.tts_model}",
                     chat_dir=c.chat_dir,
                     shape=c.cue_style.shape,
                     editor=editor_from_env(),

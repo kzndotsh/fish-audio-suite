@@ -349,7 +349,6 @@ class Composer(Input):
 
 
 # The state line: a glyph and a word for every state, never colour alone, and a plain hint.
-_LISTENING_HINT = "just talk, or type below"
 
 
 class VoiceApp(App[int]):
@@ -369,6 +368,9 @@ class VoiceApp(App[int]):
         Where the session reports. The session-wide ``EVENTS`` by default.
     info : str, optional
         What the session runs on, such as the model and voice. Diagnostics shows it.
+    models : str, optional
+        The chat model and the TTS model, such as ``grok-4.20 · drama-3``, shown at the
+        right of the title line. Empty shows nothing there.
     chat_dir : Path or None, optional
         The folder of saved chats the chat list shows. None lists none, so only a new chat
         can be started.
@@ -405,11 +407,13 @@ class VoiceApp(App[int]):
         session: DuplexSession,
         bus: EventBus = EVENTS,
         info: str = "",
+        models: str = "",
         chat_dir: Path | None = None,
         shape: Callable[[str], str] | None = None,
         editor: str = "vi",
     ) -> None:
         super().__init__()
+        self._models = models
         self._editor = editor
         self._runner = runner
         self._live = live
@@ -437,6 +441,7 @@ class VoiceApp(App[int]):
         """Lay out the title, the conversation, the state line, the composer and the keys."""
         with Horizontal(id="header"):
             yield Static(_APP_NAME, id="title")
+            yield Static(printable(self._models), id="models")
             yield Static("? keys", id="keys-hint")
         yield Conversation(
             id="conversation", send=self._live.send, hold_mic=self._hold_mic, editor=self._editor
@@ -566,10 +571,10 @@ class VoiceApp(App[int]):
         if state is SessionState.THINKING:
             return "◌", "Thinking…", "", "thinking"
         if muted:
-            return "○", "Mic off", "F2 turns it back on", "muted"
+            return "○", "Mic off", "", "muted"
         if state is SessionState.LISTENING:
-            return "●", "Listening", _LISTENING_HINT, "listening"
-        return "○", "Ready", _LISTENING_HINT, "idle"
+            return "●", "Listening", "", "listening"
+        return "○", "Ready", "", "idle"
 
     def _render_view(self) -> None:
         main = self._main

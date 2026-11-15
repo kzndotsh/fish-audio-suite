@@ -17,6 +17,7 @@ from voice_fakes import ScriptedMic
 
 from fish_audio_suite_voice.cli import main as cli
 from fish_audio_suite_voice.cli.main import main, run_loop, run_tui
+from fish_audio_suite_voice.cli.wording import short_model
 from fish_audio_suite_voice.config.settings import VoiceCliConfig, load_config
 from fish_audio_suite_voice.llm.transports import unusable
 from fish_audio_suite_voice.logutil.debug import DebugLevel
@@ -127,6 +128,7 @@ class _FakeApp:
         live: LiveInput,
         session: DuplexSession,
         info: str = "",
+        models: str = "",
         chat_dir: Path | None = None,
         shape: Callable[[str], str] | None = None,
         editor: str = "vi",
@@ -137,6 +139,7 @@ class _FakeApp:
         self.live = live
         self.session = session
         self.info = info
+        self.models = models
         self.chat_dir = chat_dir
         self.code: int | None = 0
         self.switch_interval = 0.0
@@ -195,6 +198,8 @@ def test_run_tui_gives_the_session_to_the_app_with_the_console_off(
     assert app.editor == "nano -w"  # what Ctrl+E opens a line being edited in
     assert "voice123" in app.info
     assert "model" in app.info
+    # The title line names the chat model and the TTS model, not the provider or voice.
+    assert app.models == f"{short_model(c.llm.model)} · {c.tts_model}"
     args, kwargs = calls["duplex"]
     assert args[0] == c
     assert kwargs["full_screen"] is True

@@ -14,6 +14,12 @@ Screen {
         text-style: bold;
     }
 
+    #models {
+        width: auto;
+        color: $text-muted;
+        margin-right: 3;
+    }
+
     #keys-hint {
         width: auto;
         color: $text-muted;
