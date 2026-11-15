@@ -624,8 +624,8 @@ def normalize_cues(
         False, which keeps free-form S2 cues as written.
     directed : bool, optional
         True for a model that is directed in plain language (``takes_directions``). Every
-        ``[direction]`` is then left exactly as written, ``official`` and ``lead`` are
-        ignored, a mood word written without brackets stays a word, and
+        ``[direction]`` then keeps its wording and is only lowercased, ``official`` and
+        ``lead`` are ignored, a mood word written without brackets stays a word, and
         ``<whisper>…</whisper>`` stays a paired tag. Only an S1 ``(happy)`` tag is still
         bracketed, since the scrubber would otherwise drop it. Default False.
 
@@ -657,12 +657,12 @@ def normalize_cues(
     >>> normalize_cues("happy Hi there. calm Take it slow.")
     '[happy] Hi there. [calm] Take it slow.'
     >>> normalize_cues("[Barely holding it together] <whisper>fine</whisper>", directed=True)
-    '[Barely holding it together] <whisper>fine</whisper>'
+    '[barely holding it together] <whisper>fine</whisper>'
     """
     if not text:
         return text
     if directed:
-        return rewrite_s1_parens(text)
+        return _CUE_RE.sub(lambda m: m.group(0).lower(), rewrite_s1_parens(text))
     text = _bracket_bare_leads(text, continued=continued)
     text = _WHISPER_XML_RE.sub(lambda m: f"[whispering] {m.group(1).strip()}", text)
     text = rewrite_s1_parens(text)

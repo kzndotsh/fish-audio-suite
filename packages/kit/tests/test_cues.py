@@ -459,11 +459,12 @@ def test_a_sound_first_sentence_still_gets_the_mood_and_one_with_its_own_is_left
     assert MoodCarry().apply("No mood yet. ") == "No mood yet. "
 
 
-def test_a_directed_model_gets_every_direction_and_whisper_tag_as_written() -> None:
-    text = "[Barely holding it together, forcing a smile] I'm fine. [shaky breath] <whisper>Really</whisper>. [pause]"
-    assert normalize_cues(text, directed=True) == text
+def test_a_directed_model_gets_every_direction_in_lowercase_and_whisper_tags_as_written() -> None:
+    text = "[Barely holding it together, forcing a smile] I'm Fine. [Shaky breath] <whisper>Really</whisper>. [pause]"
+    shaped = "[barely holding it together, forcing a smile] I'm Fine. [shaky breath] <whisper>Really</whisper>. [pause]"
+    assert normalize_cues(text, directed=True) == shaped
     # The official mapping would shrink or drop them, so it does not apply.
-    assert normalize_cues(text, directed=True, official=True) == text
+    assert normalize_cues(text, directed=True, official=True) == shaped
     assert normalize_cues("[Smiling] hi", official=True) == "[happy] hi"
 
 

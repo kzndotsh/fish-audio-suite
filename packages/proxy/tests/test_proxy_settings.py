@@ -710,7 +710,7 @@ def test_a_request_for_drama_3_keeps_its_directions_and_paired_tags(
     _, captured = post_speech(monkeypatch, {"input": text, "model": "fish-audio/drama-3"})
     assert captured["headers"]["model"] == "drama-3"
     assert captured["json"]["text"] == (
-        "[Barely holding it together] It is <emphasis>mine</emphasis>, now."
+        "[barely holding it together] It is <emphasis>mine</emphasis>, now."
     )
     _, captured = post_speech(monkeypatch, {"input": text, "model": "s2.1-pro"})
     assert captured["json"]["text"] == "[barely holding it together] It is mine, now."
