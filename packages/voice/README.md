@@ -252,7 +252,7 @@ The footer shows only the keys that do something now: Stop appears only while a 
 | F2 | Turn the mic off or on. Off, the mic stays closed: no listening between turns and no barge-in watch during a reply. Typing or Esc still interrupts. Turning it on during a reply applies from the next reply. Turning it off while you speak ends your turn there: with a streaming recogniser, words it already heard are answered, and with none heard yet the turn is dropped |
 | Tab | Move between the composer and the messages. Nothing else takes focus |
 | Ctrl+O | The saved chats, to open, search, rename or delete one, or start a new chat. See [Editing the chat](#editing-the-chat) |
-| Ctrl+P | The command palette: Try again (while the newest reply can be tried again), New chat, Chats…, Mic on or off, Stop speaking, Diagnostics and Keys, then Textual's own commands |
+| Ctrl+P | The command palette: Try again (while the newest reply can be tried again), New chat, Chats…, Mic on or off, Stop speaking, Diagnostics, Keys and Quit, then Textual's own commands |
 | F1, or ? in an empty composer | List every key in plain words. F1 works anywhere on the chat screen and closes the list again; with text in the composer, ? is just typed |
 | F12 | Open Diagnostics, or go back to the chat |
 | Ctrl+Q | Quit |

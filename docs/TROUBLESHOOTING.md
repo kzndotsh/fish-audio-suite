@@ -177,7 +177,7 @@ Look for `tts underrun after N kB played`. The speaker ran out of audio between 
 
 Not every audio system reports underruns: on PipeWire the line can be missing even when the speaker briefly ran dry. If you hear a blip at sentence ends with no underrun line, compare the `tts audio` arrival times (in `--trace`) with how long each chunk plays (bytes ÷ 88,200 per second at 44.1 kHz). A chunk that arrives just as the previous one ends is the cause. `FISH_LATENCY=balanced` makes Fish deliver sooner.
 
-In `--tui` the screen shares the process with playback. It asks for a bigger sound-card buffer (`FISH_VOICE_OUTPUT_LATENCY`, `high` there by default), lets the playback thread in sooner, and collects garbage less often. An underrun line now also shows `chunk_wait` (the audio arrived late), `in_python` (the thread was busy before the write) and `write` (the call itself waited, usually for Python's lock).
+In `--tui` the screen shares the process with playback. It asks for a bigger sound-card buffer (`FISH_VOICE_OUTPUT_LATENCY`, `high` there by default), lets the playback thread in sooner, and collects garbage less often. An underrun line now also shows `chunk_wait` (the audio arrived late), `in_python` (the thread was busy before the write) and `write` (the call itself waited, usually for Python's lock). An underrun with a small `chunk_wait` means the audio had arrived and the app held playback up while drawing the screen. That is a bug: report it with the `--debug` log and how many turns the chat had.
 
 ### A faint click at the start or end of a sentence
 
