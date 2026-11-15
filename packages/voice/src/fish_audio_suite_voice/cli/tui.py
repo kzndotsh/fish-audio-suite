@@ -28,6 +28,7 @@ from textual.content import Content
 from textual.events import Key, Resize
 from textual.message import Message
 from textual.screen import ModalScreen, Screen
+from textual.style import Style
 from textual.timer import Timer
 from textual.types import CSSPathType
 from textual.widget import Widget
@@ -98,6 +99,7 @@ _MIN_SIZE = (50, 14)  # under this nothing fits, so the app says so and keeps qu
 _APP_NAME = "fish-voice"
 _CHATS_KEY = "ctrl+o"  # a control key, so it works while typing; Ctrl+O reaches the app in raw mode
 _DIAGNOSTICS_KEY = "f12"
+_KEYS_KEY = "f1"  # the keys list from anywhere on the chat screen; ? only where it types nothing
 
 
 class Waveform(Widget):
@@ -310,15 +312,19 @@ class Composer(Input):
         self._at: int | None = None  # where in ``_sent`` the line came from, None for a new one
         self._draft = ""
 
-    def on_key(self, event: Key) -> None:
-        """Note the keystroke, arrows and Enter included, and let ``Input`` handle it.
+    async def on_key(self, event: Key) -> None:
+        """Open the keys list on ``?`` in an empty line, else note the keystroke for ``Input``.
 
         Parameters
         ----------
         event : Key
-            The key.
+            The key. Every other key, arrows and Enter included, counts as typing.
         """
-        del event
+        if event.key == "question_mark" and not self.value:
+            event.prevent_default()
+            event.stop()
+            await self.run_action("app.keys")
+            return
         self._on_typing()
 
     def on_input_changed(self, event: Input.Changed) -> None:
@@ -427,6 +433,7 @@ class VoiceApp(App[int]):
         Binding(DEFAULT_KEYS[SessionAction.UNMUTE], "unmute", "Mic on", priority=True),
         Binding(_CHATS_KEY, "chats", "Chats", priority=True),
         Binding(_DIAGNOSTICS_KEY, "diagnostics", "Diagnostics", show=False, priority=True),
+        Binding(_KEYS_KEY, "keys", "Keys", show=False, priority=True),
         Binding(
             DEFAULT_KEYS[SessionAction.QUIT], "quit_session", "Quit", show=False, priority=True
         ),
@@ -478,7 +485,9 @@ class VoiceApp(App[int]):
         with Horizontal(id="header"):
             yield Static(_APP_NAME, id="title")
             yield Static(printable(self._models), id="models")
-            yield Static("? keys", id="keys-hint")
+            yield Static(
+                Content("? keys").stylize(Style.from_meta({"@click": "app.keys"})), id="keys-hint"
+            )
         yield Conversation(
             id="conversation", send=self._live.send, hold_mic=self._hold_mic, editor=self._editor
         )
@@ -660,6 +669,9 @@ class VoiceApp(App[int]):
                 return not self._editing and SessionAction.UNMUTE in actions
             case "chats":
                 return not isinstance(self.screen, ModalScreen)
+            case "keys":
+                # F1 opens the list over the chat and closes it again, and leaves other screens be.
+                return self.screen is self._main or isinstance(self.screen, KeysScreen)
             case _:
                 return True
 
@@ -721,8 +733,10 @@ class VoiceApp(App[int]):
         self.push_screen(ChatPicker(self._chat_dir, self._chat_file, self._live.send))
 
     def action_keys(self) -> None:
-        """List every key in plain words."""
-        if not isinstance(self.screen, KeysScreen):
+        """List every key in plain words, or close the list when it is open."""
+        if isinstance(self.screen, KeysScreen):
+            self.screen.dismiss(None)
+        else:
             self.push_screen(KeysScreen())
 
     def action_diagnostics(self) -> None:

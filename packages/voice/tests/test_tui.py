@@ -875,14 +875,61 @@ def test_the_keys_list_opens_from_the_messages_and_closes_with_escape() -> None:
     harness = _Harness()
 
     async def scenario(pilot: Pilot[int]) -> None:
-        await pilot.press("question_mark")  # typing: it is just a character
-        assert harness.app.query_one(Composer).value == "?"
         await pilot.press("tab", "question_mark")
         assert isinstance(harness.app.screen, KeysScreen)
         text = str(harness.app.screen.query_one(Static).content)
         assert "Hide from the AI, or show again" in text
         await pilot.press("escape")
         assert not isinstance(harness.app.screen, KeysScreen)
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+
+
+def test_question_mark_in_an_empty_composer_opens_the_keys_and_otherwise_types() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        composer = harness.app.query_one(Composer)
+        await pilot.press("question_mark")
+        assert isinstance(harness.app.screen, KeysScreen)
+        assert composer.value == ""
+        await pilot.press("question_mark")  # ? closes the list again
+        assert not isinstance(harness.app.screen, KeysScreen)
+        await pilot.press("w", "h", "y", "question_mark")
+        assert composer.value == "why?"
+        assert not isinstance(harness.app.screen, KeysScreen)
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+
+
+def test_f1_opens_and_closes_the_keys_from_anywhere_on_the_chat_screen() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        await pilot.press("a", "f1")  # typing, with text in the line
+        assert isinstance(harness.app.screen, KeysScreen)
+        assert "F1" in str(harness.app.screen.query_one(Static).content)
+        await pilot.press("f1")
+        assert not isinstance(harness.app.screen, KeysScreen)
+        assert harness.app.query_one(Composer).value == "a"
+        await pilot.press("tab", "f1")  # from the messages
+        assert isinstance(harness.app.screen, KeysScreen)
+        await pilot.press("escape", "f12", "f1")  # Diagnostics keeps F1 to itself
+        assert isinstance(harness.app.screen, DiagnosticsScreen)
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+
+
+def test_clicking_the_keys_hint_opens_the_keys() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        assert await pilot.click("#keys-hint")
+        await pilot.pause(0.05)
+        assert isinstance(harness.app.screen, KeysScreen)
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0

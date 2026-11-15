@@ -63,7 +63,7 @@ KEYS: tuple[tuple[str, str], ...] = (
     ("z", "Undo"),
     ("Ctrl+O", "Chats"),
     ("Ctrl+P", "All commands"),
-    ("?", "Keys (from the messages)"),
+    ("F1  ?", "Keys (? in the messages or an empty composer)"),
     ("F12", "Diagnostics"),
     ("Ctrl+Q", "Quit"),
 )
@@ -409,7 +409,7 @@ class ChatPicker(ModalScreen[None]):
 
 
 class KeysScreen(ModalScreen[None]):
-    """Every key of the app, in plain words. Any of Escape, ``?`` or ``q`` closes it."""
+    """Every key of the app, in plain words. Any of Escape, ``?``, ``q`` or F1 closes it."""
 
     BINDINGS: ClassVar[list[BindingType]] = [
         Binding("escape,question_mark,q", "close", "Close"),

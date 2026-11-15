@@ -20,9 +20,16 @@ Screen {
         margin-right: 3;
     }
 
+    /* A link that opens the keys list: muted, brighter under the mouse. */
     #keys-hint {
         width: auto;
         color: $text-muted;
+        pointer: pointer;
+        link-color: $text-muted;
+        link-style: none;
+        link-background-hover: transparent;
+        link-color-hover: $text;
+        link-style-hover: bold;
     }
 }
 
