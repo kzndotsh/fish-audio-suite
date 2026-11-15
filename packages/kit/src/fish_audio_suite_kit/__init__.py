@@ -81,6 +81,7 @@ from fish_audio_suite_kit.tts.cues import (
     official_cue,
     split_cues,
     strip_cue_tags,
+    unclosed_cue_start,
 )
 from fish_audio_suite_kit.tts.cuts import (
     ends_sentence,
@@ -238,6 +239,7 @@ __all__ = [
     "takes_directions",
     "trace_id_of",
     "tts_hold_at",
+    "unclosed_cue_start",
     "utf8_text",
     "without_watermark_segments",
 ]

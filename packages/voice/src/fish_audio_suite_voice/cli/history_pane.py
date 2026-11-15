@@ -20,7 +20,7 @@ from textual.style import Style
 from textual.timer import Timer
 from textual.widgets import Input, Static
 
-from fish_audio_suite_kit import split_cues
+from fish_audio_suite_kit import split_cues, unclosed_cue_start
 from fish_audio_suite_voice.cli.chat_screens import printable, spoken
 from fish_audio_suite_voice.cli.turn_editor import EditKind, TurnEditor
 from fish_audio_suite_voice.session.commands import (
@@ -106,10 +106,9 @@ def _heard_end(words: str, chars: int) -> int:
 
 
 def _settled(text: str) -> str:
-    # A reply still streaming can end in the first half of a cue ("[war"). Leave it out
-    # until it closes, so it never flashes up as words.
-    head, bracket, tail = text.rpartition("[")
-    return head if bracket and "]" not in tail and "\n" not in tail else text
+    # A reply still streaming can end in the first half of a cue ("[war", "<whis"). Leave
+    # it out until it closes, so it never flashes up as words.
+    return text[: unclosed_cue_start(text)]
 
 
 # Marks the part of a turn's action hint that runs an action when clicked. It is not an
@@ -831,7 +830,8 @@ class Conversation(VerticalScroll):
         text : str
             The reply so far, cues and all. They are left out of what is shown.
         """
-        self._reply_words = spoken(_settled(text))
+        # On one line, as the record keeps it, so the bubble keeps its shape once recorded.
+        self._reply_words = " ".join(spoken(_settled(text)).split())
         if self._reply is None and not self._reply_words:
             return
         content = self._reply_content()

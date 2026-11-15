@@ -11,6 +11,7 @@ import re
 from typing import Final
 
 from fish_audio_suite_kit.tts.cuts import ABBREVIATION_LOOKBACK, ends_sentence, sentence_cuts
+from fish_audio_suite_kit.types.catalog import DIRECTED_PAIRED_TAGS
 
 __all__ = [
     "CLEAR_CUE",
@@ -20,6 +21,7 @@ __all__ = [
     "official_cue",
     "split_cues",
     "strip_cue_tags",
+    "unclosed_cue_start",
 ]
 
 # Official single-word emotions (basic + advanced), the common ones first. The default
@@ -202,14 +204,23 @@ _KNOWN_CUE_TAG_RE: Final = re.compile(
 )
 
 
+# A directed model's paired tag, opening or closing, such as <whisper> or </emphasis>.
+_PAIRED_TAG_SOURCE: Final = r"<\s{0,8}/?\s{0,8}(?:" + "|".join(DIRECTED_PAIRED_TAGS) + r")\s{0,8}>"
+# What a display shows as a cue: a [cue], or a paired tag Fish performs and does not speak.
+_SHOWN_CUE_RE: Final = re.compile(
+    rf"{cue_pattern(_MAX_CUE_CHARS, capture=False)}|{_PAIRED_TAG_SOURCE}", re.IGNORECASE
+)
+
+
 def split_cues(text: str) -> list[tuple[str, bool]]:
-    """Split text into its ``[cue]`` tags and the words around them.
+    """Split text into its cues and the words around them.
 
     Parameters
     ----------
     text : str
         Text that may contain bracketed cues such as ``[calm]`` or
-        ``[smothering affection]``.
+        ``[smothering affection]``, or a directed model's paired tags such as
+        ``<whisper>`` and ``</whisper>``.
 
     Returns
     -------
@@ -217,7 +228,8 @@ def split_cues(text: str) -> list[tuple[str, bool]]:
         Pieces in order, each with ``True`` when it is a cue (brackets included).
         Joined back together they are exactly ``text``, so nothing is lost.
         Empty pieces are left out. A bracket longer than a cue can be, or one
-        that spans a line break, is plain text.
+        that spans a line break, is plain text, and so is an angle-bracket tag
+        Fish does not read in pairs.
 
     Notes
     -----
@@ -228,12 +240,14 @@ def split_cues(text: str) -> list[tuple[str, bool]]:
     --------
     >>> split_cues("[calm] Hello [soft encouragement] there.")
     [('[calm]', True), (' Hello ', False), ('[soft encouragement]', True), (' there.', False)]
+    >>> split_cues("Shh. <whisper>Over here.</whisper>")
+    [('Shh. ', False), ('<whisper>', True), ('Over here.', False), ('</whisper>', True)]
     >>> split_cues("no cues")
     [('no cues', False)]
     """
     pieces: list[tuple[str, bool]] = []
     last = 0
-    for match in _CUE_RE.finditer(text):
+    for match in _SHOWN_CUE_RE.finditer(text):
         if match.start() > last:
             pieces.append((text[last : match.start()], False))
         pieces.append((match.group(0), True))
@@ -241,6 +255,47 @@ def split_cues(text: str) -> list[tuple[str, bool]]:
     if last < len(text):
         pieces.append((text[last:], False))
     return pieces
+
+
+_PAIRED_TAG_FORMS: Final = tuple(
+    form for tag in DIRECTED_PAIRED_TAGS for form in (f"<{tag}>", f"</{tag}>")
+)
+
+
+def unclosed_cue_start(text: str) -> int:
+    """Return where a cue still being written starts at the end of ``text``.
+
+    Parameters
+    ----------
+    text : str
+        A reply as it streams in.
+
+    Returns
+    -------
+    int
+        The index of a trailing ``[`` with no ``]`` or newline after it, or of a trailing
+        ``<`` that the rest could still turn into a paired tag such as ``<whisper>``.
+        ``len(text)`` when nothing is open. A display shows ``text`` up to here, so half a
+        cue never flashes up as words.
+
+    Examples
+    --------
+    >>> unclosed_cue_start("Hi [war")
+    3
+    >>> unclosed_cue_start("Shh. <whis")
+    5
+    >>> unclosed_cue_start("a < b")
+    5
+    """
+    bracket = text.rfind("[")
+    if bracket >= 0 and "]" not in text[bracket:] and "\n" not in text[bracket:]:
+        return bracket
+    angle = text.rfind("<")
+    if angle >= 0:
+        tail = "".join(text[angle:].split()).lower()
+        if any(form.startswith(tail) for form in _PAIRED_TAG_FORMS):
+            return angle
+    return len(text)
 
 
 def strip_cue_tags(text: str) -> str:

@@ -107,6 +107,7 @@
     "takes_directions",
     "trace_id_of",
     "tts_hold_at",
+    "unclosed_cue_start",
     "utf8_text",
     "without_watermark_segments"
   ],
@@ -190,6 +191,7 @@
     "strip_base": "def(url: str) -> str",
     "strip_cue_tags": "def(text: str) -> str",
     "trace_id_of": "def(traceparent: str) -> str | None",
+    "unclosed_cue_start": "def(text: str) -> int",
     "utf8_text": "def(text: str) -> str"
   }
 }

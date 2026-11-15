@@ -717,6 +717,42 @@ def test_a_recorded_turn_takes_the_place_of_the_turn_in_progress() -> None:
     _drive(harness, scenario)
 
 
+def test_a_whispered_reply_shows_no_tags_and_keeps_its_shape_once_recorded() -> None:
+    harness = _Harness()
+    record = Record("s")
+    reply = "[soft] Over here.\n\n<whisper>Quietly now.</whisper>\n\nThat was close."
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        harness.bus.emit(Heard("where are you", 0.0))
+        seen: list[str] = []
+        for piece in (
+            "[soft] Over here.\n\n<whis",
+            "per>Quietly now.</whisper>\n\n",
+            "That was close.",
+        ):
+            harness.bus.emit(ReplyToken(piece))
+            await pilot.pause(0.05)
+            seen.append(harness.lines()[-1])
+        harness.bus.emit(ReplyEnd(reply))
+        await pilot.pause(0.05)
+        live = harness.lines()[-1]
+        # Half a tag never shows, nor a whole one, and the paragraphs share one line.
+        assert seen[0] == "ai: Over here."
+        assert not any("<" in line or "whis" in line for line in [*seen, live])
+        assert live == "ai: Over here. Quietly now. That was close."
+        record.add_user_line("where are you")
+        record.add_reply(
+            "[soft] Over here. <whisper>Quietly now.</whisper> That was close.", interrupted=False
+        )
+        harness.bus.emit(_shown(record, window=10))
+        await pilot.pause(0.1)
+        assert (
+            harness.lines()[-1] == "you: where are you\nai: Over here. Quietly now. That was close."
+        )
+
+    _drive(harness, scenario)
+
+
 def _live(harness: _Harness) -> list[Bubble]:
     """The bubbles of the turn in progress, which no recorded turn holds yet."""
     return [child for child in harness.pane.children if isinstance(child, Bubble)]
