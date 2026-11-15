@@ -12,19 +12,21 @@ import contextlib
 import json
 import os
 import tempfile
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Final
 
 from fish_audio_suite_voice.logutil.debug import debug
-from fish_audio_suite_voice.session.conversation import SCHEMA_VERSION, Conversation
+from fish_audio_suite_voice.session.conversation import SCHEMA_VERSION, Conversation, Turn
 
 __all__ = [
     "ChatFile",
     "ChatLoadError",
     "ChatSummary",
     "SavedChat",
+    "chat_title",
     "find_chat",
     "list_chats",
     "load_chat",
@@ -168,16 +170,39 @@ class SavedChat:
             Its id, file, title, times and number of turns.
         """
         turns = self.conversation.turns
-        first = turns[0].user.split("\n")[0].strip() if turns else ""
-        title = first if len(first) <= _TITLE_CHARS else first[: _TITLE_CHARS - 1] + "…"
         return ChatSummary(
             self.conversation.id,
             self.file.path,
-            title,
+            chat_title(turns),
             self.file.started,
             self.updated,
             len(turns),
         )
+
+
+def chat_title(turns: Sequence[Turn]) -> str:
+    r"""Return a chat's title: its first user line, shortened.
+
+    Parameters
+    ----------
+    turns : Sequence of Turn
+        The chat's turns, oldest first.
+
+    Returns
+    -------
+    str
+        The first line of the first turn's user text, cut to 60 characters with an
+        ellipsis. Empty when there are no turns.
+
+    Examples
+    --------
+    >>> chat_title([Turn("a", "Name the cat\nplease")])
+    'Name the cat'
+    >>> chat_title([])
+    ''
+    """
+    first = turns[0].user.split("\n")[0].strip() if turns else ""
+    return first if len(first) <= _TITLE_CHARS else first[: _TITLE_CHARS - 1] + "…"
 
 
 def load_chat(path: Path) -> SavedChat:
