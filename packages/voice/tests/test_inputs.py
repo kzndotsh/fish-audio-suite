@@ -189,7 +189,7 @@ def test_the_loop_answers_a_typed_line_through_a_source(monkeypatch: pytest.Monk
     ScriptedRecordings(monkeypatch, b"wav")
     ScriptedAsr(monkeypatch, "goodbye").serve_sessions()
     assert run_session(quick_config(), tts, hello_tokens, source=source) == 0
-    assert said == ["[calm] Hello there friend."]
+    assert said == ["Hello there friend."]
 
 
 def _bound_turn(ctx: DuplexContext) -> tuple[threading.Event, asyncio.Event]:

@@ -243,7 +243,7 @@ def test_cancelled_speak_keeps_the_audio_that_tripped_barge(
         on_first_audio: object = None,
         trace_headers: object = None,
     ) -> TtsResult:
-        assert text == "[calm] Hello there friend"
+        assert text == "Hello there friend"
         return make_result(
             "hello",
             bytes_played=4,
@@ -613,9 +613,9 @@ def test_a_cut_off_reply_is_remembered_for_resuming(monkeypatch: pytest.MonkeyPa
             trace_id=None,
         )
     )
-    # Fish is sent the rest led by the mood from before the cut; the record gets it as written.
+    # A reply with no cue is sent on as written: no mood is made up for the rest.
     assert ctx.turn_input.carry.resume == Unheard(
-        "[calm] How was your day today?", "How was your day today?"
+        "How was your day today?", "How was your day today?"
     )
 
 

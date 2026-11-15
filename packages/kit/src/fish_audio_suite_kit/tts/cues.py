@@ -15,7 +15,6 @@ from fish_audio_suite_kit.tts.cuts import ABBREVIATION_LOOKBACK, ends_sentence, 
 __all__ = [
     "CLEAR_CUE",
     "MoodCarry",
-    "ensure_lead_cue",
     "last_emotion",
     "normalize_cues",
     "official_cue",
@@ -571,7 +570,9 @@ def normalize_cues(
     directed : bool, optional
         True for a model that is directed in plain language (``takes_directions``). Every
         ``[direction]`` is then left exactly as written, ``official`` and ``lead`` are
-        ignored, and ``<whisper>…</whisper>`` stays a paired tag. Default False.
+        ignored, a mood word written without brackets stays a word, and
+        ``<whisper>…</whisper>`` stays a paired tag. Only an S1 ``(happy)`` tag is still
+        bracketed, since the scrubber would otherwise drop it. Default False.
 
     Returns
     -------
@@ -605,9 +606,9 @@ def normalize_cues(
     """
     if not text:
         return text
-    text = _bracket_bare_leads(text, continued=continued)
     if directed:
         return rewrite_s1_parens(text)
+    text = _bracket_bare_leads(text, continued=continued)
     text = _WHISPER_XML_RE.sub(lambda m: f"[whispering] {m.group(1).strip()}", text)
     text = rewrite_s1_parens(text)
     if official:
@@ -696,41 +697,3 @@ class MoodCarry:
         if piece.strip():
             self._before = piece
         return out
-
-
-def ensure_lead_cue(text: str, *, default: str | None = None) -> str:
-    """Prepend one cue when the reply has none at the start.
-
-    Parameters
-    ----------
-    text : str
-        Already scrubbed reply.
-    default : str or None, optional
-        Cue name without brackets, lowercased before use. When omitted or
-        blank, the reply is returned unchanged.
-
-    Returns
-    -------
-    str
-        ``text`` unchanged when it is blank, when no default is set, or when
-        it already starts with a ``[cue]``. Otherwise ``[default]``, a space,
-        and ``text`` without its leading whitespace.
-
-    Notes
-    -----
-    Pick an emotion such as ``calm`` as the default. ``[clear]`` is not
-    neutral, because Fish speaks it as an ahem, the same as ``[clear throat]``.
-
-    Examples
-    --------
-    >>> ensure_lead_cue("  hi", default="Calm")
-    '[calm] hi'
-    >>> ensure_lead_cue("[sad] hi", default="calm")
-    '[sad] hi'
-    """
-    if not text.strip():
-        return text
-    tag = (default or "").strip().lower()
-    if not tag or _CUE_RE.match(text.lstrip()):
-        return text
-    return f"[{tag}] {text.lstrip()}"

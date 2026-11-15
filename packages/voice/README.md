@@ -93,7 +93,7 @@ In the [full-screen app](#the-full-screen-app), Ctrl+O lists the saved chats, ne
 
 ### History after a barge-in
 
-The chat history gets only what you probably heard. For PCM that is a word-aligned estimate from the bytes played, the speed, and the device buffer. Encoded playback (`mpv`) cannot be cut by length, so an interrupted or failed reply is left out of history. It keeps the reply as the model wrote it: the `[calm]` lead and the mood carried into each streamed sentence are sent to Fish but not kept, so the model does not learn to open every reply the same way.
+The chat history gets only what you probably heard. For PCM that is a word-aligned estimate from the bytes played, the speed, and the device buffer. Encoded playback (`mpv`) cannot be cut by length, so an interrupted or failed reply is left out of history. It keeps the reply as the model wrote it: the mood carried into each streamed sentence is sent to Fish but not kept, so the model does not learn to open every reply the same way.
 
 If the interrupt turns out not to be speech (Fish hears no words, a backchannel such as "mm-hmm", or a clip too short to keep), the rest of the reply is spoken again from where it was cut, and joins the same history message. A real line drops the rest. Only text the model had already written is resumed.
 
@@ -103,9 +103,9 @@ On a turn of its own, a lone "yeah", "yep" or "uh-huh" is an answer and gets a r
 
 How Fish's S2 models read cues, from Fish's guides: a cue is square brackets around plain language, so `[warm and happy]` and `[laughing nervously]` work as well as the official names. Layered cues work (`[sad][whispering]`, at most three per sentence is advised), a sentence's emotion cue works best at its start, and sound cues can go anywhere. Follow a sound with the words of it (`[laughing] Ha ha`), use cues sparingly, and do not stack conflicting emotions. The kit keeps stacks whole, rewrites the older S1 `(parenthesis)` and alias spellings (`[laugh]` becomes `[laughing]`), and never speaks a cue. The S1 model uses parentheses and a fixed list, and the app does not write them back for it, so `FISH_TTS_MODEL=s1` is not supported for cues.
 
-`drama-3` is directed differently: long plain-language directions (`[barely holding it together, forcing a smile]`), sounds where they occur (`[shaky breath]`), and paired tags around words (`<emphasis>`, `<soft>`, `<fast>`, `<slow>`, `<stress>`, `<forceful>`, `<whisper>`). With `FISH_TTS_MODEL=drama-3` the app sends all of that as written: `FISH_TTS_CUES` is ignored, the paired tags are kept, and no mood is carried from one sentence to the next. The default prompt still asks the model for one mood word per sentence, which `drama-3` accepts; to use its full range, describe its directions and tags in your own `FISH_VOICE_SYSTEM_PROMPT`. Its experimental language tags (`<french>`) are removed like any other markup. This follows Fish's guide and has not been tuned by ear here. The proxy does the same when a request resolves to `drama-3`.
+`drama-3` is directed differently: long plain-language directions (`[barely holding it together, forcing a smile]`), sounds where they occur (`[shaky breath]`), and paired tags around words (`<emphasis>`, `<soft>`, `<fast>`, `<slow>`, `<stress>`, `<forceful>`, `<whisper>`). With `FISH_TTS_MODEL=drama-3` the app sends all of that as written: `FISH_TTS_CUES` is ignored, the paired tags are kept, and no mood is carried from one sentence to the next. The default prompt follows the model. With `drama-3` its cue rules ask for a short plain-language direction where the reply starts and then only where the feeling shifts, sounds written in brackets alone, and the paired tags used rarely, in place of the S models' fixed list of mood words. A character file gets the same rules after it. `FISH_TTS_MOOD_LEAD` does nothing with `drama-3`, and a mood word written without brackets stays a word. Its experimental language tags (`<french>`) are removed like any other markup. This follows Fish's guide and has not been tuned by ear here. The proxy does the same when a request resolves to `drama-3`.
 
-Free-form cues are risky on some voices: a description of a face or a voice (`[smiling]`, `[soft chuckle]`, `[echoing voice]`) can be acted out as a hum or a small sound, which sounds like an "mhm" between sentences. The default prompt therefore asks for one word from Fish's own list of 49 emotions, and tells the model to use the whole list rather than the same few, and `FISH_TTS_CUES=official` (the default) is the safety net: any cue Fish does not list becomes the nearest official one (`smiling` to `happy`, `gentle` to `calm`, `soft chuckle` to `chuckling`) or is removed (`in a storytelling voice`). `FISH_TTS_CUES=free` sends cues as written. Whatever the mode, a sentence the model wrote without a cue is sent with the mood the last sentence had, because each piece goes to Fish on its own and a sentence with no cue starts cold; a piece that only continues a sentence is left alone.
+Free-form cues are risky on some voices: a description of a face or a voice (`[smiling]`, `[soft chuckle]`, `[echoing voice]`) can be acted out as a hum or a small sound, which sounds like an "mhm" between sentences. The default prompt therefore asks for one word from Fish's own list of 49 emotions, and tells the model to use the whole list rather than the same few, and `FISH_TTS_CUES=official` (the default) is the safety net: any cue Fish does not list becomes the nearest official one (`smiling` to `happy`, `gentle` to `calm`, `soft chuckle` to `chuckling`) or is removed (`in a storytelling voice`). `FISH_TTS_CUES=free` sends cues as written. With an S model, in either mode, a sentence the model wrote without a cue is sent with the mood the last sentence had, because each piece goes to Fish on its own and a sentence with no cue starts cold; a piece that only continues a sentence is left alone.
 
 ### Characters and system prompts
 
@@ -116,7 +116,7 @@ Put a character or scene in a file and point the session at it:
 ```
 
 The file is UTF-8 text, up to 64 KiB. Its text comes first, then a blank line, then the default voice
-rules (spoken replies, `[cue]` tags). So a file only has to describe who is talking. If the file is missing, empty, too large or not UTF-8, fish-voice warns.
+rules for `FISH_TTS_MODEL` (spoken replies, then cues: plain directions for `drama-3`, Fish's listed cue words otherwise). So a file only has to describe who is talking. If the file is missing, empty, too large or not UTF-8, fish-voice warns.
 From `FISH_VOICE_SYSTEM_PROMPT_FILE` it then uses the default prompt, and from `--prompt-file` it exits 2.
 The flag beats the variable, and the file beats `FISH_VOICE_SYSTEM_PROMPT`.
 
@@ -225,7 +225,7 @@ FISH_LLM_REASONING_EFFORT=none
 
 ### Roleplay helpers
 
-Both are off by default because they also change ordinary English. `FISH_TTS_MOOD_LEAD=1` rewrites a sentence-leading mood word (`Excited, hello`) into a `[cue]`. `FISH_TTS_DROP_NARRATION=1` drops lines that are only stage directions (`She smiles.`).
+Both are off by default because they also change ordinary English. `FISH_TTS_MOOD_LEAD=1` rewrites a sentence-leading mood word (`Excited, hello`) into a `[cue]`. It does nothing with `drama-3`, whose text is never rewritten. `FISH_TTS_DROP_NARRATION=1` drops lines that are only stage directions (`She smiles.`).
 
 ### The full-screen app
 

@@ -443,7 +443,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.playback:
         c = replace(c, playback=playback_key(args.playback))
     if args.prompt_file:
-        prompt = prompt_from_file(str(args.prompt_file), required=True)
+        prompt = prompt_from_file(str(args.prompt_file), required=True, tts_model=c.tts_model)
         if prompt is None:
             return ExitCode.FATAL
         c = replace(c, prompt=prompt)

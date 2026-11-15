@@ -7,7 +7,7 @@ from typing import BinaryIO
 
 import pytest
 
-from fish_audio_suite_kit import DEFAULT_SYSTEM_PROMPT
+from fish_audio_suite_kit import DEFAULT_SYSTEM_PROMPT, DIRECTED_SYSTEM_PROMPT
 from fish_audio_suite_voice.cli.main import main
 from fish_audio_suite_voice.config.settings import (
     VoiceCliConfig,
@@ -22,6 +22,7 @@ CARD = "You are Mira, a dry-witted ship's engineer. Stay in character."
 def _clean_prompt_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("FISH_VOICE_SYSTEM_PROMPT", raising=False)
     monkeypatch.delenv("FISH_VOICE_SYSTEM_PROMPT_FILE", raising=False)
+    monkeypatch.delenv("FISH_TTS_MODEL", raising=False)
 
 
 def _card(tmp_path: Path, text: str = CARD) -> Path:
@@ -195,3 +196,12 @@ def test_the_slot_works_through_the_environment_variable(
     )
     config = load_config()
     assert config.prompt == f"{DEFAULT_SYSTEM_PROMPT}\n\n{CARD}"
+
+
+def test_drama_3_gets_the_directed_voice_rules_alone_or_after_a_character_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FISH_TTS_MODEL", "drama-3")
+    assert load_config().prompt == DIRECTED_SYSTEM_PROMPT
+    monkeypatch.setenv("FISH_VOICE_SYSTEM_PROMPT_FILE", str(_card(tmp_path)))
+    assert load_config().prompt == f"{CARD}\n\n{DIRECTED_SYSTEM_PROMPT}"

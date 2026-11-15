@@ -61,7 +61,7 @@ def test_a_heard_line_is_answered_by_the_llm_and_spoken_then_the_loop_says_bye(
     source = ScriptedTurns(heard_line("hi there"), heard_line("and then?"))
     assert run_session(quick_config(stream=stream), tts, tokens, source=source) == 0
     # Only the whole-reply path gives the line a lead cue itself. A stream gets one from the scrubber.
-    assert said == ["Hello there friend." if stream else "[calm] Hello there friend."] * 2
+    assert said == ["Hello there friend."] * 2
     # The next request carries the line and what the model wrote of its reply, without the
     # lead cue only Fish was sent.
     assert asked[1][-3:] == [
@@ -429,7 +429,7 @@ def test_noise_after_a_barge_in_speaks_the_rest_and_joins_history(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     said, history = _cut_off_session(monkeypatch, HeardLine("noise"))
-    assert said == ["[calm] Hello there. How was your day today?", "[calm] How was your day today?"]
+    assert said == ["Hello there. How was your day today?", "How was your day today?"]
     assert history[-1] == {"role": "assistant", "content": "Hello there. Hello there."}
 
 
@@ -441,4 +441,4 @@ def test_a_real_line_after_a_barge_in_drops_the_rest_for_good(
     )
     # The joke request is answered, and the noise after it must not bring back the reply
     # the user talked over.
-    assert said == ["[calm] Hello there. How was your day today?"] * 2
+    assert said == ["Hello there. How was your day today?"] * 2

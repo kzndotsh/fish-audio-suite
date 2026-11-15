@@ -411,7 +411,7 @@ Install it as described in [INSTALL.md](INSTALL.md#the-voice-app), then set your
 | Ollama | `FISH_LLM_PROVIDER=custom`, `FISH_LLM_BASE=http://127.0.0.1:11434/v1`, `FISH_LLM_API_KEY=ollama`, `FISH_LLM_MODEL=...` |
 | Any other OpenAI-compatible server (LM Studio, vLLM, llama.cpp's server, a hosted API) | `FISH_LLM_PROVIDER=custom`, `FISH_LLM_BASE=<server>/v1`, `FISH_LLM_API_KEY`, `FISH_LLM_MODEL` |
 
-Give it a personality with a character file: `--prompt-file my-character.md`, or `FISH_VOICE_SYSTEM_PROMPT_FILE`. The voice rules (cue tags, short spoken replies) are added after it. Model choice and latency tuning are in [PERFORMANCE.md](PERFORMANCE.md).
+Give it a personality with a character file: `--prompt-file my-character.md`, or `FISH_VOICE_SYSTEM_PROMPT_FILE`. The voice rules for your TTS model (cue tags or `drama-3` directions, short spoken replies) are added after it. Model choice and latency tuning are in [PERFORMANCE.md](PERFORMANCE.md).
 
 ## Running the proxy as a service
 

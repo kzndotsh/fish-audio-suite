@@ -28,6 +28,7 @@ import argparse
 import asyncio
 import contextlib
 import json
+import os
 import re
 import statistics
 import sys
@@ -40,9 +41,10 @@ from typing import Any, cast
 from loguru import logger
 
 from fish_audio_suite_kit import (
-    DEFAULT_SYSTEM_PROMPT,
     ChatMessage,
     CueStyle,
+    SuiteDefaults,
+    default_system_prompt,
     is_tts_junk,
 )
 from fish_audio_suite_voice.config.dotenv import load_dotenv
@@ -739,9 +741,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         print("--runs must be at least 1.", file=sys.stderr)
         return 2
     prompts = read_prompts(args.prompt, args.prompts_file)
-    prompt: str | None = DEFAULT_SYSTEM_PROMPT
+    # The voice rules fish-voice would use for the TTS model the env names.
+    tts_model = os.environ.get("FISH_TTS_MODEL") or SuiteDefaults().tts_model
+    prompt: str | None = default_system_prompt(tts_model)
     if args.system_file is not None:
-        prompt = prompt_from_file(str(args.system_file), required=True)
+        prompt = prompt_from_file(str(args.system_file), required=True, tts_model=tts_model)
     if prompt is None:
         print(f"Could not use {args.system_file} as a character file.", file=sys.stderr)
         return 2

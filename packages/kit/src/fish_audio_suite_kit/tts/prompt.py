@@ -1,7 +1,9 @@
-"""The voice loop's default system prompt.
+"""The voice loop's default system prompts: one for listed cues, one for directed models.
 
-The cue words the prompt offers come from the cue tables in ``cues``, so a cue added
-there reaches the prompt and the prompt never names a cue the normalizer drops.
+Both share the voice rules. The listed-cue prompt (the S models) offers the cue words
+from the cue tables in ``cues``, so a cue added there reaches the prompt and the prompt
+never names a cue the normalizer drops. The directed prompt (``drama-3``) asks for short
+plain-language directions and offers the paired tags from the model catalog.
 """
 
 from __future__ import annotations
@@ -9,9 +11,12 @@ from __future__ import annotations
 from typing import Final
 
 from fish_audio_suite_kit.tts.cues import FISH_BREAKS, FISH_EMOTIONS
+from fish_audio_suite_kit.types.catalog import DIRECTED_PAIRED_TAGS, takes_directions
 
 __all__ = [
     "DEFAULT_SYSTEM_PROMPT",
+    "DIRECTED_SYSTEM_PROMPT",
+    "default_system_prompt",
 ]
 
 # The sounds the prompt offers, a few of Fish's official sound effects
@@ -24,9 +29,12 @@ def _bracketed(names: tuple[str, ...]) -> str:
     return ", ".join(f"[{name}]" for name in names)
 
 
-# The mood list is every emotion Fish documents, the common ones first. A short list of 22
-# kept replies to a handful of cheerful moods.
-DEFAULT_SYSTEM_PROMPT: Final = (
+def _paired(names: tuple[str, ...]) -> str:
+    return ", ".join(f"<{name}>" for name in names)
+
+
+# What every voice reply follows, whichever TTS model reads it.
+_VOICE_RULES: Final = (
     "You are a voice assistant. Your reply is spoken aloud by a text-to-speech voice. "
     "English by default. Speak the user's language if they switch. "
     "Say only words that should be heard: no markdown, bullets, emoji, or URLs. "
@@ -41,6 +49,12 @@ DEFAULT_SYSTEM_PROMPT: Final = (
     "and then. A natural 'um', 'well' or trailing off is fine, at most once in a "
     "reply and not in every reply. Match the user's energy: slower and softer when they are, "
     "livelier when they are. Write numbers and symbols out as words. "
+    "Write for the ear: no dashes, semicolons or parentheses, just commas and periods. "
+)
+
+# The mood list is every emotion Fish documents, the common ones first. A short list of 22
+# kept replies to a handful of cheerful moods.
+_LISTED_CUES: Final = (
     "Square-bracket cues are silent stage directions for the voice and are never spoken. "
     "Never mention, describe or explain a cue, and never treat one as something the user "
     "asked for. "
@@ -58,5 +72,48 @@ DEFAULT_SYSTEM_PROMPT: Final = (
     f"[{_SHORT_BREAK}] is a short pause and [{_LONG_BREAK}] a longer one: use them only in the "
     "middle of a sentence, never beside a period, question mark or exclamation mark, and most "
     "replies need none. A whisper only if the user asks you to whisper. "
-    "Write for the ear: no dashes, semicolons or parentheses, just commas and periods. "
 )
+
+_DIRECTED_CUES: Final = (
+    "Your voice is directed in plain language. Before the words a feeling applies to, you "
+    "may write a short direction in square brackets: a few words on how to say them, such "
+    "as the emotion, the intent, the pace or the loudness. A direction carries on until you "
+    "write another, so give one where the reply starts and then only where the feeling "
+    "really shifts, not before every sentence. Word each direction fresh for this moment, "
+    "and do not reuse the wording of an earlier one. Describe only how the words sound, "
+    "never a face, a gesture or an action. "
+    "A laugh, a sigh, a breath or a pause is a direction too: write it in brackets only, "
+    "and do not also spell it out in words. Use sounds sparingly. "
+    "To change only a few words, wrap them in one of these tags, closing it after them: "
+    f"{_paired(DIRECTED_PAIRED_TAGS)}. Use a tag rarely, never around a whole reply. "
+    "A direction always comes before the words it colors, never after them: do not end a "
+    "reply with one. Directions and tags are silent and never spoken. Never mention, "
+    "describe or explain one, and never treat one as something the user asked for. "
+)
+
+DEFAULT_SYSTEM_PROMPT: Final = _VOICE_RULES + _LISTED_CUES
+DIRECTED_SYSTEM_PROMPT: Final = _VOICE_RULES + _DIRECTED_CUES
+
+
+def default_system_prompt(tts_model: str) -> str:
+    """Return the default system prompt for a TTS model.
+
+    Parameters
+    ----------
+    tts_model : str
+        Fish TTS model id.
+
+    Returns
+    -------
+    str
+        ``DIRECTED_SYSTEM_PROMPT`` for a model directed in plain language
+        (``takes_directions``, such as ``drama-3``), otherwise ``DEFAULT_SYSTEM_PROMPT``.
+
+    Examples
+    --------
+    >>> default_system_prompt("drama-3") == DIRECTED_SYSTEM_PROMPT
+    True
+    >>> default_system_prompt("s2.1-pro") == DEFAULT_SYSTEM_PROMPT
+    True
+    """
+    return DIRECTED_SYSTEM_PROMPT if takes_directions(tts_model) else DEFAULT_SYSTEM_PROMPT

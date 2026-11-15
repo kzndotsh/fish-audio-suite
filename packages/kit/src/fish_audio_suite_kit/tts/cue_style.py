@@ -39,8 +39,7 @@ class CueStyle:
     lead : bool
         Rewrite a sentence-leading mood word (``Excited, hello``) into a cue. Default
         False, because the word also opens ordinary sentences (``Curious, isn't it?``).
-        A directed reply is never rewritten, but a stream still holds an unfinished mood
-        word back while this is on.
+        Always False for a directed model, whose reply is never rewritten.
 
     Examples
     --------
@@ -65,7 +64,7 @@ class CueStyle:
         official : bool
             Keep only Fish's own cues. Not used for a directed model.
         lead : bool
-            Rewrite a sentence-leading mood word into a cue.
+            Rewrite a sentence-leading mood word into a cue. Not used for a directed model.
 
         Returns
         -------
@@ -74,7 +73,7 @@ class CueStyle:
             ``official`` or ``free``.
         """
         if takes_directions(model):
-            return cls("directed", lead=lead)
+            return cls("directed")
         return cls("official" if official else "free", lead=lead)
 
     @property
@@ -174,7 +173,7 @@ class CueStyle:
         Returns
         -------
         int
-            ``tts_hold_at`` with this style's ``lead``: the start of the unfinished span,
+            ``tts_hold_at`` with this style's ``lead`` and mode: the start of the unfinished span,
             or ``len(text)`` when the chunk is stable.
         """
         return tts_hold_at(
@@ -183,4 +182,5 @@ class CueStyle:
             sentence_start=sentence_start,
             before=before,
             lead=self.lead,
+            directed=self.mode == "directed",
         )

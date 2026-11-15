@@ -641,6 +641,7 @@ def tts_hold_at(
     sentence_start: bool,
     before: str = "",
     lead: bool = False,
+    directed: bool = False,
 ) -> int:
     """Return the index where a stream must keep buffering.
 
@@ -659,6 +660,10 @@ def tts_hold_at(
         True when mood leads are enabled in ``normalize_cues``. The mood-word
         holds (an unfinished ``Exc`` before ``ited,``) are then active.
         Default False, so no mood-related text is held.
+    directed : bool, optional
+        True for a model directed in plain language (``takes_directions``). Its text is
+        never rewritten, so a lowercase mood word that opens a line is not held to see
+        whether it is a cue written without brackets. Default False.
 
     Returns
     -------
@@ -670,7 +675,12 @@ def tts_hold_at(
     # earlier, so a long held span does not rerun every check on every token.
     best = len(text)
     for mark in _hold_marks(
-        text, line_start=line_start, sentence_start=sentence_start, before=before, lead=lead
+        text,
+        line_start=line_start,
+        sentence_start=sentence_start,
+        before=before,
+        lead=lead,
+        directed=directed,
     ):
         if mark is not None and mark < best:
             best = mark
@@ -680,7 +690,7 @@ def tts_hold_at(
 
 
 def _hold_marks(
-    text: str, *, line_start: bool, sentence_start: bool, before: str, lead: bool
+    text: str, *, line_start: bool, sentence_start: bool, before: str, lead: bool, directed: bool
 ) -> Iterator[int | None]:
     # Cheapest and most often held first. The lead holds come last because
     # they cost the most, and a span held at index 0 skips them.
@@ -693,5 +703,5 @@ def _hold_marks(
         yield _entity_stop_hold(text)
         yield mood_lead_hold_at(text, sentence_start=sentence_start)
         yield _sentence_lead_hold(text, sentence_start=sentence_start, before=before)
-    else:
+    elif not directed:
         yield _bare_lead_hold_at(text, sentence_start=sentence_start)

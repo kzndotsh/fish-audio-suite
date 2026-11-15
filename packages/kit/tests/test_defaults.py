@@ -6,9 +6,11 @@ import pytest
 
 from fish_audio_suite_kit import (
     DEFAULT_SYSTEM_PROMPT,
+    DIRECTED_SYSTEM_PROMPT,
     chunk_length_hi,
     clamp_number,
     cut_at_control,
+    default_system_prompt,
     env_base,
     env_bool,
     env_float,
@@ -26,6 +28,7 @@ from fish_audio_suite_kit import (
     parse_number,
 )
 from fish_audio_suite_kit.tts.cues import FISH_BREAKS, FISH_EMOTIONS, FISH_SOUNDS
+from fish_audio_suite_kit.types.catalog import DIRECTED_PAIRED_TAGS
 
 
 def test_bitrate_snaps_to_documented_values() -> None:
@@ -119,8 +122,30 @@ def test_env_number_keeps_default_when_blank_or_junk(monkeypatch: pytest.MonkeyP
     "banned",
     ["decline", "refuse", "adult", "character", "roleplay", "scene"],
 )
-def test_the_default_prompt_is_neutral(banned: str) -> None:
+def test_the_default_prompts_are_neutral(banned: str) -> None:
     assert banned not in DEFAULT_SYSTEM_PROMPT.lower()
+    assert banned not in DIRECTED_SYSTEM_PROMPT.lower()
+
+
+def test_a_directed_model_gets_the_directed_prompt_and_an_s_model_the_listed_one() -> None:
+    assert default_system_prompt("drama-3") == DIRECTED_SYSTEM_PROMPT
+    assert default_system_prompt(" DRAMA-3 ") == DIRECTED_SYSTEM_PROMPT
+    assert default_system_prompt("s2.1-pro") == DEFAULT_SYSTEM_PROMPT
+    assert default_system_prompt("a-model-fish-added-later") == DEFAULT_SYSTEM_PROMPT
+
+
+def test_the_directed_prompt_offers_its_paired_tags_and_no_fixed_cue_list() -> None:
+    for tag in DIRECTED_PAIRED_TAGS:
+        assert f"<{tag}>" in DIRECTED_SYSTEM_PROMPT
+    # Free directions in place of the S models' word list, sounds included.
+    assert "[" not in DIRECTED_SYSTEM_PROMPT
+    assert not any(f"[{name}]" in DIRECTED_SYSTEM_PROMPT for name in FISH_EMOTIONS)
+
+
+def test_both_prompts_share_the_voice_rules() -> None:
+    shared = DEFAULT_SYSTEM_PROMPT[: DEFAULT_SYSTEM_PROMPT.index("Square-bracket cues")]
+    assert shared
+    assert DIRECTED_SYSTEM_PROMPT.startswith(shared)
 
 
 @pytest.mark.parametrize(

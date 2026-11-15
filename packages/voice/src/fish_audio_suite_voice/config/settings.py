@@ -9,11 +9,11 @@ from typing import Final, Literal, overload
 from urllib.parse import urlsplit
 
 from fish_audio_suite_kit import (
-    DEFAULT_SYSTEM_PROMPT,
     FISH_ASR_MODEL_IDS,
     PRO_ASR_MODEL,
     CueStyle,
     SuiteDefaults,
+    default_system_prompt,
     is_insecure_fish_base,
     normalize_tts_model,
     strip_base,
@@ -308,14 +308,15 @@ def load_config() -> VoiceCliConfig:
     to a default key. There is no default voice id.
     """
     d = SuiteDefaults()
+    tts_model = normalize_tts_model(read_word("FISH_TTS_MODEL", d.tts_model))
     # Read first, so its warnings come before the tunes'.
-    prompt = _system_prompt()
+    prompt = _system_prompt(tts_model)
     return VoiceCliConfig(
         fish_api_key=read_text(_FISH_KEY_ENV),
         fish_base=strip_base(read_word(_FISH_BASE_ENV, d.fish_base)) or strip_base(d.fish_base),
         fish_voice_id=read_text(_VOICE_ID_ENV),
         fish_asr_language=read_text("FISH_ASR_LANGUAGE", d.asr_language),
-        tts_model=normalize_tts_model(read_word("FISH_TTS_MODEL", d.tts_model)),
+        tts_model=tts_model,
         tts=TtsTune.from_env(),
         playback=playback_key(read_word("FISH_VOICE_PLAYBACK", DEFAULT_PLAYBACK)),
         prompt=prompt,
@@ -425,10 +426,10 @@ def system_prompt_from_file(path: str, default: str) -> str | None:
 
 
 @overload
-def prompt_from_file(path: str, *, required: Literal[True]) -> str | None: ...
+def prompt_from_file(path: str, *, required: Literal[True], tts_model: str) -> str | None: ...
 @overload
-def prompt_from_file(path: str, *, required: Literal[False]) -> str: ...
-def prompt_from_file(path: str, *, required: bool) -> str | None:
+def prompt_from_file(path: str, *, required: Literal[False], tts_model: str) -> str: ...
+def prompt_from_file(path: str, *, required: bool, tts_model: str) -> str | None:
     """Build the system prompt from a character file, with the voice rules.
 
     Parameters
@@ -439,19 +440,23 @@ def prompt_from_file(path: str, *, required: bool) -> str | None:
         What a file that cannot be used means. True (``--prompt-file``) returns None, so
         the caller can stop. False (``FISH_VOICE_SYSTEM_PROMPT_FILE``) falls back to the
         default prompt. Either way a warning says why first.
+    tts_model : str
+        Fish TTS model id. It picks the voice rules (``default_system_prompt``): plain
+        directions for ``drama-3``, listed cues for the S models.
 
     Returns
     -------
     str or None
         The file and the voice rules.
     """
-    composed = system_prompt_from_file(path, DEFAULT_SYSTEM_PROMPT)
+    default = default_system_prompt(tts_model)
+    composed = system_prompt_from_file(path, default)
     if composed is None and not required:
-        return DEFAULT_SYSTEM_PROMPT
+        return default
     return composed
 
 
-def _system_prompt() -> str:
+def _system_prompt(tts_model: str) -> str:
     file = read_text(_PROMPT_FILE_ENV)
     # Read as written: a prompt set but blank means "no system prompt", so unlike the other
     # keys a blank value still counts here.
@@ -459,5 +464,5 @@ def _system_prompt() -> str:
     if file:
         if inline is not None:
             warn(f"fish-voice: {_PROMPT_FILE_ENV} is set, so {_PROMPT_ENV} is ignored")
-        return prompt_from_file(file, required=False)
-    return DEFAULT_SYSTEM_PROMPT if inline is None else inline
+        return prompt_from_file(file, required=False, tts_model=tts_model)
+    return default_system_prompt(tts_model) if inline is None else inline

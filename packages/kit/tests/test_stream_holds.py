@@ -83,3 +83,8 @@ def test_a_lowercase_mood_word_opening_a_reply_waits_for_the_next_word(
     # Released alone, a cue written without brackets is spoken before the next word shows
     # it was a cue.
     assert tts_hold_at(text, line_start=True, sentence_start=True) == held_at
+
+
+def test_a_directed_reply_never_holds_a_mood_word_back() -> None:
+    # Its words are never turned into cues, so there is nothing to wait and see.
+    assert tts_hold_at("happy", line_start=True, sentence_start=True, directed=True) == 5

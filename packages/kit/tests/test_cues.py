@@ -7,7 +7,6 @@ from fish_audio_suite_kit import (
     CueMode,
     CueStyle,
     MoodCarry,
-    ensure_lead_cue,
     last_emotion,
     normalize_cues,
     official_cue,
@@ -159,21 +158,6 @@ def test_inline_chuckle_and_cough() -> None:
     assert "[coughing]" not in out
 
 
-def test_ensure_lead_cue_only_when_missing() -> None:
-    assert ensure_lead_cue("[curious] yeah") == "[curious] yeah"
-    assert ensure_lead_cue("I'll call you back [chuckle] in a minute").startswith("I'll")
-    assert ensure_lead_cue("yeah i hear you") == "yeah i hear you"
-    assert ensure_lead_cue("yeah i hear you", default="calm") == "[calm] yeah i hear you"
-    assert ensure_lead_cue("  ") == "  "
-    # With a default: prepend even when a cue exists elsewhere but not at the start.
-    assert (
-        ensure_lead_cue("Hello! [happy] Come here.", default="calm")
-        == "[calm] Hello! [happy] Come here."
-    )
-    # With a default: no change when the reply already starts with a cue.
-    assert ensure_lead_cue("[happy] Hello!", default="calm") == "[happy] Hello!"
-
-
 def test_pause_alias_vs_moss_duration() -> None:
     assert "[break]" in normalize_cues("[pause] wait", lead=True)
     stripped = scrub_tts("hello [pause 3.2s] there")
@@ -233,7 +217,6 @@ def test_cue_before_a_parenthetical_stays_a_cue() -> None:
 def test_mood_lead_with_no_remainder_is_only_the_cue() -> None:
     assert normalize_cues("", lead=True) == ""
     assert normalize_cues("Excited, ", lead=True) == "[excited]"
-    assert ensure_lead_cue("hello", default="  ") == "hello"
 
 
 @pytest.mark.parametrize(
@@ -491,6 +474,12 @@ def test_only_drama_3_takes_directions() -> None:
         assert not takes_directions(model)
 
 
+def test_a_directed_style_never_rewrites_a_mood_lead() -> None:
+    style = CueStyle.for_model("drama-3", official=True, lead=True)
+    assert (style.mode, style.lead) == ("directed", False)
+    assert style.shape("Excited, hi there.") == "Excited, hi there."
+
+
 def test_a_mood_word_after_a_stop_inside_a_cue_is_not_a_lead() -> None:
     text = "Well [laugh!] Excited, I said."
     assert normalize_cues(text, lead=True) == text
@@ -499,15 +488,15 @@ def test_a_mood_word_after_a_stop_inside_a_cue_is_not_a_lead() -> None:
     )
 
 
-@pytest.mark.parametrize("directed", [False, True])
-def test_a_cue_word_written_without_brackets_gets_them(directed: bool) -> None:
-    assert normalize_cues("happy Hi there.", directed=directed) == "[happy] Hi there."
-    assert normalize_cues("Okay. sad That is a shame.", directed=directed) == (
-        "Okay. [sad] That is a shame."
-    )
-    assert (
-        normalize_cues("calm\nexcited Let's go.", directed=directed) == "calm\n[excited] Let's go."
-    )
+def test_a_cue_word_written_without_brackets_gets_them() -> None:
+    assert normalize_cues("happy Hi there.") == "[happy] Hi there."
+    assert normalize_cues("Okay. sad That is a shame.") == "Okay. [sad] That is a shame."
+    assert normalize_cues("calm\nexcited Let's go.") == "calm\n[excited] Let's go."
+
+
+def test_a_directed_reply_keeps_every_word_as_written() -> None:
+    for text in ("happy Hi there.", "Okay. sad That is a shame.", "[softly] calm Down."):
+        assert normalize_cues(text, directed=True) == text
 
 
 @pytest.mark.parametrize(

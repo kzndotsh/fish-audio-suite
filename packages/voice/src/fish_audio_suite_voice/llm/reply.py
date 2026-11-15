@@ -12,7 +12,6 @@ from typing import Final
 
 from fish_audio_suite_kit import (
     elapsed_ms,
-    ensure_lead_cue,
     is_tts_junk,
     make_traceparent,
 )
@@ -269,11 +268,6 @@ def _trace(trace_id: str | None) -> dict[str, str]:
     return {"traceparent": make_traceparent(trace_id=trace_id)}
 
 
-def _led(written: str) -> str:
-    """Return a shaped reply as Fish is sent it whole: led by a cue."""
-    return ensure_lead_cue(written, default="calm")
-
-
 def _keep_for_resume(
     ctx: DuplexContext, sent: str, written: str, result: TtsResult, barge: BargeGate
 ) -> None:
@@ -302,10 +296,9 @@ async def speak_reply(
     """
     c = ctx.config
     if isinstance(reply, Unheard):
-        written, prepared = reply.written, _led(c.cue_style.shape(reply.sent))
+        written, prepared = reply.written, c.cue_style.shape(reply.sent)
     else:
-        written = c.cue_style.shape(reply)
-        prepared = _led(written)
+        written = prepared = c.cue_style.shape(reply)
     if is_tts_junk(prepared, drop_narration=c.drop_narration):
         notice("  (skip junk TTS)")
         return snapshot, None
@@ -449,7 +442,7 @@ async def stream_turn(
         # Not the pieces the stream sent: the resumed rest and what the conversation records
         # are cut from the reply shaped whole, as it would have been spoken without streaming.
         written = c.cue_style.shape(reply)
-        _keep_for_resume(ctx, _led(written), written, result, barge)
+        _keep_for_resume(ctx, written, written, result, barge)
     finally:
         cancel.set()
         for thread in barge_threads:

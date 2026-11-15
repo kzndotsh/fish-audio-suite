@@ -76,7 +76,6 @@ from fish_audio_suite_kit.tts.cues import (
     CLEAR_CUE,
     MoodCarry,
     cue_pattern,
-    ensure_lead_cue,
     last_emotion,
     normalize_cues,
     official_cue,
@@ -91,7 +90,11 @@ from fish_audio_suite_kit.tts.cuts import (
 )
 from fish_audio_suite_kit.tts.dialogue import extract_quoted_speech
 from fish_audio_suite_kit.tts.junk import is_tts_junk
-from fish_audio_suite_kit.tts.prompt import DEFAULT_SYSTEM_PROMPT
+from fish_audio_suite_kit.tts.prompt import (
+    DEFAULT_SYSTEM_PROMPT,
+    DIRECTED_SYSTEM_PROMPT,
+    default_system_prompt,
+)
 from fish_audio_suite_kit.tts.scrub_tts import scrub_tts
 from fish_audio_suite_kit.tts.stream_holds import tts_hold_at
 from fish_audio_suite_kit.types.catalog import (
@@ -133,6 +136,7 @@ __all__ = [
     "DEFAULT_QUIT_PHRASES",
     "DEFAULT_SHORT_WORDS",
     "DEFAULT_SYSTEM_PROMPT",
+    "DIRECTED_SYSTEM_PROMPT",
     "EMPHASIS_MARKS",
     "FISH_ASR_MODEL_IDS",
     "FISH_ASR_PATH",
@@ -181,9 +185,9 @@ __all__ = [
     "clean_transcript",
     "cue_pattern",
     "cut_at_control",
+    "default_system_prompt",
     "elapsed_ms",
     "ends_sentence",
-    "ensure_lead_cue",
     "ensure_trace_headers",
     "env_base",
     "env_bool",

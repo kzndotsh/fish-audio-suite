@@ -290,7 +290,7 @@ def test_a_line_in_progress_starts_in_the_same_column_as_a_recorded_turn() -> No
 
 
 def test_a_turn_in_progress_is_laid_out_as_its_recorded_turn_will_be() -> None:
-    harness = _Harness(shape=CueStyle.for_model("drama-3", official=True, lead=False).shape)
+    harness = _Harness(shape=CueStyle.for_model("s2.1-pro", official=True, lead=False).shape)
 
     async def scenario(pilot: Pilot[int]) -> None:
         harness.bus.emit(Heard("hello", 0.0))
