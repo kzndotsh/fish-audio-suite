@@ -10,6 +10,7 @@ from __future__ import annotations
 import threading
 from collections import deque
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Final
 
 from fish_audio_suite_voice.asr.result import BargeIn
@@ -18,7 +19,12 @@ from fish_audio_suite_voice.capture.mic import Mic
 from fish_audio_suite_voice.capture.pcm import LISTEN_HEARTBEAT_FRAMES
 from fish_audio_suite_voice.capture.scoring import FrameScorer
 from fish_audio_suite_voice.capture.vad import open_vad
-from fish_audio_suite_voice.config.tune import BargeTune, ListenTune
+from fish_audio_suite_voice.config.tune import (
+    IMPULSE_NOW_RATIO,
+    IMPULSE_PEAK_RATIO,
+    BargeTune,
+    ListenTune,
+)
 from fish_audio_suite_voice.logutil.debug import debug, heartbeat_due, trace, warn
 from fish_audio_suite_voice.session.cancel import any_of, never
 from fish_audio_suite_voice.session.events import EVENTS, BargedIn
@@ -32,40 +38,54 @@ __all__ = [
 # Unvoiced frames in a row that take one hit back, so a short pause between words does
 # not reset the count.
 BARGE_MISS_DECAY_FRAMES: Final = 3
+# How much of the loudest recent frame is left after each frame (30 ms), for telling a
+# knock's ring-down from speech. At 0.9 a peak far over the need still marks a knock 12
+# frames on.
+_PEAK_FADE: Final = 0.9
 # Frames (about 600 ms) kept for the next listen when the gate trips, so the words
 # that interrupted the reply reach speech recognition.
 BARGE_LOOKBACK_FRAMES: Final = 20
 
 
-def _barge_step(
-    *,
-    hit: int,
-    miss: int,
-    voiced: bool,
-    rms: float,
-    need: float,
-    far: bool,
-    want: int,
-) -> tuple[int, int, bool]:
-    if not voiced:
-        miss += 1
-        if miss >= BARGE_MISS_DECAY_FRAMES and hit:
-            trace(
-                "barge.decay hit={hit} rms={rms:.0f} need={need:.0f} far={far}",
-                hit=hit,
-                rms=rms,
-                need=need,
-                far=far,
-            )
-            return max(0, hit - 1), 0, False
-        return hit, miss, False
-    miss = 0
-    hit += 1
-    debug("barge.hit {hit}/{want} rms={rms:.0f}", hit=hit, want=want, rms=rms)
-    if hit >= want:
-        debug("barge.interrupt rms={rms:.0f} hits={hit}", rms=rms, hit=hit)
-        return hit, miss, True
-    return hit, miss, False
+@dataclass(slots=True)
+class _Run:
+    """The loud frames heard over one reply, and how loud the loudest was lately.
+
+    ``peak`` follows the loudest frame and fades by ``_PEAK_FADE`` each frame after it. A
+    knock on the mic rings loud for about eight frames, as many as a trip needs, but each
+    one quieter: it never comes back to half of its own fading peak. Speech that loud
+    keeps lifting the peak, so it trips as soon as a frame is near it again.
+    """
+
+    hit: int = 0
+    miss: int = 0
+    peak: float = 0.0
+
+    def step(self, *, voiced: bool, rms: float, need: float, far: bool, want: int) -> bool:
+        self.peak *= _PEAK_FADE
+        if not voiced:
+            self.miss += 1
+            if self.miss >= BARGE_MISS_DECAY_FRAMES and self.hit:
+                trace(
+                    "barge.decay hit={hit} rms={rms:.0f} need={need:.0f} far={far}",
+                    hit=self.hit,
+                    rms=rms,
+                    need=need,
+                    far=far,
+                )
+                self.hit, self.miss = self.hit - 1, 0
+            return False
+        self.miss = 0
+        self.hit += 1
+        self.peak = max(self.peak, rms)
+        debug("barge.hit {hit}/{want} rms={rms:.0f}", hit=self.hit, want=want, rms=rms)
+        if self.hit < want:
+            return False
+        if self.peak >= need * IMPULSE_PEAK_RATIO and rms < self.peak * IMPULSE_NOW_RATIO:
+            debug("barge.knock rms={rms:.0f} peak={peak:.0f}", rms=rms, peak=self.peak)
+            return False
+        debug("barge.interrupt rms={rms:.0f} hits={hit}", rms=rms, hit=self.hit)
+        return True
 
 
 def barge_rms_need(
@@ -204,8 +224,7 @@ class BargeGate:
             self.tune.min_rms,
             "barge",
         )
-        hit = 0
-        miss = 0
+        run = _Run()
         aec_on = self.aec.available()
         debug(
             "barge.arm after {delay}s bleed, {hits} loud frames of rms>={min_rms:.0f} interrupt, "
@@ -234,20 +253,13 @@ class BargeGate:
                 rms=heard.rms,
                 need=need,
                 far=far,
-                hit=hit,
+                hit=run.hit,
                 aec_on=aec_on,
             )
             self._heard.append(frame)
-            hit, miss, tripped = _barge_step(
-                hit=hit,
-                miss=miss,
-                voiced=heard.voiced,
-                rms=heard.rms,
-                need=need,
-                far=far,
-                want=self.tune.hit_frames,
-            )
-            if tripped:
+            if run.step(
+                voiced=heard.voiced, rms=heard.rms, need=need, far=far, want=self.tune.hit_frames
+            ):
                 self.captured = b"".join(self._heard)
                 self.resume_at = start + idle_frames
                 self.aec.clear()

@@ -153,7 +153,7 @@ Flux was not sure enough that you had finished (its `confidence` was below `FISH
 
 The log shows `barge interrupt` after hits from short, loud noises. Raise `FISH_VOICE_BARGE_FRAMES` (default 10, about 300 ms) before raising `FISH_VOICE_BARGE_RMS`. A noise that interrupts but holds no words is treated as a false alarm: the reply resumes where it was cut.
 
-Hits do not have to be in a row. The count falls by one only after 3 missed frames, so a run of small sounds such as sniffs, breathing or typing can add up to an interruption. The default voice detector (`FISH_VOICE_VAD_ENGINE=webrtc`) is lenient enough to call those sounds voiced. Automatic gain (`FISH_VOICE_AGC`) raises them along with your voice, and noise suppression does little against key clicks.
+Hits do not have to be in a row. The count falls by one only after 3 missed frames, so a run of small sounds such as sniffs, breathing or typing can add up to an interruption. A knock on the mic itself is caught: it rings loud for several frames but each one quieter, so the log shows `barge knock rms=... peak=...` where it would have interrupted, and the reply goes on. The default voice detector (`FISH_VOICE_VAD_ENGINE=webrtc`) is lenient enough to call those sounds voiced. Automatic gain (`FISH_VOICE_AGC`) raises them along with your voice, and noise suppression does little against key clicks.
 
 These help:
 

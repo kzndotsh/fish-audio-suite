@@ -198,6 +198,43 @@ def test_barge_hits_decay_after_three_misses_and_then_trip(
     assert _trip_frame(monkeypatch, long_gap) == 2 + BARGE_MISS_DECAY_FRAMES + 2
 
 
+# Mic levels from a real session: a knock on the mic during a reply, which rang loud for
+# eight frames and stopped it. The gate's need was 800 then.
+_KNOCK = [17029, 22553, 7973, 4168, 3323, 3979, 2027, 1684, 900, 600, 0, 0, 0]
+
+
+def _eight_hit_trip(monkeypatch: pytest.MonkeyPatch, levels: list[int]) -> int | None:
+    """The frame (counted from 1) on which an eight-hit gate needing 800 tripped, or None."""
+    gate, cancel = _watch_with(
+        monkeypatch,
+        [level_frame(level) for level in levels],
+        aec=EchoCanceller(AecTune(enabled=False)),
+        tune=BargeTune(hit_frames=8, min_rms=800.0),
+    )
+    gate.watch(cancel)
+    return gate.resume_at
+
+
+def test_a_knock_on_the_mic_does_not_stop_the_reply(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert _eight_hit_trip(monkeypatch, _KNOCK) is None
+
+
+def test_speech_right_after_a_knock_still_stops_the_reply(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    speech = [2500, 3100, 2200, 2900, 3400, 2600, 3000, 2800] * 3
+    trip = _eight_hit_trip(monkeypatch, _KNOCK[:8] + speech)
+    assert trip is not None
+    assert trip <= 8 + len(speech)
+
+
+def test_loud_speech_stops_the_reply_like_any_other(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Louder than a knock's need-relative peak, but it keeps coming back near its peak.
+    shouting = [7000, 5200, 6100, 4800, 6600, 5900, 4500, 6300]
+    assert _eight_hit_trip(monkeypatch, shouting) == len(shouting)
+    assert _eight_hit_trip(monkeypatch, [1500] * 8) == 8
+
+
 def test_barge_watch_logs_a_mic_failure_without_cancelling(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
