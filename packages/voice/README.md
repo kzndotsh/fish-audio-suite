@@ -248,7 +248,7 @@ The footer shows only the keys that do something now: Stop appears only while a 
 | --- | --- |
 | Enter | Send the typed line |
 | Up, Down | In the composer, bring back the lines you typed this session, newest first. What you were typing comes back when you go past the newest |
-| Escape | Stop the reply while the model is thinking or the reply is playing. Otherwise it closes the open dialog or screen, or else goes back to typing |
+| Escape | Closes the open dialog or screen first. On the chat itself it stops the reply while the model is thinking or the reply is playing, or else goes back to typing |
 | F2 | Turn the mic off or on. Off, the mic stays closed: no listening between turns and no barge-in watch during a reply. Typing or Esc still interrupts. Turning it on during a reply applies from the next reply. Turning it off while you speak ends your turn there: with a streaming recogniser, words it already heard are answered, and with none heard yet the turn is dropped |
 | Tab | Move between the composer and the messages. Nothing else takes focus |
 | Ctrl+O | List the saved chats, to open one or start a new chat. See [Editing the chat](#editing-the-chat) |

@@ -387,6 +387,25 @@ def test_escape_stops_the_reply_first_then_closes_then_goes_back_to_typing() -> 
     assert _drive(harness, scenario) == 0
 
 
+def test_escape_over_an_open_screen_closes_it_even_while_a_reply_plays() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        harness.bus.emit(Heard("hi", 1.0))
+        harness.bus.emit(Speaking())
+        await pilot.pause(0.1)
+        await pilot.press("f12")
+        assert isinstance(harness.app.screen, DiagnosticsScreen)
+        await pilot.press("escape")  # the open screen has the key, not the reply
+        assert not isinstance(harness.app.screen, DiagnosticsScreen)
+        assert harness.live.stops == 0
+        await pilot.press("escape")  # back on the chat: now it stops the reply
+        assert harness.live.stops == 1
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+
+
 def test_the_state_line_has_a_glyph_and_a_word_for_every_state() -> None:
     harness = _Harness()
 
@@ -817,8 +836,11 @@ def test_the_command_palette_lists_the_apps_own_commands_first() -> None:
         def titles() -> list[str]:
             return [command.title for command in harness.app.get_system_commands(harness.main)]
 
-        assert titles()[:5] == ["New chat", "Chats…", "Mic off", "Diagnostics", "Keys"]
-        assert len(titles()) > 5  # Textual's own come after
+        assert titles()[:6] == ["New chat", "Chats…", "Mic off", "Diagnostics", "Keys", "Quit"]
+        assert len(titles()) > 6  # Textual's own come after
+        # Its Keys and Quit are left out: one keys list, and Quit that ends the session first.
+        assert titles().count("Keys") == 1
+        assert titles().count("Quit") == 1
         harness.bus.emit(Heard("hi", 1.0))
         harness.bus.emit(Speaking())
         await pilot.press("f2")

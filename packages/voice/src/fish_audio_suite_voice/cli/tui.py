@@ -594,7 +594,9 @@ class VoiceApp(App[int]):
         actions = available_actions(self._view.state, muted=self._live.muted)
         match action:
             case "stop":
-                return not self._ended and SessionAction.INTERRUPT in actions
+                # Over a dialog or Diagnostics, Escape belongs to that screen.
+                on_top = self.screen is self._main
+                return on_top and not self._ended and SessionAction.INTERRUPT in actions
             case "mute":
                 return SessionAction.MUTE in actions
             case "unmute":
@@ -616,7 +618,8 @@ class VoiceApp(App[int]):
         ------
         SystemCommand
             New chat, Chats…, Mic on or off, Stop speaking (while there is a reply to
-            stop), Diagnostics and Keys, then Textual's own.
+            stop), Diagnostics, Keys and Quit, then Textual's own but its Keys and Quit:
+            the app has its own keys list, and its Quit would skip ending the session.
         """
         yield SystemCommand("New chat", "Start an empty chat", self.action_new_chat)
         yield SystemCommand("Chats…", "Open a saved chat, or start a new one", self.action_chats)
@@ -630,7 +633,10 @@ class VoiceApp(App[int]):
             "Diagnostics", "Timings, the log, and what was sent to Fish", self.action_diagnostics
         )
         yield SystemCommand("Keys", "Every key, in plain words", self.action_keys)
-        yield from super().get_system_commands(screen)
+        yield SystemCommand("Quit", "End the session and leave", self.action_quit_session)
+        for command in super().get_system_commands(screen):
+            if command.title not in ("Keys", "Quit"):
+                yield command
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         """Send the typed line to the session and clear the composer."""
