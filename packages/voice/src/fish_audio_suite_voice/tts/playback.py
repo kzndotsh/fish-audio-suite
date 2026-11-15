@@ -8,7 +8,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import Any, Final, Protocol, get_args, runtime_checkable
 
@@ -111,12 +111,18 @@ class _LevelTap:
         self._block = max(SAMPLE_BYTES, round(sample_rate * OUTPUT_LEVEL_EVERY_S) * SAMPLE_BYTES)
         self._pending = b""
 
-    def feed(self, pcm: bytes) -> None:
-        """Add audio that is going to the speaker, and report each full block of it."""
+    def feed(self, pcm: bytes) -> bool:
+        """Add audio that is going to the speaker, and report each full block of it.
+
+        Returns True when a block was reported.
+        """
         self._pending += pcm
+        reported = False
         while len(self._pending) >= self._block:
             block, self._pending = self._pending[: self._block], self._pending[self._block :]
             EVENTS.emit(OutputLevel(pcm_rms(block)))
+            reported = True
+        return reported
 
     def clear(self) -> None:
         """Forget a part-filled block, as at the start of a turn."""
@@ -252,8 +258,10 @@ class SounddeviceSink(_Played):
     The far-end tap used by AEC (``aec``) is filled before each blocking write,
     so the reference matches what is about to hit the speaker. The stream's
     output latency is recorded on it so the barge gate can align the reference.
-    Without ``aec`` nothing is tapped. Missing PortAudio
-    raises ``PortAudioMissingError`` when the stream opens, not at import.
+    Without ``aec`` nothing is tapped. ``on_played``, when given, is called with the
+    seconds of the turn the listener has heard (what was played, less the device buffer)
+    each time a level is reported, so it costs the write loop one call per level. Missing
+    PortAudio raises ``PortAudioMissingError`` when the stream opens, not at import.
     """
 
     output_latency_s: float
@@ -266,9 +274,11 @@ class SounddeviceSink(_Played):
         cancel: threading.Event | None = None,
         aec: EchoCanceller | None = None,
         latency: str = "low",
+        on_played: Callable[[float], None] | None = None,
     ) -> None:
         super().__init__()
         self.latency = latency
+        self._on_played = on_played
         self.sample_rate: int = wav_rate(sample_rate)
         self.device: str | int | None = device
         self._cancel = cancel
@@ -339,7 +349,9 @@ class SounddeviceSink(_Played):
                 )
             self._wrote_at = time.perf_counter()
             self._count(piece)
-            self._tap.feed(piece)
+            if self._tap.feed(piece) and self._on_played is not None:
+                played_s = self._played / (self.sample_rate * SAMPLE_BYTES)
+                self._on_played(played_s - self.output_latency_s)
 
     def finish(self, *, kill: bool = False) -> None:
         """Stop or abort the PortAudio stream and close it."""
@@ -508,6 +520,7 @@ def make_sink(
     cancel: threading.Event | None = None,
     aec: EchoCanceller | None = None,
     latency: str = "low",
+    on_played: Callable[[float], None] | None = None,
 ) -> PlaybackSink:
     """Build the sink named by ``FISH_VOICE_PLAYBACK`` or ``--playback``.
 
@@ -527,6 +540,9 @@ def make_sink(
         Far-end tap filled by the sounddevice sink.
     latency : str, optional
         The sounddevice sink's buffer size, ``low`` or ``high``.
+    on_played : Callable or None, optional
+        Passed to the sounddevice sink, which says through it how many seconds of the turn
+        have been heard. The other sinks ignore it.
 
     Returns
     -------
@@ -549,6 +565,11 @@ def make_sink(
         return MpvSink()
     if kind is not None and kind.is_speaker:
         return SounddeviceSink(
-            sample_rate=sample_rate, device=device, cancel=cancel, aec=aec, latency=latency
+            sample_rate=sample_rate,
+            device=device,
+            cancel=cancel,
+            aec=aec,
+            latency=latency,
+            on_played=on_played,
         )
     raise ValueError(f"unknown playback sink {name!r}")

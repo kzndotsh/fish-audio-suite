@@ -23,6 +23,7 @@ from fish_audio_suite_voice.capture.pcm import SAMPLE_BYTES
 
 __all__ = [
     "Unheard",
+    "heard_chars",
     "heard_written",
     "spoken_prefix",
     "unheard",
@@ -45,11 +46,29 @@ def _without_clear(text: str) -> str:
     return _CUE_SPAN_RE.sub(lambda m: " " if m.group().lower() == _CLEAR else m.group(), text)
 
 
+def heard_chars(seconds: float, speed: float) -> int:
+    """Return how many characters of a reply take ``seconds`` to speak.
+
+    Parameters
+    ----------
+    seconds : float
+        Audio the listener has heard. Below 0 counts as 0.
+    speed : float
+        Prosody speed. Faster speech covers more text per second.
+
+    Returns
+    -------
+    int
+        Characters, cues left out, at about 16 a second at speed 1.0.
+    """
+    return max(0, int(seconds * CHARS_PER_S * max(speed, _MIN_SPEED)))
+
+
 def _pcm_chars(bytes_played: int, sample_rate: int, speed: float, latency_s: float) -> int:
     # bytes_played counts bytes handed to the device. The last output_latency_s
     # of them are still in its buffer, so the listener has not heard them.
     secs = bytes_played / max(sample_rate * SAMPLE_BYTES, 1) - max(0.0, latency_s)
-    return max(0, int(secs * CHARS_PER_S * max(speed, _MIN_SPEED)))
+    return heard_chars(secs, speed)
 
 
 def _word_char(ch: str) -> bool:

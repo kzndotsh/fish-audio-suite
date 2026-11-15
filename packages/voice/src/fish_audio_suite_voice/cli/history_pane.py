@@ -45,6 +45,7 @@ _HEARING_TICK_S = 0.1
 _PULSE_CELLS = 5  # characters wide, two bars each
 _YOU = ("› ", "bold $text-primary")  # noqa: RUF001 - the quote mark is the design
 _CUT = ("…", "dim")  # ends a reply that was cut off
+_UNHEARD = "dim"  # the words of a reply not played yet
 _KEY = "bold $text-accent"
 _UNDO_HINT = " · z to undo"
 
@@ -62,6 +63,16 @@ def _with_lead_cue(before: str, text: str) -> str:
         if piece.strip():
             return f"{piece} {text}" if is_cue else text
     return text
+
+
+def _heard_end(words: str, chars: int) -> int:
+    """Return where the heard part of ``words`` ends: at ``chars``, back to a whole word."""
+    if chars >= len(words):
+        return len(words)
+    end = max(0, chars)
+    while end > 0 and not words[end].isspace():
+        end -= 1
+    return end
 
 
 def _settled(text: str) -> str:
@@ -223,6 +234,8 @@ class Conversation(VerticalScroll):
         self._reply: Static | None = None
         self._reply_words = ""
         self._reply_cut = False
+        # Characters of the reply heard so far while it plays; None shows it all as heard.
+        self._heard: int | None = None
         self._pending: Static | None = None
         self._words = ""
         self._pulse: Timer | None = None
@@ -595,6 +608,7 @@ class Conversation(VerticalScroll):
             The line.
         """
         self._reply, self._reply_words, self._reply_cut = None, "", False
+        self._heard = None
         self._busy = True
         self._mark_selected()
         self.refresh_bindings()
@@ -636,18 +650,50 @@ class Conversation(VerticalScroll):
         self._reply_words = spoken(_settled(text))
         if self._reply is None and not self._reply_words:
             return
-        cut = [_CUT] if self._reply_cut else []
-        content = Content.assemble(self._reply_words, *cut)
+        content = self._reply_content()
         if self._reply is None:
             self._reply = self._add("reply", content)
         else:
             self._reply.update(content)
 
+    def _reply_content(self) -> Content:
+        words, heard = self._reply_words, self._heard
+        if heard is None:
+            return Content.assemble(words, *([_CUT] if self._reply_cut else []))
+        end = _heard_end(words, heard)
+        if self._reply_cut:
+            return Content.assemble(words[:end].rstrip(), _CUT)  # the rest was never heard
+        return Content.assemble(words[:end], (words[end:], _UNHEARD))
+
+    def show_heard(self, chars: int) -> None:
+        """Show how much of the reply has been heard: the rest is dim until it plays.
+
+        Parameters
+        ----------
+        chars : int
+            Characters of the reply heard so far, its cues left out (``ReplyHeard``).
+        """
+        if self._reply_cut:
+            return  # what plays after a barge-in is not this reply's
+        self._heard = chars
+        if self._reply is not None:
+            self._reply.update(self._reply_content())
+
+    def end_playback(self) -> None:
+        """Show the whole reply as heard: it has played to the end."""
+        if self._heard is not None and not self._reply_cut:
+            self._heard = None
+            if self._reply is not None:
+                self._reply.update(self._reply_content())
+
     def cut_reply(self) -> None:
-        """Mark the reply in progress as cut off, when the user talks over it."""
+        """Mark the reply in progress as cut off, when the user talks over it.
+
+        Words not heard yet go, when it is known how much was heard.
+        """
         if self._reply is not None:
             self._reply_cut = True
-            self.show_reply(self._reply_words)
+            self._reply.update(self._reply_content())
 
     def _add(self, role: str, content: Content) -> Static:
         message = Static(content, classes=f"message {role}")

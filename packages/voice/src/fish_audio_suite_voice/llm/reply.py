@@ -26,14 +26,15 @@ from fish_audio_suite_voice.session.events import (
     EVENTS,
     ExitCode,
     ReplyEnd,
+    ReplyHeard,
     ReplyToken,
     Speaking,
     notice,
 )
 from fish_audio_suite_voice.session.latency import LatencySnapshot
 from fish_audio_suite_voice.session.state import Chat, DuplexContext
-from fish_audio_suite_voice.tts.playback import PlaybackSink, make_sink
-from fish_audio_suite_voice.tts.played_text import Unheard, heard_written, unheard
+from fish_audio_suite_voice.tts.playback import PlaybackSink, SounddeviceSink, make_sink
+from fish_audio_suite_voice.tts.played_text import Unheard, heard_chars, heard_written, unheard
 from fish_audio_suite_voice.tts.websocket import TtsResult
 
 __all__ = [
@@ -44,6 +45,8 @@ __all__ = [
     "stream_turn",
 ]
 
+# ReplyHeard is sent at most once per this much audio: a display redraws the reply on each.
+_HEARD_EVERY_S: Final = 0.1
 # The barge watch notices its stop flag within one mic poll (0.2 s). The join
 # waits that out, so the watch has stopped reading before the next listen starts.
 _BARGE_JOIN_S: Final = 1.0
@@ -249,10 +252,36 @@ def _after_speech(
     )
 
 
+class _HeardReport:
+    """Turn the seconds of a reply the sink has played into ``ReplyHeard`` events.
+
+    Called on the playback thread each time the sink reports a level. It sends the count
+    at most once per ``_HEARD_EVERY_S`` of audio, which plays in real time, and only when it
+    has grown, so the audio path does no more than a comparison per level.
+    """
+
+    def __init__(self, speed: float) -> None:
+        self._speed = speed
+        self._chars = 0
+        self._next_s = 0.0
+
+    def __call__(self, heard_s: float) -> None:
+        if heard_s < self._next_s:
+            return
+        chars = heard_chars(heard_s, self._speed)
+        if chars > self._chars:
+            self._chars, self._next_s = chars, heard_s + _HEARD_EVERY_S
+            EVENTS.emit(ReplyHeard(chars))
+
+
 def _reply_sink(ctx: DuplexContext, cancel: threading.Event) -> PlaybackSink:
-    """Open the session's playback sink for one reply. It says which format Fish sends."""
+    """Open the session's playback sink for one reply. It says which format Fish sends.
+
+    A sink that plays on the sound card also says how much of the reply has been heard:
+    ``ReplyHeard(0)`` now, then the count as it grows.
+    """
     c = ctx.config
-    return make_sink(
+    sink = make_sink(
         c.playback,
         path=None,
         sample_rate=c.tts.sample_rate,
@@ -260,7 +289,11 @@ def _reply_sink(ctx: DuplexContext, cancel: threading.Event) -> PlaybackSink:
         cancel=cancel,
         aec=ctx.turn_input.mic.aec,
         latency=ctx.sink_latency,
+        on_played=_HeardReport(c.tts.speed),
     )
+    if isinstance(sink, SounddeviceSink):
+        EVENTS.emit(ReplyHeard(0))
+    return sink
 
 
 def _trace(trace_id: str | None) -> dict[str, str]:

@@ -56,6 +56,7 @@ from fish_audio_suite_voice.session.events import (
     Notice,
     OutputLevel,
     ReplyEnd,
+    ReplyHeard,
     ReplyToken,
     SessionAction,
     SessionState,
@@ -417,6 +418,7 @@ _ONE_OF_EACH: tuple[Event, ...] = (
     BargedIn(),
     MicLevel(1.0, 2.0, "listen"),
     OutputLevel(1.0),
+    ReplyHeard(3),
     LogLine("DEBUG", "tts", "x"),
     Notice("x"),
     TurnEnded(LatencySnapshot()),
@@ -425,7 +427,7 @@ _ONE_OF_EACH: tuple[Event, ...] = (
 )
 
 
-def test_a_queue_that_falls_behind_drops_only_levels_interim_words_and_log_lines() -> None:
+def test_a_queue_that_falls_behind_drops_only_levels_progress_interim_words_and_logs() -> None:
     assert {type(e) for e in _ONE_OF_EACH} == set(_event_classes()), "add the new event here"
     bus = EventBus()
     queue = EventQueue(bus, max_droppable=1)
@@ -434,7 +436,8 @@ def test_a_queue_that_falls_behind_drops_only_levels_interim_words_and_log_lines
             bus.emit(event)
     kept = collections.Counter(type(e) for e in queue.drain())
     dropped = {type(e) for e in _ONE_OF_EACH if kept[type(e)] < 3}
-    assert dropped == {MicLevel, OutputLevel, Interim, LogLine}
+    # Each of these holds the whole state it reports, so the next one makes up for it.
+    assert dropped == {MicLevel, OutputLevel, ReplyHeard, Interim, LogLine}
 
 
 def test_an_event_cannot_be_changed_after_it_is_sent() -> None:

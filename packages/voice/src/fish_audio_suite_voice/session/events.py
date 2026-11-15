@@ -38,6 +38,7 @@ __all__ = [
     "Notice",
     "OutputLevel",
     "ReplyEnd",
+    "ReplyHeard",
     "ReplyToken",
     "SessionAction",
     "SessionState",
@@ -209,6 +210,31 @@ class OutputLevel:
 
 
 @dataclass(frozen=True, slots=True)
+class ReplyHeard:
+    """How much of the reply being played the user has heard, a few times a second.
+
+    Attributes
+    ----------
+    chars : int
+        Characters of the reply heard so far, its cues left out: the same estimate the
+        record is cut to after a barge-in (``tts.played_text``), from the audio the device
+        has played. 0 when playback is about to start.
+    at : float
+        ``time.monotonic()`` when the event was made. Not part of equality.
+
+    Notes
+    -----
+    It comes only from a sink that plays PCM on the sound card, from where each slice is
+    played, at most ten times a second, and only when the count has grown. Each one holds
+    the whole count, so a dropped one costs nothing. A reply's playback is over at
+    ``TurnEnded``, or when the user talks over it (``BargedIn``).
+    """
+
+    chars: int
+    at: float = field(default_factory=_now, compare=False, kw_only=True)
+
+
+@dataclass(frozen=True, slots=True)
 class LogLine:
     """One log line, for a display that cannot share the terminal with stderr.
 
@@ -368,6 +394,7 @@ type Event = (
     | BargedIn
     | MicLevel
     | OutputLevel
+    | ReplyHeard
     | LogLine
     | Notice
     | TurnEnded
@@ -377,7 +404,7 @@ type Event = (
 
 # Events that may be dropped when a consumer falls behind. Everything else is
 # a fact about the conversation and is never dropped.
-_DROPPABLE: Final = (MicLevel, OutputLevel, Interim, LogLine)
+_DROPPABLE: Final = (MicLevel, OutputLevel, ReplyHeard, Interim, LogLine)
 
 
 def next_state(state: SessionState, event: Event) -> SessionState:
@@ -515,7 +542,7 @@ class EventQueue:
     bus : EventBus
         The bus to collect from.
     max_droppable : int, optional
-        How many ``MicLevel``, ``OutputLevel``, ``Interim`` and ``LogLine`` events to keep while the consumer
+        How many ``MicLevel``, ``OutputLevel``, ``ReplyHeard``, ``Interim`` and ``LogLine`` events to keep while the consumer
         is behind. The oldest go first. Every other event is always kept.
     wake : Callable or None, optional
         Called after each event is added, from the thread that emitted it, so it

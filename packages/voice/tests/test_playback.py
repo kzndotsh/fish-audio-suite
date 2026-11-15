@@ -397,6 +397,21 @@ def test_the_level_reports_one_level_per_block_of_audio_and_keeps_the_remainder(
     assert _levels_while(lambda: sink.write(loud[: block - 2])) == []
 
 
+def test_sounddevice_sink_says_how_much_was_heard_at_each_level(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    heard: list[float] = []
+    sink = open_sounddevice_sink(
+        monkeypatch, FakeOutputStream(latency=0.2), sample_rate=16_000, on_played=heard.append
+    )
+    pcm = (2000).to_bytes(2, "little", signed=True) * 16_000  # one second
+    levels = _levels_while(lambda: sink.write(pcm))
+    assert len(heard) == len(levels)  # one call per level, none in between
+    assert heard == sorted(heard)
+    # What was played, less what the device still holds.
+    assert heard[-1] == pytest.approx(len(levels) * OUTPUT_LEVEL_EVERY_S - 0.2, abs=0.01)
+
+
 def test_sounddevice_sink_reports_the_level_of_what_it_plays_and_never_of_what_it_dropped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

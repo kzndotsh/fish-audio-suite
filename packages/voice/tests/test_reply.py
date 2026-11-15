@@ -7,6 +7,7 @@ import sys
 import threading
 import time
 from collections.abc import AsyncIterator, Callable
+from dataclasses import replace
 
 import pytest
 from fishaudio import TextEvent
@@ -15,17 +16,18 @@ from session_fakes import (
     make_ctx,
 )
 from voice_fakes import FakeGate, install_gate, make_result, set_tts
+from wire_helpers import FakeOutputStream, install_output_device
 
 from fish_audio_suite_voice.asr.outcome import HeardLine
 from fish_audio_suite_voice.asr.result import BargeIn
 from fish_audio_suite_voice.capture.portaudio import PortAudioMissingError
 from fish_audio_suite_voice.cli.console_sink import ConsoleSink
 from fish_audio_suite_voice.llm.reply import collect_reply, speak_reply, stream_turn
-from fish_audio_suite_voice.session.events import EVENTS
+from fish_audio_suite_voice.session.events import EVENTS, ReplyHeard
 from fish_audio_suite_voice.session.latency import LatencySnapshot
 from fish_audio_suite_voice.session.state import DuplexContext
 from fish_audio_suite_voice.tts.playback import PlaybackSink
-from fish_audio_suite_voice.tts.played_text import Unheard, spoken_prefix
+from fish_audio_suite_voice.tts.played_text import Unheard, heard_chars, spoken_prefix
 from fish_audio_suite_voice.tts.text import delta_events
 from fish_audio_suite_voice.tts.websocket import TtsResult
 
@@ -202,6 +204,44 @@ def test_collect_reply_lets_asyncio_timeout_fire() -> None:
 
     with pytest.raises(TimeoutError):
         asyncio.run(run())
+
+
+def test_a_reply_played_on_the_sound_card_says_how_much_of_it_was_heard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    install_gate(monkeypatch)
+    install_output_device(monkeypatch, FakeOutputStream(latency=0.25))
+    ctx = _asked()
+    ctx = replace(ctx, config=replace(ctx.config, playback="sounddevice"))
+    rate = ctx.config.tts.sample_rate
+    two_seconds = (1000).to_bytes(2, "little", signed=True) * (2 * rate)
+
+    def speak(text: str, sink: PlaybackSink, **_kwargs: object) -> TtsResult:
+        sink.start()
+        sink.write(two_seconds)
+        return make_result(text, bytes_played=len(two_seconds), got_audio=True)
+
+    set_tts(monkeypatch, ctx.tts, speak=speak)
+    heard: list[int] = []
+    stop = EVENTS.subscribe(lambda e: heard.append(e.chars) if isinstance(e, ReplyHeard) else None)
+    try:
+        asyncio.run(
+            speak_reply(
+                ctx,
+                "Hello there friend",
+                threading.Event(),
+                LatencySnapshot(),
+                started=0.0,
+                trace_id=None,
+            )
+        )
+    finally:
+        stop()
+    assert heard[0] == 0  # before any audio: none of it heard yet
+    assert heard == sorted(set(heard))  # only ever more
+    assert len(heard) <= 2 * 10 + 1  # at most ten a second of audio
+    # Two seconds played, less the quarter second still in the device's buffer.
+    assert heard[-1] == pytest.approx(heard_chars(1.75, ctx.config.tts.speed), abs=2)
 
 
 def test_speak_reply_exits_when_playback_cannot_open(

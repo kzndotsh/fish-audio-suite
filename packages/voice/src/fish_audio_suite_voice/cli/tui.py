@@ -62,9 +62,11 @@ from fish_audio_suite_voice.session.events import (
     Notice,
     OutputLevel,
     ReplyEnd,
+    ReplyHeard,
     ReplyToken,
     SessionAction,
     SessionState,
+    TurnEnded,
     available_actions,
 )
 from fish_audio_suite_voice.session.inputs import LiveInput
@@ -513,6 +515,10 @@ class VoiceApp(App[int]):
             case ReplyToken() | ReplyEnd():
                 # The view has already folded the tokens into the reply so far.
                 conversation.show_reply(self._view.reply)
+            case ReplyHeard(chars=chars):
+                conversation.show_heard(chars)
+            case TurnEnded():
+                conversation.end_playback()
             case BargedIn():
                 conversation.cut_reply()
             case Notice(text=text):

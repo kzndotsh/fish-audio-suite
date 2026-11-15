@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 from session_fakes import FakeBackend, hello_tokens, quick_config, speak_with_fakes
+from textual.content import Content
 from textual.pilot import Pilot
 from textual.widget import Widget
 from textual.widgets import Input, OptionList, Static, TextArea
@@ -48,6 +49,7 @@ from fish_audio_suite_voice.session.conversation import Conversation as Record
 from fish_audio_suite_voice.session.conversation import HistoryView
 from fish_audio_suite_voice.session.duplex import duplex_turns
 from fish_audio_suite_voice.session.events import (
+    BargedIn,
     Bye,
     ChatShown,
     EventBus,
@@ -56,9 +58,12 @@ from fish_audio_suite_voice.session.events import (
     Listening,
     Notice,
     ReplyEnd,
+    ReplyHeard,
     ReplyToken,
+    TurnEnded,
 )
 from fish_audio_suite_voice.session.inputs import LiveInput
+from fish_audio_suite_voice.session.latency import LatencySnapshot
 from fish_audio_suite_voice.session.signals import DuplexSession
 from fish_audio_suite_voice.tts.speaker import FishSpeaker
 
@@ -550,6 +555,55 @@ def test_a_turn_in_progress_is_laid_out_as_its_recorded_turn_will_be() -> None:
         # the reply is indented under the user's line.
         assert reply.region.y == you.region.y + you.region.height
         assert reply.content_region.x == you.content_region.x + 2
+
+    _drive(harness, scenario)
+
+
+def _dim(widget: Static) -> str:
+    content = widget.content
+    assert isinstance(content, Content)
+    return "".join(
+        content.plain[span.start : span.end] for span in content.spans if span.style == "dim"
+    )
+
+
+def test_the_words_of_a_reply_not_heard_yet_are_dim_until_they_play() -> None:
+    harness = _Harness()
+    reply = "Bart it is. Does he look like a Bart?"
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        harness.bus.emit(Heard("Ha, I like that.", 0.0))
+        harness.bus.emit(ReplyHeard(0))  # the sound card is about to play it
+        harness.bus.emit(ReplyToken(f"[warm] {reply}"))
+        await pilot.pause(0.1)
+        live = [child for child in harness.pane.children if isinstance(child, Static)][-1]
+        assert str(live.content) == reply
+        assert _dim(live) == reply
+        harness.bus.emit(ReplyHeard(14))  # partway into "Does": only whole words count
+        await pilot.pause(0.1)
+        assert _dim(live) == " Does he look like a Bart?"
+        harness.bus.emit(TurnEnded(LatencySnapshot()))  # played to the end
+        await pilot.pause(0.1)
+        assert _dim(live) == ""
+        assert str(live.content) == reply
+
+    _drive(harness, scenario)
+
+
+def test_a_reply_talked_over_keeps_only_the_words_that_were_heard() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        harness.bus.emit(Heard("Name the cat", 0.0))
+        harness.bus.emit(ReplyHeard(0))
+        harness.bus.emit(ReplyToken("Bart it is. Does he look like a Bart?"))
+        harness.bus.emit(ReplyHeard(14))
+        harness.bus.emit(BargedIn())
+        harness.bus.emit(ReplyHeard(40))  # the rest, spoken again after a false alarm
+        await pilot.pause(0.1)
+        live = [child for child in harness.pane.children if isinstance(child, Static)][-1]
+        assert str(live.content) == "Bart it is.…"
+        assert _dim(live) == "…"  # only the mark of the cut: no unheard words left
 
     _drive(harness, scenario)
 
