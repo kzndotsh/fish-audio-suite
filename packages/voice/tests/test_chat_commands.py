@@ -26,6 +26,7 @@ from fish_audio_suite_voice.session.chat_store import ChatFile, list_chats, load
 from fish_audio_suite_voice.session.commands import (
     ChatCommand,
     DeleteTurn,
+    EditMessage,
     EditReply,
     NewChat,
     OpenChat,
@@ -195,6 +196,48 @@ def test_trying_again_answers_the_same_line_afresh_and_undo_brings_the_old_reply
         ("one", "reply 2.")
     ]
     assert _dialogue(run.asked[2]) == ["one", "reply 1.", "two"]
+
+
+def test_an_edited_message_is_answered_afresh_without_the_turns_after_it(
+    monkeypatch: pytest.MonkeyPatch, saving: VoiceCliConfig
+) -> None:
+    run = _Run(saving)
+    run.run(
+        monkeypatch,
+        heard_line("one"),
+        heard_line("two"),
+        heard_line("three"),
+        run.change(lambda shown: [EditMessage(_ids(shown)[1], "two, said better")]),
+        run.change(lambda _shown: [Undo()]),
+        heard_line("four"),
+    )
+    assert _dialogue(run.asked[3]) == ["one", "reply 1.", "two, said better"]
+    answered = run.shown[-3]
+    assert [t.user for t in answered.turns] == ["one", "two, said better"]
+    # One undo puts back the old line, its reply and the turn after it.
+    assert _dialogue(run.asked[4]) == [
+        "one",
+        "reply 1.",
+        "two",
+        "reply 2.",
+        "three",
+        "reply 3.",
+        "four",
+    ]
+    [chat] = list_chats(saving.chat_dir or Path())
+    assert len(load_chat(chat.path).conversation.turns) == 4
+
+
+def test_a_blank_message_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    run = _Run(quick_config())
+    run.run(
+        monkeypatch,
+        heard_line("one"),
+        run.change(lambda shown: [EditMessage(_ids(shown)[0], "  ")]),
+        heard_line("two"),
+    )
+    assert run.notices == ["[a message cannot be blank: delete the turn instead]"]
+    assert _dialogue(run.asked[1]) == ["one", "reply 1.", "two"]
 
 
 def test_only_the_newest_reply_is_tried_again(monkeypatch: pytest.MonkeyPatch) -> None:

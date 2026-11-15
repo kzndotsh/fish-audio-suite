@@ -261,6 +261,22 @@ def test_only_the_newest_shown_reply_can_be_tried_again() -> None:
         conversation.try_again(conversation.turns[0].id)
 
 
+def test_resending_a_line_drops_what_followed_it_and_one_undo_brings_it_all_back() -> None:
+    conversation = _talk(Conversation("s"), ("one", "first"), ("two", "second"), ("three", "third"))
+    conversation.set_hidden(conversation.turns[1].id, hidden=True)
+    before = list(conversation.turns)
+    conversation.resend(before[1].id, "two, said better")
+    assert [(t.id, t.user, t.reply, t.hidden) for t in conversation.turns[1:]] == [
+        (before[1].id, "two, said better", None, False)
+    ]
+    assert conversation.last_user() == "two, said better"
+    conversation.add_reply("a new second", interrupted=False)
+    assert conversation.undo()
+    assert conversation.turns == before
+    with pytest.raises(ValueError, match="blank"):
+        conversation.resend(before[0].id, " ")
+
+
 def test_new_turns_keep_coming_in_after_an_edit_is_undone() -> None:
     conversation = _talk(Conversation("s"), ("one", "first"))
     conversation.edit_reply(conversation.turns[0].id, "edited")

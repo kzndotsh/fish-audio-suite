@@ -265,6 +265,7 @@ The messages show the whole chat, including the turns of a chat you resumed or o
 | Up, Down (or K, J) | Select the turn before or after |
 | G or Home, Shift+G or End | Select the first or the newest turn. End also follows new turns again as they arrive |
 | E | Rewrite the selected reply in a dialog. Ctrl+S saves, Escape keeps it as it was. A blank reply is refused: hide or delete the turn instead |
+| Shift+E | Rewrite your line of the selected turn in a dialog and send it again: its reply and every later turn are dropped, and the new line is answered afresh. One undo puts them all back. Not offered while a turn is in progress |
 | R | Try again: drop the newest reply and answer the same line afresh. Offered only on the newest turn, once its reply is recorded and while it is not hidden. Undo brings the old reply back |
 | Y | Copy the selected reply, without its cues |
 | H | Hide the selected turn from the AI, or show it again. The chat keeps it |

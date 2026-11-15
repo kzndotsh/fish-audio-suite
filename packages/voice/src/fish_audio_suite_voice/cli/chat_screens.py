@@ -43,6 +43,7 @@ KEYS: tuple[tuple[str, str], ...] = (
     ("j k  ↑ ↓", "Pick a message"),
     ("g  G", "The first or the newest message"),
     ("e", "Edit the reply"),
+    ("E", "Edit my message and send it again"),
     ("r", "Try again (a new reply)"),
     ("y", "Copy the reply"),
     ("h", "Hide from the AI, or show again"),
@@ -57,12 +58,14 @@ KEYS: tuple[tuple[str, str], ...] = (
 
 
 class EditReplyScreen(ModalScreen[str | None]):
-    """Rewrite one reply. Dismissed with the new text, or None to keep the reply as it was.
+    """Rewrite one reply or line. Dismissed with the new text, or None to keep it as it was.
 
     Parameters
     ----------
     text : str
-        The reply as the model is sent it now.
+        The reply as the model is sent it now, or the user's line.
+    message : bool, optional
+        True to edit the user's line, which is then answered afresh.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -70,15 +73,21 @@ class EditReplyScreen(ModalScreen[str | None]):
         Binding("escape", "cancel", "Cancel"),
     ]
 
-    def __init__(self, text: str) -> None:
+    def __init__(self, text: str, *, message: bool = False) -> None:
         super().__init__()
         self._text = text
+        self._message = message
 
     def compose(self) -> ComposeResult:
-        """Lay out the reply in an editor, with the keys below it."""
+        """Lay out the text in an editor, with the keys below it."""
         with Vertical(id="edit-box") as box:
-            box.border_title = "edit reply"
-            yield Static("The model is sent this reply from now on.", classes="dialog-hint")
+            box.border_title = "edit my message" if self._message else "edit reply"
+            hint = (
+                "Saving drops the reply and the turns after it, and answers this afresh."
+                if self._message
+                else "The model is sent this reply from now on."
+            )
+            yield Static(hint, classes="dialog-hint")
             yield TextArea(self._text, id="edit-text", soft_wrap=True)
         yield Footer()
 
@@ -92,9 +101,12 @@ class EditReplyScreen(ModalScreen[str | None]):
         """Keep the new text, unless it is blank."""
         text = self.query_one(TextArea).text.strip()
         if not text:
-            self.notify(
-                "A reply cannot be blank. Hide or delete the turn instead.", severity="warning"
+            refused = (
+                "A message cannot be blank. Delete the turn instead."
+                if self._message
+                else "A reply cannot be blank. Hide or delete the turn instead."
             )
+            self.notify(refused, severity="warning")
             return
         self.dismiss(text)
 

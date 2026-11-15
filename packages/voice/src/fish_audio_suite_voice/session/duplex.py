@@ -29,6 +29,7 @@ from fish_audio_suite_voice.session.chat_store import ChatLoadError, SavedChat, 
 from fish_audio_suite_voice.session.commands import (
     ChatCommand,
     DeleteTurn,
+    EditMessage,
     EditReply,
     NewChat,
     OpenChat,
@@ -326,18 +327,31 @@ async def _apply(ctx: DuplexContext, command: ChatCommand) -> bool:
         case Undo():
             if not chat.history.undo():
                 notice("[nothing to undo]")
-        case EditReply() | DeleteTurn() | SetHidden() | TryAgain():
+        case EditReply() | EditMessage() | DeleteTurn() | SetHidden() | TryAgain():
             return _edit(chat.history, command)
         case _:
             assert_never(command)
     return False
 
 
-def _edit(history: Conversation, command: EditReply | DeleteTurn | SetHidden | TryAgain) -> bool:
+type _TurnChange = EditReply | EditMessage | DeleteTurn | SetHidden | TryAgain
+
+# Why a change was refused, by the kind of change. A delete or a hide is never refused.
+_REFUSED: dict[type[_TurnChange], str] = {
+    EditReply: "[a reply cannot be blank: hide or delete the turn instead]",
+    EditMessage: "[a message cannot be blank: delete the turn instead]",
+    TryAgain: "[only the newest reply can be tried again]",
+}
+
+
+def _edit(history: Conversation, command: _TurnChange) -> bool:
     try:
         match command:
             case EditReply(turn_id=turn_id, text=text):
                 history.edit_reply(turn_id, text)
+            case EditMessage(turn_id=turn_id, text=text):
+                history.resend(turn_id, text)
+                return True
             case DeleteTurn(turn_id=turn_id):
                 history.delete_turn(turn_id)
             case SetHidden(turn_id=turn_id, hidden=hidden):
@@ -348,10 +362,7 @@ def _edit(history: Conversation, command: EditReply | DeleteTurn | SetHidden | T
     except KeyError:
         notice("[that turn is no longer in the chat]")
     except ValueError:
-        if isinstance(command, TryAgain):
-            notice("[only the newest reply can be tried again]")
-        else:
-            notice("[a reply cannot be blank: hide or delete the turn instead]")
+        notice(_REFUSED[type(command)])
     return False
 
 

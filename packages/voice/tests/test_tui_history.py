@@ -31,6 +31,7 @@ from fish_audio_suite_voice.session.chat_store import ChatFile, load_chat
 from fish_audio_suite_voice.session.commands import (
     ChatCommand,
     DeleteTurn,
+    EditMessage,
     EditReply,
     NewChat,
     OpenChat,
@@ -206,7 +207,9 @@ def test_the_selected_turn_shows_its_keys_and_y_copies_the_reply_without_cues() 
         await pilot.press("tab", "g")  # the first turn
         await pilot.pause(0.05)
         first = harness.rows()[0]
-        assert _text(first).splitlines()[-1] == "e Edit reply   y Copy   h Hide   d Delete"
+        assert _text(first).splitlines()[-1] == (
+            "e Edit reply   E Edit my message   y Copy   h Hide   d Delete"
+        )
         assert "e Edit reply" not in _text(harness.rows()[1])  # only on the selected turn
         await pilot.press("y")
         assert harness.copied == ["first."]
@@ -342,6 +345,29 @@ def test_a_reply_is_rewritten_in_a_dialog_and_saved_or_left_as_it_was() -> None:
         assert not isinstance(harness.app.screen, EditReplyScreen)
         assert harness.live.sent == [EditReply(three, "Calmer.")]
         assert harness.toasts[-1] == "Reply edited · z to undo"
+
+    _drive(harness, scenario)
+
+
+def test_shift_e_rewrites_the_selected_line_and_sends_it_again() -> None:
+    harness = _Harness()
+    record = _record()
+    two = record.turns[1].id
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        harness.bus.emit(_shown(record))
+        await pilot.pause(0.1)
+        await pilot.press("tab", "k")
+        assert "E Edit my message" in _text(harness.rows()[1])
+        await pilot.press("E")
+        editor = harness.app.screen.query_one(TextArea)
+        assert editor.text == "two"
+        editor.move_cursor(editor.document.end)
+        await pilot.press("exclamation_mark", "ctrl+s")
+        assert harness.live.sent == [EditMessage(two, "two!")]
+        assert harness.toasts[-1] == "Message edited and sent again · z to undo"
+        await pilot.press("E")  # the line is being answered: no more edits until it is
+        assert isinstance(harness.app.screen.focused, Conversation)
 
     _drive(harness, scenario)
 

@@ -14,6 +14,7 @@ from pathlib import Path
 __all__ = [
     "ChatCommand",
     "DeleteTurn",
+    "EditMessage",
     "EditReply",
     "NewChat",
     "OpenChat",
@@ -33,6 +34,23 @@ class EditReply:
         The turn whose reply changes.
     text : str
         The new reply. Not blank: hide or delete the turn instead.
+    """
+
+    turn_id: str
+    text: str
+
+
+@dataclass(frozen=True, slots=True)
+class EditMessage:
+    """Put ``text`` in place of a turn's line, drop the turns after it, and answer it afresh.
+
+    Attributes
+    ----------
+    turn_id : str
+        The turn whose line changes. Its reply and every later turn go; ``Undo`` puts them
+        back.
+    text : str
+        The user's new line. Not blank: delete the turn instead.
     """
 
     turn_id: str
@@ -104,5 +122,7 @@ class NewChat:
     """Start a new chat, in a new file."""
 
 
-type ChatCommand = EditReply | DeleteTurn | SetHidden | TryAgain | Undo | OpenChat | NewChat
+type ChatCommand = (
+    EditReply | EditMessage | DeleteTurn | SetHidden | TryAgain | Undo | OpenChat | NewChat
+)
 """Every change a display can ask for."""

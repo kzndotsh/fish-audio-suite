@@ -2,7 +2,7 @@
 
 ``Conversation`` keeps every turn of a session: the user's line, what the model wrote of
 the part the user heard, and the user's edits. It converts to and from plain JSON. Turns
-can be edited, hidden, deleted, and each change undone.
+can be edited, hidden, deleted, answered again, and each change undone.
 
 ``HistoryView`` builds the request from it: the system prompt, then the last visible turns
 with edits applied. It drops old turns in blocks, so the start of the prompt stays the
@@ -272,6 +272,31 @@ class Conversation:
         index, turn = self._find(turn_id)
         del self.turns[index]
         self._undo.append(_Undo(index, (turn,), replaced=0))
+
+    def resend(self, turn_id: str, text: str) -> None:
+        """Put ``text`` in place of a turn's line and drop its reply and every turn after it.
+
+        Parameters
+        ----------
+        turn_id : str
+            The turn whose line changes. It is shown to the model again if it was hidden.
+        text : str
+            The user's new line, which the next reply answers.
+
+        Raises
+        ------
+        ValueError
+            When ``text`` is blank. Delete the turn instead.
+
+        Notes
+        -----
+        One ``undo`` puts back the old line, its reply and the turns that followed it.
+        """
+        index, turn = self._find(turn_id)
+        if not text.strip():
+            raise ValueError(f"the new line for turn {turn_id} is blank")
+        self._undo.append(_Undo(index, tuple(self.turns[index:]), replaced=1))
+        self.turns[index:] = [Turn(turn.id, text)]
 
     def try_again(self, turn_id: str) -> str:
         """Drop the reply of the newest turn, so its line is answered again.
