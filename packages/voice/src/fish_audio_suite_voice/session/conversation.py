@@ -13,6 +13,7 @@ copies the cues it sees in its own history.
 from __future__ import annotations
 
 import dataclasses
+import re
 import uuid
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -39,6 +40,20 @@ SCHEMA_VERSION: Final = 1
 _UNANSWERED_LINES: Final = 4
 # Over the cap, a quarter of the turns are dropped at once. See HistoryView.
 _TRIM_BLOCK: Final = 4
+# Replies in a row that open with one word before the next request asks for another.
+_OPENING_RUN: Final = 2
+# A lead set off from the sentence, such as an exclamation, a sound or a form of address:
+# one to three words, then a comma, period, "!", "?" or ellipsis. A sentence that merely
+# starts with a common word ("I think...") has none, so it never asks for another opening.
+_LEAD: Final = re.compile(
+    r"\W*([^\W\d_]+(?:'[^\W\d_]+)?)(?:\s+[^\W\d_]+(?:'[^\W\d_]+)?){0,2}[,.!?…]"
+)
+_STRETCHED: Final = re.compile(r"(\w)\1+")
+# Words that start a short sentence ("I know.", "That's it!") rather than an exclamation.
+_SENTENCE_STARTS: Final = frozenset(
+    {"i", "i'm", "i'd", "i'll", "i've", "you", "we", "it", "it's", "that", "that's", "this"}
+    | {"they", "he", "she", "there", "here", "what", "who", "how", "why"}
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -375,11 +390,15 @@ class HistoryView:
         list of ChatMessage
             The system prompt, then the visible turns the cap keeps,
             with edits applied. Roles alternate: a visible turn with no reply before the
-            last one joins its line to the next.
+            last one joins its line to the next. When the last two replies sent opened
+            with the same word, a note on the last user line names it and asks for
+            another opening, for this request only.
         """
+        sent = self.sent(conversation)
         out: list[ChatMessage] = [{"role": "system", "content": conversation.system}]
-        out.extend(self._turn_messages(self.sent(conversation)))
-        return _with_tone_hint(out, tone)
+        out.extend(self._turn_messages(sent))
+        notes = [note for note in (_tone_note(tone), _opening_note(sent)) if note]
+        return _with_notes(out, notes)
 
     def sent(self, conversation: Conversation) -> list[Turn]:
         """Return the turns a request sends the model, oldest first.
@@ -429,20 +448,57 @@ def _window_start(count: int, cap: int) -> int:
     return -(-(count - cap) // step) * step
 
 
-def _with_tone_hint(history: list[ChatMessage], tone: tuple[str, ...]) -> list[ChatMessage]:
-    """Note how the last user line sounded, in brackets ``scrub_tts`` removes if echoed.
-
-    The note tells the model not to repeat it or turn it into a ``[cue]``. If the model
-    echoes it anyway, it is not spoken.
-    """
-    if not tone or history[-1]["role"] != "user":
-        return history
-    note = (
+def _tone_note(tone: tuple[str, ...]) -> str:
+    """Say how the last user line sounded, and that it is not something they said."""
+    if not tone:
+        return ""
+    return (
         f"(Note on how they sounded: {', '.join(tone)}. This is not something they said. "
         "Do not repeat or mention it, and never write it as a [cue] or in brackets.)"
     )
+
+
+def _opening_note(turns: Sequence[Turn]) -> str:
+    """Name the lead word the latest replies all opened with, so the next one opens otherwise.
+
+    The model copies its own recent replies more than it follows the system prompt, so a
+    reply that opens like the last few makes the next one likelier to. A note on the line
+    it answers is the closest place to break the run.
+    """
+    replies = [turn.reply.content for turn in turns if turn.reply is not None]
+    recent = [_lead_word(reply) for reply in replies[-_OPENING_RUN:]]
+    if len(recent) < _OPENING_RUN or not recent[-1]:
+        return ""
+    if len({_word_key(word) for word in recent}) != 1:
+        return ""
+    return (
+        f'(Note: your last {_OPENING_RUN} replies all began with "{recent[-1]}". '
+        "Begin this one another way, without that word. Do not mention this note.)"
+    )
+
+
+def _lead_word(reply: str) -> str:
+    found = _LEAD.match(strip_cue_tags(reply))
+    if found is None or found.group(1).casefold() in _SENTENCE_STARTS:
+        return ""
+    return found.group(1)
+
+
+def _word_key(word: str) -> str:
+    """Fold case and stretched letters, so drawn-out spellings of a word count as one."""
+    return _STRETCHED.sub(r"\1", word.casefold())
+
+
+def _with_notes(history: list[ChatMessage], notes: list[str]) -> list[ChatMessage]:
+    """Add notes to the last user line, in brackets ``scrub_tts`` removes if echoed.
+
+    The notes are for this request only. If the model echoes one anyway, it is not spoken.
+    """
+    if not notes or history[-1]["role"] != "user":
+        return history
     last = history[-1]
-    return [*history[:-1], {"role": "user", "content": f"{last['content']}\n\n{note}"}]
+    content = "\n\n".join([last["content"], *notes])
+    return [*history[:-1], {"role": "user", "content": content}]
 
 
 def _turn_json(turn: Turn) -> dict[str, object]:

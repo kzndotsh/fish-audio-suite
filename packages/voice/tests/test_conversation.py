@@ -364,6 +364,50 @@ def test_an_edited_reply_is_sent_by_the_same_cue_rule() -> None:
     assert _contents(sent)[2] == "First, edited."
 
 
+def _chat_with(*replies: str) -> Conversation:
+    conversation = Conversation("s")
+    return _talk(
+        conversation, *((f"u{i}", reply) for i, reply in enumerate(replies)), ("next", None)
+    )
+
+
+def _asked(*replies: str) -> str:
+    return HistoryView(HISTORY_TURNS).messages(_chat_with(*replies))[-1]["content"]
+
+
+def test_replies_that_keep_opening_with_one_word_ask_the_next_for_another() -> None:
+    conversation = _chat_with("Sure, fine.", "[calm] Well, maybe.", "[happy] Wellll okay then.")
+    asked = HistoryView(HISTORY_TURNS).messages(conversation)[-1]["content"]
+    line, note = asked.split("\n\n")
+    assert line == "next"
+    assert note.startswith("(Note:")
+    assert '"Wellll"' in note
+    # The record keeps the line as said: the note is for that request only.
+    assert conversation.turns[-1].user == "next"
+
+
+def test_replies_that_open_differently_add_no_note() -> None:
+    assert _asked("Well, maybe.", "Sure, fine.") == "next"
+    assert _asked("Well, maybe.") == "next"
+
+
+def test_a_shared_first_word_that_is_not_a_lead_adds_no_note() -> None:
+    assert _asked("I think so.", "I would wait a day.") == "next"
+    assert _asked("I know.", "I see!") == "next"
+    assert _asked("Well it depends on the day.", "Well that sounds fine.") == "next"
+
+
+def test_a_lead_of_a_few_words_counts_by_its_first_word() -> None:
+    assert '"Oh"' in _asked("Oh wow, nice.", "Oh dear! Really?")
+
+
+def test_the_opening_note_follows_the_tone_note() -> None:
+    conversation = _talk(Conversation("s"), ("a", "Well, yes."), ("b", "Well, no."), ("c", None))
+    asked = HistoryView(HISTORY_TURNS).messages(conversation, ("tired",))[-1]["content"]
+    first, tone, opening = asked.split("\n\n")
+    assert (first, tone[:27], opening[:6]) == ("c", "(Note on how they sounded: ", "(Note:")
+
+
 def test_the_id_is_kept_by_a_copy_json_and_a_reopened_record() -> None:
     conversation = _talk(Conversation("old prompt"), ("one", "First."))
     assert conversation.copy().id == conversation.id
