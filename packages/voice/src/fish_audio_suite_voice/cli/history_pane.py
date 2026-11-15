@@ -213,6 +213,7 @@ class TurnRow(VerticalGroup):
             note
             for note, on in (
                 ("hidden from AI", turn.hidden),
+                ("cut off", reply is not None and reply.interrupted and reply.edit is None),
                 ("edited", reply is not None and reply.edit is not None),
             )
             if on

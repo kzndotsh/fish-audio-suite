@@ -446,6 +446,35 @@ def test_the_opening_note_follows_the_tone_note() -> None:
     assert (first, tone[:27], opening[:6]) == ("c", "(Note on how they sounded: ", "(Note:")
 
 
+def _after_a_cut_reply(*, edit: str | None = None) -> Conversation:
+    conversation = Conversation("s")
+    conversation.add_user_line("Tell me about the garden.")
+    conversation.add_reply("The roses are out, and the", interrupted=True)
+    if edit is not None:
+        conversation.edit_reply(conversation.turns[0].id, edit)
+    conversation.add_user_line("Sorry, go on.")
+    return conversation
+
+
+def test_a_reply_that_was_cut_off_is_named_on_the_next_line_for_that_request_only() -> None:
+    conversation = _after_a_cut_reply()
+    sent = HistoryView(HISTORY_TURNS).messages(conversation)
+    line, note = sent[-1]["content"].split("\n\n")
+    assert line == "Sorry, go on."
+    assert note.startswith("(Note: your last reply was cut off")
+    # The reply is sent as heard, with nothing added to it, and the record is unchanged.
+    assert sent[-2]["content"] == "The roses are out, and the"
+    assert conversation.turns[-1].user == "Sorry, go on."
+    conversation.add_reply("They are lovely this year.", interrupted=False)
+    conversation.add_user_line("Nice.")
+    assert HistoryView(HISTORY_TURNS).messages(conversation)[-1]["content"] == "Nice."
+
+
+def test_a_cut_reply_the_user_rewrote_gets_no_note() -> None:
+    conversation = _after_a_cut_reply(edit="The roses are out.")
+    assert HistoryView(HISTORY_TURNS).messages(conversation)[-1]["content"] == "Sorry, go on."
+
+
 def test_the_id_is_kept_by_a_copy_json_and_a_reopened_record() -> None:
     conversation = _talk(Conversation("old prompt"), ("one", "First."))
     assert conversation.copy().id == conversation.id

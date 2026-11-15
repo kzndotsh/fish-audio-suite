@@ -711,8 +711,8 @@ def test_a_recorded_turn_takes_the_place_of_the_turn_in_progress() -> None:
         record.add_reply("[calm] fourth.", interrupted=True)
         harness.bus.emit(_shown(record, window=10))
         await pilot.pause(0.1)
-        # Cut off: the reply ends in a dim ellipsis.
-        assert harness.lines()[-2:] == ["you: four\nai: fourth.…", "[after the reply]"]
+        # Cut off: the reply ends in a dim ellipsis, and the turn says so in words.
+        assert harness.lines()[-2:] == ["you: four\nai: fourth.…\ncut off", "[after the reply]"]
 
     _drive(harness, scenario)
 

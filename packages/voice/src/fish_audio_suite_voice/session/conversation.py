@@ -454,12 +454,13 @@ class HistoryView:
             with edits applied. Roles alternate: a visible turn with no reply before the
             last one joins its line to the next. When the last two replies sent opened
             with the same word, a note on the last user line names it and asks for
-            another opening, for this request only.
+            another opening, for this request only. When the latest reply was cut off,
+            another note there says so, also for this request only.
         """
         sent = self.sent(conversation)
         out: list[ChatMessage] = [{"role": "system", "content": conversation.system}]
         out.extend(self._turn_messages(sent))
-        notes = [note for note in (_tone_note(tone), _opening_note(sent)) if note]
+        notes = [note for note in (_tone_note(tone), _cut_note(sent), _opening_note(sent)) if note]
         return _with_notes(out, notes)
 
     def sent(self, conversation: Conversation) -> list[Turn]:
@@ -536,6 +537,21 @@ def _opening_note(turns: Sequence[Turn]) -> str:
     return (
         f'(Note: your last {_OPENING_RUN} replies all began with "{recent[-1]}". '
         "Begin this one another way, without that word. Do not mention this note.)"
+    )
+
+
+def _cut_note(turns: Sequence[Turn]) -> str:
+    """Say that the latest reply was cut off, so the model does not answer as if it ended.
+
+    The record keeps only the words heard, so the reply just stops. A reply the user
+    rewrote is theirs now and gets no note.
+    """
+    replies = [turn.reply for turn in turns if turn.reply is not None]
+    if not replies or not replies[-1].interrupted or replies[-1].edit is not None:
+        return ""
+    return (
+        "(Note: your last reply was cut off where it ends, and they heard only that much. "
+        "Do not mention this note.)"
     )
 
 
