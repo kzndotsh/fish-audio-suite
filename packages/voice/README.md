@@ -89,7 +89,7 @@ Each file is written to a temporary file first and then renamed over the old one
 
 `--resume` goes on with the most recently updated chat. `--resume 3f9c` goes on with the chat whose id starts with `3f9c`, and `--resume PATH` with that file. The chat keeps its turns and keeps writing to the same file. It runs with the system prompt you have set now, not the one it was saved with, and a notice says so when the two differ. A file that cannot be read, or that a newer `fish-voice` wrote, stops the run with an error before the session starts.
 
-In the [full-screen app](#the-full-screen-app), Ctrl+O lists the saved chats, newest first, and opens one or starts a new chat, and the conversation pane lets you rewrite, hide or delete turns. See [Editing the chat](#editing-the-chat).
+In the [full-screen app](#the-full-screen-app), Ctrl+O lists the saved chats, newest first, and opens one or starts a new chat, and the messages let you rewrite, hide or delete turns. See [Editing the chat](#editing-the-chat).
 
 ### History after a barge-in
 
@@ -233,36 +233,59 @@ Both are off by default because they also change ordinary English. `FISH_TTS_MOO
 uv run --package fish-audio-suite-voice --extra cli --extra tui fish-voice --tui
 ```
 
-`--tui` runs the same session in a full-screen terminal app (built on [Textual](https://textual.textualize.io)). It shows the conversation as it streams, with each `[cue]` styled and never read as markup, the state (listening, thinking, speaking), a live waveform drawn in dots (bars grow from the middle and scroll left; green and brighter the louder you are, grey when quiet; a cursor blinks at the right edge while it listens, and an amber wave scrolls by while the model thinks; while the reply plays the strip shows its level in the accent colour and its title changes from `mic` to `speaker`, for the default PortAudio playback only). The mic and the speaker are scaled the same way, from the last few seconds of the signal itself (its noise floor and its speech level), so they look alike whatever their volume, a quiet room stays flat and one loud bump does not shrink the speech after it, a pulsing "you" line while you talk that turns into your words once they are transcribed, the last turn as a bar showing where the wait before you heard audio went (asr, llm, tts), and the log. You can also type a line instead of speaking, mute the mic, and stop a reply that is playing.
+`--tui` runs the same session in a full-screen terminal app (built on [Textual](https://textual.textualize.io)). The chat screen shows only what you need while talking, top to bottom:
+
+- **The title line**: the chat's first line (or `fish-voice` before there is one), and `? keys` on the right.
+- **The conversation**: your lines start with `›`, and each reply sits indented under them as you hear it, without its `[cue]` tags, live as it streams and once it is recorded. While you talk a pulsing line shows you are heard, and turns into your words once they are transcribed. A reply you cut off ends in `…`. A turn you hid says `hidden from AI` and is dimmed, and a reply you rewrote says `edited`.
+- **The state line**: a symbol and a word, never colour alone, then a plain hint. `● Listening` (just talk, or type below), `◌ Thinking…`, `▶ Speaking` (talk to interrupt, or press Esc), `○ Mic off` (F2 turns it back on) and `✕ Session ended` with the exit code. While it listens or speaks, a small meter in dots shows the mic's level, or the reply's (for the default PortAudio playback only). The mic and the speaker are scaled the same way, from the last few seconds of the signal itself (its noise floor and its speech level), so they look alike whatever their volume, a quiet room stays flat and one loud bump does not shrink the speech after it.
+- **The composer**, where you type instead of talking, and the keys that work now.
+
+Timings, models, the log and the reply as Fish read it are on the Diagnostics screen (F12), not on the chat screen. See [Diagnostics](#diagnostics).
+
+The footer shows only the keys that do something now: Stop appears only while a reply can be stopped, and Mic off or Mic on, whichever applies.
 
 | Key | Does |
 | --- | --- |
 | Enter | Send the typed line |
-| Escape | Stop the reply (only while the model is thinking or the reply is playing) |
-| F2 | Mute or unmute the mic. Muted, the mic stays closed: no listening between turns and no barge-in watch during a reply. Typing or Esc still interrupts. Unmuting during a reply applies from the next reply. Muting while you speak ends your turn there: with a streaming recogniser, words it already heard are answered, and with none heard yet the turn is dropped |
+| Up, Down | In the composer, bring back the lines you typed this session, newest first. What you were typing comes back when you go past the newest |
+| Escape | Stop the reply while the model is thinking or the reply is playing. Otherwise it closes the open dialog or screen, or else goes back to typing |
+| F2 | Turn the mic off or on. Off, the mic stays closed: no listening between turns and no barge-in watch during a reply. Typing or Esc still interrupts. Turning it on during a reply applies from the next reply. Turning it off while you speak ends your turn there: with a streaming recogniser, words it already heard are answered, and with none heard yet the turn is dropped |
+| Tab | Move between the composer and the messages. Nothing else takes focus |
 | Ctrl+O | List the saved chats, to open one or start a new chat. See [Editing the chat](#editing-the-chat) |
-| Tab | Move between the input line, the conversation and the log. The conversation keys below work only while it has focus |
+| Ctrl+P | The command palette: New chat, Chats…, Mic on or off, Stop speaking, Diagnostics and Keys, then Textual's own commands |
+| F12 | Open Diagnostics, or go back to the chat |
 | Ctrl+Q | Quit |
 
 #### Editing the chat
 
-The conversation pane shows the whole chat, including the turns of a chat you resumed or opened. Under the pane's border, `model sees 12 of 30 turns` says how many turns the next request sends the model. A turn the model is not sent is dimmed and says why: `hidden from the model` (you hid it) or `older than the model is sent` (it is older than the last `FISH_VOICE_HISTORY_TURNS` visible turns). A reply you rewrote says `edited`, and one you did not hear to the end says `cut off`.
-
-Press Tab until the conversation has focus. The newest turn is selected, and the footer shows the keys:
+The messages show the whole chat, including the turns of a chat you resumed or opened. Press Tab to move to them. The newest turn is selected, marked by a bar on its left, and its keys are listed under it:
 
 | Key | Does |
 | --- | --- |
 | Up, Down (or K, J) | Select the turn before or after |
+| G or Home, Shift+G or End | Select the first or the newest turn. End also follows new turns again as they arrive |
 | E | Rewrite the selected reply in a dialog. Ctrl+S saves, Escape keeps it as it was. A blank reply is refused: hide or delete the turn instead |
-| H | Hide the selected turn from the model, or show it again. The chat keeps it |
+| Y | Copy the selected reply, without its cues |
+| H | Hide the selected turn from the AI, or show it again. The chat keeps it |
 | D or Delete | Delete the selected turn |
-| U | Undo the last edit, hide or delete in this chat |
+| Z | Undo the last edit, hide or delete in this chat |
+| ? | List every key in plain words |
+| Escape or Tab | Go back to typing |
 
-The model is sent your version from the next request on. What it first wrote is kept in the file, so undo can put it back, but undo does not survive a restart or opening another chat. A change is applied between turns: during a reply it waits until the reply is recorded, and while the mic listens it stops the listen, so speech it had started to hear is dropped. Each change is saved to the chat's file at once.
+A short message confirms each change, such as `Message hidden from AI · z to undo`. The model is sent your version from the next request on. What it first wrote is kept in the file, so undo can put it back, but undo does not survive a restart or opening another chat. A change is applied between turns: during a reply it waits until the reply is recorded, and while the mic listens it stops the listen, so speech it had started to hear is dropped. Each change is saved to the chat's file at once.
 
 Ctrl+O lists the saved chats in `FISH_VOICE_CHAT_DIR`, newest first, with the first line, when each started and was last saved, and how many turns it has. The chat open now is marked. Enter on a chat goes on with it between turns, under the system prompt you have set now, and keeps writing to its file. `+ new chat` starts an empty chat in a new file. A file that is not a chat is left out of the list, and one that cannot be read when you open it is reported in the conversation while the current chat goes on.
 
-While it runs, the app asks the sound card for a bigger playback buffer (`FISH_VOICE_OUTPUT_LATENCY`, `high` in `--tui` by default), lets the playback thread in sooner, and collects garbage less often, because drawing the screen shares a process with playback and otherwise makes it click. Ctrl+C is not quit here, because the app uses it to copy. Without the `tui` extra, `fish-voice --tui` says how to install it and exits 2. The panels shrink with the terminal: under 72 columns the timings and the log go, under 22 rows the timings go, and under 50x14 it asks for a bigger window (typing and Ctrl+Q still work). With no terminal on stdin or stdout, `--tui` falls back to the plain loop. `NO_COLOR` is honoured, and `TEXTUAL_ANIMATIONS=none` stops the pulsing "you" line, the listening cursor and the thinking wave from moving. A modern terminal works best; macOS's Terminal.app is limited to 256 colors, so use iTerm2, Kitty, WezTerm or Ghostty there.
+#### Diagnostics
+
+F12 opens a screen for tuning, not for chatting. F12 or Escape goes back. Its tabs:
+
+- **Timings**: the last turn as a bar showing where the wait before you heard audio went (asr, llm, tts), a table of the last 20 turns (heard, first word, first audio, total, newest first) and the median and 95th percentile wait.
+- **Log**: the log. The app keeps the last 1000 lines while this screen is closed, so nothing that happened while you were chatting is lost.
+- **Sent to Fish**: the last reply as Fish read it, with its cues.
+- **Session**: the models and voice, and how many of the chat's turns the model is sent (`the model sees 12 of 30 turns`). A turn the model is not sent is hidden, or older than the last `FISH_VOICE_HISTORY_TURNS` visible turns.
+
+While it runs, the app asks the sound card for a bigger playback buffer (`FISH_VOICE_OUTPUT_LATENCY`, `high` in `--tui` by default), lets the playback thread in sooner, and collects garbage less often, because drawing the screen shares a process with playback and otherwise makes it click. Ctrl+C is not quit here, because the app uses it to copy. Without the `tui` extra, `fish-voice --tui` says how to install it and exits 2. Under 50x14 it asks for a bigger window (typing and Ctrl+Q still work). With no terminal on stdin or stdout, `--tui` falls back to the plain loop. `NO_COLOR` is honoured, and `TEXTUAL_ANIMATIONS=none` stops the pulsing line and the meter's listening cursor from moving. A modern terminal works best; macOS's Terminal.app is limited to 256 colors, so use iTerm2, Kitty, WezTerm or Ghostty there. Copying uses the terminal's clipboard escape (OSC 52), which most modern terminals support and Terminal.app does not.
 
 ### Streaming speech recognition (Fish realtime)
 

@@ -11,15 +11,19 @@ from hypothesis import strategies as st
 from real_mic import BLOCK_S, QUIET_BELOW, RMS, SPEECH_FROM
 
 from fish_audio_suite_voice.cli.session_view import (
+    RECENT_TURNS,
     SessionView,
     SpeechScale,
+    bar_dots,
     reduce_view,
     turn_timings,
     wave_dots,
 )
+from fish_audio_suite_voice.session.conversation import Conversation, HistoryView
 from fish_audio_suite_voice.session.events import (
     BargedIn,
     Bye,
+    ChatShown,
     Event,
     ExitCode,
     Heard,
@@ -55,8 +59,29 @@ def test_a_whole_turn_folds_into_the_view_a_screen_shows() -> None:
     assert view == SessionView(
         state=SessionState.IDLE,
         reply="Once upon a time.",
-        last_turn=snapshot,
+        recent_turns=(snapshot,),
+        turns_timed=1,
     )
+    assert view.last_turn == snapshot
+
+
+def test_the_view_keeps_the_recent_turns_and_counts_them_all() -> None:
+    snapshots = [LatencySnapshot(first_audio_ms=float(n)) for n in range(RECENT_TURNS + 5)]
+    view = _fold(*(TurnEnded(snapshot) for snapshot in snapshots))
+    assert view.recent_turns == tuple(snapshots[-RECENT_TURNS:])
+    assert view.turns_timed == RECENT_TURNS + 5
+    assert SessionView().last_turn is None
+
+
+def test_the_view_says_how_much_of_the_chat_the_model_is_sent() -> None:
+    record = Conversation("be brief")
+    for line in ("one", "two", "three"):
+        record.add_user_line(line)
+        record.add_reply("ok.", interrupted=False)
+    record.set_hidden(record.turns[0].id, hidden=True)
+    sent = frozenset(turn.id for turn in HistoryView(10).sent(record))
+    view = _fold(ChatShown(record.id, tuple(record.turns), sent))
+    assert (view.sent_turns, view.chat_turns) == (2, 3)
 
 
 def test_the_view_follows_the_state_through_a_turn() -> None:
@@ -135,6 +160,16 @@ def test_wave_dots_are_mirrored_never_empty_and_grow_with_the_level() -> None:
         loud = wave_dots([0.5, 1.0, 0.2, 0.9], rows)
         for line, mirror in zip(loud, reversed(loud), strict=True):
             assert [_dots(a) for a in line] == [_dots(b) for b in mirror]
+
+
+def test_bar_dots_grow_from_the_bottom_and_never_vanish() -> None:
+    heights = [_dots(bar_dots([level / 10] * 2)) for level in range(11)]
+    assert heights[0] == 2  # silence: one dot per bar, a thin line along the bottom
+    assert heights[-1] == 8  # the whole cell
+    assert heights == sorted(heights)
+    assert bar_dots([-1.0, 5.0]) == bar_dots([0.0, 1.0])  # out of range is clamped
+    assert len(bar_dots([0.5] * 5)) == 3  # two bars to a character, the odd one on its own
+    assert bar_dots([]) == ""
 
 
 def test_wave_dots_clamps_levels_and_copes_with_odd_and_empty_input() -> None:

@@ -7,7 +7,7 @@ Find your symptom, check the log line it names, and apply the fix.
 
 ## First steps
 
-1. **Turn on the debug log.** Run `./packages/voice/dev.sh --debug`, or `fish-voice --debug`. Use `--trace` to also see mic levels every 20 frames, raw websocket events and HTTP lines. Logs go to stderr, and the conversation goes to stdout.
+1. **Turn on the debug log.** Run `./packages/voice/dev.sh --debug`, or `fish-voice --debug`. Use `--trace` to also see mic levels every 20 frames, raw websocket events and HTTP lines. Logs go to stderr, and the conversation goes to stdout. In `--tui` the log is not on the chat screen: press F12 for Diagnostics and open its Log tab, which keeps the last 1000 lines. The timings of the recent turns are on its Timings tab.
 2. **Check Fish on its own.** `fish-voice --smoke` synthesizes one line into a WAV file. If that fails, the problem is the key, the voice or the network, not your audio setup.
 3. **Check what was loaded.** The first line printed shows which env file was read (`env: /path/.env`). The `fish-voice ready | ...` line shows the TTS model, voice, ASR language, latency mode, playback and LLM in use.
 

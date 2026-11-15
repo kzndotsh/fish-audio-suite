@@ -1,8 +1,12 @@
 """The full-screen app, driven headless: events in, widgets and exit codes out."""
 
+# The user's lines start with a single angle quote mark, which is the design, not a typo.
+# ruff: noqa: RUF001
+
 from __future__ import annotations
 
 import asyncio
+import itertools
 import threading
 import time
 from collections.abc import Awaitable, Callable
@@ -14,12 +18,17 @@ from textual.app import App, ComposeResult
 from textual.color import Color
 from textual.geometry import Region
 from textual.pilot import Pilot
-from textual.widgets import Input, Log, Static
+from textual.screen import Screen
+from textual.widget import Widget
+from textual.widgets import Log, Static, TabbedContent
 
 from fish_audio_suite_voice.cli import history_pane
 from fish_audio_suite_voice.cli import tui as tui_module
+from fish_audio_suite_voice.cli.chat_screens import KeysScreen
+from fish_audio_suite_voice.cli.diagnostics import DiagnosticsScreen, Timings
 from fish_audio_suite_voice.cli.history_pane import Conversation
-from fish_audio_suite_voice.cli.tui import Timings, VoiceApp, Waveform
+from fish_audio_suite_voice.cli.tui import Composer, VoiceApp, Waveform
+from fish_audio_suite_voice.session.commands import NewChat
 from fish_audio_suite_voice.session.events import (
     BargedIn,
     Bye,
@@ -61,13 +70,22 @@ class _SpyInput(LiveInput):
 
 
 class _Harness:
-    def __init__(self, runner: Callable[[_Harness], Awaitable[int]] | None = None) -> None:
+    def __init__(
+        self,
+        runner: Callable[[_Harness], Awaitable[int]] | None = None,
+        shape: Callable[[str], str] | None = None,
+    ) -> None:
         self.bus = EventBus()
         self.session = DuplexSession()
         self.live = _SpyInput()
         self.runner = runner or _Harness._until_quit
         self.app = VoiceApp(
-            self._run, live=self.live, session=self.session, bus=self.bus, info="model / voice"
+            self._run,
+            live=self.live,
+            session=self.session,
+            bus=self.bus,
+            info="model / voice",
+            shape=shape,
         )
 
     async def _run(self) -> int:
@@ -79,20 +97,32 @@ class _Harness:
         self.bus.emit(Bye(ExitCode.OK))
         return 0
 
+    @property
+    def main(self) -> Screen[object]:
+        return self.app.screen_stack[0]
+
     def messages(self) -> list[str]:
-        conversation = self.app.query_one("#conversation")
+        conversation = self.main.query_one("#conversation")
         return [str(child.content) for child in conversation.children if isinstance(child, Static)]
 
     def text(self, selector: str) -> str:
-        return str(self.app.query_one(selector, Static).content)
+        return str(self.main.query_one(selector, Static).content)
 
-    def log_lines(self) -> list[str]:
-        return list(self.app.query_one("#log", Log).lines)
+    def state_line(self) -> str:
+        parts = [self.text("#state"), self.text("#hint")]
+        return "  ".join(part for part in parts if part)
+
+    def footer_actions(self) -> set[str]:
+        """The actions the footer shows a key for now."""
+        return {active.binding.action for active in self.app.screen.active_bindings.values()}
 
 
 def _dots(char: str) -> int:
     """How many dots a Braille character raises."""
     return (ord(char) - 0x2800).bit_count()
+
+
+_BASELINE = 2  # a quiet character of the meter: one dot along the bottom for each of its bars
 
 
 def _mic_rms(height: float) -> float:
@@ -105,21 +135,16 @@ def _mic_rms(height: float) -> float:
     return 32768.0 * 10 ** ((-57.0 + 24.0 * height) / 20)
 
 
-def _timings_text(harness: _Harness) -> str:
-    panel = harness.app.query_one(Timings)
-    return "\n".join(strip.text for strip in panel.render_lines(Region(0, 0, panel.size.width, 3)))
-
-
 def _drive(harness: _Harness, scenario: Callable[[Pilot[int]], Awaitable[None]]) -> int | None:
     async def main() -> None:
-        async with harness.app.run_test() as pilot:
+        async with harness.app.run_test(size=(100, 30)) as pilot:
             await scenario(pilot)
 
     asyncio.run(asyncio.wait_for(main(), 20))
     return harness.app.return_value
 
 
-def test_a_turn_is_shown_as_it_happens() -> None:
+def test_a_turn_is_shown_as_it_happens_without_its_cues() -> None:
     harness = _Harness()
 
     async def scenario(pilot: Pilot[int]) -> None:
@@ -127,63 +152,66 @@ def test_a_turn_is_shown_as_it_happens() -> None:
             Listening(),
             Heard("tell me something fun", 120.0),
             ReplyToken("[calm] Once "),
-            ReplyToken("upon a time."),
+            ReplyToken("upon a time. [war"),  # half a cue, still arriving
         ):
             harness.bus.emit(event)
         await pilot.pause(0.1)
-        assert harness.messages() == [
-            "you ▸ tell me something fun",
-            "llm ▸ [calm] Once upon a time.",
-        ]
-        assert harness.text("#status") == "thinking"
-        harness.bus.emit(ReplyEnd("[calm] Once upon a time."))
+        assert harness.messages() == ["› tell me something fun", "Once upon a time."]
+        assert harness.state_line() == "◌ Thinking…"
+        harness.bus.emit(ReplyToken("m, teasing] The end."))
+        harness.bus.emit(ReplyEnd("[calm] Once upon a time. [warm, teasing] The end."))
         harness.bus.emit(Speaking())
         await pilot.pause(0.1)
-        assert harness.text("#status") == "speaking"
+        assert harness.messages()[-1] == "Once upon a time. The end."
+        assert harness.state_line() == "▶ Speaking  talk to interrupt, or press Esc"
         snapshot = LatencySnapshot(asr_ms=120.0, first_audio_ms=900.0)
         harness.bus.emit(TurnEnded(snapshot))
+        harness.bus.emit(Listening())
         await pilot.pause(0.1)
-        assert harness.text("#status") == "idle"
-        assert "0.90s wait" in _timings_text(harness)
-        assert harness.messages().count("llm ▸ [calm] Once upon a time.") == 1
+        assert harness.state_line() == "● Listening  just talk, or type below"
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
     assert harness.app.view.last_turn == LatencySnapshot(asr_ms=120.0, first_audio_ms=900.0)
 
 
-def test_square_brackets_in_a_reply_are_shown_as_they_are_not_read_as_markup() -> None:
+def test_square_brackets_are_never_read_as_markup() -> None:
     harness = _Harness()
 
     async def scenario(pilot: Pilot[int]) -> None:
         harness.bus.emit(Heard("[bold]hi[/bold] $name", 1.0))
-        harness.bus.emit(ReplyEnd("[soft encouragement] a[0] [/] [[x]] done"))
+        harness.bus.emit(ReplyEnd("[soft encouragement] Say hi to $name."))
         await pilot.pause(0.1)
-        assert harness.messages() == [
-            "you ▸ [bold]hi[/bold] $name",
-            "llm ▸ [soft encouragement] a[0] [/] [[x]] done",
-        ]
+        assert harness.messages() == ["› [bold]hi[/bold] $name", "Say hi to $name."]
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
 
 
-def test_the_mic_meter_and_the_log_follow_the_events() -> None:
+def test_a_reply_the_user_talks_over_ends_in_an_ellipsis() -> None:
     harness = _Harness()
 
     async def scenario(pilot: Pilot[int]) -> None:
-        harness.bus.emit(MicLevel(1000.0, 200.0, "listen"))
-        harness.bus.emit(LogLine("DEBUG", "tts", "start voice=abc"))
-        harness.bus.emit(Notice("[llm 429, retrying in 4s]"))
+        harness.bus.emit(Heard("hi", 1.0))
+        harness.bus.emit(ReplyToken("Well, let me think"))
+        harness.bus.emit(Speaking())
         harness.bus.emit(BargedIn())
         await pilot.pause(0.1)
-        wave = harness.app.query_one(Waveform)
-        assert wave.size.height == 4
-        lines = [strip.text for strip in wave.render_lines(Region(0, 0, wave.size.width, 4))]
-        assert max(_dots(ch) for line in lines for ch in line) >= 4  # the loud bar is drawn
-        assert harness.log_lines() == ["D tts    start voice=abc"]
-        assert "[llm 429, retrying in 4s]" in harness.messages()
-        assert "(interrupted)" in harness.messages()
+        assert harness.messages() == ["› hi", "Well, let me think…"]
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+
+
+def test_notices_are_shown_in_the_conversation_and_log_lines_are_not() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        harness.bus.emit(LogLine("DEBUG", "tts", "start voice=abc"))
+        harness.bus.emit(Notice("[llm 429, retrying in 4s]"))
+        await pilot.pause(0.1)
+        assert harness.messages() == ["[llm 429, retrying in 4s]"]
+        assert not harness.main.query(Log)  # the log lives in Diagnostics only
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
@@ -222,36 +250,76 @@ def test_a_typed_line_goes_to_the_session_and_the_box_is_cleared() -> None:
     harness = _Harness()
 
     async def scenario(pilot: Pilot[int]) -> None:
+        line = harness.app.query_one(Composer)
+        assert line.placeholder == "Type a message, or just talk"
         await pilot.press(*"hello", "enter")
         await pilot.pause(0.1)
         assert harness.live.lines == ["hello"]
-        assert harness.app.query_one(Input).value == ""
+        assert line.value == ""
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
 
 
-def test_the_mute_key_toggles_the_mic_and_says_so() -> None:
+def test_up_and_down_bring_back_typed_lines_and_keep_the_draft() -> None:
     harness = _Harness()
 
     async def scenario(pilot: Pilot[int]) -> None:
+        line = harness.app.query_one(Composer)
+        await pilot.press("up")
+        assert line.value == ""  # nothing typed yet: nothing to bring back
+        assert "recall(-1)" not in harness.footer_actions()  # so the footer offers nothing
+        for text in ("first", "second"):
+            await pilot.press(*text, "enter")
+        assert "recall(-1)" in harness.footer_actions()
+        await pilot.press(*"half")
+        await pilot.press("up")
+        assert line.value == "second"  # newest first
+        await pilot.press("up")
+        assert line.value == "first"
+        await pilot.press("up")
+        assert line.value == "first"  # the oldest stays
+        await pilot.press("down")
+        assert line.value == "second"
+        await pilot.press("down")
+        assert line.value == "half"  # past the newest: the draft is back
+        assert line.cursor_position == len("half")
+        await pilot.press("down")
+        assert line.value == "half"
+        await pilot.press("up", "enter")
+        assert harness.live.lines == ["first", "second", "second"]
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+
+
+def test_the_mute_key_turns_the_mic_off_and_the_state_line_says_so() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        harness.bus.emit(Listening())
+        await pilot.pause(0.05)
+        assert "mute" in harness.footer_actions()
         await pilot.press("f2")
         await pilot.pause(0.05)
         assert harness.live.muted
-        assert harness.text("#status") == "idle · muted"
+        assert harness.state_line() == "○ Mic off  F2 turns it back on"
+        assert harness.footer_actions() >= {"unmute"}
+        assert "mute" not in harness.footer_actions()
         await pilot.press("f2")
         await pilot.pause(0.05)
         assert not harness.live.muted
-        assert harness.text("#status") == "idle"
+        assert harness.state_line() == "● Listening  just talk, or type below"
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
 
 
-def test_stop_only_works_while_the_model_is_thinking_or_the_reply_is_playing() -> None:
+def test_stop_is_shown_and_works_only_while_there_is_a_reply_to_stop() -> None:
     harness = _Harness()
 
     async def scenario(pilot: Pilot[int]) -> None:
+        assert "stop" not in harness.footer_actions()
         await pilot.press("escape")
         await pilot.pause(0.05)
         assert harness.live.stops == 0  # idle: nothing to stop
@@ -259,9 +327,79 @@ def test_stop_only_works_while_the_model_is_thinking_or_the_reply_is_playing() -
         harness.bus.emit(Speaking())
         await pilot.pause(0.1)
         assert harness.app.state is SessionState.SPEAKING
+        assert "stop" in harness.footer_actions()
         await pilot.press("escape")
         await pilot.pause(0.05)
         assert harness.live.stops == 1
+        harness.bus.emit(TurnEnded(LatencySnapshot()))
+        await pilot.pause(0.05)
+        assert "stop" not in harness.footer_actions()
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+
+
+def test_tab_moves_only_between_the_composer_and_the_messages() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        composer = harness.app.query_one(Composer)
+        conversation = harness.app.query_one(Conversation)
+        assert composer.has_focus
+        seen: list[Widget | None] = []
+        for _ in range(4):
+            await pilot.press("tab")
+            seen.append(harness.app.focused)
+        assert seen == [conversation, composer, conversation, composer]
+        focusable = [w for w in harness.app.screen.walk_children(Widget) if w.focusable]
+        assert focusable == [conversation, composer]  # nothing read-only takes focus
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+
+
+def test_escape_stops_the_reply_first_then_closes_then_goes_back_to_typing() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        composer = harness.app.query_one(Composer)
+        await pilot.press("tab")
+        harness.bus.emit(Heard("hi", 1.0))
+        harness.bus.emit(Speaking())
+        await pilot.pause(0.1)
+        await pilot.press("escape")  # a reply is playing: it stops, and focus stays
+        assert harness.live.stops == 1
+        assert not composer.has_focus
+        harness.bus.emit(TurnEnded(LatencySnapshot()))
+        await pilot.pause(0.05)
+        await pilot.press("f12")
+        assert isinstance(harness.app.screen, DiagnosticsScreen)
+        await pilot.press("escape")  # a screen is open: it closes
+        assert not isinstance(harness.app.screen, DiagnosticsScreen)
+        assert not composer.has_focus
+        await pilot.press("escape")  # nothing else: back to typing
+        assert composer.has_focus
+        assert harness.live.stops == 1
+        await pilot.press("escape")  # already typing: nothing happens
+        assert composer.has_focus
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+
+
+def test_the_state_line_has_a_glyph_and_a_word_for_every_state() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        seen: list[str] = []
+        for event in (Listening(), Heard("hi", 1.0), Speaking()):
+            harness.bus.emit(event)
+            await pilot.pause(0.05)
+            seen.append(harness.text("#state"))
+        await pilot.press("f2")  # muted while the reply plays: no barge-in, so say Esc
+        await pilot.pause(0.05)
+        assert harness.state_line() == "▶ Speaking  press Esc to stop"
+        assert seen == ["● Listening", "◌ Thinking…", "▶ Speaking"]
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
@@ -305,7 +443,7 @@ def test_a_fatal_end_stays_on_screen_until_the_user_quits_and_keeps_its_code() -
     async def scenario(pilot: Pilot[int]) -> None:
         await pilot.pause(0.3)
         assert harness.app.is_running  # still open so the reason can be read
-        assert harness.text("#status") == "ended (code 2)"
+        assert harness.state_line() == "✕ Session ended  exit code 2 · Ctrl+Q to quit"
         assert "[tts] 401 unauthorized" in harness.messages()
         await pilot.press("ctrl+q")
 
@@ -322,7 +460,7 @@ def test_a_session_that_raises_is_reported_and_leaves_code_1() -> None:
     async def scenario(pilot: Pilot[int]) -> None:
         await pilot.pause(0.3)
         assert any("the session stopped" in m and "boom" in m for m in harness.messages())
-        assert harness.text("#status") == "ended (code 1)"
+        assert harness.state_line().startswith("✕ Session ended  exit code 1")
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 1
@@ -334,17 +472,26 @@ def test_events_sent_before_the_screen_is_up_are_not_lost() -> None:
 
     async def scenario(pilot: Pilot[int]) -> None:
         await pilot.pause(0.2)
-        assert harness.messages() == ["you ▸ early"]
+        assert harness.messages() == ["› early"]
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
 
 
-def test_the_title_shows_what_the_session_uses() -> None:
+def test_the_header_names_the_chat_or_else_the_app() -> None:
+    from fish_audio_suite_voice.session.conversation import Conversation as Record
+    from fish_audio_suite_voice.session.events import ChatShown
+
     harness = _Harness()
 
     async def scenario(pilot: Pilot[int]) -> None:
-        assert harness.app.sub_title == "model / voice"
+        assert harness.text("#title") == "fish-voice"
+        assert harness.text("#keys-hint") == "? keys"
+        record = Record("be brief")
+        record.add_user_line("What should the cat be called?")
+        harness.bus.emit(ChatShown(record.id, tuple(record.turns), frozenset()))
+        await pilot.pause(0.1)
+        assert harness.text("#title") == "What should the cat be called?"
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
@@ -363,35 +510,25 @@ def test_the_app_stops_collecting_events_when_it_closes() -> None:
 
 
 @pytest.mark.parametrize("size", [(80, 24), (60, 20), (120, 40)])
-def test_the_layout_fits_the_screen_and_nothing_overlaps(size: tuple[int, int]) -> None:
+def test_the_layout_stacks_the_parts_full_width_and_nothing_overlaps(
+    size: tuple[int, int],
+) -> None:
     harness = _Harness()
 
     async def main() -> None:
         async with harness.app.run_test(size=size) as pilot:
             await pilot.pause(0.1)
             screen = harness.app.screen.region
-            conversation = harness.app.query_one("#conversation").region
-            side = harness.app.query_one("#side").region
-            line = harness.app.query_one("#line").region
-            footer = harness.app.query_one("Footer").region
-            header = harness.app.query_one("Header").region
-            for name, region in {
-                "conversation": conversation,
-                "side": side,
-                "line": line,
-                "footer": footer,
-                "header": header,
-            }.items():
-                assert region.width > 0, f"{name} has no width"
+            order = ["#header", "#conversation", "#state-line", "#line", "Footer"]
+            regions = [harness.app.query_one(selector).region for selector in order]
+            for name, region in zip(order, regions, strict=True):
+                assert region.width == screen.width, f"{name} is not full width"
                 assert region.height > 0, f"{name} has no height"
                 assert screen.contains_region(region), f"{name} is off the screen"
-            # The input line sits directly above the footer, below the panes, and
-            # the panes do not run into each other.
-            assert line.bottom <= footer.y
-            assert conversation.bottom <= line.y
-            assert side.bottom <= line.y
-            assert header.bottom <= conversation.y
-            assert conversation.right <= side.x
+            for above, below in itertools.pairwise(regions):
+                assert above.bottom <= below.y
+            assert regions[0].height == 1
+            assert regions[2].height == 1
             await pilot.press("ctrl+q")
 
     asyncio.run(asyncio.wait_for(main(), 20))
@@ -421,10 +558,27 @@ def test_the_app_draws_under_every_builtin_theme() -> None:
             harness.app.theme = name
             await pilot.pause(0.02)
             assert harness.app.theme == name
-            assert harness.messages() == ["you ▸ hello", "llm ▸ [calm] hi there"]
+            assert harness.messages() == ["› hello", "hi there"]
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
+
+
+def test_too_small_a_terminal_says_so_and_quit_still_works() -> None:
+    harness = _Harness()
+
+    async def main() -> None:
+        async with harness.app.run_test(size=(40, 12)) as pilot:
+            await pilot.pause(0.1)
+            assert harness.app.query_one("#too-small").region.height > 0
+            for selector in ("#conversation", "#state-line"):
+                widget = harness.app.query_one(selector)
+                assert not widget.display or widget.region.height == 0, selector
+            assert harness.app.query_one("#line").region.height > 0  # typing still works
+            await pilot.press("ctrl+q")
+
+    asyncio.run(asyncio.wait_for(main(), 20))
+    assert harness.app.return_value == 0
 
 
 class _ConversationApp(App[None]):
@@ -445,77 +599,38 @@ def test_the_conversation_widget_adds_its_reply_once_then_updates_it() -> None:
             conversation = app.query_one(Conversation)
             conversation.show_reply("")  # nothing to show yet: no empty line
             conversation.add_user("hi")
+            conversation.show_reply("[calm]")  # only a cue so far: still nothing to show
             conversation.show_reply("[calm] Hel")
             conversation.show_reply("[calm] Hello")
             await pilot.pause(0.05)
-            assert _conversation_lines(conversation) == ["you ▸ hi", "llm ▸ [calm] Hello"]
+            assert _conversation_lines(conversation) == ["› hi", "Hello"]
             conversation.add_user("again")
             conversation.show_reply("Sure")
             await pilot.pause(0.05)
-            assert _conversation_lines(conversation) == [
-                "you ▸ hi",
-                "llm ▸ [calm] Hello",
-                "you ▸ again",
-                "llm ▸ Sure",
-            ]
+            assert _conversation_lines(conversation) == ["› hi", "Hello", "› again", "Sure"]
 
     asyncio.run(asyncio.wait_for(main(), 20))
 
 
-def test_the_conversation_widget_keeps_notes_in_order_and_titles_itself() -> None:
+def test_the_conversation_widget_keeps_notes_in_order() -> None:
     async def main() -> None:
         app = _ConversationApp()
         async with app.run_test() as pilot:
             conversation = app.query_one(Conversation)
             conversation.add_user("a")
-            conversation.add_note("(interrupted)")
             conversation.add_note("[llm 429, retrying in 4s]")
+            conversation.add_note("[a second note]")
             await pilot.pause(0.05)
             assert _conversation_lines(conversation) == [
-                "you ▸ a",
-                "(interrupted)",
+                "› a",
                 "[llm 429, retrying in 4s]",
+                "[a second note]",
             ]
-            assert conversation.border_title == "conversation"
 
     asyncio.run(asyncio.wait_for(main(), 20))
 
 
-def test_the_waveform_scrolls_newest_right_and_decays_in_dots() -> None:
-    class Host(App[None]):
-        def compose(self) -> ComposeResult:
-            yield Waveform()
-
-    async def main() -> None:
-        host = Host()
-        async with host.run_test(size=(40, 10)) as pilot:
-            wave = host.query_one(Waveform)
-            await pilot.pause()
-            width = wave.size.width
-            assert width > 0
-            for level in (
-                0.0,
-                1.0,
-                0.0,
-            ):  # quiet, loud, then silence that falls instead of snapping
-                wave.push(_mic_rms(level), 1.0)
-            await pilot.pause()
-            lines = [s.text for s in wave.render_lines(Region(0, 0, width, 4))]
-            assert all(len(line) == width for line in lines)
-            assert all(0x2800 <= ord(ch) <= 0x28FF for line in lines for ch in line)  # all dots
-            top = lines[0]
-            assert top[0] == "\u2800"  # nothing drawn that high before any speech
-            assert _dots(top[-2]) > 0  # the newest characters hold the loud bar and its fall
-            assert _dots(top[-2]) > _dots(top[-4])  # (the last one is kept for the cursor)
-            # Mirrored: each line has as many dots as the one at the same distance below.
-            for row in range(2):
-                for above, below in zip(lines[row], lines[3 - row], strict=True):
-                    assert _dots(above) == _dots(below)
-
-    asyncio.run(main())
-
-
-def test_a_pulsing_you_line_appears_when_speech_starts_and_becomes_the_transcript() -> None:
+def test_a_pulsing_line_appears_when_speech_starts_and_becomes_the_transcript() -> None:
     harness = _Harness()
 
     async def scenario(pilot: Pilot[int]) -> None:
@@ -526,7 +641,7 @@ def test_a_pulsing_you_line_appears_when_speech_starts_and_becomes_the_transcrip
         harness.bus.emit(MicLevel(1200.0, 200.0, "listen"))  # more speech: still one line
         await pilot.pause(0.35)  # long enough to animate
         (pending,) = harness.messages()
-        assert pending.startswith("you ▸ ")
+        assert pending.startswith("› ")
         assert any(0x2800 < ord(ch) <= 0x28FF for ch in pending)  # dots, not blocks
         frames = {pending}
         await pilot.pause(0.35)
@@ -534,7 +649,7 @@ def test_a_pulsing_you_line_appears_when_speech_starts_and_becomes_the_transcrip
         assert len(frames) == 2  # it moves
         harness.bus.emit(Heard("hello there", 120.0))
         await pilot.pause(0.1)
-        assert harness.messages() == ["you ▸ hello there"]  # the same line, now with words
+        assert harness.messages() == ["› hello there"]  # the same line, now with words
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
@@ -573,7 +688,7 @@ def test_a_typed_line_and_barge_in_levels_do_not_start_the_pulse() -> None:
         assert harness.messages() == []
         harness.bus.emit(Heard("typed", 0.0))
         await pilot.pause(0.1)
-        assert harness.messages() == ["you ▸ typed"]
+        assert harness.messages() == ["› typed"]
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
@@ -583,54 +698,28 @@ def test_control_characters_in_untrusted_text_never_reach_the_screen() -> None:
     harness = _Harness()
     evil = "a\x1b]0;pwned\x07b\x1b[2Jc\x9bd\x08e\tf"
 
+    def clean(text: str) -> bool:
+        return not any(
+            (ord(ch) < 32 and ch not in "\n\t") or 0x7F <= ord(ch) <= 0x9F for ch in text
+        )
+
     async def scenario(pilot: Pilot[int]) -> None:
         harness.bus.emit(Heard(evil, 1.0))
         harness.bus.emit(ReplyToken(evil))
         harness.bus.emit(Notice(evil))
         harness.bus.emit(LogLine("INFO", "llm", evil))
         await pilot.pause(0.1)
-        shown = [*harness.messages(), *harness.log_lines()]
-        assert len(shown) == 4
-        for text in shown:
-            assert not any(
-                (ord(ch) < 32 and ch not in "\n\t") or 0x7F <= ord(ch) <= 0x9F for ch in text
-            )
-        assert "you ▸ a]0;pwnedb[2Jcde\tf" in shown  # the printable remainder is kept
+        shown = harness.messages()
+        assert len(shown) == 3
+        assert all(clean(text) for text in shown)
+        assert "› a]0;pwnedb[2Jcde\tf" in shown  # the printable remainder is kept
+        await pilot.press("f12")
+        await pilot.pause(0.1)
+        (logged,) = harness.app.screen.query_one(Log).lines
+        assert clean(logged)
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
-
-
-@pytest.mark.parametrize(
-    ("size", "shown", "hidden"),
-    [
-        ((120, 40), ["#log", "#latency-box", "#mic-box", "#status-box"], ["#too-small"]),
-        ((80, 24), ["#log", "#latency-box", "#mic-box", "#status-box"], ["#too-small"]),
-        ((60, 24), ["#mic-box", "#status-box"], ["#log", "#latency-box", "#too-small"]),
-        ((100, 18), ["#log", "#mic-box", "#status-box"], ["#latency-box", "#too-small"]),
-        ((40, 12), ["#too-small", "#line"], ["#body", "#conversation", "#mic-box"]),
-    ],
-)
-def test_the_layout_gives_up_secondary_panels_as_the_terminal_shrinks(
-    size: tuple[int, int], shown: list[str], hidden: list[str]
-) -> None:
-    harness = _Harness()
-
-    async def main() -> None:
-        async with harness.app.run_test(size=size) as pilot:
-            await pilot.pause(0.1)
-            for selector in shown:
-                assert harness.app.query_one(selector).display, f"{selector} should show"
-                assert harness.app.query_one(selector).region.height > 0
-            for selector in hidden:
-                widget = harness.app.query_one(selector)
-                assert not widget.display or widget.region.height == 0, f"{selector} should hide"
-            width = harness.app.query_one("#conversation").region.width
-            assert width == 0 or width >= 36  # either hidden with its body, or room to read
-            await pilot.press("ctrl+q")  # quit still works at every size
-
-    asyncio.run(asyncio.wait_for(main(), 20))
-    assert harness.app.return_value == 0
 
 
 def test_an_event_that_arrives_as_the_app_closes_is_ignored() -> None:
@@ -665,41 +754,16 @@ def test_the_pulse_holds_still_when_animations_are_turned_off() -> None:
         (first,) = harness.messages()
         await pilot.pause(0.4)
         assert harness.messages() == [first]  # still there, and not moving
-        assert first.startswith("you ▸ ")
+        assert first.startswith("› ")
         harness.bus.emit(Heard("hi", 1.0))
         await pilot.pause(0.1)
-        assert harness.messages() == ["you ▸ hi"]
+        assert harness.messages() == ["› hi"]
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
 
 
-def test_the_waveform_draws_dots_in_the_foreground_only_with_no_cell_background() -> None:
-    class Host(App[None]):
-        def compose(self) -> ComposeResult:
-            yield Waveform()
-
-    async def main() -> None:
-        host = Host()
-        async with host.run_test(size=(40, 10)) as pilot:
-            wave = host.query_one(Waveform)
-            for level in (0.0, 0.8, 0.05, 0.9):
-                wave.push(_mic_rms(level), 1.0)
-            await pilot.pause()
-            screen = Color.parse(host.get_css_variables()["background"]).rgb
-            strips = wave.render_lines(Region(0, 0, wave.size.width, 4))
-            backgrounds = {
-                tuple(segment.style.bgcolor.get_truecolor())
-                for strip in strips
-                for segment in strip
-                if segment.style is not None and segment.style.bgcolor is not None
-            }
-            assert backgrounds <= {screen}  # dots sit on the screen, nothing is filled behind them
-
-    asyncio.run(main())
-
-
-def test_the_input_line_has_the_same_rounded_border_as_the_panels() -> None:
+def test_the_composer_has_a_rounded_border_in_the_accent_colour_only_when_focused() -> None:
     harness = _Harness()
 
     async def scenario(pilot: Pilot[int]) -> None:
@@ -709,36 +773,21 @@ def test_the_input_line_has_the_same_rounded_border_as_the_panels() -> None:
         assert top.startswith("╭")
         assert top.endswith("╮")  # no half-block edges of the default "tall" border
         assert line.region.height == 3
+        accent = Color.parse(harness.app.get_css_variables()["accent"])
+        assert line.styles.border_top[1] == accent
+        await pilot.press("tab")
+        assert line.styles.border_top[1] != accent
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
 
 
-def test_the_log_shows_scrollbars_only_when_there_is_something_to_scroll() -> None:
-    harness = _Harness()
-
-    async def scenario(pilot: Pilot[int]) -> None:
-        log = harness.app.query_one("#log", Log)
-        harness.bus.emit(LogLine("INFO", "llm", "one short line"))
-        await pilot.pause(0.1)
-        assert not log.show_vertical_scrollbar
-        assert not log.show_horizontal_scrollbar
-        for number in range(200):
-            harness.bus.emit(LogLine("INFO", "llm", f"line {number}"))
-        await pilot.pause(0.2)
-        assert log.show_vertical_scrollbar
-        assert log.scrollbar_size_vertical == 1
-        await pilot.press("ctrl+q")
-
-    assert _drive(harness, scenario) == 0
-
-
-def test_bordered_widgets_share_the_screens_background_so_none_shows_past_its_border() -> None:
+def test_the_composer_and_footer_share_the_screens_background() -> None:
     harness = _Harness()
 
     async def scenario(pilot: Pilot[int]) -> None:
         screen = Color.parse(harness.app.get_css_variables()["background"]).rgb
-        for selector in ("#log", "#line", "Footer"):
+        for selector in ("#line", "Footer"):
             assert harness.app.query_one(selector).styles.background.rgb == screen, selector
         assert harness.app.query_one(Waveform).styles.background.a == 0  # draws on the screen
         await pilot.press("ctrl+q")
@@ -746,16 +795,152 @@ def test_bordered_widgets_share_the_screens_background_so_none_shows_past_its_bo
     assert _drive(harness, scenario) == 0
 
 
-def test_focus_does_not_tint_past_the_border_of_the_log_conversation_or_input() -> None:
+def test_focus_does_not_tint_past_the_border_of_the_conversation_or_composer() -> None:
     harness = _Harness()
 
     async def scenario(pilot: Pilot[int]) -> None:
-        for selector in ("#log", "#conversation", "#line"):
+        for selector in ("#conversation", "#line"):
             widget = harness.app.query_one(selector)
             widget.focus()
             await pilot.pause(0.05)
             assert widget.has_focus, selector
             assert widget.styles.background_tint.a == 0, f"{selector} is tinted when focused"
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+
+
+def test_the_command_palette_lists_the_apps_own_commands_first() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        def titles() -> list[str]:
+            return [command.title for command in harness.app.get_system_commands(harness.main)]
+
+        assert titles()[:5] == ["New chat", "Chats…", "Mic off", "Diagnostics", "Keys"]
+        assert len(titles()) > 5  # Textual's own come after
+        harness.bus.emit(Heard("hi", 1.0))
+        harness.bus.emit(Speaking())
+        await pilot.press("f2")
+        await pilot.pause(0.1)
+        assert titles()[:4] == ["New chat", "Chats…", "Mic on", "Stop speaking"]
+        new_chat = next(c for c in harness.app.get_system_commands(harness.main))
+        new_chat.callback()
+        assert harness.live.take_commands() == [NewChat()]
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+
+
+def test_the_keys_list_opens_from_the_messages_and_closes_with_escape() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        await pilot.press("question_mark")  # typing: it is just a character
+        assert harness.app.query_one(Composer).value == "?"
+        await pilot.press("tab", "question_mark")
+        assert isinstance(harness.app.screen, KeysScreen)
+        text = str(harness.app.screen.query_one(Static).content)
+        assert "Hide from the AI, or show again" in text
+        await pilot.press("escape")
+        assert not isinstance(harness.app.screen, KeysScreen)
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+
+
+def _diagnostics(harness: _Harness) -> DiagnosticsScreen:
+    screen = harness.app.screen
+    assert isinstance(screen, DiagnosticsScreen)
+    return screen
+
+
+def test_diagnostics_shows_the_log_including_lines_that_arrived_while_it_was_closed() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        harness.bus.emit(LogLine("DEBUG", "tts", "start voice=abc"))
+        await pilot.pause(0.1)
+        await pilot.press("f12")
+        await pilot.pause(0.1)
+        screen = _diagnostics(harness)
+        screen.query_one(TabbedContent).active = "log-tab"
+        log = screen.query_one(Log)
+        assert list(log.lines) == ["D tts    start voice=abc"]
+        harness.bus.emit(LogLine("INFO", "llm", "while open"))
+        await pilot.pause(0.1)
+        assert list(log.lines)[-1] == "I llm    while open"
+        await pilot.press("f12")  # F12 goes back as well
+        assert not isinstance(harness.app.screen, DiagnosticsScreen)
+        harness.bus.emit(LogLine("INFO", "llm", "while closed again"))
+        await pilot.pause(0.1)
+        await pilot.press("f12")
+        await pilot.pause(0.1)
+        lines = list(_diagnostics(harness).query_one(Log).lines)
+        assert lines == [
+            "D tts    start voice=abc",
+            "I llm    while open",
+            "I llm    while closed again",
+        ]
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+
+
+def test_the_log_keeps_only_the_newest_lines_while_diagnostics_is_closed() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        for number in range(1200):
+            harness.bus.emit(LogLine("INFO", "llm", f"line {number}"))
+            if number % 200 == 0:
+                await pilot.pause(0.01)  # the queue keeps 256 between wakes
+        await pilot.pause(0.2)
+        await pilot.press("f12")
+        await pilot.pause(0.1)
+        lines = list(_diagnostics(harness).query_one(Log).lines)
+        assert len(lines) == 1000
+        assert lines[-1].endswith("line 1199")
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+
+
+def test_diagnostics_shows_timings_the_reply_as_fish_read_it_and_the_session() -> None:
+    from fish_audio_suite_voice.session.conversation import Conversation as Record
+    from fish_audio_suite_voice.session.events import ChatShown
+
+    harness = _Harness(shape=lambda text: text.replace("happy", "[happy]"))
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        record = Record("be brief")
+        for line in ("one", "two"):
+            record.add_user_line(line)
+            record.add_reply("ok.", interrupted=False)
+        harness.bus.emit(ChatShown(record.id, tuple(record.turns), frozenset({record.turns[1].id})))
+        harness.bus.emit(Heard("hi", 1.0))
+        harness.bus.emit(ReplyEnd("happy Hello there."))
+        for wait in (900.0, 1500.0):
+            harness.bus.emit(
+                TurnEnded(
+                    LatencySnapshot(asr_ms=200.0, llm_first_token_ms=400.0, first_audio_ms=wait)
+                )
+            )
+        await pilot.pause(0.1)
+        await pilot.press("f12")
+        await pilot.pause(0.1)
+        screen = _diagnostics(harness)
+        assert "1.50s wait" in "\n".join(
+            strip.text for strip in screen.query_one(Timings).render_lines(Region(0, 0, 60, 3))
+        )
+        recent = str(screen.query_one("#recent", Static).content).splitlines()
+        assert recent[0].split()[:2] == ["turn", "heard"]
+        assert recent[1].split()[0] == "2"  # newest first
+        assert recent[2].split()[0] == "1"
+        assert str(screen.query_one("#sent", Static).content) == "[happy] Hello there."
+        session = str(screen.query_one("#session", Static).content)
+        assert "model / voice" in session
+        assert "the model sees 1 of 2 turns" in session
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
@@ -834,12 +1019,12 @@ class _WaveHost(App[None]):
         yield Waveform()
 
 
-def _wave_lines(wave: Waveform) -> list[str]:
-    return [strip.text for strip in wave.render_lines(Region(0, 0, wave.size.width, 4))]
+def _wave_line(wave: Waveform) -> str:
+    return wave.render_lines(Region(0, 0, wave.size.width, 1))[0].text
 
 
-def _wave_colours(wave: Waveform, row: int) -> list[tuple[int, int, int] | None]:
-    strip = wave.render_lines(Region(0, 0, wave.size.width, 4))[row]
+def _wave_colours(wave: Waveform) -> list[tuple[int, int, int] | None]:
+    strip = wave.render_lines(Region(0, 0, wave.size.width, 1))[0]
     colours: list[tuple[int, int, int] | None] = []
     for segment in strip:
         colour = segment.style.color if segment.style is not None else None
@@ -848,52 +1033,74 @@ def _wave_colours(wave: Waveform, row: int) -> list[tuple[int, int, int] | None]
     return colours
 
 
-def test_the_waveform_moves_to_a_mood_for_each_state_and_goes_still_when_muted_or_over() -> None:
+def test_the_meter_scrolls_newest_right_and_decays_in_dots() -> None:
+    async def main() -> None:
+        host = _WaveHost()
+        async with host.run_test(size=(40, 10)) as pilot:
+            wave = host.query_one(Waveform)
+            await pilot.pause()
+            width = wave.size.width
+            assert width > 0
+            assert wave.size.height == 1
+            for level in (
+                0.0,
+                1.0,
+                0.0,
+            ):  # quiet, loud, then silence that falls instead of snapping
+                wave.push(_mic_rms(level), 1.0)
+            await pilot.pause()
+            line = _wave_line(wave)
+            assert len(line) == width
+            assert all(0x2800 <= ord(ch) <= 0x28FF for ch in line)  # all dots
+            assert _dots(line[0]) == _BASELINE  # nothing but the thin line before any speech
+            assert (
+                _dots(line[-2]) > _BASELINE
+            )  # the newest characters hold the loud bar and its fall
+            assert _dots(line[-2]) > _dots(line[-4])  # (the last one is kept for the cursor)
+
+    asyncio.run(main())
+
+
+def test_the_meter_draws_dots_in_the_foreground_only_with_no_cell_background() -> None:
+    async def main() -> None:
+        host = _WaveHost()
+        async with host.run_test(size=(40, 10)) as pilot:
+            wave = host.query_one(Waveform)
+            for level in (0.0, 0.8, 0.05, 0.9):
+                wave.push(_mic_rms(level), 1.0)
+            await pilot.pause()
+            screen = Color.parse(host.get_css_variables()["background"]).rgb
+            strips = wave.render_lines(Region(0, 0, wave.size.width, 1))
+            backgrounds = {
+                tuple(segment.style.bgcolor.get_truecolor())
+                for strip in strips
+                for segment in strip
+                if segment.style is not None and segment.style.bgcolor is not None
+            }
+            assert backgrounds <= {screen}  # dots sit on the screen, nothing is filled behind them
+
+    asyncio.run(main())
+
+
+def test_the_meter_shows_only_while_listening_or_speaking() -> None:
     harness = _Harness()
 
     async def scenario(pilot: Pilot[int]) -> None:
         wave = harness.app.query_one(Waveform)
-        assert wave.mood == "still"
-        harness.bus.emit(Listening())
+        moods: list[tuple[str, bool]] = []
+        for event in (Listening(), Heard("hi", 1.0), Speaking(), Listening()):
+            harness.bus.emit(event)
+            await pilot.pause(0.1)
+            moods.append((wave.mood, wave.display))
+        assert moods == [
+            ("listening", True),
+            ("still", False),  # thinking: the word says it, there is no level to show
+            ("speaking", True),
+            ("listening", True),
+        ]
+        await pilot.press("f2")  # muted: nothing is listening, so no meter
         await pilot.pause(0.1)
-        assert wave.mood == "listening"
-        harness.bus.emit(Heard("hi", 1.0))
-        await pilot.pause(0.1)
-        assert wave.mood == "thinking"
-        harness.bus.emit(Speaking())
-        await pilot.pause(0.1)
-        assert wave.mood == "speaking"
-        harness.bus.emit(Listening())
-        await pilot.pause(0.1)
-        await pilot.press("f2")  # muted: it is not listening, so no cursor
-        await pilot.pause(0.1)
-        assert wave.mood == "still"
-        await pilot.press("ctrl+q")
-
-    assert _drive(harness, scenario) == 0
-
-
-def test_while_thinking_a_wave_scrolls_by_itself_and_stops_when_the_state_changes() -> None:
-    harness = _Harness()
-
-    async def scenario(pilot: Pilot[int]) -> None:
-        wave = harness.app.query_one(Waveform)
-        harness.bus.emit(Heard("hi", 1.0))
-        await pilot.pause(0.3)
-        first = _wave_lines(wave)
-        await pilot.pause(0.3)
-        second = _wave_lines(wave)
-        assert first != second  # it moves with no mic input at all
-        assert max(_dots(ch) for line in second for ch in line) >= 4  # and is a real wave
-        harness.bus.emit(Speaking())
-        await pilot.pause(0.2)
-        after = _wave_lines(wave)
-        assert max(_dots(ch) for line in after for ch in line) >= 4  # kept as history, not blanked
-        await pilot.pause(0.3)
-        # The strip does not freeze while the reply's audio is on its way: it keeps scrolling,
-        # with a flat line coming in, but the thinking wave itself is no longer being drawn.
-        assert _wave_lines(wave) != after
-        assert harness.app.query_one(Waveform).mood == "speaking"
+        assert (wave.mood, wave.display) == ("still", False)
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
@@ -908,16 +1115,16 @@ def test_while_listening_a_cursor_blinks_at_the_right_edge() -> None:
         await pilot.pause(0.1)
         seen: set[str] = set()
         for _ in range(8):
-            seen.add(_wave_lines(wave)[1][-1])  # the cursor's character, near the middle
+            seen.add(_wave_line(wave)[-1])  # the cursor's character
             await pilot.pause(0.2)
         assert len(seen) == 2  # on and off
-        assert all(_dots(ch) > 0 for ch in seen)  # even "off" keeps the thin baseline
+        assert all(_dots(ch) >= _BASELINE for ch in seen)  # even "off" keeps the thin line
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
 
 
-def test_with_animations_off_the_cursor_and_the_thinking_wave_hold_still() -> None:
+def test_with_animations_off_the_cursor_holds_still() -> None:
     harness = _Harness()
     harness.app.animation_level = "none"  # what TEXTUAL_ANIMATIONS=none sets
 
@@ -925,22 +1132,16 @@ def test_with_animations_off_the_cursor_and_the_thinking_wave_hold_still() -> No
         wave = harness.app.query_one(Waveform)
         harness.bus.emit(Listening())
         await pilot.pause(0.1)
-        cursor = _wave_lines(wave)
+        cursor = _wave_line(wave)
         await pilot.pause(0.7)
-        assert _wave_lines(wave) == cursor  # no blinking
-        harness.bus.emit(Heard("hi", 1.0))
-        await pilot.pause(0.1)
-        frozen = _wave_lines(wave)
-        assert max(_dots(ch) for line in frozen for ch in line) >= 4  # a picture, not a blank
-        await pilot.pause(0.4)
-        assert _wave_lines(wave) == frozen  # and it does not move
+        assert _wave_line(wave) == cursor  # no blinking
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
 
 
-def _strip_after(feed: Callable[[Waveform], None]) -> list[str]:
-    """Draw a fresh strip after ``feed`` has pushed bars to it, and return its lines."""
+def _strip_after(feed: Callable[[Waveform], None]) -> str:
+    """Draw a fresh strip after ``feed`` has pushed bars to it, and return its line."""
     lines: list[str] = []
 
     async def main() -> None:
@@ -950,10 +1151,10 @@ def _strip_after(feed: Callable[[Waveform], None]) -> list[str]:
             await pilot.pause()
             feed(wave)
             await pilot.pause()
-            lines.extend(_wave_lines(wave))
+            lines.append(_wave_line(wave))
 
     asyncio.run(main())
-    return lines
+    return lines[0]
 
 
 def test_the_mic_and_the_speaker_draw_alike_once_each_has_learnt_its_source() -> None:
@@ -973,8 +1174,8 @@ def test_the_mic_and_the_speaker_draw_alike_once_each_has_learnt_its_source() ->
     def speaker(wave: Waveform, rms: float, now: float) -> None:
         wave.push_speaker(rms, now=now)
 
-    def ink(lines: list[str]) -> int:
-        return sum(_dots(ch) for line in lines for ch in line[-12:])  # the newest twelve cells
+    def ink(line: str) -> int:
+        return sum(_dots(ch) for ch in line[-12:])  # the newest twelve cells
 
     quiet_mic = _strip_after(lambda wave: feed(wave, mic, -32.0))
     hot_speaker = _strip_after(lambda wave: feed(wave, speaker, -8.0))  # 24 dB louder
@@ -986,15 +1187,15 @@ def test_a_quiet_room_is_not_stretched_into_a_waveform_by_the_mic_scale() -> Non
         for step in range(60):  # three and a half seconds of room noise at -50 dB
             wave.push(32768.0 * 10 ** (-50.0 / 20), 1500.0, now=step * 0.06)
 
-    lines = _strip_after(room)
+    line = _strip_after(room)
     # After the first second, while the scale measures the room, there is only the thin line.
-    assert max(_dots(ch) for line in lines for ch in line[-20:]) <= 2
+    assert max(_dots(ch) for ch in line[-20:]) <= _BASELINE + 1
 
     def speech(wave: Waveform) -> None:
         room(wave)
         wave.push(32768.0 * 10 ** (-30.0 / 20), 1500.0, now=4.0)  # then someone speaks
 
-    assert max(_dots(ch) for line in _strip_after(speech) for ch in line) >= 4
+    assert max(_dots(ch) for ch in _strip_after(speech)) > _BASELINE + 2
 
 
 def test_brightness_follows_loudness_and_colour_follows_what_the_bar_is() -> None:
@@ -1006,7 +1207,7 @@ def test_brightness_follows_loudness_and_colour_follows_what_the_bar_is() -> Non
             for level in (0.2, 0.2, 0.55, 0.55, 0.95, 0.95):  # soft, medium, loud, all heard
                 wave.push(_mic_rms(level), 1.0, now=0.0)
             await pilot.pause()
-            colours = _wave_colours(wave, 1)
+            colours = _wave_colours(wave)
             soft, medium, loud = colours[-4], colours[-3], colours[-2]
             assert None not in (soft, medium, loud)
             assert sum(soft) < sum(medium) < sum(loud)  # type: ignore[arg-type]  # brighter as it gets louder
@@ -1014,35 +1215,27 @@ def test_brightness_follows_loudness_and_colour_follows_what_the_bar_is() -> Non
     asyncio.run(main())
 
 
-def test_while_the_model_speaks_the_strip_shows_the_speaker_and_hands_back_to_the_mic() -> None:
+def test_while_the_model_speaks_the_meter_shows_the_speaker_and_hands_back_to_the_mic() -> None:
     harness = _Harness()
 
     async def scenario(pilot: Pilot[int]) -> None:
         wave = harness.app.query_one(Waveform)
-        box = harness.app.query_one("#mic-box")
-        assert box.border_title == "mic"
         harness.bus.emit(Listening())
         harness.bus.emit(Heard("hi", 1.0))
         harness.bus.emit(Speaking())
         await pilot.pause(0.1)
-        assert box.border_title == "speaker"
-        before = _wave_lines(wave)
+        before = wave._bars.copy()
         # The mic hearing the speakers (the barge-in watch) is not drawn while the reply plays.
         harness.bus.emit(MicLevel(30000.0, 200.0, "barge"))
-        await pilot.pause(0.1)
-        assert _wave_lines(wave) == before
+        await pilot.pause(0.05)
+        assert not any(kind == "heard" for _, kind in list(wave._bars)[len(before) :])
         for _ in range(6):
             harness.bus.emit(OutputLevel(8000.0))
         await pilot.pause(0.1)
-        after = _wave_lines(wave)
-        assert after != before  # the reply's level is drawn
-        assert max(_dots(ch) for line in after for ch in line) >= 4
+        assert max(_dots(ch) for ch in _wave_line(wave)) >= 6  # the reply's level is drawn
         harness.bus.emit(BargedIn())  # the user talks over it: back to the mic
         await pilot.pause(0.1)
-        assert box.border_title == "mic"
-        harness.bus.emit(OutputLevel(8000.0))  # a late slice of the old reply
-        harness.bus.emit(MicLevel(1000.0, 200.0, "listen"))
-        await pilot.pause(0.1)
+        assert wave.mood == "listening"
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
@@ -1059,7 +1252,7 @@ def test_speaker_bars_are_the_accent_colour_and_the_mics_are_not() -> None:
             for _ in range(2):
                 wave.push(_mic_rms(0.9), 1.0, now=0.0)  # a loud mic bar, heard
             await pilot.pause()
-            colours = _wave_colours(wave, 1)
+            colours = _wave_colours(wave)
             speaker, mic = colours[-3], colours[-2]
             assert speaker is not None
             assert mic is not None
@@ -1068,9 +1261,8 @@ def test_speaker_bars_are_the_accent_colour_and_the_mics_are_not() -> None:
     asyncio.run(main())
 
 
-def _column_dots(wave: Waveform, cell: int) -> int:
-    lines = _wave_lines(wave)
-    return sum(_dots(line[cell]) for line in lines)
+def _cell_dots(wave: Waveform, cell: int) -> int:
+    return _dots(_wave_line(wave)[cell])
 
 
 def test_speaker_bars_follow_the_voices_own_ups_and_downs() -> None:
@@ -1085,9 +1277,9 @@ def test_speaker_bars_follow_the_voices_own_ups_and_downs() -> None:
                 wave.push_speaker(rms, now=clock)
                 clock += 0.25
             await pilot.pause()
-            loud, pause, loud_again, stressed = (_column_dots(wave, i) for i in (-5, -4, -3, -2))
+            loud, pause, loud_again, stressed = (_cell_dots(wave, i) for i in (-5, -4, -3, -2))
             assert pause < loud  # a pause really is lower
-            assert loud_again == pytest.approx(loud, rel=0.2)  # the same loudness, the same height
+            assert loud_again == loud  # the same loudness, the same height
             assert stressed < loud  # and a softer syllable sits between
 
     asyncio.run(main())
@@ -1104,13 +1296,13 @@ def test_a_reply_after_a_pause_is_scaled_afresh_not_against_the_last_reply() -> 
             wave.push_speaker(1500.0, now=5.0)  # much later: the next reply, much quieter
             wave.push_speaker(1500.0, now=5.06)
             await pilot.pause()
-            same_reply = _column_dots(wave, -2)
+            same_reply = _cell_dots(wave, -2)
             wave.push_speaker(30000.0, now=6.0)
             wave.push_speaker(30000.0, now=6.06)
             wave.push_speaker(1500.0, now=6.1)  # soon after a loud one: the same reply
             wave.push_speaker(1500.0, now=6.16)
             await pilot.pause()
-            assert _column_dots(wave, -2) < same_reply  # judged against the loud moment just before
+            assert _cell_dots(wave, -2) < same_reply  # judged against the loud moment just before
 
     asyncio.run(main())
 
@@ -1128,8 +1320,8 @@ def test_one_loud_transient_does_not_shrink_the_speech_that_follows_it() -> None
     bumped = _strip_after(lambda wave: speech(wave, transient=True))
     clean = _strip_after(lambda wave: speech(wave, transient=False))
 
-    def height(lines: list[str]) -> int:
-        return sum(_dots(ch) for line in lines for ch in line[-4:])  # the speech's own cells
+    def height(line: str) -> int:
+        return sum(_dots(ch) for ch in line[-4:])  # the speech's own cells
 
     assert height(bumped) >= 0.85 * height(clean)  # a bump costs it almost nothing
 
@@ -1144,8 +1336,8 @@ def test_the_bars_do_not_shift_sideways_when_the_mood_changes() -> None:
                 wave.push(_mic_rms(0.8 if step % 6 < 3 else 0.1), 1.0, now=step * 0.09)
             await pilot.pause()
 
-            def without_cursor() -> list[str]:
-                return [line[:-1] for line in _wave_lines(wave)]  # the last character is the cursor
+            def without_cursor() -> str:
+                return _wave_line(wave)[:-1]  # the last character is the cursor
 
             still = without_cursor()
             wave.set_mood("listening")
@@ -1154,25 +1346,6 @@ def test_the_bars_do_not_shift_sideways_when_the_mood_changes() -> None:
             wave.set_mood("still")
             await pilot.pause()
             assert without_cursor() == still
-
-    asyncio.run(main())
-
-
-def test_the_strip_is_not_blanked_when_thinking_ends_and_the_wave_goes_quiet() -> None:
-    async def main() -> None:
-        host = _WaveHost()
-        async with host.run_test(size=(30, 10)) as pilot:
-            wave = host.query_one(Waveform)
-            await pilot.pause()
-            wave.set_mood("thinking")
-            await pilot.pause(1.0)
-            amber = _wave_colours(wave, 1)
-            wave.set_mood("still")
-            await pilot.pause()
-            lines = _wave_lines(wave)
-            assert max(_dots(ch) for line in lines for ch in line) >= 4  # still there
-            grey = _wave_colours(wave, 1)
-            assert grey[-3] != amber[-3]  # but no longer amber: the thinking is over
 
     asyncio.run(main())
 
@@ -1187,13 +1360,13 @@ def test_the_scale_keeps_what_it_learnt_about_the_room_across_turns() -> None:
             speech = 32768.0 * 10 ** (-25.0 / 20)
             for step in range(130):  # twelve seconds of someone talking in it
                 wave.push(speech if step % 8 < 4 else room, 1e9, now=step * 0.09)
-            for mood in ("thinking", "still", "listening"):  # a turn: thinking, speaking, listening
+            for mood in ("speaking", "still", "listening"):  # a turn: speaking, then listening
                 wave.set_mood(mood)
                 await pilot.pause(0.05)
             wave.push(room, 1e9, now=40.0)  # the first blocks of the next turn, much later
             wave.push(room, 1e9, now=40.09)
             await pilot.pause()
-            assert _column_dots(wave, -2) <= 4  # a thin line: it still knows the room
+            assert _cell_dots(wave, -2) == _BASELINE  # a thin line: it still knows the room
 
     asyncio.run(main())
 
@@ -1216,25 +1389,16 @@ class _FaintBars(App[None]):
     """One strip per kind of bar, each drawn at its faintest: a level of zero."""
 
     def compose(self) -> ComposeResult:
-        for kind in ("quiet", "heard", "speaker", "thinking", "cursor"):
+        for kind in ("quiet", "heard", "speaker", "cursor"):
             yield Waveform(id=kind)
 
     def on_mount(self) -> None:
-        self.animation_level = "none"  # the thinking wave and the cursor hold still
+        self.animation_level = "none"  # the cursor holds still
         for _ in range(8):
             self.query_one("#quiet", Waveform).push(0.0, 1.0)
             self.query_one("#heard", Waveform).push(1.0, 1.0)  # at the speech level: heard
             self.query_one("#speaker", Waveform).push_speaker(0.0)
-        self.query_one("#thinking", Waveform).set_mood("thinking")
         self.query_one("#cursor", Waveform).set_mood("listening")
-
-
-def _drawn_colours(wave: Waveform, cells: slice) -> set[tuple[int, int, int]]:
-    """The colours ``wave`` draws its dots in across ``cells``, in every row."""
-    colours: set[tuple[int, int, int]] = set()
-    for row in range(4):
-        colours.update(c for c in _wave_colours(wave, row)[cells] if c is not None)
-    return colours
 
 
 def test_every_bar_colour_stays_visible_against_the_background_in_every_builtin_theme() -> None:
@@ -1243,7 +1407,6 @@ def test_every_bar_colour_stays_visible_against_the_background_in_every_builtin_
         "quiet": slice(-4, -1),
         "heard": slice(-4, -1),
         "speaker": slice(-4, -1),
-        "thinking": slice(-30, -1),  # a frozen wave, with soft and loud parts
         "cursor": slice(-1, None),
     }
 
@@ -1258,7 +1421,8 @@ def test_every_bar_colour_stays_visible_against_the_background_in_every_builtin_
                 await pilot.pause(0.02)
                 background = Color.parse(app.get_css_variables()["background"])
                 for kind, where in cells.items():
-                    drawn = _drawn_colours(app.query_one(f"#{kind}", Waveform), where)
+                    wave = app.query_one(f"#{kind}", Waveform)
+                    drawn = {c for c in _wave_colours(wave)[where] if c is not None}
                     assert drawn, f"{kind} draws nothing in {theme}"
                     weakest = min(_contrast(Color(*rgb), background) for rgb in drawn)
                     # Braille dots are small, so they need more than text does. A faint "quiet"
@@ -1289,7 +1453,6 @@ def test_the_strip_scrolls_at_one_speed_through_a_whole_turn() -> None:
         harness.bus.emit(Listening())
         await phase("listening", 1.3, lambda: harness.bus.emit(MicLevel(500.0, 200.0, "listen")))
         harness.bus.emit(Heard("hi", 1.0))
-        await phase("thinking", 1.3)
         harness.bus.emit(Speaking())
         await phase("before audio", 1.3)  # no audio levels yet: the strip must not stop
         await phase("speaking", 1.3, lambda: harness.bus.emit(OutputLevel(8000.0)))
@@ -1315,7 +1478,7 @@ def test_the_words_appear_on_the_you_line_as_they_are_recognised_then_become_the
         harness.bus.emit(Interim("hel"))
         await pilot.pause(0.1)
         (line,) = harness.messages()
-        assert line.startswith("you ▸ ")
+        assert line.startswith("› ")
         assert line.endswith(" hel")
         harness.bus.emit(Interim("hello there"))
         harness.bus.emit(Interim("hello there friend\x1b[2J"))  # untrusted text, like any other
@@ -1325,7 +1488,7 @@ def test_the_words_appear_on_the_you_line_as_they_are_recognised_then_become_the
         assert "\x1b" not in line
         harness.bus.emit(Heard("hello there friend", 120.0))
         await pilot.pause(0.1)
-        assert harness.messages() == ["you ▸ hello there friend"]  # the same line, now final
+        assert harness.messages() == ["› hello there friend"]  # the same line, now final
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0

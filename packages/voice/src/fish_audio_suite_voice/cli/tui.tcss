@@ -1,20 +1,27 @@
-/* Stylesheet for the fish-voice terminal app. Layout: header, a body of the conversation
-   beside a column of panels, the input line, then the footer. */
-
-$panel-border: round $secondary;
+/* Stylesheet for the fish-voice terminal app. Layout, top to bottom: the title line, the
+   conversation, the state line, the composer, then the footer. */
 
 Screen {
     layout: vertical;
 }
 
-#body {
-    height: 1fr;
+#header {
+    height: 1;
+    padding: 0 1;
+
+    #title {
+        width: 1fr;
+        text-style: bold;
+    }
+
+    #keys-hint {
+        width: auto;
+        color: $text-muted;
+    }
 }
 
 #conversation {
-    width: 2fr;
-    border: round $primary;
-    border-title-color: $text-primary;
+    height: 1fr;
     padding: 0 1;
 
     .message {
@@ -25,67 +32,9 @@ Screen {
         color: $text-muted;
         text-style: italic;
     }
-}
 
-#side {
-    width: 1fr;
-    min-width: 30;
-
-    #status-box,
-    #mic-box,
-    #latency-box {
-        border: $panel-border;
-        border-title-color: $text-secondary;
-        padding: 0 1;
-    }
-
-    #log {
-        height: 1fr;
-        background: $background;
-        border: round $panel;
-        border-title-color: $text-muted;
-    }
-}
-
-#status {
-    &.state-listening {
-        color: $text-success;
-    }
-
-    &.state-thinking {
-        color: $text-warning;
-    }
-
-    &.state-speaking {
-        color: $text-accent;
-    }
-
-    &.ended {
-        color: $text-error;
-    }
-}
-
-#line {
-    height: auto;
-    background: $background;
-    border: round $secondary;
-
-    &:focus {
-        border: round $primary;
-    }
-}
-
-.message.pending {
-    opacity: 70%;
-}
-
-/* Recorded turns (cli/history_pane.py). A turn the model is not sent is dimmed; the note
-   under it says whether it is hidden or older than the model is sent. */
-#conversation {
-    border-subtitle-color: $text-muted;
-
-    /* Every row keeps the column the selection bar uses, and a live "you" line sits right
-       on its reply, so nothing shifts when the recorded turn takes their place. */
+    /* Every row keeps the column the selection bar uses, and a live "›" line sits right on
+       its reply, so nothing shifts when the recorded turn takes their place. */
     .message {
         padding: 0 1 0 0;
         border-left: blank;
@@ -95,28 +44,99 @@ Screen {
         margin-bottom: 0;
     }
 
+    /* A reply sits under the user's line, indented, and its wrapped lines keep the indent. */
+    .reply,
+    .turn-note,
+    .actions {
+        padding-left: 2;
+    }
+
     .turn.hidden {
         opacity: 50%;
     }
 
-    .turn.older {
-        opacity: 75%;
+    .actions {
+        display: none;
+        margin-top: 1;
     }
 
     &:focus .turn.selected {
         border-left: thick $primary;
         background: $boost;
+
+        .actions {
+            display: block;
+        }
+    }
+}
+
+.message.pending {
+    opacity: 70%;
+}
+
+/* The state line: a glyph and a word in the state's colour, a small level meter while
+   listening or speaking, and a plain hint. */
+#state-line {
+    height: 1;
+    padding: 0 1;
+
+    #state {
+        width: auto;
+
+        &.listening {
+            color: $text-success;
+        }
+
+        &.thinking {
+            color: $text-warning;
+        }
+
+        &.speaking {
+            color: $text-accent;
+        }
+
+        &.muted,
+        &.idle {
+            color: $text-muted;
+        }
+
+        &.ended {
+            color: $text-error;
+        }
+    }
+
+    #meter {
+        width: 10;
+        margin-left: 2;
+    }
+
+    #hint {
+        width: 1fr;
+        margin-left: 2;
+        color: $text-muted;
+    }
+}
+
+#line {
+    height: auto;
+    background: $background;
+    border: round $panel;
+
+    &:focus {
+        border: round $accent;
     }
 }
 
 /* The dialogs (cli/chat_screens.py). */
 EditReplyScreen,
-ChatPicker {
+ChatPicker,
+KeysScreen {
     align: center middle;
 }
 
 #edit-box,
-#picker-box {
+#picker-box,
+#keys-box {
     width: 80%;
     max-width: 100;
     height: auto;
@@ -132,6 +152,10 @@ ChatPicker {
     }
 }
 
+#keys-box {
+    max-width: 64;
+}
+
 #edit-text {
     height: 12;
 }
@@ -142,7 +166,52 @@ ChatPicker {
     border: none;
 }
 
-/* Responsive: the screen carries .narrow, .short or .tiny (see VoiceApp.on_resize). */
+/* Diagnostics (cli/diagnostics.py). */
+#diag-head {
+    height: 1;
+    padding: 0 1;
+
+    #diag-title {
+        width: auto;
+        text-style: bold;
+    }
+
+    #diag-note {
+        width: 1fr;
+        margin-left: 2;
+        color: $text-muted;
+    }
+
+    #diag-back {
+        width: auto;
+        color: $text-muted;
+    }
+}
+
+DiagnosticsScreen {
+    TabbedContent {
+        height: 1fr;
+    }
+
+    TabPane {
+        padding: 1 1 0 1;
+    }
+
+    #latency {
+        margin-bottom: 1;
+    }
+
+    .dim {
+        color: $text-muted;
+    }
+
+    #log {
+        height: 1fr;
+        background: $background;
+    }
+}
+
+/* Too small: the screen carries .tiny (see VoiceApp.on_resize). */
 #too-small {
     display: none;
     height: 1fr;
@@ -151,24 +220,9 @@ ChatPicker {
     color: $text-warning;
 }
 
-Screen.narrow {
-    #side {
-        width: 24;
-        min-width: 24;
-    }
-
-    #latency-box,
-    #log {
-        display: none;
-    }
-}
-
-Screen.short #latency-box {
-    display: none;
-}
-
 Screen.tiny {
-    #body {
+    #conversation,
+    #state-line {
         display: none;
     }
 
@@ -192,7 +246,8 @@ Conversation {
 }
 
 /* A focused widget gets a lighter tint over its whole box by default, which includes the
-   border cells and reads as a halo past the border. The border colour marks focus instead. */
+   border cells and reads as a halo past the border. The border colour, or the selection
+   bar, marks focus instead. */
 #log,
 #line,
 #conversation {
@@ -201,11 +256,6 @@ Conversation {
     &:focus {
         background-tint: transparent;
     }
-}
-
-#log:focus,
-#conversation:focus {
-    border: round $primary;
 }
 
 /* Minimal: the key hints sit on the screen colour, with no bar or key backgrounds. */

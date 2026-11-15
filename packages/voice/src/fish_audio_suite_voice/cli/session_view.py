@@ -11,6 +11,7 @@ from typing import Final
 from fish_audio_suite_voice.capture.pcm import FULL_SCALE
 from fish_audio_suite_voice.session.events import (
     Bye,
+    ChatShown,
     Event,
     ExitCode,
     Heard,
@@ -26,8 +27,8 @@ __all__ = [
     "Ballistics",
     "SessionView",
     "SpeechScale",
+    "bar_dots",
     "noise_floor_db",
-    "processing_level",
     "reduce_view",
     "speech_level_db",
     "split_cells",
@@ -55,6 +56,7 @@ SCALE_MIN_BLOCKS: Final = 10  # blocks needed before the noise floor is measured
 _BRAILLE: Final = 0x2800  # the first Braille pattern, which has no dots
 # The bit that raises each dot of a Braille cell, by dot row (top to bottom) and column.
 _DOT_BITS: Final = ((0x01, 0x08), (0x02, 0x10), (0x04, 0x20), (0x40, 0x80))
+RECENT_TURNS: Final = 20  # finished turns whose timings a view keeps
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,16 +72,30 @@ class SessionView:
         What the session is doing.
     reply : str
         The model's reply so far, growing token by token, then the whole reply.
-    last_turn : LatencySnapshot or None
-        The timings of the last finished turn.
+    recent_turns : tuple of LatencySnapshot
+        The timings of the last ``RECENT_TURNS`` finished turns, oldest first.
+    turns_timed : int
+        How many turns have finished since the session started.
+    sent_turns : int
+        How many of the chat's turns the next request sends the model.
+    chat_turns : int
+        How many turns the chat has, hidden ones included.
     exit_code : ExitCode or None
         Set when the session has ended. None while it runs.
     """
 
     state: SessionState = SessionState.IDLE
     reply: str = ""
-    last_turn: LatencySnapshot | None = None
+    recent_turns: tuple[LatencySnapshot, ...] = ()
+    turns_timed: int = 0
+    sent_turns: int = 0
+    chat_turns: int = 0
     exit_code: ExitCode | None = None
+
+    @property
+    def last_turn(self) -> LatencySnapshot | None:
+        """The timings of the last finished turn, or None before the first."""
+        return self.recent_turns[-1] if self.recent_turns else None
 
 
 def wave_dots(
@@ -150,9 +166,9 @@ def reduce_view(view: SessionView, event: Event) -> SessionView:
     Notes
     -----
     Call it from one thread, in event order, such as the thread that drains an
-    ``EventQueue``. Only the state, the reply, the last turn's timings and the exit code
-    are folded: the conversation, notes, levels and log lines are each drawn as their
-    event arrives.
+    ``EventQueue``. Only the state, the reply, the recent turns' timings, how much of the
+    chat the model is sent and the exit code are folded: the conversation, notes, levels
+    and log lines are each drawn as their event arrives.
     """
     moved = replace(view, state=next_state(view.state, event))
     match event:
@@ -163,7 +179,11 @@ def reduce_view(view: SessionView, event: Event) -> SessionView:
         case ReplyEnd(text=text):
             return replace(moved, reply=text)
         case TurnEnded(snapshot=snapshot):
-            return replace(moved, last_turn=snapshot)
+            recent = (*view.recent_turns, snapshot)[-RECENT_TURNS:]
+            return replace(moved, recent_turns=recent, turns_timed=view.turns_timed + 1)
+        case ChatShown(turns=turns, sent=sent):
+            sent_turns = sum(1 for turn in turns if turn.id in sent)
+            return replace(moved, sent_turns=sent_turns, chat_turns=len(turns))
         case Bye(code=code):
             return replace(moved, exit_code=code)
         case _:
@@ -331,31 +351,31 @@ class Ballistics:
         return self.body, self.peak
 
 
-def processing_level(seconds: float) -> float:
-    """Return how tall a bar is at ``seconds`` into the "thinking" animation.
+def bar_dots(levels: Sequence[float]) -> str:
+    """Draw one line of level bars in dots: one bar per level, two bars to a character.
 
     Parameters
     ----------
-    seconds : float
-        Time since thinking began.
+    levels : Sequence[float]
+        How loud each bar is, from 0 to 1, left to right. Each bar grows from the bottom of
+        the line, one to four dots tall, so silence still shows a thin dotted line.
 
     Returns
     -------
-    float
-        From 0.05 to 1: three slow sine waves of different speeds added together, so the
-        pattern keeps changing and never repeats exactly, with no audio behind it.
+    str
+        ``ceil(len(levels) / 2)`` Braille characters.
 
     Examples
     --------
-    >>> 0.05 <= processing_level(1.234) <= 1.0
-    True
+    >>> bar_dots([0.0, 0.0, 1.0, 1.0])
+    '\u28c0\u28ff'
     """
-    waves = (
-        0.25 * math.sin(seconds * 1.5)
-        + 0.2 * math.sin(seconds * 0.8)
-        + 0.15 * math.cos(seconds * 2.0)
-    )
-    return min(1.0, max(0.05, 0.2 + waves))
+    cells = [0] * ((len(levels) + 1) // 2)
+    for x, level in enumerate(levels):
+        reach = 1 + round(min(1.0, max(0.0, level)) * 3)
+        for row in range(4 - reach, 4):
+            cells[x // 2] |= _DOT_BITS[row][x % 2]
+    return "".join(chr(_BRAILLE + bits) for bits in cells)
 
 
 @dataclass(slots=True)

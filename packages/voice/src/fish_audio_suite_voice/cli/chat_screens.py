@@ -1,6 +1,6 @@
-"""The full-screen app's dialogs: rewriting a reply, and choosing a saved chat.
+"""The full-screen app's dialogs: rewriting a reply, choosing a saved chat, and the keys.
 
-Neither changes the chat. Each returns what the user chose, and the caller sends it to the
+None changes the chat. Each returns what the user chose, and the caller sends it to the
 session as a ``ChatCommand``.
 """
 
@@ -24,12 +24,35 @@ from fish_audio_suite_voice.session.chat_store import ChatSummary, list_chats
 from fish_audio_suite_voice.session.commands import ChatCommand, NewChat, OpenChat
 
 __all__ = [
+    "KEYS",
     "ChatPicker",
     "EditReplyScreen",
+    "KeysScreen",
     "printable",
 ]
 
 _NEW = "new"
+
+# Every key of the app, in plain words, as the keys dialog lists them.
+KEYS: tuple[tuple[str, str], ...] = (
+    ("Enter", "Send what you typed"),
+    ("↑ ↓", "Previous messages you typed"),
+    ("Esc", "Stop speaking, else close, else back to typing"),
+    ("F2", "Mic on or off"),
+    ("Tab", "Move between typing and messages"),
+    ("j k  ↑ ↓", "Pick a message"),
+    ("g  G", "The first or the newest message"),
+    ("e", "Edit the reply"),
+    ("y", "Copy the reply"),
+    ("h", "Hide from the AI, or show again"),
+    ("d", "Delete"),
+    ("z", "Undo"),
+    ("Ctrl+O", "Chats"),
+    ("Ctrl+P", "All commands"),
+    ("?", "Keys (from the messages)"),
+    ("F12", "Diagnostics"),
+    ("Ctrl+Q", "Quit"),
+)
 
 
 class EditReplyScreen(ModalScreen[str | None]):
@@ -167,4 +190,28 @@ class ChatPicker(ModalScreen[ChatCommand | None]):
 
     def action_cancel(self) -> None:
         """Close the list and change nothing."""
+        self.dismiss(None)
+
+
+class KeysScreen(ModalScreen[None]):
+    """Every key of the app, in plain words. Any of Escape, ``?`` or ``q`` closes it."""
+
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("escape,question_mark,q", "close", "Close"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        """Lay out the keys, one to a line."""
+        width = max(len(key) for key, _ in KEYS)
+        lines = [
+            Content.assemble((key.ljust(width), "bold $text-accent"), "  ", does)
+            for key, does in KEYS
+        ]
+        with Vertical(id="keys-box") as box:
+            box.border_title = "keys"
+            yield Static(Content("\n").join(lines))
+        yield Footer()
+
+    def action_close(self) -> None:
+        """Close the list."""
         self.dismiss(None)

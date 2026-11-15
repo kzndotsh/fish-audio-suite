@@ -3,8 +3,12 @@
 It follows a session through its events, shows it as one ``SessionView``, and drives it
 with typed lines, mute, interrupt and changes to the chat. It owns no audio or network code:
 the session runs as a worker and reports through ``session.events``, so everything here
-happens on the app's own thread. The conversation pane is ``cli.history_pane`` and the
-dialogs are ``cli.chat_screens``.
+happens on the app's own thread.
+
+The chat screen holds only what a person needs while talking: the chat's title, the
+conversation, one state line, the composer and the keys. Everything technical is on the
+Diagnostics screen (F12, ``cli.diagnostics``). The conversation pane is ``cli.history_pane``
+and the dialogs are ``cli.chat_screens``.
 """
 
 from __future__ import annotations
@@ -12,15 +16,14 @@ from __future__ import annotations
 import threading
 import time
 from collections import deque
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import replace
 from pathlib import Path
 from typing import ClassVar
 
-from textual.actions import SkipAction
-from textual.app import App, ComposeResult, RenderResult
+from textual.app import App, ComposeResult, RenderResult, SystemCommand
 from textual.binding import Binding, BindingType
-from textual.containers import Horizontal, Vertical, VerticalGroup
+from textual.containers import Horizontal
 from textual.content import Content
 from textual.events import Resize
 from textual.message import Message
@@ -28,22 +31,21 @@ from textual.screen import ModalScreen, Screen
 from textual.timer import Timer
 from textual.types import CSSPathType
 from textual.widget import Widget
-from textual.widgets import Footer, Header, Input, Log, Static
+from textual.widgets import Footer, Input, Static
 from textual.worker import Worker, WorkerState
 
-from fish_audio_suite_voice.cli.chat_screens import ChatPicker, printable
+from fish_audio_suite_voice.cli.chat_screens import ChatPicker, KeysScreen, printable
+from fish_audio_suite_voice.cli.diagnostics import LOG_LINES, DiagnosticsScreen
 from fish_audio_suite_voice.cli.history_pane import Conversation
 from fish_audio_suite_voice.cli.session_view import (
     Ballistics,
     SessionView,
     SpeechScale,
-    processing_level,
+    bar_dots,
     reduce_view,
-    split_cells,
-    turn_timings,
-    wave_dots,
 )
-from fish_audio_suite_voice.session.commands import ChatCommand
+from fish_audio_suite_voice.session.chat_store import chat_title
+from fish_audio_suite_voice.session.commands import ChatCommand, NewChat
 from fish_audio_suite_voice.session.events import (
     DEFAULT_KEYS,
     EVENTS,
@@ -67,20 +69,18 @@ from fish_audio_suite_voice.session.events import (
     available_actions,
 )
 from fish_audio_suite_voice.session.inputs import LiveInput
-from fish_audio_suite_voice.session.latency import LatencySnapshot, turn_summary
 from fish_audio_suite_voice.session.signals import DuplexSession
 
 __all__ = [
+    "Composer",
     "VoiceApp",
+    "Waveform",
 ]
 
-_WAVE_ROWS = 4  # lines tall; each line is four dot rows
-_WAVE_HISTORY = 480  # bars kept (two to a character), so a wide terminal is filled
-_WAVE_STILL_BARS = 60  # bars of the frozen thinking wave when animations are off
+_WAVE_HISTORY = 480  # bars kept (two to a character), so a wide strip is filled
 # One bar: the mic's own rate, a level every three 30 ms frames. Every other source keeps to it,
 # so the scroll is even.
 _BAR_S = 0.09
-_THINK_TICK_S = _BAR_S  # one new bar of the thinking wave
 _AUDIO_GAP_S = 0.25  # no audio level for this long inside a reply: a pause, so fill it in
 _BLINK_S = 0.45  # the listening cursor's half cycle
 _SPEAKER_NEW_REPLY_S = 1.5  # a pause this long means the next audio is a new reply
@@ -93,27 +93,25 @@ def _speaker_scale() -> SpeechScale:
 
 _LOUD_STEPS = (0.34, 0.67)  # where a bar passes from dim to medium to bright
 _QUIT_GRACE_S = 3.0
-_NARROW_BELOW = 72  # columns: under this the side column keeps only the state and the mic
-_SHORT_BELOW = 22  # rows: under this the timings panel goes too
 _MIN_SIZE = (50, 14)  # under this nothing fits, so the app says so and keeps quit working
-_NO_TURNS = "no turns yet"
+_APP_NAME = "fish-voice"
 _CHATS_KEY = "ctrl+o"  # a control key, so it works while typing; Ctrl+O reaches the app in raw mode
+_DIAGNOSTICS_KEY = "f12"
 
 
 class Waveform(Widget):
-    """The mic or the speaker as a mirrored, scrolling waveform of dots: newest on the right.
+    """The mic or the speaker as one line of level bars in dots, scrolling: newest on the right.
 
     Both are drawn the same way, so they look alike: each level is scaled to that source's own
     recent peak and eased down a little, with no caps. Colour says what a bar is (green for
-    speech the mic hears, grey for quiet, amber for the model thinking, the accent colour for
-    the reply being played) and its brightness says how loud it is. What the strip does when
-    nothing is said depends on the mood: while listening a cursor blinks at the right edge,
-    while thinking a calm wave scrolls by on its own, and otherwise it holds still.
+    speech the mic hears, grey for quiet, the accent colour for the reply being played) and its
+    height and brightness say how loud it is. While listening a cursor blinks at the right
+    edge; while speaking the strip keeps scrolling through the reply's pauses.
     """
 
     DEFAULT_CSS: ClassVar[str] = """
     Waveform {
-        height: 4;
+        height: 1;
     }
     """
 
@@ -125,7 +123,6 @@ class Waveform(Widget):
         self._last_speaker: float | None = None
         self._mood = "still"
         self._timer: Timer | None = None
-        self._since = 0.0
         self._cursor_on = True
         self._last_bar = 0.0
         self._audio_seen = False
@@ -139,7 +136,7 @@ class Waveform(Widget):
 
     @property
     def mood(self) -> str:
-        """What the strip is doing besides drawing the mic: listening, thinking, speaking or still."""
+        """What the strip is doing besides drawing levels: listening, speaking or still."""
         return self._mood
 
     def _add(self, level: float, kind: str) -> None:
@@ -196,26 +193,19 @@ class Waveform(Widget):
         self._add(level, "speaker")
 
     def set_mood(self, mood: str) -> None:
-        """Choose what the strip does besides drawing the mic.
+        """Choose what the strip does besides drawing levels.
 
         Parameters
         ----------
         mood : str
-            ``"listening"`` (a blinking cursor at the right edge), ``"thinking"`` (a calm
-            wave scrolls by), ``"speaking"`` (the reply's bars, with a flat line scrolling
-            until the first audio level arrives) or ``"still"``. Every source adds bars at
-            the same rate, so the scroll keeps one speed through a turn. Textual's
-            reduced-motion setting turns the blinking and the scrolling into a fixed picture.
+            ``"listening"`` (a blinking cursor at the right edge), ``"speaking"`` (the
+            reply's bars, with a flat line scrolling until the first audio level arrives and
+            through its pauses) or ``"still"``. Every source adds bars at the same rate, so
+            the scroll keeps one speed through a turn. Textual's reduced-motion setting turns
+            the blinking and the filling off.
         """
         if mood == self._mood:
             return
-        if self._mood == "thinking":
-            # The made-up wave is over. Keep it as history, in the quiet colour, so the
-            # strip does not blank in one go, and let it scroll away.
-            self._bars = deque(
-                ((level, "quiet" if kind == "thinking" else kind) for level, kind in self._bars),
-                maxlen=_WAVE_HISTORY,
-            )
         self._mood = mood
         if self._timer is not None:
             self._timer.stop()
@@ -226,22 +216,12 @@ class Waveform(Widget):
         self._last_push = None
         self._cursor_on = True
         moving = self.app.animation_level != "none"
-        if mood == "thinking":
-            self._since = time.monotonic()
-            if moving:
-                self._timer = self.set_interval(_THINK_TICK_S, self._think)
-            else:
-                for step in range(_WAVE_STILL_BARS):
-                    self._bars.append((processing_level(step * _THINK_TICK_S), "thinking"))
-        elif mood == "listening" and moving:
+        if mood == "listening" and moving:
             self._timer = self.set_interval(_BLINK_S, self._blink)
         elif mood == "speaking" and moving:
             self._audio_seen = False
             self._timer = self.set_interval(_BAR_S / 4, self._fill)
         self.refresh()
-
-    def _think(self) -> None:
-        self._add(processing_level(time.monotonic() - self._since), "thinking")
 
     def _fill(self) -> None:
         # The reply's first audio takes a moment to arrive, and a reply pauses between
@@ -267,11 +247,10 @@ class Waveform(Widget):
         bars = list(self._bars)[-room:] if room else []
         bars = [(0.0, "quiet")] * (room - len(bars)) + bars
         blinking = self._mood == "listening" and self._cursor_on
-        bars += [(0.3, "cursor") if blinking else (0.0, "quiet")] * (want - len(bars))
-        rows = wave_dots([level for level, _ in bars], _WAVE_ROWS)
+        bars += [(0.67, "cursor") if blinking else (0.0, "quiet")] * (want - len(bars))
+        dots = bar_dots([level for level, _ in bars])
         tones = [_bar_tone(bars[2 * i], bars[2 * i + 1]) for i in range(width)]
-        lines = [Content.assemble(*zip(row, tones, strict=True)) for row in rows]
-        return Content("\n").join(lines)
+        return Content.assemble(*zip(dots, tones, strict=True))
 
 
 # What a bar is, as a colour, and how strong it is at each of three loudness steps. The steps
@@ -282,7 +261,6 @@ _BAR_COLOURS = {
     "cursor": ("$text-accent", (100, 100, 100)),
     "speaker": ("$text-accent", (85, 93, 100)),
     "heard": ("$text-success", (85, 93, 100)),
-    "thinking": ("$text-warning", (85, 93, 100)),
     "quiet": ("$foreground", (58, 68, 78)),
 }
 
@@ -290,87 +268,91 @@ _BAR_COLOURS = {
 def _bar_tone(left: tuple[float, str], right: tuple[float, str]) -> str:
     """Return the style of the character that holds two bars, from what and how loud they are."""
     kinds = {left[1], right[1]}
-    kind = next(k for k in ("cursor", "heard", "speaker", "thinking", "quiet") if k in kinds)
+    kind = next(k for k in ("cursor", "heard", "speaker", "quiet") if k in kinds)
     colour, steps = _BAR_COLOURS[kind]
     level = max(left[0], right[0])
     step = 0 if level < _LOUD_STEPS[0] else 1 if level < _LOUD_STEPS[1] else 2
     return f"{colour} {steps[step]}%"
 
 
-_STAGE_TONES = {"asr": "$text-secondary", "llm": "$text-primary", "tts": "$text-accent"}
-# Each stage has its own pattern as well as its own colour, so the bar reads without colour:
-# dots in the top half, in every row, and in the bottom half.
-_STAGE_DOTS = {"asr": "\u281b", "llm": "\u28ff", "tts": "\u28e4"}
+class Composer(Input):
+    """The line you type into: Enter sends, Up and Down bring back what you typed before.
 
-
-class Timings(Widget):
-    """The last turn: the wait before you heard audio, and where it went.
-
-    Three lines: the wait beside the whole turn's length, one bar split into recognising
-    (asr), thinking (llm) and speaking (tts), and the number behind each part. The parts
-    differ by pattern as well as colour, with a gap between them, and come in the same order
-    as the legend, so the bar reads without colour. The numbers are always shown.
+    The lines are kept for this session only, newest first. A line you were typing when you
+    went back through them is kept, and comes back when you go past the newest one.
     """
 
-    DEFAULT_CSS: ClassVar[str] = """
-    Timings {
-        height: 3;
-    }
-    """
+    BINDINGS: ClassVar[list[BindingType]] = [
+        Binding("enter", "submit", "Send"),
+        Binding("up", "recall(-1)", "Previous", key_display="↑"),
+        Binding("down", "recall(1)", "Next", show=False),
+        Binding("tab", "messages", "Messages"),
+    ]
 
     def __init__(self, *, id: str | None = None) -> None:  # noqa: A002 - Textual's own name
-        super().__init__(id=id)
-        self._snapshot: LatencySnapshot | None = None
+        super().__init__(placeholder="Type a message, or just talk", id=id)
+        self._sent: list[str] = []
+        self._at: int | None = None  # where in ``_sent`` the line came from, None for a new one
+        self._draft = ""
 
-    def show(self, snapshot: LatencySnapshot | None) -> None:
-        """Show a finished turn, or the empty state for ``None``."""
-        self._snapshot = snapshot
-        self.refresh()
+    async def action_submit(self) -> None:
+        """Remember the line, then send it."""
+        text = self.value
+        if text.strip() and (not self._sent or self._sent[-1] != text):
+            self._sent.append(text)
+        self._at, self._draft = None, ""
+        await super().action_submit()
 
-    def render(self) -> RenderResult:
-        """Draw the wait, the split bar and the legend, fitted to the width."""
-        snapshot = self._snapshot
-        if snapshot is None:
-            return Content.assemble((_NO_TURNS, "dim"))
-        timings = turn_timings(snapshot)
-        if timings is None:
-            return Content(turn_summary(snapshot) or _NO_TURNS)
-        width = max(1, self.size.width)
-        wait = f"{timings.wait_ms / 1000:.2f}s"
-        total = f"total {timings.total_ms / 1000:.2f}s" if timings.total_ms is not None else ""
-        gap = " " * max(1, width - len(wait) - len(" wait") - len(total))
-        head = Content.assemble((wait, "bold"), " wait", gap, (total, "dim"))
-        gaps = max(0, len(timings.stages) - 1)  # a blank cell between parts marks each edge
-        cells = split_cells([ms for _, ms in timings.stages], max(1, width - gaps))
-        parts: list[tuple[str, str] | str] = []
-        for position, ((name, _), count) in enumerate(zip(timings.stages, cells, strict=True)):
-            if position and width > gaps:
-                parts.append(" ")
-            parts.append((_STAGE_DOTS[name] * count, _STAGE_TONES[name]))
-        bar = Content.assemble(*parts)
-        decimals = 2 if len(_legend(timings.stages, 2)) <= width else 1
-        legend = Content.assemble(*_legend_parts(timings.stages, decimals))
-        return Content("\n").join([head, bar, legend])
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        """Offer Previous only when there is a line to bring back, and Next only while looking.
+
+        Parameters
+        ----------
+        action : str
+            The action's name.
+        parameters : tuple
+            Its parameters.
+
+        Returns
+        -------
+        bool or None
+            False hides the key.
+        """
+        if action == "recall":
+            if parameters == (-1,):
+                return bool(self._sent) and self._at != 0
+            return self._at is not None
+        return super().check_action(action, parameters)
+
+    def action_recall(self, step: int) -> None:
+        """Bring back the line typed before (-1) or after (1) the one shown.
+
+        Parameters
+        ----------
+        step : int
+            -1 for an older line, 1 for a newer one.
+        """
+        if self._at is None:
+            if step > 0 or not self._sent:
+                return
+            self._draft, self._at = self.value, len(self._sent)
+        at = min(len(self._sent), max(0, self._at + step))
+        self._at = None if at == len(self._sent) else at
+        self.value = self._draft if self._at is None else self._sent[at]
+        self.cursor_position = len(self.value)
+        self.refresh_bindings()
+
+    def action_messages(self) -> None:
+        """Move to the messages."""
+        self.screen.focus_next(Conversation)
 
 
-def _legend(stages: tuple[tuple[str, float], ...], decimals: int) -> str:
-    return " ".join(f"{name} {ms / 1000:.{decimals}f}" for name, ms in stages)
-
-
-def _legend_parts(
-    stages: tuple[tuple[str, float], ...], decimals: int
-) -> list[tuple[str, str] | str]:
-    parts: list[tuple[str, str] | str] = []
-    for position, (name, ms) in enumerate(stages):
-        if position:
-            parts.append(" ")
-        parts.append((name, _STAGE_TONES[name]))
-        parts.append(f" {ms / 1000:.{decimals}f}")
-    return parts
+# The state line: a glyph and a word for every state, never colour alone, and a plain hint.
+_LISTENING_HINT = "just talk, or type below"
 
 
 class VoiceApp(App[int]):
-    """Conversation, status, mic meter, timings and log of one ``fish-voice`` session.
+    """The chat of one ``fish-voice`` session, with its diagnostics one key away.
 
     Parameters
     ----------
@@ -385,23 +367,27 @@ class VoiceApp(App[int]):
     bus : EventBus, optional
         Where the session reports. The session-wide ``EVENTS`` by default.
     info : str, optional
-        What to show next to the title, such as the model and voice.
+        What the session runs on, such as the model and voice. Diagnostics shows it.
     chat_dir : Path or None, optional
         The folder of saved chats the chat list shows. None lists none, so only a new chat
         can be started.
     shape : Callable or None, optional
-        Cleans a reply the way it is cleaned before it is spoken (``CueStyle.shape``). The
-        reply is shown that way as it streams, so it reads and wraps as its recorded turn
-        will. None shows the model's text as written.
+        Cleans a reply the way it is cleaned before it is spoken (``CueStyle.shape``).
+        Diagnostics shows the last reply that way, as Fish read it. None shows the model's
+        text as written.
     """
 
-    TITLE: str | None = "fish-voice"
+    TITLE: str | None = _APP_NAME
     CSS_PATH: ClassVar[CSSPathType | None] = "tui.tcss"
     BINDINGS: ClassVar[list[BindingType]] = [
-        Binding(DEFAULT_KEYS[SessionAction.INTERRUPT], "interrupt", "Stop", priority=True),
-        Binding(DEFAULT_KEYS[SessionAction.MUTE], "toggle_mute", "Mute", priority=True),
-        Binding(DEFAULT_KEYS[SessionAction.QUIT], "quit_session", "Quit", priority=True),
+        Binding(DEFAULT_KEYS[SessionAction.INTERRUPT], "stop", "Stop", priority=True),
+        Binding(DEFAULT_KEYS[SessionAction.MUTE], "mute", "Mic off", priority=True),
+        Binding(DEFAULT_KEYS[SessionAction.UNMUTE], "unmute", "Mic on", priority=True),
         Binding(_CHATS_KEY, "chats", "Chats", priority=True),
+        Binding(_DIAGNOSTICS_KEY, "diagnostics", "Diagnostics", show=False, priority=True),
+        Binding(
+            DEFAULT_KEYS[SessionAction.QUIT], "quit_session", "Quit", show=False, priority=True
+        ),
     ]
 
     class Wake(Message):
@@ -426,7 +412,9 @@ class VoiceApp(App[int]):
         self._chat_dir = chat_dir
         self._shape = shape
         self._chat_file: Path | None = None
+        self._chat_title = ""
         self._view = SessionView()
+        self._log_lines: deque[str] = deque(maxlen=LOG_LINES)
         self._wake_pending = threading.Event()
         # Subscribed now, so nothing the session says before the screen is up is lost.
         self._queue = EventQueue(bus, wake=self._wake)
@@ -437,48 +425,32 @@ class VoiceApp(App[int]):
         return self._view
 
     def compose(self) -> ComposeResult:
-        """Lay out the conversation, the side panels, the input line and the footer."""
-        yield Header()
-        with Horizontal(id="body"):
-            yield Conversation(id="conversation", send=self._live.send)
-            with Vertical(id="side"):
-                with VerticalGroup(id="status-box") as status_box:
-                    status_box.border_title = "state"
-                    yield Static("idle", id="status")
-                with VerticalGroup(id="mic-box") as mic_box:
-                    mic_box.border_title = "mic"
-                    wave = Waveform(id="meter")
-                    wave.tooltip = (
-                        "The mic level, newest on the right. Bright means it hears speech."
-                    )
-                    yield wave
-                with VerticalGroup(id="latency-box") as latency_box:
-                    latency_box.border_title = "last turn"
-                    yield Timings(id="latency")
-                log = Log(id="log", max_lines=1000)
-                log.border_title = "log"
-                yield log
+        """Lay out the title, the conversation, the state line, the composer and the keys."""
+        with Horizontal(id="header"):
+            yield Static(_APP_NAME, id="title")
+            yield Static("? keys", id="keys-hint")
+        yield Conversation(id="conversation", send=self._live.send)
         yield Static(
             f"Terminal too small. Make it at least {_MIN_SIZE[0]}x{_MIN_SIZE[1]}, or Ctrl+Q to quit.",
             id="too-small",
         )
-        yield Input(placeholder="type a line and press Enter · Tab to edit the chat", id="line")
+        with Horizontal(id="state-line"):
+            yield Static(id="state")
+            yield Waveform(id="meter")
+            yield Static(id="hint")
+        yield Composer(id="line")
         yield Footer()
 
     def on_resize(self, event: Resize) -> None:
-        """Drop the secondary panels as the terminal shrinks, and say so when nothing fits."""
+        """Say so when the terminal is too small for the conversation."""
         width, height = event.size
-        screen = self._main
-        screen.set_class(width < _NARROW_BELOW, "narrow")
-        screen.set_class(height < _SHORT_BELOW, "short")
-        screen.set_class(width < _MIN_SIZE[0] or height < _MIN_SIZE[1], "tiny")
+        self._main.set_class(width < _MIN_SIZE[0] or height < _MIN_SIZE[1], "tiny")
 
     def on_mount(self) -> None:
-        """Show the first view, start the session as a worker and focus the input line."""
-        self.sub_title = self._info
+        """Show the first view, start the session as a worker and focus the composer."""
         self._render_view()
         self.run_worker(self._run(), exclusive=True, exit_on_error=False)
-        self.query_one(Input).focus()
+        self.query_one(Composer).focus()
 
     async def _run(self) -> int:
         return await self._runner()
@@ -487,6 +459,10 @@ class VoiceApp(App[int]):
     def _main(self) -> Screen[object]:
         # The screen under any dialog: a query from the app looks only at the top screen.
         return self.screen_stack[0]
+
+    @property
+    def _diagnostics(self) -> DiagnosticsScreen | None:
+        return next((s for s in self.screen_stack if isinstance(s, DiagnosticsScreen)), None)
 
     def _wake(self) -> None:
         # Called from whichever thread emitted the event. One message at a time is
@@ -527,19 +503,20 @@ class VoiceApp(App[int]):
                 conversation.add_user(text)
             case ReplyToken() | ReplyEnd():
                 # The view has already folded the tokens into the reply so far.
-                reply = self._view.reply
-                conversation.show_reply(self._shape(reply) if self._shape else reply)
+                conversation.show_reply(self._view.reply)
             case BargedIn():
-                conversation.add_note("(interrupted)")
+                conversation.cut_reply()
             case Notice(text=text):
                 conversation.add_note(text)
-            case ChatShown(file=file):
+            case ChatShown(file=file, turns=turns):
                 self._chat_file = file
+                self._chat_title = chat_title(turns)
                 conversation.show_record(event)
             case LogLine(level=level, tag=tag, text=text):
-                self._main.query_one("#log", Log).write_line(
-                    printable(f"{level[:1]} {tag:<6} {text}")
-                )
+                line = printable(f"{level[:1]} {tag:<6} {text}")
+                self._log_lines.append(line)
+                if (diagnostics := self._diagnostics) is not None:
+                    diagnostics.add_log(line)
             case Bye(code=code):
                 self._on_bye(code)
             case _:
@@ -556,63 +533,120 @@ class VoiceApp(App[int]):
     def _exit_code(self) -> ExitCode:
         return ExitCode.OK if self._view.exit_code is None else self._view.exit_code
 
-    def _render_view(self) -> None:
-        view = self._view
-        main = self._main
-        status = main.query_one("#status", Static)
-        label = view.state.value
-        if self._live.muted:
-            label += " · muted"
+    @property
+    def _title_text(self) -> str:
+        return printable(self._chat_title) or _APP_NAME
+
+    def _state_line(self) -> tuple[str, str, str, str]:
+        """Return the glyph, the word, the hint and the style class for the state now."""
+        state, muted = self._view.state, self._live.muted
         if self._ended:
-            label = f"ended (code {self._exit_code()})"
-        status.update(Content(label))
-        status.set_classes("ended" if self._ended else f"state-{view.state.value}")
-        main.query_one(Waveform).set_mood(self._wave_mood(view))
-        speaking = view.state is SessionState.SPEAKING and not self._ended
-        main.query_one("#mic-box").border_title = "speaker" if speaking else "mic"
-        main.query_one(Timings).show(view.last_turn)
+            return "✕", "Session ended", f"exit code {self._exit_code()} · Ctrl+Q to quit", "ended"
+        if state is SessionState.SPEAKING:
+            hint = "press Esc to stop" if muted else "talk to interrupt, or press Esc"
+            return "▶", "Speaking", hint, "speaking"
+        if state is SessionState.THINKING:
+            return "◌", "Thinking…", "", "thinking"
+        if muted:
+            return "○", "Mic off", "F2 turns it back on", "muted"
+        if state is SessionState.LISTENING:
+            return "●", "Listening", _LISTENING_HINT, "listening"
+        return "○", "Ready", _LISTENING_HINT, "idle"
+
+    def _render_view(self) -> None:
+        main = self._main
+        main.query_one("#title", Static).update(Content(self._title_text))
+        glyph, word, hint, tone = self._state_line()
+        state = main.query_one("#state", Static)
+        state.update(Content.assemble(f"{glyph} ", (word, "bold")))
+        state.set_classes(tone)
+        main.query_one("#hint", Static).update(Content(hint))
+        meter = main.query_one(Waveform)
+        mood = tone if tone in ("listening", "speaking") else "still"
+        meter.set_mood(mood)
+        meter.display = mood != "still"
+        if (diagnostics := self._diagnostics) is not None:
+            diagnostics.show(self._view, self._sent_to_fish)
         self.refresh_bindings()
 
-    def _wave_mood(self, view: SessionView) -> str:
-        if self._ended:
-            return "still"
-        if view.state is SessionState.THINKING:
-            return "thinking"
-        if view.state is SessionState.SPEAKING:
-            return "speaking"
-        if view.state is SessionState.LISTENING and not self._live.muted:
-            return "listening"
-        return "still"
+    @property
+    def _sent_to_fish(self) -> str:
+        reply = self._view.reply
+        return self._shape(reply) if self._shape and reply else reply
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
-        """Show Stop only while there is something to stop."""
+        """Show each app key only while it does something.
+
+        Parameters
+        ----------
+        action : str
+            The action's name.
+        parameters : tuple
+            Its parameters.
+
+        Returns
+        -------
+        bool or None
+            False hides the key and passes it on, so Escape closes a dialog or goes back to
+            typing when there is nothing to stop.
+        """
         del parameters
-        if action == "interrupt":
-            actions = available_actions(self._view.state, muted=self._live.muted)
-            return True if SessionAction.INTERRUPT in actions else None
-        return True
+        actions = available_actions(self._view.state, muted=self._live.muted)
+        match action:
+            case "stop":
+                return not self._ended and SessionAction.INTERRUPT in actions
+            case "mute":
+                return SessionAction.MUTE in actions
+            case "unmute":
+                return SessionAction.UNMUTE in actions
+            case "chats":
+                return not isinstance(self.screen, ModalScreen)
+            case _:
+                return True
+
+    def get_system_commands(self, screen: Screen[object]) -> Iterable[SystemCommand]:
+        """List the app's own commands in the command palette, before Textual's.
+
+        Parameters
+        ----------
+        screen : Screen
+            The screen the palette was opened from.
+
+        Yields
+        ------
+        SystemCommand
+            New chat, Chats…, Mic on or off, Stop speaking (while there is a reply to
+            stop), Diagnostics and Keys, then Textual's own.
+        """
+        yield SystemCommand("New chat", "Start an empty chat", self.action_new_chat)
+        yield SystemCommand("Chats…", "Open a saved chat, or start a new one", self.action_chats)
+        if self._live.muted:
+            yield SystemCommand("Mic on", "Listen again", self.action_unmute)
+        else:
+            yield SystemCommand("Mic off", "Stop listening until you turn it on", self.action_mute)
+        if self.check_action("stop", ()):
+            yield SystemCommand("Stop speaking", "Stop the reply", self.action_stop)
+        yield SystemCommand(
+            "Diagnostics", "Timings, the log, and what was sent to Fish", self.action_diagnostics
+        )
+        yield SystemCommand("Keys", "Every key, in plain words", self.action_keys)
+        yield from super().get_system_commands(screen)
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        """Send the typed line to the session and clear the input."""
+        """Send the typed line to the session and clear the composer."""
         self._live.submit(event.value)
         event.input.value = ""
 
-    def action_interrupt(self) -> None:
-        """Stop the reply that is playing, or let a dialog have Escape to close it.
-
-        Raises
-        ------
-        SkipAction
-            While a dialog is open, so the key goes on to it.
-        """
-        if isinstance(self.screen, ModalScreen):
-            raise SkipAction
+    def action_stop(self) -> None:
+        """Stop the reply that is playing."""
         self._live.stop_reply()
+
+    def action_new_chat(self) -> None:
+        """Start an empty chat."""
+        self._live.send(NewChat())
 
     def action_chats(self) -> None:
         """Open the list of saved chats, to go on with one or start a new one."""
-        if isinstance(self.screen, ModalScreen):
-            return
 
         def chosen(command: ChatCommand | None) -> None:
             if command is not None:
@@ -620,9 +654,36 @@ class VoiceApp(App[int]):
 
         self.push_screen(ChatPicker(self._chat_dir, self._chat_file), chosen)
 
-    def action_toggle_mute(self) -> None:
-        """Mute or unmute the mic."""
-        self._live.toggle_mute()
+    def action_keys(self) -> None:
+        """List every key in plain words."""
+        if not isinstance(self.screen, KeysScreen):
+            self.push_screen(KeysScreen())
+
+    def action_diagnostics(self) -> None:
+        """Open the Diagnostics screen, or go back to the chat from it."""
+        if isinstance(self.screen, DiagnosticsScreen):
+            self.screen.dismiss(None)
+            return
+        if self._diagnostics is not None:
+            return  # under a dialog: let the dialog close first
+        self.push_screen(
+            DiagnosticsScreen(
+                title=self._title_text,
+                info=self._info,
+                log=self._log_lines,
+                view=self._view,
+                sent=self._sent_to_fish,
+            )
+        )
+
+    def action_mute(self) -> None:
+        """Turn the mic off."""
+        self._live.mute()
+        self._render_view()
+
+    def action_unmute(self) -> None:
+        """Turn the mic back on."""
+        self._live.unmute()
         self._render_view()
 
     def action_quit_session(self) -> None:

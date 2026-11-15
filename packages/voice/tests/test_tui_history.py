@@ -4,6 +4,9 @@ The app never changes the chat: each key sends a ``ChatCommand`` to the session,
 pane redraws from the ``ChatShown`` the session answers with.
 """
 
+# The user's lines start with a single angle quote mark, which is the design, not a typo.
+# ruff: noqa: RUF001
+
 from __future__ import annotations
 
 import asyncio
@@ -14,13 +17,14 @@ from pathlib import Path
 
 import pytest
 from session_fakes import FakeBackend, hello_tokens, quick_config, speak_with_fakes
-from textual.content import Content
 from textual.pilot import Pilot
+from textual.widget import Widget
 from textual.widgets import Input, OptionList, Static, TextArea
 from voice_fakes import ScriptedMic, install_gate
 
 from fish_audio_suite_kit import CueStyle
 from fish_audio_suite_voice.cli.chat_screens import ChatPicker, EditReplyScreen
+from fish_audio_suite_voice.cli.diagnostics import DiagnosticsScreen
 from fish_audio_suite_voice.cli.history_pane import Conversation, TurnRow
 from fish_audio_suite_voice.cli.tui import VoiceApp
 from fish_audio_suite_voice.session.chat_store import ChatFile, load_chat
@@ -52,6 +56,14 @@ from fish_audio_suite_voice.session.signals import DuplexSession
 from fish_audio_suite_voice.tts.speaker import FishSpeaker
 
 
+def _text(widget: Widget) -> str:
+    """What a row of the pane shows: each of its visible lines."""
+    if isinstance(widget, TurnRow):
+        return "\n".join(str(line.content) for line in widget.query(Static) if line.display)
+    assert isinstance(widget, Static)
+    return str(widget.content)
+
+
 class _SpyInput(LiveInput):
     """A ``LiveInput`` that remembers each change the app sent and each stop."""
 
@@ -76,6 +88,8 @@ class _Harness:
         self.bus = EventBus()
         self.session = DuplexSession()
         self.live = _SpyInput()
+        self.toasts: list[str] = []
+        self.copied: list[str] = []
         self.app = VoiceApp(
             self._until_quit,
             live=self.live,
@@ -84,6 +98,12 @@ class _Harness:
             chat_dir=chat_dir,
             shape=shape,
         )
+        self.app.notify = lambda message, **_kwargs: self.toasts.append(str(message))
+
+        def copy(text: str) -> None:
+            self.copied.append(text)
+
+        self.app.copy_to_clipboard = copy
 
     async def _until_quit(self) -> int:
         await asyncio.to_thread(self.session.quit_requested.wait, 15)
@@ -98,7 +118,7 @@ class _Harness:
         return [child for child in self.pane.children if isinstance(child, TurnRow)]
 
     def lines(self) -> list[str]:
-        return [str(child.content) for child in self.pane.children if isinstance(child, Static)]
+        return [_text(child) for child in self.pane.children]
 
 
 def _drive(harness: _Harness, scenario: Callable[[Pilot[int]], Awaitable[None]]) -> None:
@@ -113,7 +133,7 @@ def _drive(harness: _Harness, scenario: Callable[[Pilot[int]], Awaitable[None]])
 
 
 def _record() -> Record:
-    """Three turns: the first one older than a one-turn window, the second hidden, the third edited."""
+    """Three turns: the first with a cue, the second hidden, the third edited."""
     record = Record("be brief")
     for user, reply in (("one", "[calm] first."), ("two", "second."), ("three", "third.")):
         record.add_user_line(user)
@@ -128,25 +148,19 @@ def _shown(record: Record, *, window: int = 1, file: Path | None = None) -> Chat
     return ChatShown(record.id, tuple(record.turns), sent, file)
 
 
-def test_the_pane_shows_every_turn_and_what_the_model_is_sent() -> None:
+def test_the_pane_shows_every_turn_as_it_was_heard_and_marks_hidden_and_edited_ones() -> None:
     harness = _Harness()
 
     async def scenario(pilot: Pilot[int]) -> None:
         harness.bus.emit(_shown(_record()))
         await pilot.pause(0.1)
+        # The first turn is older than the model is sent, which only Diagnostics says.
         assert harness.lines() == [
-            "you ▸ one\nllm ▸ [calm] first.\n      ↳ older than the model is sent",
-            "you ▸ two\nllm ▸ second.\n      ↳ hidden from the model",
-            "you ▸ three\nllm ▸ a better third.\n      ↳ edited",
+            "› one\nfirst.",
+            "› two\nsecond.\nhidden from AI",
+            "› three\na better third.\nedited",
         ]
-        older, hidden, sent = harness.rows()
-        marks = {"older", "hidden"}
-        assert [set(row.classes) & marks for row in (older, hidden, sent)] == [
-            {"older"},
-            {"hidden"},
-            set(),
-        ]
-        assert harness.pane.border_subtitle == "model sees 1 of 3 turns"
+        assert [row.has_class("hidden") for row in harness.rows()] == [False, True, False]
 
     _drive(harness, scenario)
 
@@ -165,7 +179,7 @@ def test_keys_on_the_focused_pane_send_changes_for_the_selected_turn() -> None:
         assert harness.pane.selected.id == three  # the newest turn is selected first
         await pilot.press("k", "h")  # up to the hidden turn, and show it again
         await pilot.press("up", "h")  # the first turn, and hide it
-        await pilot.press("j", "d", "u")
+        await pilot.press("j", "d", "z")
         assert harness.live.sent == [
             SetHidden(two, hidden=False),
             SetHidden(one, hidden=True),
@@ -173,6 +187,58 @@ def test_keys_on_the_focused_pane_send_changes_for_the_selected_turn() -> None:
             Undo(),
         ]
         assert [row.has_class("selected") for row in harness.rows()] == [False, False, True]
+        assert harness.toasts == [
+            "Message shown to AI again · z to undo",
+            "Message hidden from AI · z to undo",
+            "Message deleted · z to undo",
+        ]
+
+    _drive(harness, scenario)
+
+
+def test_the_selected_turn_shows_its_keys_and_y_copies_the_reply_without_cues() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        harness.bus.emit(_shown(_record()))
+        await pilot.pause(0.1)
+        await pilot.press("tab", "g")  # the first turn
+        await pilot.pause(0.05)
+        first = harness.rows()[0]
+        assert _text(first).splitlines()[-1] == "e Edit reply   y Copy   h Hide   d Delete"
+        assert "e Edit reply" not in _text(harness.rows()[1])  # only on the selected turn
+        await pilot.press("y")
+        assert harness.copied == ["first."]
+        assert harness.toasts == ["Copied"]
+        await pilot.press("j")
+        assert _text(harness.rows()[1]).splitlines()[-1].endswith("h Show   d Delete")
+        await pilot.press("escape")  # back to typing: no keys under any turn
+        await pilot.pause(0.05)
+        assert all("Delete" not in _text(row) for row in harness.rows())
+
+    _drive(harness, scenario)
+
+
+def test_g_goes_to_the_first_turn_and_end_follows_the_newest_again() -> None:
+    harness = _Harness()
+    record = _record()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        harness.bus.emit(_shown(record))
+        await pilot.pause(0.1)
+        await pilot.press("tab", "home")
+        assert harness.pane.selected is not None
+        assert harness.pane.selected.id == record.turns[0].id
+        record.add_user_line("four")
+        harness.bus.emit(_shown(record))
+        await pilot.pause(0.1)
+        assert harness.pane.selected.id == record.turns[0].id  # reading back: it stays put
+        await pilot.press("G")
+        assert harness.pane.selected.id == record.turns[-1].id
+        record.add_user_line("five")
+        harness.bus.emit(_shown(record))
+        await pilot.pause(0.1)
+        assert harness.pane.selected.id == record.turns[-1].id  # following: the new turn
 
     _drive(harness, scenario)
 
@@ -204,8 +270,8 @@ def test_the_edit_keys_type_into_the_input_line_while_it_has_focus() -> None:
     async def scenario(pilot: Pilot[int]) -> None:
         harness.bus.emit(_shown(_record()))
         await pilot.pause(0.1)
-        await pilot.press("e", "d", "h", "u", "k")
-        assert harness.app.query_one(Input).value == "edhuk"
+        await pilot.press("e", "d", "h", "z", "k", "y", "g")
+        assert harness.app.query_one(Input).value == "edhzkyg"
         assert harness.live.sent == []
 
     _drive(harness, scenario)
@@ -237,6 +303,7 @@ def test_a_reply_is_rewritten_in_a_dialog_and_saved_or_left_as_it_was() -> None:
         await pilot.press("full_stop", "ctrl+s")
         assert not isinstance(harness.app.screen, EditReplyScreen)
         assert harness.live.sent == [EditReply(three, "Calmer.")]
+        assert harness.toasts[-1] == "Reply edited · z to undo"
 
     _drive(harness, scenario)
 
@@ -257,8 +324,12 @@ def test_the_session_s_answer_redraws_the_pane_and_events_still_arrive_under_a_d
         await pilot.press("escape")
         assert "[a note]" in harness.lines()
         assert [row.turn.user for row in harness.rows()] == ["two", "three"]
-        assert harness.pane.border_subtitle == "model sees 1 of 2 turns"
-        assert str(harness.app.screen_stack[0].query_one("#status", Static).content) == "listening"
+        state = harness.app.screen_stack[0].query_one("#state", Static)
+        assert str(state.content) == "● Listening"
+        await pilot.press("f12")
+        assert isinstance(harness.app.screen, DiagnosticsScreen)
+        session = str(harness.app.screen.query_one("#session", Static).content)
+        assert "the model sees 1 of 2 turns" in session
 
     _drive(harness, scenario)
 
@@ -274,21 +345,13 @@ def test_a_recorded_turn_takes_the_place_of_the_turn_in_progress() -> None:
         harness.bus.emit(ReplyEnd("[calm] fourth."))
         harness.bus.emit(Notice("[after the reply]"))
         await pilot.pause(0.1)
-        assert harness.lines()[-3:] == ["you ▸ four", "llm ▸ [calm] fourth.", "[after the reply]"]
+        assert harness.lines()[-3:] == ["› four", "fourth.", "[after the reply]"]
         record.add_user_line("four")
-        record.add_reply("fourth.", interrupted=True)
+        record.add_reply("[calm] fourth.", interrupted=True)
         harness.bus.emit(_shown(record, window=10))
         await pilot.pause(0.1)
-        assert harness.lines()[-2:] == [
-            "you ▸ four\nllm ▸ fourth.\n      ↳ cut off",
-            "[after the reply]",
-        ]
-        # The note is styled as a warning, not as more of the reply.
-        note = harness.rows()[-1].visual
-        assert isinstance(note, Content)
-        styles = [str(span.style) for span in note.spans]
-        assert any("$text-warning" in style for style in styles)
-        assert harness.pane.border_subtitle == "model sees 3 of 4 turns"
+        # Cut off: the reply ends in a dim ellipsis.
+        assert harness.lines()[-2:] == ["› four\nfourth.…", "[after the reply]"]
 
     _drive(harness, scenario)
 
@@ -303,7 +366,7 @@ def test_a_line_in_progress_starts_in_the_same_column_as_a_recorded_turn() -> No
         await pilot.pause(0.1)
         recorded = harness.rows()[-1]
         live = [child for child in harness.pane.children if isinstance(child, Static)][-1]
-        assert str(live.content) == "you ▸ four"
+        assert str(live.content) == "› four"
         # Otherwise the line jumps sideways once its turn is recorded.
         assert live.content_region.x == recorded.content_region.x
 
@@ -315,14 +378,15 @@ def test_a_turn_in_progress_is_laid_out_as_its_recorded_turn_will_be() -> None:
 
     async def scenario(pilot: Pilot[int]) -> None:
         harness.bus.emit(Heard("hello", 0.0))
-        harness.bus.emit(ReplyToken("happy Hi"))
+        harness.bus.emit(ReplyToken("[happy] Hi"))
         harness.bus.emit(ReplyToken(" there."))
         await pilot.pause(0.1)
-        you, llm = [child for child in harness.pane.children if isinstance(child, Static)][-2:]
-        # Shown as it is spoken and recorded, cue in brackets, not as the model wrote it.
-        assert str(llm.content) == "llm ▸ [happy] Hi there."
-        # No blank line between the user's line and the reply, as in a recorded turn.
-        assert llm.region.y == you.region.y + you.region.height
+        you, reply = [child for child in harness.pane.children if isinstance(child, Static)][-2:]
+        assert str(reply.content) == "Hi there."
+        # No blank line between the user's line and the reply, as in a recorded turn, and
+        # the reply is indented under the user's line.
+        assert reply.region.y == you.region.y + you.region.height
+        assert reply.content_region.x == you.content_region.x + 2
 
     _drive(harness, scenario)
 
@@ -337,7 +401,7 @@ def test_another_chat_replaces_everything_in_the_pane() -> None:
         other.add_user_line("hello again")
         harness.bus.emit(_shown(other))
         await pilot.pause(0.1)
-        assert harness.lines() == ["you ▸ hello again"]
+        assert harness.lines() == ["› hello again"]
 
     _drive(harness, scenario)
 
@@ -470,7 +534,7 @@ def test_a_resumed_chat_is_edited_in_the_app_and_the_file_changes(
             assert editor.text == "Hello there friend."
             editor.load_text("Hi. How was your day?")
             await pilot.press("ctrl+s")
-            await _until(pilot, lambda: "edited" in str(rows()[-1].content))
+            await _until(pilot, lambda: "edited" in _text(rows()[-1]))
             await pilot.press("ctrl+q")
 
     asyncio.run(asyncio.wait_for(main(), 20))
