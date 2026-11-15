@@ -15,6 +15,8 @@ from typing import Any, ClassVar, Literal
 from textual.binding import Binding, BindingType
 from textual.containers import HorizontalGroup, VerticalGroup, VerticalScroll
 from textual.content import Content
+from textual.events import Click
+from textual.style import Style
 from textual.timer import Timer
 from textual.widgets import Input, Static
 
@@ -80,12 +82,19 @@ def _settled(text: str) -> str:
     return head if bracket and "]" not in tail and "\n" not in tail else text
 
 
-def _hint(*pairs: tuple[str, str]) -> Content:
-    parts: list[tuple[str, str] | str] = []
-    for index, (key, label) in enumerate(pairs):
+# Marks the part of a turn's action hint that runs an action when clicked. It is not an
+# ``@click`` link, which would paint every item in one link colour.
+_ACTION_META = "turn_action"
+
+
+def _hint(*items: tuple[str, str, str]) -> Content:
+    """Return the action hint: each key and label, marked with the action a click on it runs."""
+    parts: list[Content | str] = []
+    for index, (key, label, action) in enumerate(items):
         if index:
             parts.append("   ")
-        parts += [(key, _KEY), (f" {label}", "dim")]
+        item = Content.assemble((key, _KEY), (f" {label}", "dim"))
+        parts.append(item.stylize(Style.from_meta({_ACTION_META: action})))
     return Content.assemble(*parts)
 
 
@@ -191,6 +200,12 @@ class TurnRow(VerticalGroup):
         self.remove_class("editing")
         self.show(self.turn)
 
+    def on_resize(self) -> None:
+        """Keep the whole of the selected turn in view as it grows, while the pane is in use."""
+        pane = self.parent
+        if self.has_class("selected") and isinstance(pane, Conversation) and pane.has_focus_within:
+            pane.show_selected()
+
     def show_keys(self, *, resend: bool, try_again: bool) -> None:
         """Show the keys that change this turn, under it while it is selected.
 
@@ -202,11 +217,11 @@ class TurnRow(VerticalGroup):
             Whether ``r`` applies: the turn is the newest and no turn is in progress.
         """
         answered = self.turn.reply is not None
-        keys = [("e", "Edit reply")] if answered else []
-        keys += [("E", "Edit my message")] if resend else []
-        keys += [("r", "Try again")] if try_again else []
-        keys += [("y", "Copy")] if answered else []
-        keys += [("h", "Show" if self.turn.hidden else "Hide"), ("d", "Delete")]
+        keys = [("e", "Edit reply", "edit")] if answered else []
+        keys += [("E", "Edit my message", "edit_message")] if resend else []
+        keys += [("r", "Try again", "try_again")] if try_again else []
+        keys += [("y", "Copy", "copy")] if answered else []
+        keys += [("h", "Show" if self.turn.hidden else "Hide", "hide"), ("d", "Delete", "delete")]
         self._keys.update(_hint(*keys))
 
 
@@ -262,7 +277,9 @@ class Conversation(VerticalScroll):
         self._send = send
         self._hold_mic = hold_mic
         self._editor: TurnEditor | None = None
-        self._back_from: str | None = None  # the turn an editor was closed on
+        # The turn to select when the pane is next focused: the one an editor was closed on,
+        # or the one clicked.
+        self._focus_turn: str | None = None
         self._user: Bubble | None = None
         self._reply: Bubble | None = None
         self._reply_words = ""
@@ -369,19 +386,30 @@ class Conversation(VerticalScroll):
         if self._editor is not None:
             self._editor.focus_text()
             return
-        back_from, self._back_from = self._back_from, None
-        if back_from in self._rows:
-            self._select(back_from)  # the turn just edited stays selected
+        focus_turn, self._focus_turn = self._focus_turn, None
+        if focus_turn in self._rows:
+            self._select(focus_turn)  # the turn just edited, or clicked, stays selected
         elif self._order:
             self._select(self._order[-1])
 
     def _select(self, turn_id: str | None) -> None:
         self._selected = turn_id
         self._mark_selected()
-        row = None if turn_id is None else self._rows.get(turn_id)
-        if row is not None:
-            self.scroll_to_widget(row, animate=False)
+        self.show_selected()
         self.refresh_bindings()
+
+    def show_selected(self) -> None:
+        """Scroll the selected turn fully into view, its action hint or editor included.
+
+        Notes
+        -----
+        Selecting a turn shows its action hint, and an editor makes it taller, so the row
+        grows once the pane is laid out again. The row calls this again when it does, or
+        the hint would stay cut off under the bottom edge.
+        """
+        row = None if self._selected is None else self._rows.get(self._selected)
+        if row is not None and row.is_attached:
+            self.scroll_to_widget(row, animate=False, immediate=True)
 
     def _mark_selected(self) -> None:
         target = self._try_again_target()
@@ -392,6 +420,51 @@ class Conversation(VerticalScroll):
                     resend=not self._busy,
                     try_again=target is not None and target.id == turn_id,
                 )
+
+    def focus_on_click(self) -> bool:
+        """Leave focus to ``on_click``, which selects the turn clicked rather than the newest.
+
+        Returns
+        -------
+        bool
+            Always False.
+        """
+        return False
+
+    async def on_click(self, event: Click) -> None:
+        """Select a recorded turn that is clicked, and act on a turn already selected.
+
+        Parameters
+        ----------
+        event : Click
+            The click. On an item of the action hint it runs that action. On a bubble of the
+            selected turn it opens the reply (``e``) or the user's line (``E``) in the editor.
+            The turn in progress and an open editor take no clicks.
+        """
+        widget = event.widget
+        if widget is None or self._editor is not None:
+            return
+        row = next((n for n in widget.ancestors_with_self if isinstance(n, TurnRow)), None)
+        if row is None or row.turn.id not in self._rows:
+            return
+        event.stop()
+        action = event.style.meta.get(_ACTION_META)
+        if isinstance(action, str):
+            if self.check_action(action, ()):
+                await self.run_action(action)
+            return
+        bubble = next((n for n in widget.ancestors_with_self if isinstance(n, Bubble)), None)
+        was_selected = self.has_focus and self._selected == row.turn.id
+        if not self.has_focus:
+            self._focus_turn = row.turn.id
+            self.focus()
+        self._select(row.turn.id)
+        if not was_selected or bubble is None:
+            return
+        if bubble.has_class("ai"):
+            self.action_edit()
+        elif self.check_action("edit_message", ()):
+            self.action_edit_message()
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         """Offer only the changes that apply to the selected turn.
@@ -488,7 +561,7 @@ class Conversation(VerticalScroll):
             row.close_editor()
         editor.remove()
         self._hold_mic(False)
-        self._back_from = editor.turn_id
+        self._focus_turn = editor.turn_id
         self.focus()
         self.refresh_bindings()
 

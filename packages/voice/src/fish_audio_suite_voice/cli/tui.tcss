@@ -90,6 +90,13 @@ Screen {
         opacity: 50%;
     }
 
+    /* A recorded turn's bubbles and its action hint take clicks; the turn in progress
+       does not. */
+    .turn .bubble > .text,
+    .turn .actions {
+        pointer: pointer;
+    }
+
     .actions {
         display: none;
         margin-top: 1;

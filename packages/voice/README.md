@@ -275,6 +275,8 @@ The messages show the whole chat, including the turns of a chat you resumed or o
 | ? | List every key in plain words |
 | Escape or Tab | Go back to typing |
 
+You can also use the mouse. Click a message of a recorded turn to select that turn, and click a message of the selected turn to edit it: its reply as E does, your line as Shift+E does (when that is offered). Each item of the keys listed under the selected turn, such as `y Copy`, runs when you click it. The turn in progress takes no clicks.
+
 E and Shift+E open an editor under the turn, in place of the line. Enter saves, Escape keeps the line as it was, and Shift+Enter (if your terminal sends it) or Ctrl+J starts a new line. Ctrl+E opens the text in `$VISUAL` or `$EDITOR` (`vi` when neither is set) and brings back what you save there; the session waits while that editor is open. While a line is open the mic is off, and the state line says `○ Mic off while you edit`; it comes back when you are done, unless you had turned it off yourself. A reply you edit is saved as you wrote it, led by the cue the reply opened with (such as `[warm]`) unless you start it with a cue of your own; its other cues go, because the editor shows the reply without them.
 
 A short message confirms each change, such as `Message hidden from AI · z to undo`. The model is sent your version from the next request on. What it first wrote is kept in the file, so undo can put it back, but undo does not survive a restart or opening another chat. A change is applied between turns: during a reply it waits until the reply is recorded, and while the mic listens it stops the listen, so speech it had started to hear is dropped. Each change is saved to the chat's file at once.

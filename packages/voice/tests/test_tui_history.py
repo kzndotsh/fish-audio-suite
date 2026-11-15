@@ -510,6 +510,151 @@ def test_the_session_s_answer_redraws_the_pane_while_a_line_is_edited() -> None:
     _drive(harness, scenario)
 
 
+def _bubbles(row: TurnRow) -> tuple[Widget, Widget]:
+    """The boxes of a recorded turn's bubbles: the user's, then the reply's."""
+    you, reply = row.query(Bubble)
+    return you.query_one(".text"), reply.query_one(".text")
+
+
+def test_clicking_a_message_selects_its_turn_and_a_second_click_edits_it() -> None:
+    harness = _Harness()
+    record = _record()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        harness.bus.emit(_shown(record))
+        await pilot.pause(0.1)
+        first = harness.rows()[0]
+        you, reply = _bubbles(first)
+        assert await pilot.click(reply)  # from the composer: select, do not edit yet
+        await pilot.pause(0.05)
+        assert harness.app.focused is harness.pane
+        assert harness.pane.selected is not None
+        assert harness.pane.selected.id == record.turns[0].id
+        assert "e Edit reply" in _text(first)
+        assert not harness.pane.editing
+        assert await pilot.click(_bubbles(harness.rows()[1])[0])  # another turn's message
+        await pilot.pause(0.05)
+        assert harness.pane.selected.id == record.turns[1].id
+        assert not harness.pane.editing
+        assert await pilot.click(_bubbles(harness.rows()[1])[1])  # its reply, now selected
+        await pilot.pause(0.05)
+        assert harness.pane.editing
+        assert _editor(harness).text == "second."
+        await pilot.press("escape")
+        await pilot.pause(0.05)
+        assert await pilot.click(you)  # the first turn again, then its own line
+        await pilot.pause(0.05)
+        assert await pilot.click(you)
+        await pilot.pause(0.05)
+        assert _editor(harness).text == "one"
+
+    _drive(harness, scenario)
+
+
+def _click_action(pilot: Pilot[int], row: TurnRow, label: str) -> Awaitable[bool]:
+    """Click the item of the row's action hint that reads ``label``."""
+    hint = row.query_one(".actions", Static)
+    at = str(hint.content).index(label)
+    return pilot.click(hint, offset=(hint.content_region.x - hint.region.x + at, 0))
+
+
+def test_each_item_of_the_action_hint_runs_its_action_when_clicked() -> None:
+    harness = _Harness()
+    record = _record()
+    one = record.turns[0].id
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        harness.bus.emit(_shown(record))
+        await pilot.pause(0.1)
+        await pilot.press("tab", "g")
+        await pilot.pause(0.05)
+        first = harness.rows()[0]
+        assert await _click_action(pilot, first, "Copy")
+        assert await _click_action(pilot, first, "Hide")
+        await pilot.pause(0.05)
+        assert harness.copied == ["first."]
+        assert harness.live.sent == [SetHidden(one, hidden=True)]
+        assert harness.pane.selected is not None
+        assert harness.pane.selected.id == one
+        assert await _click_action(pilot, first, "Edit my message")
+        await pilot.pause(0.05)
+        assert _editor(harness).text == "one"
+        # A blank between items does nothing.
+        await pilot.press("escape")
+        await pilot.pause(0.05)
+        hint = harness.rows()[0].query_one(".actions", Static)
+        gap = str(hint.content).index("   ")
+        assert await pilot.click(hint, offset=(hint.content_region.x - hint.region.x + gap, 0))
+        assert not harness.pane.editing
+        assert len(harness.live.sent) == 1
+
+    _drive(harness, scenario)
+
+
+def test_the_turn_in_progress_takes_no_clicks() -> None:
+    harness = _Harness()
+    record = _record()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        harness.bus.emit(_shown(record, window=10))
+        harness.bus.emit(Heard("four", 0.0))
+        harness.bus.emit(ReplyToken("fourth."))
+        await pilot.pause(0.1)
+        you, reply = _live(harness)
+        assert await pilot.click(you.query_one(".text"))
+        assert await pilot.click(reply.query_one(".text"))
+        await pilot.pause(0.05)
+        assert harness.app.focused is not harness.pane
+        assert not harness.pane.editing
+
+    _drive(harness, scenario)
+
+
+def _record_of(turns: int) -> Record:
+    record = Record("be brief")
+    for n in range(turns):
+        record.add_user_line(f"question {n}")
+        record.add_reply(f"answer {n}.", interrupted=False)
+    return record
+
+
+def _in_view(harness: _Harness, widget: Widget) -> bool:
+    region = widget.region
+    return bool(region) and harness.pane.scrollable_content_region.contains_region(region)
+
+
+def test_the_selected_turn_and_its_action_hint_are_scrolled_fully_into_view() -> None:
+    harness = _Harness()
+    record = _record_of(12)  # more than fit in the pane
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        harness.bus.emit(_shown(record))
+        await pilot.pause(0.1)
+        await pilot.press("tab")  # selects the newest turn, which grows its hint
+        await pilot.pause(0.1)
+        newest = harness.rows()[-1]
+        assert _in_view(harness, newest.query_one(".actions"))
+        await pilot.press("g")
+        await pilot.pause(0.1)
+        assert _in_view(harness, harness.rows()[0].query_one(".actions"))
+        await pilot.press("G")
+        await pilot.pause(0.1)
+        assert await pilot.click(_bubbles(newest)[0])  # its line, now selected
+        await pilot.pause(0.1)
+        assert harness.pane.editing
+        editor = harness.pane.query_one(TurnEditor)
+        assert _in_view(harness, editor)
+        await pilot.press("escape")
+        await pilot.pause(0.1)
+        harness.app.query_one("#line").focus()
+        await pilot.pause(0.2)  # the hint goes and the pane settles before the click
+        assert await pilot.click(_bubbles(newest)[1])  # clicked from the composer
+        await pilot.pause(0.1)
+        assert _in_view(harness, newest.query_one(".actions"))
+
+    _drive(harness, scenario)
+
+
 def test_a_recorded_turn_takes_the_place_of_the_turn_in_progress() -> None:
     harness = _Harness()
     record = _record()
