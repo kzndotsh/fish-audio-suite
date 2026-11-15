@@ -36,6 +36,9 @@ Screen {
 #conversation {
     height: 1fr;
     padding: 0 4;
+    /* A short chat sits at the bottom, by the composer, and new turns push it up, so only
+       what has been pushed up far enough fades. */
+    align-vertical: bottom;
 
     .message {
         margin-bottom: 1;
