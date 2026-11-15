@@ -75,12 +75,11 @@ _LISTED_CUES: Final = (
 )
 
 _DIRECTED_CUES: Final = (
-    "Your voice is directed in plain language. Before the words a feeling applies to, you "
-    "may write a short direction in square brackets: a few words on how to say them, such "
-    "as the emotion, the intent, the pace or the loudness. A direction carries on until you "
-    "write another, so give one where the reply starts and then only where the feeling "
-    "really shifts, not before every sentence. Word each direction fresh for this moment, "
-    "and do not reuse the wording of an earlier one. Describe only how the words sound, "
+    "Your voice is directed in plain language. Every sentence starts with its own direction "
+    "in square brackets: a few words on how to say that sentence, such as the emotion, the "
+    "intent, the pace or the loudness. Word each direction fresh for its sentence, let it "
+    "change as the feeling moves through the reply, and do not reuse the wording of an "
+    "earlier one. Describe only how the words sound, "
     "never a face, a gesture or an action. "
     "A laugh, a sigh, a breath or a pause is a direction too: write it in brackets only, "
     "and do not also spell it out in words. Use sounds sparingly. "
