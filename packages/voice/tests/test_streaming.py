@@ -16,7 +16,7 @@ from typing import Any
 
 import ormsgpack
 import pytest
-from voice_fakes import ScriptedMic
+from voice_fakes import ScriptedMic, install_detector, level_frame
 
 from fish_audio_suite_voice.asr import streaming
 from fish_audio_suite_voice.asr.result import BargeIn, NoTurn, StreamFallback, Transcript
@@ -33,6 +33,7 @@ from fish_audio_suite_voice.asr.turn_stream import (
     TurnStarted,
     TurnUpdate,
 )
+from fish_audio_suite_voice.capture.listen import stream_utterance
 from fish_audio_suite_voice.capture.mic import Mic
 from fish_audio_suite_voice.capture.pcm import BYTES_PER_S, FRAME_BYTES
 from fish_audio_suite_voice.capture.portaudio import PortAudioMissingError
@@ -43,7 +44,7 @@ from fish_audio_suite_voice.config.tune import (
     SttProvider,
     SttTune,
 )
-from fish_audio_suite_voice.session.cancel import StopFlag
+from fish_audio_suite_voice.session.cancel import StopFlag, never
 from fish_audio_suite_voice.session.events import EVENTS, Event, Interim
 
 CHUNK = BYTES_PER_S * 80 // 1000  # 80 ms of audio: the size Deepgram recommends
@@ -121,6 +122,7 @@ def _mic(
         carried: BargeIn | None,
         tune: ListenTune,
         since: int | None = None,
+        held: Callable[[], bool] = never,
     ) -> bool:
         if seen is not None:
             seen.update(carried=carried, tune=tune)
@@ -271,6 +273,7 @@ def test_an_outage_hands_over_the_frames_the_mic_was_still_passing_on() -> None:
         carried: BargeIn | None,
         tune: ListenTune,
         since: int | None = None,
+        held: Callable[[], bool] = never,
     ) -> bool:
         del carried, tune
         for _ in range(3):
@@ -298,6 +301,7 @@ def test_a_turn_cancelled_while_the_mic_lets_go_still_closes_the_stream() -> Non
         carried: BargeIn | None,
         tune: ListenTune,
         since: int | None = None,
+        held: Callable[[], bool] = never,
     ) -> bool:
         del carried, tune
         for _ in range(3):
@@ -507,6 +511,15 @@ def test_the_connection_goes_to_the_regional_endpoint_that_was_chosen() -> None:
     assert urls[0].startswith("wss://api.deepgram.com/v2/listen?")
     assert urls[1].startswith("wss://api.eu.deepgram.com/v2/listen?")
     assert all("mip_opt_out=true" in url for url in urls)  # whichever region, nothing is kept
+
+
+def test_key_clicks_while_typing_open_no_connection(monkeypatch: pytest.MonkeyPatch) -> None:
+    install_detector(monkeypatch, lambda _frame: True)  # the clicks pass the voice detector
+    clicks = ScriptedMic([level_frame(2000)] * 40)
+    for typing, connects in ((True, 0), (False, 1)):
+        fake = _FakeFlux()
+        _run(fake, stream_utterance, mic=clicks, held=lambda typing=typing: typing)
+        assert fake.opens == connects
 
 
 def test_a_knock_or_a_cough_is_dropped_before_anything_is_connected_or_sent() -> None:
@@ -781,6 +794,7 @@ def test_an_outage_hands_over_where_the_mic_was_read_up_to_so_nothing_is_lost() 
         carried: BargeIn | None,
         tune: ListenTune,
         since: int | None = None,
+        held: Callable[[], bool] = never,
     ) -> bool:
         del carried, tune
         for frame in mic.frames(stop, since=since):

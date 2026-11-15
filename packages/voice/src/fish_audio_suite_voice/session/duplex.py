@@ -240,6 +240,7 @@ async def _session(
             asr_http=asr_http,
             device=device,
             muted=(lambda: source.muted) if source is not None else never,
+            typing=(lambda: source.typing) if source is not None else never,
             full_screen=full_screen,
             resumed=resumed,
         )

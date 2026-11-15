@@ -29,7 +29,7 @@ from fish_audio_suite_voice.config.tune import (
     ListenTune,
 )
 from fish_audio_suite_voice.logutil.debug import debug, heartbeat_due, trace, warn
-from fish_audio_suite_voice.session.cancel import StopFlag
+from fish_audio_suite_voice.session.cancel import StopFlag, never
 
 __all__ = [
     "cooldown_report",
@@ -171,8 +171,12 @@ def _encode_wav(pcm: bytes) -> bytes:
 
 
 class _Listen:
-    def __init__(self, tune: ListenTune, vad: Vad) -> None:
+    def __init__(self, tune: ListenTune, vad: Vad, held: Callable[[], bool] = never) -> None:
         self.tune: ListenTune = tune
+        # While it says yes (the user is typing), no speech can start: key clicks pass
+        # the voice detector and the level floor.
+        self.held: Callable[[], bool] = held
+        self._held_noted: bool = False
         self.clip_frames: list[bytes] = []
         self.ring: collections.deque[tuple[bytes, bool]] = collections.deque(
             maxlen=tune.pre_pad_frames
@@ -256,6 +260,15 @@ class _Listen:
         self.window_peak = 0.0
 
     def _arm(self, frame: bytes, rms: float, vad_speech: bool) -> bool:
+        if self.held():
+            # Dropping the pre-pad too keeps a start from being pieced together from
+            # the last key clicks once the hold ends.
+            self.ring.clear()
+            if not self._held_noted:
+                self._held_noted = True
+                debug("listen.held typing")
+            return False
+        self._held_noted = False
         self.ring.append((frame, start_hit(rms, self.min_speech_now, vad_speech=vad_speech)))
         peak_ring = max((pcm_rms(pcm) for pcm, _ in self.ring), default=0.0)
         need_start = start_frames_needed(
@@ -400,6 +413,7 @@ def record_utterance(
     carried: CarriedClip | None = None,
     tune: ListenTune | None = None,
     give_up_frames: int | None = None,
+    held: Callable[[], bool] = never,
 ) -> bytes | None:
     """Block until one VAD utterance.
 
@@ -418,6 +432,9 @@ def record_utterance(
     give_up_frames : int or None, optional
         Stop and return None when speech has not started after this many 30 ms frames. None
         waits as long as it takes.
+    held : Callable, optional
+        Says whether speech must not start yet, such as while the user is typing. Once
+        speech has started it no longer applies. Never held when omitted.
 
     Returns
     -------
@@ -436,7 +453,7 @@ def record_utterance(
     detector keeps state between frames.
     """
     tune = tune or ListenTune()
-    heard = _Listen(tune, open_vad(tune.vad_engine, tune.vad_aggressiveness))
+    heard = _Listen(tune, open_vad(tune.vad_engine, tune.vad_aggressiveness), held)
     _prime_listen(heard, carried)
     trace(
         "listen.open vad={} start_speech_frames={} min_rms={} min_voiced_frames={} "
@@ -464,8 +481,14 @@ def record_utterance(
 class _StreamListen(_Listen):
     """A listen that hands each frame of the utterance to ``sink`` as it is kept."""
 
-    def __init__(self, tune: ListenTune, vad: Vad, sink: Callable[[bytes, bool], None]) -> None:
-        super().__init__(tune, vad)
+    def __init__(
+        self,
+        tune: ListenTune,
+        vad: Vad,
+        sink: Callable[[bytes, bool], None],
+        held: Callable[[], bool] = never,
+    ) -> None:
+        super().__init__(tune, vad, held)
         self._sink = sink
 
     def remember(self, frame: bytes, hit: bool) -> None:
@@ -490,6 +513,7 @@ def stream_utterance(
     carried: BargeIn | None = None,
     tune: ListenTune | None = None,
     since: int | None = None,
+    held: Callable[[], bool] = never,
 ) -> bool:
     """Block until one utterance ends, passing its frames to ``sink`` as they come.
 
@@ -511,6 +535,8 @@ def stream_utterance(
         VAD and utterance limits. None uses the defaults.
     since : int or None, optional
         The mic position to read from. None reads from now.
+    held : Callable, optional
+        Says whether speech must not start yet, as for ``record_utterance``.
 
     Returns
     -------
@@ -525,7 +551,7 @@ def stream_utterance(
     judge, with this silence as the limit.
     """
     tune = tune or ListenTune()
-    heard = _StreamListen(tune, open_vad(tune.vad_engine, tune.vad_aggressiveness), sink)
+    heard = _StreamListen(tune, open_vad(tune.vad_engine, tune.vad_aggressiveness), sink, held)
     _prime_listen(heard, carried)
     for idle_frames, frame in enumerate(mic.frames(quit_requested, since=since), start=1):
         if heard.take(frame, idle_frames):

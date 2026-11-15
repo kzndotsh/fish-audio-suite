@@ -25,7 +25,7 @@ from textual.app import App, ComposeResult, RenderResult, SystemCommand
 from textual.binding import Binding, BindingType
 from textual.containers import Horizontal
 from textual.content import Content
-from textual.events import Resize
+from textual.events import Key, Resize
 from textual.message import Message
 from textual.screen import ModalScreen, Screen
 from textual.timer import Timer
@@ -281,6 +281,14 @@ class Composer(Input):
 
     The lines are kept for this session only, newest first. A line you were typing when you
     went back through them is kept, and comes back when you go past the newest one.
+
+    Parameters
+    ----------
+    on_typing : Callable, optional
+        Called on every key pressed here and every change to the line, pasting included,
+        so the mic can tell key clicks from speech (``LiveInput.note_typing``).
+    id : str or None, optional
+        The widget's id.
     """
 
     BINDINGS: ClassVar[list[BindingType]] = [
@@ -290,11 +298,39 @@ class Composer(Input):
         Binding("tab", "messages", "Messages"),
     ]
 
-    def __init__(self, *, id: str | None = None) -> None:  # noqa: A002 - Textual's own name
+    def __init__(
+        self,
+        *,
+        on_typing: Callable[[], None] = lambda: None,
+        id: str | None = None,  # noqa: A002 - Textual's own name
+    ) -> None:
         super().__init__(placeholder="Type a message, or just talk", id=id)
+        self._on_typing = on_typing
         self._sent: list[str] = []
         self._at: int | None = None  # where in ``_sent`` the line came from, None for a new one
         self._draft = ""
+
+    def on_key(self, event: Key) -> None:
+        """Note the keystroke, arrows and Enter included, and let ``Input`` handle it.
+
+        Parameters
+        ----------
+        event : Key
+            The key.
+        """
+        del event
+        self._on_typing()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        """Note a change to the line, which a paste makes without a key.
+
+        Parameters
+        ----------
+        event : Input.Changed
+            The change, which goes on to the app.
+        """
+        del event
+        self._on_typing()
 
     async def action_submit(self) -> None:
         """Remember the line, then send it."""
@@ -454,7 +490,7 @@ class VoiceApp(App[int]):
             yield Static(id="state")
             yield Waveform(id="meter")
             yield Static(id="hint")
-        yield Composer(id="line")
+        yield Composer(on_typing=self._live.note_typing, id="line")
         yield Footer()
 
     def on_resize(self, event: Resize) -> None:

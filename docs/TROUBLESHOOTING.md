@@ -107,6 +107,10 @@ The app ignores the mic for `FISH_VOICE_COOLDOWN` seconds (default 0.8) after a 
 
 In the log, `listen speech_start` comes within a few hundred ms of `listen waiting for you`, and the transcript is empty, junk, or the bot's own last words. The speaker's echo reached the mic before the room went quiet. Raise `FISH_VOICE_COOLDOWN`, lower the speaker volume, or move the mic away from the speaker. With `--debug`, the `listen cooldown` line after each reply shows how close the echo came: `speech_like` near `start_needs` means it could start a turn.
 
+### A turn starts while I type in the full-screen app
+
+In `--tui` the mic starts no turn while you type in the composer, nor for 1.5 s after the last key: with `--debug` the log says `listen held typing` once per run of keys. A turn that still starts while you type was started by something else, or began before the first key. Keys typed outside the composer, such as in the chats dialog's search, do not hold the mic.
+
 ### `asr skip backchannel` or `asr skip hallucination`
 
 These are deliberate. A transcript that is only a hesitation ("um", "hmm") is skipped, as are lines speech-to-text invents in silence, such as "Thanks for watching". Said over the bot, "yeah" and "mm-hmm" are skipped as well, because they mean "go on". On a turn of its own, "yeah" is answered.

@@ -26,7 +26,7 @@ from fish_audio_suite_voice.asr.pipeline import HeardLine
 from fish_audio_suite_voice.session.cancel import StopFlag
 from fish_audio_suite_voice.session.commands import DeleteTurn, Undo
 from fish_audio_suite_voice.session.events import EVENTS, Event, Heard
-from fish_audio_suite_voice.session.inputs import LiveInput
+from fish_audio_suite_voice.session.inputs import TYPING_HOLD_S, LiveInput
 from fish_audio_suite_voice.session.state import DuplexContext, TurnInput
 from fish_audio_suite_voice.tts.speaker import FishSpeaker
 
@@ -302,6 +302,37 @@ def test_the_context_takes_the_mute_switch_so_the_barge_in_watch_can_follow_it()
     tts = FishSpeaker(api_key="k", voice_id="voice")
     assert run_session(quick_config(), tts, hello_tokens, source=source) == 0
     assert seen == [False, True, False]
+
+
+def test_a_keystroke_counts_as_typing_for_a_moment(monkeypatch: pytest.MonkeyPatch) -> None:
+    now = [100.0]
+    monkeypatch.setattr(time, "monotonic", lambda: now[0])
+    live = LiveInput()
+    assert not live.typing  # no key pressed yet
+    live.note_typing()
+    assert live.typing
+    now[0] += TYPING_HOLD_S - 0.1
+    assert live.typing
+    live.note_typing()  # each key starts the hold again
+    now[0] += TYPING_HOLD_S - 0.1
+    assert live.typing
+    now[0] += 0.2
+    assert not live.typing
+
+
+def test_the_listen_holds_off_while_the_source_says_the_user_is_typing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tts = FishSpeaker(api_key="k", voice_id="voice")
+    install_gate(monkeypatch)
+    recordings = ScriptedRecordings(monkeypatch, None)
+    source = ScriptedTurns("mic")
+    source.typing = True
+    assert run_session(quick_config(), tts, hello_tokens, source=source) == 0
+    held = recordings.calls[0]["held"]
+    assert held()
+    source.typing = False
+    assert not held()
 
 
 def test_muting_closes_the_session_mic_at_once_and_while_muted() -> None:

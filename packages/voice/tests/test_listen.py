@@ -33,11 +33,14 @@ from fish_audio_suite_voice.config.tune import (
     MAX_UTTERANCE_FRAMES,
     ListenTune,
 )
-from fish_audio_suite_voice.session.cancel import StopFlag
+from fish_audio_suite_voice.session.cancel import StopFlag, never
 
 
 def _stream(
-    frames: list[bytes], tune: ListenTune, carried: BargeIn | None = None
+    frames: list[bytes],
+    tune: ListenTune,
+    carried: BargeIn | None = None,
+    held: collections.abc.Callable[[], bool] = never,
 ) -> tuple[list[tuple[bytes, bool]], bool, int]:
     """Run ``stream_utterance`` over ``frames``.
 
@@ -60,6 +63,7 @@ def _stream(
         lambda frame, hit: kept.append((frame, hit)),
         carried=carried,
         tune=tune,
+        held=held,
     )
     return kept, ended, pulled
 
@@ -321,6 +325,39 @@ def test_record_utterance_gives_up_when_speech_has_not_started_in_time(
     # Once speech has started, the limit no longer applies.
     assert record_utterance(mic, tune=tune, give_up_frames=8) is not None
     assert record_utterance(mic, tune=tune) is not None
+
+
+def test_no_speech_starts_while_the_user_is_typing(monkeypatch: pytest.MonkeyPatch) -> None:
+    loud, quiet = level_frame(500), level_frame(0)
+    frames = [loud] * 6 + [quiet] * 2  # key clicks loud and voiced enough to start a turn
+    mic, tune = _install_listen_fakes(monkeypatch, frames)
+    assert record_utterance(mic, tune=tune, held=lambda: True) is None
+    kept, _ended, _pulled = _stream(frames, tune, held=lambda: True)
+    assert kept == []  # nothing would leave the machine for a streaming recogniser
+    # The same frames start a turn once the user has stopped typing.
+    assert record_utterance(mic, tune=tune, held=lambda: False) is not None
+
+
+def test_a_turn_starts_only_from_frames_heard_after_typing_stops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loud, quiet = level_frame(500), level_frame(0)
+    mic, tune = _install_listen_fakes(monkeypatch, [loud] * 4 + [quiet] * 2)
+    asked = itertools.count()
+    wav = record_utterance(mic, tune=tune, held=lambda: next(asked) < 2)
+    assert wav is not None
+    # The two frames heard while typing are not in the clip, nor counted toward its start.
+    assert len(_wav_frames(wav)) == 4
+    assert len(_wav_frames(record_utterance(mic, tune=tune) or b"")) == 6
+
+
+def test_typing_does_not_end_a_turn_that_has_started(monkeypatch: pytest.MonkeyPatch) -> None:
+    loud, quiet = level_frame(500), level_frame(0)
+    mic, tune = _install_listen_fakes(monkeypatch, [loud] * 6 + [quiet] * 2)
+    asked = itertools.count()
+    wav = record_utterance(mic, tune=tune, held=lambda: next(asked) >= 2)
+    assert wav is not None
+    assert len(_wav_frames(wav)) == 8
 
 
 def _barge_carried_listen(

@@ -8,7 +8,7 @@ import threading
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable
-from typing import Protocol
+from typing import Final, Protocol
 
 from fish_audio_suite_voice.asr.outcome import HeardLine
 from fish_audio_suite_voice.logutil.debug import mark_turn
@@ -19,10 +19,17 @@ from fish_audio_suite_voice.session.signals import DuplexSession
 from fish_audio_suite_voice.session.state import TurnInput
 
 __all__ = [
+    "TYPING_HOLD_S",
     "Hear",
     "LiveInput",
     "TurnSource",
 ]
+
+TYPING_HOLD_S: Final = 1.5
+"""How long after the last keystroke the user still counts as typing, in seconds.
+
+Key clicks are loud and pass the voice detector, so while typing no listen starts a turn.
+"""
 
 type Hear = Callable[[StopFlag, StopFlag], Awaitable[HeardLine]]
 """Listen for one turn with the mic, given two flags.
@@ -38,6 +45,11 @@ class TurnSource(Protocol):
     @property
     def muted(self) -> bool:
         """Whether the user has muted the mic, with its device closed."""
+        ...
+
+    @property
+    def typing(self) -> bool:
+        """Whether the user is typing, so the mic must not start a turn."""
         ...
 
     def take_commands(self) -> list[ChatCommand]:
@@ -90,6 +102,7 @@ class LiveInput:
         self._typed: deque[str] = deque()
         self._commands: deque[ChatCommand] = deque()
         self._muted = False
+        self._last_key: float | None = None
         # Set to stop a recording in progress: a typed line, or a change of mute.
         self._interrupt = threading.Event()
         # Set by a mute mid-listen: the turn ends there, and words already heard are kept.
@@ -107,6 +120,16 @@ class LiveInput:
     def muted(self) -> bool:
         """Whether the mic is muted, with its device closed."""
         return self._muted
+
+    @property
+    def typing(self) -> bool:
+        """Whether a key was pressed in the last ``TYPING_HOLD_S`` seconds."""
+        last = self._last_key
+        return last is not None and time.monotonic() - last < TYPING_HOLD_S
+
+    def note_typing(self) -> None:
+        """Record a keystroke, so the mic starts no turn while the user types."""
+        self._last_key = time.monotonic()
 
     def submit(self, text: str, *, interrupt: bool = True) -> None:
         """Queue a line as if the user had said it.

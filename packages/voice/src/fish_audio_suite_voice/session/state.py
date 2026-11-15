@@ -96,12 +96,16 @@ class TurnInput:
         What the last barge-in left for the next listen.
     muted : Callable
         Says whether the user has muted the mic. A source with a mute switch supplies it.
+    typing : Callable
+        Says whether the user is typing, so a listen must not start a turn from the key
+        clicks. A source with a keyboard supplies it.
     """
 
     session: DuplexSession
     mic: Mic
     carry: CarryOver = field(default_factory=CarryOver)
     muted: Callable[[], bool] = never
+    typing: Callable[[], bool] = never
 
 
 @dataclass(slots=True)
@@ -269,6 +273,7 @@ def session_context(
     asr_http: httpx.AsyncClient,
     device: str | int | None = None,
     muted: Callable[[], bool] = never,
+    typing: Callable[[], bool] = never,
     full_screen: bool = False,
     resumed: SavedChat | None = None,
 ) -> DuplexContext:
@@ -294,6 +299,8 @@ def session_context(
         chosen by ``open_mic``.
     muted : Callable, optional
         The mute switch of the session's turn source. Never muted when omitted.
+    typing : Callable, optional
+        Whether the user of the session's turn source is typing. Never when omitted.
     full_screen : bool, optional
         Whether the session runs in the full-screen app, which decides an ``auto``
         ``output_latency``.
@@ -317,7 +324,7 @@ def session_context(
     return DuplexContext(
         config=config,
         device=device,
-        turn_input=TurnInput(session=session, mic=mic, muted=muted),
+        turn_input=TurnInput(session=session, mic=mic, muted=muted, typing=typing),
         chat=Chat(
             backend,
             history,

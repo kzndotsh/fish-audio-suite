@@ -53,7 +53,7 @@ from fish_audio_suite_voice.capture.pcm import BYTES_PER_S, SAMPLE_RATE, write_m
 from fish_audio_suite_voice.capture.portaudio import PortAudioMissingError
 from fish_audio_suite_voice.config.tune import ListenTune
 from fish_audio_suite_voice.logutil.debug import debug, trace, warn
-from fish_audio_suite_voice.session.cancel import StopFlag, any_of
+from fish_audio_suite_voice.session.cancel import StopFlag, any_of, never
 from fish_audio_suite_voice.session.events import EVENTS, Interim
 
 __all__ = [
@@ -228,6 +228,7 @@ class _Capture:
         stop: StopFlag,
         carried: BargeIn | None,
         listen: ListenTune,
+        held: Callable[[], bool],
     ) -> None:
         loop = asyncio.get_running_loop()
         self.frames: asyncio.Queue[_Frame | None] = asyncio.Queue()
@@ -248,6 +249,7 @@ class _Capture:
                 carried=carried,
                 tune=listen,
                 since=carried.since if carried is not None else None,
+                held=held,
             ),
         )
         self.pump.add_done_callback(lambda _done: self.frames.put_nowait(None))
@@ -448,6 +450,7 @@ async def stream_turn(
     listen_fn: Callable[..., bool] = stream_utterance,
     on_eager: Callable[[str], None] | None = None,
     on_resumed: Callable[[], None] | None = None,
+    held: Callable[[], bool] = never,
 ) -> Transcript | NoTurn | StreamFallback:
     """Read one turn from the mic, stream it to the recogniser, and return what it heard.
 
@@ -478,6 +481,9 @@ async def stream_turn(
         Needs ``SttTune.eager_eot_threshold`` to be set.
     on_resumed : Callable, optional
         Called when the speaker carried on after that.
+    held : Callable, optional
+        Says whether speech must not start yet, such as while the user is typing. Nothing
+        is connected for a turn the gate never opened. Never held when omitted.
 
     Returns
     -------
@@ -509,6 +515,7 @@ async def stream_turn(
         stop=stop if wrap_up is None else any_of(stop, wrap_up),
         carried=carried,
         listen=listen,
+        held=held,
     )
     turn = _Turn(spec.label)
     turn.keep = bool(stt.save_dir)

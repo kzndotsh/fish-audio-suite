@@ -140,6 +140,7 @@ async def _hear_streaming(
         carried=barge,
         on_eager=functools.partial(start_speculation, ctx.chat) if eager else None,
         on_resumed=functools.partial(drop_speculation, ctx.chat) if eager else None,
+        held=ctx.turn_input.typing,
     )
 
 
@@ -156,7 +157,12 @@ async def _hear_batch(
     first_tune = first_clip_tune(ctx.config.listen, ctx.config.turn)
     try:
         wav = await asyncio.to_thread(
-            record_utterance, ctx.turn_input.mic, stop, carried=carried, tune=first_tune
+            record_utterance,
+            ctx.turn_input.mic,
+            stop,
+            carried=carried,
+            tune=first_tune,
+            held=ctx.turn_input.typing,
         )
     except PortAudioMissingError as e:
         return mic_failure(e), time.monotonic()
@@ -247,6 +253,8 @@ def _reopen(
     wait = wait_frames(turn)
 
     def record(flag: StopFlag) -> bytes | None:
-        return record_utterance(ctx.turn_input.mic, flag, tune=tune, give_up_frames=wait)
+        return record_utterance(
+            ctx.turn_input.mic, flag, tune=tune, give_up_frames=wait, held=ctx.turn_input.typing
+        )
 
     return Reopened(record, stop)

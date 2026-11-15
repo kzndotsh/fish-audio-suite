@@ -128,7 +128,7 @@ class ScriptedTurns:
     real listen, with the mic and Fish ASR scripted at their boundaries), or a function of
     the session's ``TurnInput`` that returns one, to act on the mic side first: keep a
     barge-in clip, leave a reply to resume, quit. ``asked`` counts the turns the loop asked
-    for, and ``muted`` is the mute switch the session reads. A step may add to ``commands``,
+    for, and ``muted`` and ``typing`` are the switches the session reads. A step may add to ``commands``,
     the changes to the chat the loop takes before it asks for the next turn.
     """
 
@@ -136,6 +136,7 @@ class ScriptedTurns:
         self._turns = list(turns)
         self.asked = 0
         self.muted = False
+        self.typing = False
         self.commands: list[ChatCommand] = []
 
     def take_commands(self) -> list[ChatCommand]:

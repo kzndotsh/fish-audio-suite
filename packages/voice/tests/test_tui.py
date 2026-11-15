@@ -262,6 +262,30 @@ def test_a_typed_line_goes_to_the_session_and_the_box_is_cleared() -> None:
     assert _drive(harness, scenario) == 0
 
 
+async def _press_up(pilot: Pilot[int]) -> None:
+    await pilot.press("up")  # an arrow is a key click too, though it changes nothing
+
+
+async def _paste(pilot: Pilot[int]) -> None:
+    pilot.app.query_one(Composer).insert_text_at_cursor("pasted")  # a change with no key
+    await pilot.pause(0.05)
+
+
+@pytest.mark.parametrize("act", [_press_up, _paste], ids=["arrow", "paste"])
+def test_the_composer_tells_the_mic_the_user_is_typing(
+    act: Callable[[Pilot[int]], Awaitable[None]],
+) -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        assert not harness.live.typing
+        await act(pilot)
+        assert harness.live.typing
+        await pilot.press("ctrl+q")
+
+    assert _drive(harness, scenario) == 0
+
+
 def test_up_and_down_bring_back_typed_lines_and_keep_the_draft() -> None:
     harness = _Harness()
 
