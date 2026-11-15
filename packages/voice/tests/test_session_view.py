@@ -17,7 +17,6 @@ from fish_audio_suite_voice.cli.session_view import (
     bar_dots,
     reduce_view,
     turn_timings,
-    wave_dots,
 )
 from fish_audio_suite_voice.session.conversation import Conversation, HistoryView
 from fish_audio_suite_voice.session.events import (
@@ -143,25 +142,6 @@ def _dots(char: str) -> int:
     return (ord(char) - 0x2800).bit_count()
 
 
-def test_wave_dots_are_mirrored_never_empty_and_grow_with_the_level() -> None:
-    assert wave_dots([0.0, 0.0], 1) == ["\u2836"]  # a thin dotted line through the middle
-    assert wave_dots([1.0, 1.0], 1) == ["\u28ff"]  # every dot
-    for rows in (1, 2, 4):
-        silent = wave_dots([0.0] * 6, rows)
-        assert len(silent) == rows
-        assert all(len(line) == 3 for line in silent)  # two bars to a character
-        # Silence is two dots tall per bar: one above the middle and one below it.
-        assert sum(_dots(ch) for line in silent for ch in line) == 6 * 2
-        totals = [
-            sum(_dots(ch) for line in wave_dots([level / 20] * 4, rows) for ch in line)
-            for level in range(21)
-        ]
-        assert totals == sorted(totals)  # louder never draws fewer dots
-        loud = wave_dots([0.5, 1.0, 0.2, 0.9], rows)
-        for line, mirror in zip(loud, reversed(loud), strict=True):
-            assert [_dots(a) for a in line] == [_dots(b) for b in mirror]
-
-
 def test_bar_dots_grow_from_the_bottom_and_never_vanish() -> None:
     heights = [_dots(bar_dots([level / 10] * 2)) for level in range(11)]
     assert heights[0] == 2  # silence: one dot per bar, a thin line along the bottom
@@ -170,13 +150,6 @@ def test_bar_dots_grow_from_the_bottom_and_never_vanish() -> None:
     assert bar_dots([-1.0, 5.0]) == bar_dots([0.0, 1.0])  # out of range is clamped
     assert len(bar_dots([0.5] * 5)) == 3  # two bars to a character, the odd one on its own
     assert bar_dots([]) == ""
-
-
-def test_wave_dots_clamps_levels_and_copes_with_odd_and_empty_input() -> None:
-    assert wave_dots([-5.0, 9.0], 2) == wave_dots([0.0, 1.0], 2)  # out of range is clamped
-    assert wave_dots([0.5], 1) == ["\u2806"]  # an odd bar fills only the left dots of its character
-    assert wave_dots([], 3) == ["", "", ""]
-    assert len(wave_dots([0.5, 0.5, 0.5], 0)) == 1  # a height under 1 still draws
 
 
 def test_a_turns_wait_is_split_into_asr_llm_and_the_rest_and_adds_up() -> None:

@@ -9,7 +9,6 @@ pane focused, a turn can be selected and changed. Each change goes to the sessio
 
 from __future__ import annotations
 
-import math
 from collections.abc import Callable
 from typing import Any, ClassVar
 
@@ -21,7 +20,6 @@ from textual.widgets import Input, Static
 
 from fish_audio_suite_kit import split_cues
 from fish_audio_suite_voice.cli.chat_screens import printable, spoken
-from fish_audio_suite_voice.cli.session_view import wave_dots
 from fish_audio_suite_voice.cli.turn_editor import EditKind, TurnEditor
 from fish_audio_suite_voice.session.commands import (
     ChatCommand,
@@ -40,9 +38,9 @@ __all__ = [
     "TurnRow",
 ]
 
-_HEARING_HOLD_S = 3.0  # how long "you" keeps pulsing after the last loud moment, with no transcript
-_HEARING_TICK_S = 0.1
-_PULSE_CELLS = 5  # characters wide, two bars each
+# How long the words so far stay up after the last update with no turn made of them, as
+# when the recogniser drops the turn as noise.
+_HEARING_HOLD_S = 3.0
 _YOU = ("› ", "bold $text-primary")  # noqa: RUF001 - the quote mark is the design
 _CUT = ("…", "dim")  # ends a reply that was cut off
 _UNHEARD = "dim"  # the words of a reply not played yet
@@ -237,10 +235,7 @@ class Conversation(VerticalScroll):
         # Characters of the reply heard so far while it plays; None shows it all as heard.
         self._heard: int | None = None
         self._pending: Static | None = None
-        self._words = ""
-        self._pulse: Timer | None = None
         self._expiry: Timer | None = None
-        self._phase = 0
         self._chat_id: str | None = None
         self._rows: dict[str, TurnRow] = {}
         self._order: list[str] = []
@@ -542,54 +537,37 @@ class Conversation(VerticalScroll):
         """Reverse the last change to the chat."""
         self._send(Undo())
 
-    def show_hearing(self) -> None:
-        """Show that the user is speaking: a pulsing line, until the words arrive.
-
-        Call it on every loud moment. The line is added on the first call, and goes away
-        by itself if no words follow, as after a cough.
-        """
-        if self._pending is None:
-            self._phase = 0
-            self._pending = self._add("you pending", self._pulse_content())
-            if self.app.animation_level != "none":  # Textual's reduced-motion setting
-                self._pulse = self.set_interval(_HEARING_TICK_S, self._advance_pulse)
-            self.follow()
-        if self._expiry is not None:
-            self._expiry.stop()
-        self._expiry = self.set_timer(_HEARING_HOLD_S, self._drop_pending)
-
     def show_words(self, text: str) -> None:
-        """Show what the user has said so far, on the line that is about to become their words.
+        """Show what the user has said so far, dim, on the line that is about to become their words.
 
         Parameters
         ----------
         text : str
             Everything recognised in the turn up to now. Each call replaces the last.
+
+        Notes
+        -----
+        The line is added with the first words, and goes away by itself if no line follows
+        them, as when the recogniser drops the turn as noise. Blank text adds nothing.
         """
-        self._words = printable(text).strip()
-        self.show_hearing()
-        if self._pending is not None:
-            self._pending.update(self._pulse_content())
-
-    def _pulse_content(self) -> Content:
-        levels = [(math.sin(self._phase * 0.7 + i * 0.6) + 1) / 2 for i in range(_PULSE_CELLS * 2)]
-        (dots,) = wave_dots(levels, 1)
-        if self._words:
-            return Content.assemble(_YOU, (dots, "$text-success"), " ", self._words)
-        return Content.assemble(_YOU, (dots, "$text-success"))
-
-    def _advance_pulse(self) -> None:
-        if self._pending is not None:
-            self._phase += 1
-            self._pending.update(self._pulse_content())
+        words = printable(text).strip()
+        if not words:
+            return
+        content = Content.assemble(_YOU, words)
+        if self._pending is None:
+            self._pending = self._add("you pending", content)
+            self.follow()
+        else:
+            self._pending.update(content)
+        if self._expiry is not None:
+            self._expiry.stop()
+        self._expiry = self.set_timer(_HEARING_HOLD_S, self._drop_pending)
 
     def _stop_pending(self) -> Static | None:
         pending, self._pending = self._pending, None
-        self._words = ""
-        for timer in (self._pulse, self._expiry):
-            if timer is not None:
-                timer.stop()
-        self._pulse = self._expiry = None
+        if self._expiry is not None:
+            self._expiry.stop()
+        self._expiry = None
         return pending
 
     def _drop_pending(self) -> None:
@@ -600,7 +578,7 @@ class Conversation(VerticalScroll):
     def add_user(self, text: str) -> None:
         """Add a line the user said or typed. The reply that follows starts fresh.
 
-        If the pulsing line was showing, it becomes this line where it stands.
+        If the words so far were showing, their line becomes this line where it stands.
 
         Parameters
         ----------

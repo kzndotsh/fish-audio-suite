@@ -678,26 +678,23 @@ def test_the_conversation_widget_keeps_notes_in_order() -> None:
     asyncio.run(asyncio.wait_for(main(), 20))
 
 
-def test_a_pulsing_line_appears_when_speech_starts_and_becomes_the_transcript() -> None:
+def test_the_conversation_shows_no_you_line_until_words_are_recognised() -> None:
     harness = _Harness()
 
     async def scenario(pilot: Pilot[int]) -> None:
-        harness.bus.emit(MicLevel(100.0, 200.0, "listen"))  # quiet: nothing yet
-        await pilot.pause(0.1)
+        # Loud speech moves the meter on the state line only: one level indicator, not two.
+        for rms in (1000.0, 1200.0, 900.0):
+            harness.bus.emit(MicLevel(rms, 200.0, "listen"))
+        await pilot.pause(0.2)
         assert harness.messages() == []
-        harness.bus.emit(MicLevel(1000.0, 200.0, "listen"))
-        harness.bus.emit(MicLevel(1200.0, 200.0, "listen"))  # more speech: still one line
-        await pilot.pause(0.35)  # long enough to animate
-        (pending,) = harness.messages()
-        assert pending.startswith("› ")
-        assert any(0x2800 < ord(ch) <= 0x28FF for ch in pending)  # dots, not blocks
-        frames = {pending}
-        await pilot.pause(0.35)
-        frames.add(harness.messages()[0])
-        assert len(frames) == 2  # it moves
+        harness.bus.emit(Interim("hello"))
+        await pilot.pause(0.1)
+        assert harness.messages() == ["› hello"]  # the words so far, and no dots
+        assert harness.main.query_one("#conversation .you").has_class("pending")  # dim
         harness.bus.emit(Heard("hello there", 120.0))
         await pilot.pause(0.1)
-        assert harness.messages() == ["› hello there"]  # the same line, now with words
+        assert harness.messages() == ["› hello there"]  # the same line, now final
+        assert not harness.main.query_one("#conversation .you").has_class("pending")
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
@@ -711,23 +708,25 @@ async def _settled(pilot: Pilot[int], check: Callable[[], bool], timeout_s: floa
     return check()
 
 
-def test_the_pulsing_line_goes_away_when_no_words_follow(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_words_that_never_become_a_turn_go_away_and_come_back_for_the_next(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setattr(history_pane, "_HEARING_HOLD_S", 0.2)
     harness = _Harness()
 
     async def scenario(pilot: Pilot[int]) -> None:
-        harness.bus.emit(MicLevel(1000.0, 200.0, "listen"))
+        harness.bus.emit(Interim("mm"))
         assert await _settled(pilot, lambda: len(harness.messages()) == 1)
-        # A cough: nothing was heard, so the line goes once the hold runs out.
+        # The turn was dropped as noise: no line followed, so the words go.
         assert await _settled(pilot, lambda: harness.messages() == [])
-        harness.bus.emit(MicLevel(1000.0, 200.0, "listen"))  # and it comes back for real speech
-        assert await _settled(pilot, lambda: len(harness.messages()) == 1)
+        harness.bus.emit(Interim("hello"))  # and the line comes back for the next words
+        assert await _settled(pilot, lambda: harness.messages() == ["› hello"])
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
 
 
-def test_a_typed_line_and_barge_in_levels_do_not_start_the_pulse() -> None:
+def test_a_typed_line_and_barge_in_levels_add_no_pending_line() -> None:
     harness = _Harness()
 
     async def scenario(pilot: Pilot[int]) -> None:
@@ -790,25 +789,6 @@ def test_an_event_that_arrives_as_the_app_closes_is_ignored() -> None:
     asyncio.run(asyncio.wait_for(main(), 20))
     assert harness.app.return_value == 0
     assert harness.app.view.state is not SessionState.THINKING
-
-
-def test_the_pulse_holds_still_when_animations_are_turned_off() -> None:
-    harness = _Harness()
-    harness.app.animation_level = "none"  # what TEXTUAL_ANIMATIONS=none sets
-
-    async def scenario(pilot: Pilot[int]) -> None:
-        harness.bus.emit(MicLevel(1000.0, 200.0, "listen"))
-        await pilot.pause(0.1)
-        (first,) = harness.messages()
-        await pilot.pause(0.4)
-        assert harness.messages() == [first]  # still there, and not moving
-        assert first.startswith("› ")
-        harness.bus.emit(Heard("hi", 1.0))
-        await pilot.pause(0.1)
-        assert harness.messages() == ["› hi"]
-        await pilot.press("ctrl+q")
-
-    assert _drive(harness, scenario) == 0
 
 
 def test_the_composer_has_a_rounded_border_in_the_accent_colour_only_when_focused() -> None:
@@ -1540,23 +1520,6 @@ def test_the_words_appear_on_the_you_line_as_they_are_recognised_then_become_the
         harness.bus.emit(Heard("hello there friend", 120.0))
         await pilot.pause(0.1)
         assert harness.messages() == ["› hello there friend"]  # the same line, now final
-        await pilot.press("ctrl+q")
-
-    assert _drive(harness, scenario) == 0
-
-
-def test_words_that_are_never_confirmed_do_not_stay_on_screen(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(history_pane, "_HEARING_HOLD_S", 0.2)
-    harness = _Harness()
-
-    async def scenario(pilot: Pilot[int]) -> None:
-        harness.bus.emit(Interim("uh"))
-        await pilot.pause(0.1)
-        assert len(harness.messages()) == 1
-        await pilot.pause(0.4)  # nothing more, and no final line: it was not speech
-        assert harness.messages() == []
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0

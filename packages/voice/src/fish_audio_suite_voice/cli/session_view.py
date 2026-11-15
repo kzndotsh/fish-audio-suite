@@ -33,7 +33,6 @@ __all__ = [
     "speech_level_db",
     "split_cells",
     "turn_timings",
-    "wave_dots",
 ]
 
 # Silence, and anything quieter, reads as this many dB below full scale.
@@ -96,56 +95,6 @@ class SessionView:
     def last_turn(self) -> LatencySnapshot | None:
         """The timings of the last finished turn, or None before the first."""
         return self.recent_turns[-1] if self.recent_turns else None
-
-
-def wave_dots(
-    levels: Sequence[float], rows: int, peaks: Sequence[float] | None = None
-) -> list[str]:
-    """Draw a mirrored, dot-matrix waveform: one bar per level, two bars to a character.
-
-    Parameters
-    ----------
-    levels : Sequence[float]
-        How loud each bar is, from 0 to 1, as ``SpeechScale`` gives it, left to right.
-        Even silence draws one dot above and one below the middle, so a quiet mic still
-        shows a thin dotted line.
-    rows : int
-        How many lines tall the drawing is. Each line has four dot rows, so the middle
-        splits ``rows * 4`` dot rows into two equal halves. At least 1.
-    peaks : Sequence[float], optional
-        A held peak for each bar, from 0 to 1. A peak above its bar, with room to spare,
-        is drawn as one dot (a cap) at that height, both above and below the middle.
-
-    Returns
-    -------
-    list[str]
-        ``rows`` strings of Braille characters, each ``ceil(len(levels) / 2)`` long, top to
-        bottom. Braille draws with dots in the foreground colour only, so a cell needs no
-        background and no reversed colours.
-
-    Examples
-    --------
-    >>> wave_dots([0.0, 0.0], 1)
-    ['\u2836']
-    >>> wave_dots([1.0, 1.0], 1)
-    ['\u28ff']
-    """
-    rows = max(1, rows)
-    half = rows * 2  # dot rows above, and below, the middle
-    cells = (len(levels) + 1) // 2
-    grid = [[0] * cells for _ in range(rows)]
-    for x, level in enumerate(levels):
-        reach = max(1, round(min(1.0, max(0.0, level)) * half))
-        column = x % 2
-        steps = list(range(reach))
-        if peaks is not None and x < len(peaks):
-            cap = round(min(1.0, max(0.0, peaks[x])) * half) - 1
-            if cap > reach:  # a cap right above the bar would only make it look taller
-                steps.append(cap)
-        for step in steps:
-            for dot_row in (half - 1 - step, half + step):
-                grid[dot_row // 4][x // 2] |= _DOT_BITS[dot_row % 4][column]
-    return ["".join(chr(_BRAILLE + bits) for bits in row) for row in grid]
 
 
 def reduce_view(view: SessionView, event: Event) -> SessionView:

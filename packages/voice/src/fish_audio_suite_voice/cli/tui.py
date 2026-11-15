@@ -547,8 +547,6 @@ class VoiceApp(App[int]):
         elif isinstance(event, OutputLevel) and speaking:
             self._main.query_one(Waveform).push_speaker(event.rms)
         match event:
-            case MicLevel(rms=rms, need=need, source="listen") if rms >= need > 0.0:
-                conversation.show_hearing()
             case Interim(text=text):
                 conversation.show_words(text)
             case Heard(text=text):
