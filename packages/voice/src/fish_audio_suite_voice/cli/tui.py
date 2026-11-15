@@ -470,6 +470,9 @@ class VoiceApp(App[int]):
         self._editing = False
         self._muted_before_edit = False
         self._view = SessionView()
+        # The title and state line last drawn, so a level tick that changes neither redraws
+        # nothing: each redraw lays out the whole chat, which holds up playback.
+        self._drawn: tuple[str, tuple[str, str, str, str], bool] | None = None
         self._log_lines: deque[str] = deque(maxlen=LOG_LINES)
         self._wake_pending = threading.Event()
         # Subscribed now, so nothing the session says before the screen is up is lost.
@@ -620,9 +623,15 @@ class VoiceApp(App[int]):
         return "○", "Ready", "", "idle"
 
     def _render_view(self) -> None:
+        if (diagnostics := self._diagnostics) is not None:
+            diagnostics.show(self._view, self._sent_to_fish)
+        drawn = (self._title_text, self._state_line(), self._live.muted)
+        if drawn == self._drawn:
+            return
+        self._drawn = drawn
         main = self._main
         main.query_one("#title", Static).update(Content(self._title_text))
-        glyph, word, hint, tone = self._state_line()
+        glyph, word, hint, tone = drawn[1]
         state = main.query_one("#state", Static)
         state.update(Content.assemble(f"{glyph} ", (word, "bold")))
         state.set_classes(tone)
@@ -631,8 +640,6 @@ class VoiceApp(App[int]):
         mood = tone if tone in ("listening", "speaking") else "still"
         meter.set_mood(mood)
         meter.display = mood != "still"
-        if (diagnostics := self._diagnostics) is not None:
-            diagnostics.show(self._view, self._sent_to_fish)
         self.refresh_bindings()
 
     @property
