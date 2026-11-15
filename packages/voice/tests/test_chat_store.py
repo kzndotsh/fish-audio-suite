@@ -34,9 +34,11 @@ from fish_audio_suite_voice.session.chat_store import (
     ChatFile,
     ChatLoadError,
     SavedChat,
+    delete_chat,
     find_chat,
     list_chats,
     load_chat,
+    rename_chat,
 )
 from fish_audio_suite_voice.session.conversation import Conversation
 from fish_audio_suite_voice.session.duplex import duplex_turns
@@ -114,6 +116,44 @@ def test_the_list_is_newest_first_with_a_title_and_a_count(tmp_path: Path) -> No
     assert chats[0].title.startswith("tell me a very long story")
     assert chats[0].title.endswith("…")
     assert len(chats[0].title) == 60
+
+
+def test_the_list_gives_each_chat_s_newest_reply(tmp_path: Path) -> None:
+    _saved(tmp_path, "a1", ("hi", "Hello."), ("a cat name?", "[warm] Bart it is."))
+    _saved(tmp_path, "b2")
+    by_id = {chat.id: chat.last_reply for chat in list_chats(tmp_path)}
+    assert by_id == {"a1": "[warm] Bart it is.", "b2": ""}
+
+
+def test_a_renamed_chat_keeps_its_name_and_when_it_was_last_used(tmp_path: Path) -> None:
+    path = _saved(tmp_path, "a1", ("Name the cat", "Bart."), updated="2026-01-01T10:00:00+00:00")
+    before = load_chat(path)
+    rename_chat(path, "  Cat names ")
+    after = load_chat(path)
+    assert after.conversation.title == "Cat names"
+    assert after.updated == before.updated
+    assert [chat.title for chat in list_chats(tmp_path)] == ["Cat names"]
+    rename_chat(path, " ")  # blank: named by its first line again
+    assert [chat.title for chat in list_chats(tmp_path)] == ["Name the cat"]
+
+
+def test_a_file_from_before_chats_had_names_still_reads(tmp_path: Path) -> None:
+    path = _saved(tmp_path, "a1", ("Name the cat", "Bart."))
+    data = json.loads(path.read_text(encoding="utf-8"))
+    del data["title"]
+    path.write_text(json.dumps(data), encoding="utf-8")
+    assert load_chat(path).conversation.title is None
+    data["title"] = 3
+    path.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ChatLoadError, match="title is int"):
+        load_chat(path)
+
+
+def test_deleting_a_chat_removes_its_file_and_a_missing_one_is_no_error(tmp_path: Path) -> None:
+    path = _saved(tmp_path, "a1", ("hi", "Hello."))
+    delete_chat(path)
+    delete_chat(path)
+    assert list_chats(tmp_path) == []
 
 
 def test_resume_with_no_chat_named_takes_the_most_recently_updated(tmp_path: Path) -> None:

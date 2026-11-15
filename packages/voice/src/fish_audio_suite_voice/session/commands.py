@@ -13,11 +13,13 @@ from pathlib import Path
 
 __all__ = [
     "ChatCommand",
+    "DeleteChat",
     "DeleteTurn",
     "EditMessage",
     "EditReply",
     "NewChat",
     "OpenChat",
+    "RenameChat",
     "SetHidden",
     "TryAgain",
     "Undo",
@@ -122,7 +124,45 @@ class NewChat:
     """Start a new chat, in a new file."""
 
 
+@dataclass(frozen=True, slots=True)
+class RenameChat:
+    """Give a chat a name, this one or a saved one.
+
+    Attributes
+    ----------
+    path : Path
+        The chat's file.
+    title : str
+        The new name. Blank names the chat by its first line again.
+    """
+
+    path: Path
+    title: str
+
+
+@dataclass(frozen=True, slots=True)
+class DeleteChat:
+    """Delete a saved chat. Deleting the chat open now starts a new one.
+
+    Attributes
+    ----------
+    path : Path
+        The chat's file.
+    """
+
+    path: Path
+
+
 type ChatCommand = (
-    EditReply | EditMessage | DeleteTurn | SetHidden | TryAgain | Undo | OpenChat | NewChat
+    EditReply
+    | EditMessage
+    | DeleteTurn
+    | SetHidden
+    | TryAgain
+    | Undo
+    | OpenChat
+    | NewChat
+    | RenameChat
+    | DeleteChat
 )
 """Every change a display can ask for."""

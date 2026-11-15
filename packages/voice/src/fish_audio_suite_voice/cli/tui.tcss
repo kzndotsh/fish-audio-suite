@@ -155,8 +155,18 @@ KeysScreen {
     }
 }
 
-#keys-box {
+#keys-box,
+#picker-box {
     max-width: 64;
+}
+
+#chat-search,
+#chat-rename {
+    margin-bottom: 1;
+}
+
+#chat-ask {
+    margin-top: 1;
 }
 
 #chats {

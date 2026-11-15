@@ -20,7 +20,7 @@ from textual.timer import Timer
 from textual.widgets import Input, Static
 
 from fish_audio_suite_kit import split_cues
-from fish_audio_suite_voice.cli.chat_screens import printable
+from fish_audio_suite_voice.cli.chat_screens import printable, spoken
 from fish_audio_suite_voice.cli.session_view import wave_dots
 from fish_audio_suite_voice.cli.turn_editor import EditKind, TurnEditor
 from fish_audio_suite_voice.session.commands import (
@@ -38,7 +38,6 @@ from fish_audio_suite_voice.session.events import ChatShown
 __all__ = [
     "Conversation",
     "TurnRow",
-    "spoken",
 ]
 
 _HEARING_HOLD_S = 3.0  # how long "you" keeps pulsing after the last loud moment, with no transcript
@@ -48,28 +47,6 @@ _YOU = ("› ", "bold $text-primary")  # noqa: RUF001 - the quote mark is the de
 _CUT = ("…", "dim")  # ends a reply that was cut off
 _KEY = "bold $text-accent"
 _UNDO_HINT = " · z to undo"
-
-
-def spoken(text: str) -> str:
-    """Return a reply as it is heard: without its ``[cue]`` tags or control characters.
-
-    Parameters
-    ----------
-    text : str
-        A reply as the model wrote it or as it was sent to Fish.
-
-    Returns
-    -------
-    str
-        The words, each line's spaces collapsed, blank lines kept between paragraphs.
-
-    Examples
-    --------
-    >>> spoken("[warm, teasing] Bart it is. [playful] Does he look like a Bart?")
-    'Bart it is. Does he look like a Bart?'
-    """
-    words = "".join(piece for piece, is_cue in split_cues(printable(text)) if not is_cue)
-    return "\n".join(" ".join(line.split()) for line in words.split("\n")).strip()
 
 
 def _with_lead_cue(before: str, text: str) -> str:

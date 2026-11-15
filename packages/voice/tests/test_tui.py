@@ -498,6 +498,7 @@ def test_events_sent_before_the_screen_is_up_are_not_lost() -> None:
 
 
 def test_the_header_names_the_chat_or_else_the_app() -> None:
+    from fish_audio_suite_voice.session.chat_store import chat_title
     from fish_audio_suite_voice.session.conversation import Conversation as Record
     from fish_audio_suite_voice.session.events import ChatShown
 
@@ -508,7 +509,8 @@ def test_the_header_names_the_chat_or_else_the_app() -> None:
         assert harness.text("#keys-hint") == "? keys"
         record = Record("be brief")
         record.add_user_line("What should the cat be called?")
-        harness.bus.emit(ChatShown(record.id, tuple(record.turns), frozenset()))
+        title = chat_title(record)
+        harness.bus.emit(ChatShown(record.id, tuple(record.turns), frozenset(), title=title))
         await pilot.pause(0.1)
         assert harness.text("#title") == "What should the cat be called?"
         await pilot.press("ctrl+q")

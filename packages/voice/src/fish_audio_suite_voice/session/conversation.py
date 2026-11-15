@@ -33,7 +33,8 @@ __all__ = [
     "Turn",
 ]
 
-# The ``version`` field of ``Conversation.to_json``. Raise it when the shape changes.
+# The ``version`` field of ``Conversation.to_json``. Raise it when the shape changes so that
+# an older reader would misread a file; a new optional field it ignores does not count.
 SCHEMA_VERSION: Final = 1
 # Unanswered user lines kept in one turn. While the model keeps failing, the oldest drop
 # off, so the merged line cannot grow without bound.
@@ -130,6 +131,9 @@ class Conversation:
     id : str
         Stable for the life of the record, saved with it, so a saved chat can be named
         and found again.
+    title : str or None
+        The name the user gave the chat. None names it by its first line
+        (``chat_store.chat_title``).
 
     Notes
     -----
@@ -140,6 +144,7 @@ class Conversation:
     system: str
     turns: list[Turn] = field(default_factory=list[Turn])
     id: str = field(default_factory=lambda: uuid.uuid4().hex, kw_only=True)
+    title: str | None = field(default=None, kw_only=True)
     _undo: list[_Undo] = field(default_factory=list[_Undo], repr=False, compare=False)
 
     def copy(self) -> Conversation:
@@ -148,10 +153,10 @@ class Conversation:
         Returns
         -------
         Conversation
-            The same id and turns, which are immutable, in a new list, with no undo
-            history.
+            The same id, title and turns, which are immutable, in a new list, with no
+            undo history.
         """
-        return Conversation(self.system, list(self.turns), id=self.id)
+        return Conversation(self.system, list(self.turns), id=self.id, title=self.title)
 
     def reopened(self, system_prompt: str) -> Conversation:
         """Return this record under another system prompt, to go on with a saved chat.
@@ -164,9 +169,9 @@ class Conversation:
         Returns
         -------
         Conversation
-            The same id and turns, the given prompt, and no undo history.
+            The same id, title and turns, the given prompt, and no undo history.
         """
-        return Conversation(system_prompt, list(self.turns), id=self.id)
+        return Conversation(system_prompt, list(self.turns), id=self.id, title=self.title)
 
     def last_user(self) -> str:
         """Return the line the next reply answers, or ``""`` when the last turn has a reply."""
@@ -343,11 +348,13 @@ class Conversation:
         Returns
         -------
         dict
-            ``version``, ``id``, ``system`` and ``turns``. ``from_json`` reads it back.
+            ``version``, ``id``, ``title`` (null when the chat has none), ``system`` and
+            ``turns``. ``from_json`` reads it back.
         """
         return {
             "version": SCHEMA_VERSION,
             "id": self.id,
+            "title": self.title,
             "system": self.system,
             "turns": [_turn_json(turn) for turn in self.turns],
         }
@@ -364,7 +371,8 @@ class Conversation:
         Returns
         -------
         Conversation
-            The record, with no undo history.
+            The record, with no undo history. A missing or blank ``title``, as in a file
+            written before chats could be renamed, leaves it unnamed.
 
         Raises
         ------
@@ -384,7 +392,10 @@ class Conversation:
         record_id = _str(data, "id")
         if not record_id.strip():
             raise ValueError("the conversation id is blank")
-        return cls(_str(data, "system"), turns, id=record_id)
+        title = data.get("title")
+        if title is not None and not isinstance(title, str):
+            raise TypeError(f"title is {type(title).__name__}, not a string or null")
+        return cls(_str(data, "system"), turns, id=record_id, title=(title or "").strip() or None)
 
     def _open_turn(self) -> Turn | None:
         # A hidden turn takes no more lines: the user could not see them join it.

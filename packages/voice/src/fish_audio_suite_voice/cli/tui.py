@@ -44,8 +44,7 @@ from fish_audio_suite_voice.cli.session_view import (
     bar_dots,
     reduce_view,
 )
-from fish_audio_suite_voice.session.chat_store import chat_title
-from fish_audio_suite_voice.session.commands import ChatCommand, NewChat
+from fish_audio_suite_voice.session.commands import NewChat
 from fish_audio_suite_voice.session.events import (
     DEFAULT_KEYS,
     EVENTS,
@@ -518,9 +517,9 @@ class VoiceApp(App[int]):
                 conversation.cut_reply()
             case Notice(text=text):
                 conversation.add_note(text)
-            case ChatShown(file=file, turns=turns):
+            case ChatShown(file=file, title=title):
                 self._chat_file = file
-                self._chat_title = chat_title(turns)
+                self._chat_title = title
                 conversation.show_record(event)
             case LogLine(level=level, tag=tag, text=text):
                 line = printable(f"{level[:1]} {tag:<6} {text}")
@@ -673,12 +672,7 @@ class VoiceApp(App[int]):
 
     def action_chats(self) -> None:
         """Open the list of saved chats, to go on with one or start a new one."""
-
-        def chosen(command: ChatCommand | None) -> None:
-            if command is not None:
-                self._live.send(command)
-
-        self.push_screen(ChatPicker(self._chat_dir, self._chat_file), chosen)
+        self.push_screen(ChatPicker(self._chat_dir, self._chat_file, self._live.send))
 
     def action_keys(self) -> None:
         """List every key in plain words."""

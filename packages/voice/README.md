@@ -89,7 +89,7 @@ Each file is written to a temporary file first and then renamed over the old one
 
 `--resume` goes on with the most recently updated chat. `--resume 3f9c` goes on with the chat whose id starts with `3f9c`, and `--resume PATH` with that file. The chat keeps its turns and keeps writing to the same file. It runs with the system prompt you have set now, not the one it was saved with, and a notice says so when the two differ. A file that cannot be read, or that a newer `fish-voice` wrote, stops the run with an error before the session starts.
 
-In the [full-screen app](#the-full-screen-app), Ctrl+O lists the saved chats, newest first, and opens one or starts a new chat, and the messages let you rewrite, hide or delete turns. See [Editing the chat](#editing-the-chat).
+In the [full-screen app](#the-full-screen-app), Ctrl+O lists the saved chats, newest first, to open, search, rename or delete one, or start a new chat, and the messages let you rewrite, hide or delete turns. See [Editing the chat](#editing-the-chat).
 
 ### History after a barge-in
 
@@ -235,7 +235,7 @@ uv run --package fish-audio-suite-voice --extra cli --extra tui fish-voice --tui
 
 `--tui` runs the same session in a full-screen terminal app (built on [Textual](https://textual.textualize.io)). The chat screen shows only what you need while talking, top to bottom:
 
-- **The title line**: the chat's first line (or `fish-voice` before there is one), and `? keys` on the right.
+- **The title line**: the chat's name, or else its first line (or `fish-voice` before there is one), and `? keys` on the right.
 - **The conversation**: your lines start with `›`, and each reply sits indented under them as you hear it, without its `[cue]` tags, live as it streams and once it is recorded. While you talk a pulsing line shows you are heard, and turns into your words once they are transcribed. A reply you cut off ends in `…`. A turn you hid says `hidden from AI` and is dimmed, and a reply you rewrote says `edited`.
 - **The state line**: a symbol and a word, never colour alone, then a plain hint. `● Listening` (just talk, or type below), `◌ Thinking…`, `▶ Speaking` (talk to interrupt, or press Esc), `○ Mic off` (F2 turns it back on) and `✕ Session ended` with the exit code. While it listens or speaks, a small meter in dots shows the mic's level, or the reply's (for the default PortAudio playback only). The mic and the speaker are scaled the same way, from the last few seconds of the signal itself (its noise floor and its speech level), so they look alike whatever their volume, a quiet room stays flat and one loud bump does not shrink the speech after it.
 - **The composer**, where you type instead of talking, and the keys that work now.
@@ -251,7 +251,7 @@ The footer shows only the keys that do something now: Stop appears only while a 
 | Escape | Closes the open dialog or screen first. On the chat itself it stops the reply while the model is thinking or the reply is playing, or else goes back to typing |
 | F2 | Turn the mic off or on. Off, the mic stays closed: no listening between turns and no barge-in watch during a reply. Typing or Esc still interrupts. Turning it on during a reply applies from the next reply. Turning it off while you speak ends your turn there: with a streaming recogniser, words it already heard are answered, and with none heard yet the turn is dropped |
 | Tab | Move between the composer and the messages. Nothing else takes focus |
-| Ctrl+O | List the saved chats, to open one or start a new chat. See [Editing the chat](#editing-the-chat) |
+| Ctrl+O | The saved chats, to open, search, rename or delete one, or start a new chat. See [Editing the chat](#editing-the-chat) |
 | Ctrl+P | The command palette: Try again (while the newest reply can be tried again), New chat, Chats…, Mic on or off, Stop speaking, Diagnostics and Keys, then Textual's own commands |
 | F12 | Open Diagnostics, or go back to the chat |
 | Ctrl+Q | Quit |
@@ -278,7 +278,18 @@ E and Shift+E open an editor under the turn, in place of the line. Enter saves, 
 
 A short message confirms each change, such as `Message hidden from AI · z to undo`. The model is sent your version from the next request on. What it first wrote is kept in the file, so undo can put it back, but undo does not survive a restart or opening another chat. A change is applied between turns: during a reply it waits until the reply is recorded, and while the mic listens it stops the listen, so speech it had started to hear is dropped. Each change is saved to the chat's file at once.
 
-Ctrl+O lists the saved chats in `FISH_VOICE_CHAT_DIR`, newest first, with the first line, when each started and was last saved, and how many turns it has. The chat open now is marked. Enter on a chat goes on with it between turns, under the system prompt you have set now, and keeps writing to its file. `+ new chat` starts an empty chat in a new file. A file that is not a chat is left out of the list, and one that cannot be read when you open it is reported in the conversation while the current chat goes on.
+Ctrl+O opens the chats in `FISH_VOICE_CHAT_DIR`, newest first: each with its title (the name you gave it, or else its first line), when it was last used in plain words (`Today 01:33`, `Yesterday`, `Mon`, `Nov 9`) and its last reply as you heard it. The chat open now is in bold. The search field on top filters titles and last replies as you type.
+
+| Key | Does |
+| --- | --- |
+| Enter | Open the chat: go on with it between turns, under the system prompt you have set now, writing to its file. On `+ New chat`, start one |
+| N | Start an empty chat in a new file |
+| R | Rename the chat. The name is saved in its file and does not change when it was last used. Escape keeps the old name |
+| D | Delete the chat, once you answer `y` to `Delete '…'? y / n`. Deleting the chat open now starts a new one |
+| / | Type into the search. Enter or Down goes to the first match |
+| Escape | Drop the question or the new name, else close |
+
+A file that is not a chat is left out of the list, and one that cannot be read when you open it is reported in the conversation while the current chat goes on.
 
 #### Diagnostics
 

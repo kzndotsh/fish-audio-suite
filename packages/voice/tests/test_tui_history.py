@@ -14,6 +14,7 @@ import contextlib
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -24,7 +25,7 @@ from textual.widgets import Input, OptionList, Static, TextArea
 from voice_fakes import ScriptedMic, install_gate
 
 from fish_audio_suite_kit import CueStyle
-from fish_audio_suite_voice.cli.chat_screens import ChatPicker
+from fish_audio_suite_voice.cli.chat_screens import ChatPicker, when_label
 from fish_audio_suite_voice.cli.diagnostics import DiagnosticsScreen
 from fish_audio_suite_voice.cli.history_pane import Conversation, TurnRow
 from fish_audio_suite_voice.cli.tui import VoiceApp
@@ -32,11 +33,13 @@ from fish_audio_suite_voice.cli.turn_editor import TurnEditor
 from fish_audio_suite_voice.session.chat_store import ChatFile, load_chat
 from fish_audio_suite_voice.session.commands import (
     ChatCommand,
+    DeleteChat,
     DeleteTurn,
     EditMessage,
     EditReply,
     NewChat,
     OpenChat,
+    RenameChat,
     SetHidden,
     TryAgain,
     Undo,
@@ -566,10 +569,10 @@ def test_another_chat_replaces_everything_in_the_pane() -> None:
     _drive(harness, scenario)
 
 
-def _save(folder: Path, user: str, updated: str) -> Path:
+def _save(folder: Path, user: str, updated: str, reply: str = "ok.") -> Path:
     record = Record("be brief")
     record.add_user_line(user)
-    record.add_reply("ok.", interrupted=False)
+    record.add_reply(reply, interrupted=False)
     file = ChatFile.new(folder, record)
     file.save(record)
     data = json.loads(file.path.read_text(encoding="utf-8"))
@@ -578,10 +581,40 @@ def _save(folder: Path, user: str, updated: str) -> Path:
     return file.path
 
 
-def test_the_chat_list_opens_a_saved_chat_or_starts_a_new_one(tmp_path: Path) -> None:
+def _prompts(harness: _Harness) -> list[str]:
+    options = harness.app.screen.query_one(OptionList)
+    return [str(options.get_option_at_index(i).prompt) for i in range(options.option_count)]
+
+
+def test_the_chats_dialog_lists_each_chat_with_when_it_was_used_and_its_last_reply(
+    tmp_path: Path,
+) -> None:
+    _save(tmp_path, "an older chat", "2026-01-01T10:00:00+00:00", "Try it with lemon.")
+    newer = _save(tmp_path, "a newer chat", "2026-02-01T10:00:00+00:00", "[warm] Bart it is.")
+    (tmp_path / "broken.json").write_text("{", encoding="utf-8")
+    harness = _Harness(chat_dir=tmp_path)
+    when = when_label(load_chat(newer).updated, datetime.now().astimezone())
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        await pilot.press("ctrl+o")
+        await pilot.pause(0.2)
+        prompts = _prompts(harness)
+        assert prompts[0] == "+ New chat"
+        title, last = prompts[1].split("\n")
+        assert title.startswith("a newer chat ")
+        assert title.endswith(f" {when}")
+        assert last == "Bart it is."  # as it is heard, without its cue
+        assert prompts[2].endswith("\nTry it with lemon.")
+        assert len(prompts) == 3  # the broken file is left out
+        assert harness.app.screen.query_one("#chat-search", Input).placeholder == "Search"
+        await pilot.press("escape")
+
+    _drive(harness, scenario)
+
+
+def test_the_chats_dialog_opens_a_saved_chat_or_starts_a_new_one(tmp_path: Path) -> None:
     older = _save(tmp_path, "an older chat", "2026-01-01T10:00:00+00:00")
     newer = _save(tmp_path, "a newer chat", "2026-02-01T10:00:00+00:00")
-    (tmp_path / "broken.json").write_text("{", encoding="utf-8")
     harness = _Harness(chat_dir=tmp_path)
 
     async def scenario(pilot: Pilot[int]) -> None:
@@ -589,28 +622,92 @@ def test_the_chat_list_opens_a_saved_chat_or_starts_a_new_one(tmp_path: Path) ->
         await pilot.press("ctrl+o")  # from the input line: it works while typing
         assert isinstance(harness.app.screen, ChatPicker)
         await pilot.pause(0.2)
-        options = harness.app.screen.query_one(OptionList)
-        prompts = [str(options.get_option_at_index(i).prompt) for i in range(options.option_count)]
-        assert prompts[0] == "+ new chat"
-        assert prompts[1].startswith("a newer chat\nstarted ")
-        assert " · updated 2026-0" in prompts[1]
-        assert prompts[1].endswith(" · 1 turn")
-        assert prompts[2].startswith("an older chat  open now")
-        assert len(prompts) == 3  # the broken file is left out
-
         await pilot.press("down", "enter")
         await pilot.press("ctrl+o")
         await pilot.pause(0.2)
         await pilot.press("down", "down", "enter")  # the open chat: nothing to change
         await pilot.press("ctrl+o")
         await pilot.pause(0.2)
-        await pilot.press("enter")
+        await pilot.press("enter")  # + New chat
+        await pilot.press("ctrl+o")
+        await pilot.pause(0.2)
+        await pilot.press("n")
         await pilot.press("ctrl+o")
         await pilot.pause(0.2)
         await pilot.press("escape")
         assert not isinstance(harness.app.screen, ChatPicker)
-        assert harness.live.sent == [OpenChat(newer), NewChat()]
+        assert harness.live.sent == [OpenChat(newer), NewChat(), NewChat()]
         assert harness.live.stops == 0
+
+    _drive(harness, scenario)
+
+
+def test_the_search_filters_the_chats_as_it_is_typed(tmp_path: Path) -> None:
+    older = _save(tmp_path, "Recipe ideas", "2026-01-01T10:00:00+00:00", "Try it with lemon.")
+    _save(tmp_path, "Trip planning", "2026-02-01T10:00:00+00:00", "The train is easier.")
+    harness = _Harness(chat_dir=tmp_path)
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        await pilot.press("ctrl+o")
+        await pilot.pause(0.2)
+        await pilot.press("slash", *"lemon")  # the last reply matches too
+        await pilot.pause(0.05)
+        prompts = _prompts(harness)
+        assert len(prompts) == 2
+        assert prompts[1].startswith("Recipe ideas")
+        await pilot.press("enter", "enter")  # to the first match, then open it
+        assert harness.live.sent == [OpenChat(older)]
+
+    _drive(harness, scenario)
+
+
+def test_a_chat_is_renamed_in_the_dialog(tmp_path: Path) -> None:
+    path = _save(tmp_path, "What should the cat be called?", "2026-01-01T10:00:00+00:00")
+    harness = _Harness(chat_dir=tmp_path)
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        await pilot.press("ctrl+o")
+        await pilot.pause(0.2)
+        await pilot.press("r")  # on + New chat: nothing to rename
+        assert not harness.app.screen.query_one("#chat-rename").display
+        await pilot.press("down", "r")
+        field = harness.app.screen.query_one("#chat-rename", Input)
+        assert field.display
+        assert field.value == "What should the cat be called?"
+        field.value = "Cat names"
+        await pilot.press("enter")
+        assert harness.live.sent == [RenameChat(path, "Cat names")]
+        assert _prompts(harness)[1].startswith("Cat names ")
+        assert harness.toasts[-1] == "Chat renamed"
+        await pilot.press("r", "escape")  # Escape drops a new name, then closes
+        assert isinstance(harness.app.screen, ChatPicker)
+        assert harness.live.sent == [RenameChat(path, "Cat names")]
+
+    _drive(harness, scenario)
+
+
+def test_a_chat_is_deleted_only_once_the_dialog_s_question_is_answered_yes(
+    tmp_path: Path,
+) -> None:
+    path = _save(tmp_path, "Morning check-in", "2026-01-01T10:00:00+00:00")
+    harness = _Harness(chat_dir=tmp_path)
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        harness.bus.emit(_shown(Record("be brief"), file=path))
+        await pilot.press("ctrl+o")
+        await pilot.pause(0.2)
+        await pilot.press("down", "d")
+        ask = harness.app.screen.query_one("#chat-ask", Static)
+        assert str(ask.content) == "Delete 'Morning check-in'? y / n"
+        await pilot.press("n")  # no: and n does not start a new chat here
+        assert not ask.display
+        assert harness.live.sent == []
+        await pilot.press("d", "escape")
+        assert isinstance(harness.app.screen, ChatPicker)
+        await pilot.press("d", "y")
+        assert harness.live.sent == [DeleteChat(path)]
+        assert _prompts(harness) == ["+ New chat"]
+        assert harness.toasts[-1] == "Chat deleted"
 
     _drive(harness, scenario)
 
@@ -623,9 +720,7 @@ def test_the_chat_list_drops_control_characters_from_a_title(tmp_path: Path) -> 
     async def scenario(pilot: Pilot[int]) -> None:
         await pilot.press("ctrl+o")
         await pilot.pause(0.2)
-        options = harness.app.screen.query_one(OptionList)
-        title = str(options.get_option_at_index(1).prompt).split("\n")[0]
-        assert title == "evil[2Jtitle"
+        assert _prompts(harness)[1].startswith("evil[2Jtitle ")
         await pilot.press("escape")
 
     _drive(harness, scenario)

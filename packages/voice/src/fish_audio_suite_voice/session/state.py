@@ -18,7 +18,7 @@ from fish_audio_suite_voice.llm.client import ChatBackend
 from fish_audio_suite_voice.llm.speculate import Speculation
 from fish_audio_suite_voice.logutil.debug import warn
 from fish_audio_suite_voice.session.cancel import never
-from fish_audio_suite_voice.session.chat_store import ChatFile, SavedChat
+from fish_audio_suite_voice.session.chat_store import ChatFile, SavedChat, chat_title
 from fish_audio_suite_voice.session.conversation import Conversation, HistoryView
 from fish_audio_suite_voice.session.events import ChatShown
 from fish_audio_suite_voice.session.signals import DuplexSession
@@ -156,11 +156,13 @@ class Chat:
         Returns
         -------
         ChatShown
-            Every turn, the ids ``view`` sends, and the file.
+            Every turn, the ids ``view`` sends, the file and the chat's title.
         """
         sent = frozenset(turn.id for turn in self.view.sent(self.history))
         path = None if self.file is None else self.file.path
-        return ChatShown(self.history.id, tuple(self.history.turns), sent, path)
+        return ChatShown(
+            self.history.id, tuple(self.history.turns), sent, path, chat_title(self.history)
+        )
 
     def messages(self, tone: tuple[str, ...] = ()) -> list[ChatMessage]:
         """Return the messages the next reply is asked for with.

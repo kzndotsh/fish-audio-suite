@@ -278,6 +278,9 @@ class ChatShown:
         or older than ``FISH_VOICE_HISTORY_TURNS`` keeps.
     file : Path or None
         Where the chat is saved. None when chats are not saved.
+    title : str
+        The chat's title (``chat_store.chat_title``): the name the user gave it, or else
+        its first line. Empty when it has neither.
     at : float
         ``time.monotonic()`` when the event was made. Not part of equality.
 
@@ -291,6 +294,7 @@ class ChatShown:
     turns: tuple[Turn, ...]
     sent: frozenset[str]
     file: Path | None = None
+    title: str = ""
     at: float = field(default_factory=_now, compare=False, kw_only=True)
 
 

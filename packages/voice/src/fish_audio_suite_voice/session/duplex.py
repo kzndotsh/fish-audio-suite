@@ -6,6 +6,7 @@ import asyncio
 import threading
 import time
 from contextlib import AsyncExitStack
+from pathlib import Path
 from typing import assert_never
 
 from fish_audio_suite_voice.asr.outcome import HeardLine
@@ -25,14 +26,22 @@ from fish_audio_suite_voice.llm.reply import (
 from fish_audio_suite_voice.llm.transports import ChatUnusableError
 from fish_audio_suite_voice.logutil.debug import debug, debug_enabled, mark_turn
 from fish_audio_suite_voice.session.cancel import StopFlag, never
-from fish_audio_suite_voice.session.chat_store import ChatLoadError, SavedChat, load_chat
+from fish_audio_suite_voice.session.chat_store import (
+    ChatLoadError,
+    SavedChat,
+    delete_chat,
+    load_chat,
+    rename_chat,
+)
 from fish_audio_suite_voice.session.commands import (
     ChatCommand,
+    DeleteChat,
     DeleteTurn,
     EditMessage,
     EditReply,
     NewChat,
     OpenChat,
+    RenameChat,
     SetHidden,
     TryAgain,
     Undo,
@@ -324,6 +333,8 @@ async def _apply(ctx: DuplexContext, command: ChatCommand) -> bool:
             chat.history = Conversation(prompt)
             chat.file = chat_file(ctx.config, chat.history)
             notice("[new chat]")
+        case RenameChat() | DeleteChat():
+            await _change_chat_file(ctx, command)
         case Undo():
             if not chat.history.undo():
                 notice("[nothing to undo]")
@@ -332,6 +343,29 @@ async def _apply(ctx: DuplexContext, command: ChatCommand) -> bool:
         case _:
             assert_never(command)
     return False
+
+
+async def _change_chat_file(ctx: DuplexContext, command: RenameChat | DeleteChat) -> None:
+    """Rename or delete a chat: this one in the record, any other in its file."""
+    chat = ctx.chat
+    is_open = chat.file is not None and _same_file(chat.file.path, command.path)
+    try:
+        match command:
+            case RenameChat(title=title) if is_open:
+                chat.history.title = title.strip() or None
+            case RenameChat(path=path, title=title):
+                await asyncio.to_thread(rename_chat, path, title)
+            case DeleteChat(path=path):
+                await asyncio.to_thread(delete_chat, path)
+                if is_open:
+                    chat.history = Conversation(ctx.config.prompt)
+                    chat.file = chat_file(ctx.config, chat.history)
+    except (ChatLoadError, OSError) as exc:
+        notice(f"[cannot change that chat: {exc}]")
+
+
+def _same_file(a: Path, b: Path) -> bool:
+    return a.expanduser().resolve() == b.expanduser().resolve()
 
 
 type _TurnChange = EditReply | EditMessage | DeleteTurn | SetHidden | TryAgain

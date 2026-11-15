@@ -25,11 +25,13 @@ from fish_audio_suite_voice.config.settings import VoiceCliConfig
 from fish_audio_suite_voice.session.chat_store import ChatFile, list_chats, load_chat
 from fish_audio_suite_voice.session.commands import (
     ChatCommand,
+    DeleteChat,
     DeleteTurn,
     EditMessage,
     EditReply,
     NewChat,
     OpenChat,
+    RenameChat,
     SetHidden,
     TryAgain,
     Undo,
@@ -301,6 +303,63 @@ def _saved_chat(folder: Path, *exchanges: tuple[str, str]) -> Path:
     file = ChatFile.new(folder, record)
     file.save(record)
     return file.path
+
+
+def test_the_open_chat_and_a_saved_one_are_renamed(
+    monkeypatch: pytest.MonkeyPatch, saving: VoiceCliConfig, tmp_path: Path
+) -> None:
+    other = _saved_chat(tmp_path, ("Trip planning", "The train."))
+    run = _Run(saving)
+    run.run(
+        monkeypatch,
+        heard_line("Name the cat"),
+        run.change(
+            lambda shown: [
+                RenameChat(shown.file or Path(), "Cat names"),
+                RenameChat(other, "Trains"),
+            ]
+        ),
+        heard_line("two"),
+    )
+    assert run.shown[-2].title == "Cat names"
+    assert run.shown[-1].title == "Cat names"  # the next save keeps the name
+    titles = {chat.path: chat.title for chat in list_chats(tmp_path)}
+    assert titles[other] == "Trains"
+    assert titles[run.shown[-1].file or Path()] == "Cat names"
+
+
+def test_deleting_the_open_chat_starts_a_new_one_and_deleting_another_removes_its_file(
+    monkeypatch: pytest.MonkeyPatch, saving: VoiceCliConfig, tmp_path: Path
+) -> None:
+    other = _saved_chat(tmp_path, ("Trip planning", "The train."))
+    run = _Run(saving)
+    run.run(
+        monkeypatch,
+        heard_line("one"),
+        run.change(lambda shown: [DeleteChat(other), DeleteChat(shown.file or Path())]),
+        heard_line("two"),
+    )
+    deleted, fresh = run.shown[-3], run.shown[-2]
+    assert fresh.chat_id != deleted.chat_id
+    assert fresh.turns == ()
+    assert fresh.file != deleted.file
+    assert _dialogue(run.asked[1]) == ["two"]
+    [chat] = list_chats(tmp_path)  # only the new chat, saved after "two"
+    assert chat.path == fresh.file
+
+
+def test_a_chat_that_cannot_be_renamed_is_reported(
+    monkeypatch: pytest.MonkeyPatch, saving: VoiceCliConfig, tmp_path: Path
+) -> None:
+    run = _Run(saving)
+    run.run(
+        monkeypatch,
+        heard_line("one"),
+        run.change(lambda _shown: [RenameChat(tmp_path / "gone.json", "Cats")]),
+        heard_line("two"),
+    )
+    assert len(run.notices) == 1
+    assert run.notices[0].startswith("[cannot change that chat: cannot read the saved chat")
 
 
 def test_opening_a_saved_chat_goes_on_with_it_in_its_own_file(

@@ -12,14 +12,13 @@ import contextlib
 import json
 import os
 import tempfile
-from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Final
 
 from fish_audio_suite_voice.logutil.debug import debug
-from fish_audio_suite_voice.session.conversation import SCHEMA_VERSION, Conversation, Turn
+from fish_audio_suite_voice.session.conversation import SCHEMA_VERSION, Conversation
 
 __all__ = [
     "ChatFile",
@@ -27,9 +26,11 @@ __all__ = [
     "ChatSummary",
     "SavedChat",
     "chat_title",
+    "delete_chat",
     "find_chat",
     "list_chats",
     "load_chat",
+    "rename_chat",
 ]
 
 # The first user line, cut to this many characters, is a chat's title.
@@ -77,13 +78,15 @@ class ChatFile:
         name = f"{started:%Y%m%d-%H%M%S}-{conversation.id[:_NAME_ID_CHARS]}.json"
         return cls(folder.expanduser() / name, started)
 
-    def save(self, conversation: Conversation) -> None:
+    def save(self, conversation: Conversation, *, updated: datetime | None = None) -> None:
         """Write the conversation to the file, replacing what was there in one step.
 
         Parameters
         ----------
         conversation : Conversation
-            The record to write. ``updated`` is set to now.
+            The record to write.
+        updated : datetime or None, optional
+            When the chat was last used, which orders a list of chats. Now by default.
 
         Notes
         -----
@@ -95,7 +98,7 @@ class ChatFile:
             **conversation.to_json(),
             "started": self.started.isoformat(timespec="seconds"),
             # To the microsecond, so chats saved in one second still sort newest first.
-            "updated": datetime.now().astimezone().isoformat(),
+            "updated": (updated or datetime.now().astimezone()).isoformat(),
         }
         text = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
         self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -126,13 +129,16 @@ class ChatSummary:
     path : Path
         Its file.
     title : str
-        Its first user line, shortened. Empty when it has no turns.
+        The name the user gave it, or else its first user line, shortened. Empty when it
+        has neither.
     started : datetime
         When it started.
     updated : datetime
         When it was last saved.
     turns : int
         How many turns it has, hidden ones included.
+    last_reply : str
+        The newest reply the model is sent, cues and all. Empty when there is none.
     """
 
     id: str
@@ -141,6 +147,7 @@ class ChatSummary:
     started: datetime
     updated: datetime
     turns: int
+    last_reply: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,42 +174,88 @@ class SavedChat:
         Returns
         -------
         ChatSummary
-            Its id, file, title, times and number of turns.
+            Its id, file, title, times, number of turns and newest reply.
         """
         turns = self.conversation.turns
+        replies = [turn.reply.content for turn in turns if turn.reply is not None]
         return ChatSummary(
             self.conversation.id,
             self.file.path,
-            chat_title(turns),
+            chat_title(self.conversation),
             self.file.started,
             self.updated,
             len(turns),
+            replies[-1] if replies else "",
         )
 
 
-def chat_title(turns: Sequence[Turn]) -> str:
-    r"""Return a chat's title: its first user line, shortened.
+def chat_title(conversation: Conversation) -> str:
+    r"""Return a chat's title: the name the user gave it, or else its first user line.
 
     Parameters
     ----------
-    turns : Sequence of Turn
-        The chat's turns, oldest first.
+    conversation : Conversation
+        The chat.
 
     Returns
     -------
     str
-        The first line of the first turn's user text, cut to 60 characters with an
-        ellipsis. Empty when there are no turns.
+        ``conversation.title`` when set. Otherwise the first line of the first turn's user
+        text. Either is cut to 60 characters with an ellipsis. Empty when there is neither.
 
     Examples
     --------
-    >>> chat_title([Turn("a", "Name the cat\nplease")])
-    'Name the cat'
-    >>> chat_title([])
+    >>> chat = Conversation("be brief")
+    >>> chat_title(chat)
     ''
+    >>> chat.add_user_line("Name the cat\nplease")
+    >>> chat_title(chat)
+    'Name the cat'
+    >>> chat.title = "Cat names"
+    >>> chat_title(chat)
+    'Cat names'
     """
-    first = turns[0].user.split("\n")[0].strip() if turns else ""
+    turns = conversation.turns
+    first = conversation.title or (turns[0].user.split("\n")[0].strip() if turns else "")
     return first if len(first) <= _TITLE_CHARS else first[: _TITLE_CHARS - 1] + "…"
+
+
+def rename_chat(path: Path, title: str) -> None:
+    """Give a saved chat a name, or take its name away, keeping when it was last used.
+
+    Parameters
+    ----------
+    path : Path
+        The chat's file.
+    title : str
+        The new name. Blank names the chat by its first line again.
+
+    Raises
+    ------
+    ChatLoadError
+        When the file does not read as a chat.
+    OSError
+        When it cannot be written.
+    """
+    saved = load_chat(path)
+    saved.conversation.title = title.strip() or None
+    saved.file.save(saved.conversation, updated=saved.updated)
+
+
+def delete_chat(path: Path) -> None:
+    """Delete a saved chat's file. A file already gone is not an error.
+
+    Parameters
+    ----------
+    path : Path
+        The chat's file.
+
+    Raises
+    ------
+    OSError
+        When it cannot be deleted.
+    """
+    path.expanduser().unlink(missing_ok=True)
 
 
 def load_chat(path: Path) -> SavedChat:
