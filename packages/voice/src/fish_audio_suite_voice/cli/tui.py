@@ -557,13 +557,14 @@ class VoiceApp(App[int]):
         state, muted = self._view.state, self._live.muted
         if self._ended:
             return "✕", "Session ended", f"exit code {self._exit_code()} · Ctrl+Q to quit", "ended"
+        if self._editing:
+            # The editor has Escape, so no hint here may offer Esc to stop a reply.
+            return "○", "Mic off while you edit", "it comes back when you're done", "muted"
         if state is SessionState.SPEAKING:
             hint = "press Esc to stop" if muted else "talk to interrupt, or press Esc"
             return "▶", "Speaking", hint, "speaking"
         if state is SessionState.THINKING:
             return "◌", "Thinking…", "", "thinking"
-        if self._editing:
-            return "○", "Mic off while you edit", "it comes back when you're done", "muted"
         if muted:
             return "○", "Mic off", "F2 turns it back on", "muted"
         if state is SessionState.LISTENING:
@@ -611,8 +612,8 @@ class VoiceApp(App[int]):
         actions = available_actions(self._view.state, muted=self._live.muted)
         match action:
             case "stop":
-                # Over a dialog or Diagnostics, Escape belongs to that screen.
-                on_top = self.screen is self._main
+                # Over a dialog or Diagnostics, or in an open editor, Escape belongs to it.
+                on_top = self.screen is self._main and not self._editing
                 return on_top and not self._ended and SessionAction.INTERRUPT in actions
             case "mute":
                 return not self._editing and SessionAction.MUTE in actions

@@ -60,6 +60,7 @@ from fish_audio_suite_voice.session.events import (
     ReplyEnd,
     ReplyHeard,
     ReplyToken,
+    Speaking,
     TurnEnded,
 )
 from fish_audio_suite_voice.session.inputs import LiveInput
@@ -355,6 +356,9 @@ def test_a_reply_is_rewritten_in_place_without_its_cues_and_saved_or_left_as_it_
             "› Name the cat",
             "enter Save   esc Cancel   ^e Open in editor",
         ]
+        harness.bus.emit(Speaking())  # even with a reply playing, the editor has Escape
+        await pilot.pause(0.05)
+        assert "Mic off while you edit" in str(harness.app.query_one("#state", Static).content)
         await pilot.press("escape")  # closes the editor, and stops no reply
         assert not harness.pane.editing
         assert (harness.live.sent, harness.live.stops) == ([], 0)
