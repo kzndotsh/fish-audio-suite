@@ -479,8 +479,8 @@ class VoiceApp(App[int]):
     def _apply(self, events: list[Event]) -> None:
         stack = self.screen_stack
         conversation = next(iter(stack[0].query(Conversation)), None) if stack else None
-        if conversation is None or not conversation.is_attached:
-            return  # the screen is already gone: a wake that arrived while the app was closing
+        if not self.is_running or conversation is None or not conversation.is_attached:
+            return  # the screen is going: a wake that arrived while the app was closing
         for event in events:
             self._view = reduce_view(self._view, event)
             self._side_effects(event, conversation)
@@ -617,10 +617,16 @@ class VoiceApp(App[int]):
         Yields
         ------
         SystemCommand
-            New chat, Chats…, Mic on or off, Stop speaking (while there is a reply to
-            stop), Diagnostics, Keys and Quit, then Textual's own but its Keys and Quit:
-            the app has its own keys list, and its Quit would skip ending the session.
+            Try again (while the newest reply can be tried again), New chat, Chats…, Mic on
+            or off, Stop speaking (while there is a reply to stop), Diagnostics, Keys and
+            Quit, then Textual's own but its Keys and Quit: the app has its own keys list,
+            and its Quit would skip ending the session.
         """
+        conversation = self._main.query_one(Conversation)
+        if conversation.can_try_again:
+            yield SystemCommand(
+                "Try again", "A new reply to your last message", conversation.try_again
+            )
         yield SystemCommand("New chat", "Start an empty chat", self.action_new_chat)
         yield SystemCommand("Chats…", "Open a saved chat, or start a new one", self.action_chats)
         if self._live.muted:

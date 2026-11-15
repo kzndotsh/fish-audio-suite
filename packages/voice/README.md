@@ -252,7 +252,7 @@ The footer shows only the keys that do something now: Stop appears only while a 
 | F2 | Turn the mic off or on. Off, the mic stays closed: no listening between turns and no barge-in watch during a reply. Typing or Esc still interrupts. Turning it on during a reply applies from the next reply. Turning it off while you speak ends your turn there: with a streaming recogniser, words it already heard are answered, and with none heard yet the turn is dropped |
 | Tab | Move between the composer and the messages. Nothing else takes focus |
 | Ctrl+O | List the saved chats, to open one or start a new chat. See [Editing the chat](#editing-the-chat) |
-| Ctrl+P | The command palette: New chat, Chats…, Mic on or off, Stop speaking, Diagnostics and Keys, then Textual's own commands |
+| Ctrl+P | The command palette: Try again (while the newest reply can be tried again), New chat, Chats…, Mic on or off, Stop speaking, Diagnostics and Keys, then Textual's own commands |
 | F12 | Open Diagnostics, or go back to the chat |
 | Ctrl+Q | Quit |
 
@@ -265,10 +265,11 @@ The messages show the whole chat, including the turns of a chat you resumed or o
 | Up, Down (or K, J) | Select the turn before or after |
 | G or Home, Shift+G or End | Select the first or the newest turn. End also follows new turns again as they arrive |
 | E | Rewrite the selected reply in a dialog. Ctrl+S saves, Escape keeps it as it was. A blank reply is refused: hide or delete the turn instead |
+| R | Try again: drop the newest reply and answer the same line afresh. Offered only on the newest turn, once its reply is recorded and while it is not hidden. Undo brings the old reply back |
 | Y | Copy the selected reply, without its cues |
 | H | Hide the selected turn from the AI, or show it again. The chat keeps it |
 | D or Delete | Delete the selected turn |
-| Z | Undo the last edit, hide or delete in this chat |
+| Z | Undo the last change to a turn in this chat |
 | ? | List every key in plain words |
 | Escape or Tab | Go back to typing |
 

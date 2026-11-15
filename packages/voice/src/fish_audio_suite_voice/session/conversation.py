@@ -105,11 +105,15 @@ class Turn:
 
 @dataclass(frozen=True, slots=True)
 class _Undo:
-    """How to reverse one edit: put ``before`` back at ``index``."""
+    """How to reverse one change: put ``before`` back where it stood.
+
+    ``replaced`` turns stand there now: none after a delete, else one, which kept the id of
+    the first turn of ``before``. ``index`` is where a deleted turn goes back.
+    """
 
     index: int
-    before: Turn
-    removed: bool
+    before: tuple[Turn, ...]
+    replaced: int
 
 
 @dataclass(slots=True)
@@ -267,10 +271,34 @@ class Conversation:
         """
         index, turn = self._find(turn_id)
         del self.turns[index]
-        self._undo.append(_Undo(index, turn, removed=True))
+        self._undo.append(_Undo(index, (turn,), replaced=0))
+
+    def try_again(self, turn_id: str) -> str:
+        """Drop the reply of the newest turn, so its line is answered again.
+
+        Parameters
+        ----------
+        turn_id : str
+            The newest turn. ``undo`` puts its reply back.
+
+        Returns
+        -------
+        str
+            The line the next reply answers.
+
+        Raises
+        ------
+        ValueError
+            When the turn is not the newest, has no reply, or is hidden from the model.
+        """
+        index, turn = self._find(turn_id)
+        if index != len(self.turns) - 1 or turn.reply is None or turn.hidden:
+            raise ValueError(f"turn {turn_id} is not the newest answered turn")
+        self._change(index, dataclasses.replace(turn, reply=None))
+        return turn.user
 
     def undo(self) -> bool:
-        """Reverse the last edit, hide or delete that was not undone yet.
+        """Reverse the last change that was not undone yet.
 
         Returns
         -------
@@ -280,10 +308,8 @@ class Conversation:
         if not self._undo:
             return False
         step = self._undo.pop()
-        if step.removed:
-            self.turns.insert(step.index, step.before)
-        else:
-            self.turns[self._find(step.before.id)[0]] = step.before
+        index = self._find(step.before[0].id)[0] if step.replaced else step.index
+        self.turns[index : index + step.replaced] = step.before
         return True
 
     def to_json(self) -> dict[str, object]:
@@ -348,7 +374,7 @@ class Conversation:
         raise KeyError(turn_id)
 
     def _change(self, index: int, turn: Turn) -> None:
-        self._undo.append(_Undo(index, self.turns[index], removed=False))
+        self._undo.append(_Undo(index, (self.turns[index],), replaced=1))
         self.turns[index] = turn
 
 

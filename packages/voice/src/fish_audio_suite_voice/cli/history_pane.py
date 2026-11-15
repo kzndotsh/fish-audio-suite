@@ -27,6 +27,7 @@ from fish_audio_suite_voice.session.commands import (
     DeleteTurn,
     EditReply,
     SetHidden,
+    TryAgain,
     Undo,
 )
 from fish_audio_suite_voice.session.conversation import Turn
@@ -129,10 +130,22 @@ class TurnRow(VerticalGroup):
         ]
         self._note.display = bool(notes)
         self._note.update(Content.assemble((" · ".join(notes), "dim italic")))
-        keys = [("e", "Edit reply"), ("y", "Copy")] if reply is not None else []
-        keys += [("h", "Show" if turn.hidden else "Hide"), ("d", "Delete")]
-        self._keys.update(_hint(*keys))
         self.set_class(turn.hidden, "hidden")
+
+    def show_keys(self, *, try_again: bool) -> None:
+        """Show the keys that change this turn, under it while it is selected.
+
+        Parameters
+        ----------
+        try_again : bool
+            Whether ``r`` applies: the turn is the newest and no reply is in progress.
+        """
+        answered = self.turn.reply is not None
+        keys = [("e", "Edit reply")] if answered else []
+        keys += [("r", "Try again")] if try_again else []
+        keys += [("y", "Copy")] if answered else []
+        keys += [("h", "Show" if self.turn.hidden else "Hide"), ("d", "Delete")]
+        self._keys.update(_hint(*keys))
 
 
 class Conversation(VerticalScroll):
@@ -159,6 +172,7 @@ class Conversation(VerticalScroll):
         Binding("g,home", "first", "First", show=False),
         Binding("G,end", "newest", "Newest", show=False),
         Binding("e", "edit", "Edit"),
+        Binding("r", "try_again", "Try again"),
         Binding("y", "copy", "Copy", show=False),
         Binding("h", "hide", "Hide or show", show=False),
         Binding("d,delete", "delete", "Delete", show=False),
@@ -183,12 +197,26 @@ class Conversation(VerticalScroll):
         self._rows: dict[str, TurnRow] = {}
         self._order: list[str] = []
         self._selected: str | None = None
+        # A turn is in progress: from its line until the record that holds it.
+        self._busy = False
 
     @property
     def selected(self) -> Turn | None:
         """The selected turn, if any."""
         row = None if self._selected is None else self._rows.get(self._selected)
         return None if row is None else row.turn
+
+    @property
+    def can_try_again(self) -> bool:
+        """Whether the newest turn's reply can be tried again now."""
+        return self._try_again_target() is not None
+
+    def _try_again_target(self) -> Turn | None:
+        row = self._rows.get(self._order[-1]) if self._order else None
+        turn = None if row is None else row.turn
+        if self._busy or turn is None or turn.reply is None or turn.hidden:
+            return None
+        return turn
 
     @property
     def _following(self) -> bool:
@@ -212,6 +240,7 @@ class Conversation(VerticalScroll):
             self._stop_pending()
             self.remove_children()
             self._rows, self._user, self._reply, self._selected = {}, None, None, None
+        self._busy = False
         following = self._following
         ids = [turn.id for turn in shown.turns]
         for turn_id in set(self._rows) - set(ids):
@@ -266,8 +295,11 @@ class Conversation(VerticalScroll):
         self.refresh_bindings()
 
     def _mark_selected(self) -> None:
+        target = self._try_again_target()
         for turn_id, row in self._rows.items():
             row.set_class(turn_id == self._selected, "selected")
+            if turn_id == self._selected:
+                row.show_keys(try_again=target is not None and target.id == turn_id)
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
         """Offer only the changes that apply to the selected turn.
@@ -290,6 +322,9 @@ class Conversation(VerticalScroll):
             return turn is not None and turn.reply is not None
         if action in ("hide", "delete"):
             return turn is not None
+        if action == "try_again":
+            target = self._try_again_target()
+            return turn is not None and target is not None and target.id == turn.id
         return True
 
     def action_move(self, step: int) -> None:
@@ -337,6 +372,22 @@ class Conversation(VerticalScroll):
                 self.notify("Reply edited" + _UNDO_HINT)
 
         self.app.push_screen(EditReplyScreen(before), edited)
+
+    def action_try_again(self) -> None:
+        """Answer the selected turn's line again, in place of its reply."""
+        if self.check_action("try_again", ()):
+            self.try_again()
+
+    def try_again(self) -> None:
+        """Answer the newest turn's line again, in place of its reply. ``z`` brings it back."""
+        turn = self._try_again_target()
+        if turn is None:
+            return
+        self._send(TryAgain(turn.id))
+        self._busy = True
+        self._mark_selected()
+        self.refresh_bindings()
+        self.notify("Trying again" + _UNDO_HINT)
 
     def action_copy(self) -> None:
         """Copy the selected reply as it is heard, without its cues."""
@@ -434,14 +485,25 @@ class Conversation(VerticalScroll):
             The line.
         """
         self._reply, self._reply_words, self._reply_cut = None, "", False
+        self._busy = True
+        self._mark_selected()
+        self.refresh_bindings()
         content = Content.assemble(_YOU, printable(text))
         pending = self._stop_pending()
+        if pending is None and self._open_line() == text:
+            return  # a line answered again: the record already shows it
         if pending is None:
             self._user = self._add("you", content)
         else:
             pending.remove_class("pending")
             pending.update(content)
             self._user = pending
+
+    def _open_line(self) -> str | None:
+        row = self._rows.get(self._order[-1]) if self._order else None
+        if row is None or row.turn.reply is not None or row.turn.hidden:
+            return None
+        return row.turn.user
 
     def add_note(self, text: str) -> None:
         """Add a dim status line, such as a retry.

@@ -30,11 +30,19 @@ from fish_audio_suite_voice.session.commands import (
     NewChat,
     OpenChat,
     SetHidden,
+    TryAgain,
     Undo,
 )
 from fish_audio_suite_voice.session.conversation import Conversation
 from fish_audio_suite_voice.session.duplex import duplex_turns
-from fish_audio_suite_voice.session.events import EVENTS, ChatShown, Event, ExitCode, Notice
+from fish_audio_suite_voice.session.events import (
+    EVENTS,
+    ChatShown,
+    Event,
+    ExitCode,
+    Heard,
+    Notice,
+)
 from fish_audio_suite_voice.session.state import TurnInput
 from fish_audio_suite_voice.tts.speaker import FishSpeaker
 
@@ -158,6 +166,48 @@ def test_undo_reverses_the_last_change_and_says_when_there_is_none(
     )
     assert _dialogue(run.asked[1]) == ["one", "reply 1.", "two"]
     assert run.notices == ["[nothing to undo]"]
+
+
+def test_trying_again_answers_the_same_line_afresh_and_undo_brings_the_old_reply_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = _Run(quick_config())
+    heard: list[str] = []
+    stop = EVENTS.subscribe(
+        lambda event: heard.append(event.text) if isinstance(event, Heard) else None
+    )
+    try:
+        run.run(
+            monkeypatch,
+            heard_line("one"),
+            run.change(lambda shown: [TryAgain(_ids(shown)[0])]),
+            run.change(lambda _shown: [Undo()]),
+            heard_line("two"),
+        )
+    finally:
+        stop()
+    # The second request asks for "one" again, without the reply it replaces.
+    assert _dialogue(run.asked[1]) == ["one"]
+    # A display is told the line is being answered again. (The scripted lines say nothing.)
+    assert heard == ["one"]
+    answered = run.shown[-3]
+    assert [(t.user, t.reply.text if t.reply else None) for t in answered.turns] == [
+        ("one", "reply 2.")
+    ]
+    assert _dialogue(run.asked[2]) == ["one", "reply 1.", "two"]
+
+
+def test_only_the_newest_reply_is_tried_again(monkeypatch: pytest.MonkeyPatch) -> None:
+    run = _Run(quick_config())
+    run.run(
+        monkeypatch,
+        heard_line("one"),
+        heard_line("two"),
+        run.change(lambda shown: [TryAgain(_ids(shown)[0])]),
+        heard_line("three"),
+    )
+    assert run.notices == ["[only the newest reply can be tried again]"]
+    assert len(run.asked) == 3
 
 
 def test_a_change_asked_for_during_a_reply_waits_until_the_reply_is_recorded(

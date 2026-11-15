@@ -43,6 +43,7 @@ KEYS: tuple[tuple[str, str], ...] = (
     ("j k  ↑ ↓", "Pick a message"),
     ("g  G", "The first or the newest message"),
     ("e", "Edit the reply"),
+    ("r", "Try again (a new reply)"),
     ("y", "Copy the reply"),
     ("h", "Hide from the AI, or show again"),
     ("d", "Delete"),

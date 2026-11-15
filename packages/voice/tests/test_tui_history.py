@@ -35,6 +35,7 @@ from fish_audio_suite_voice.session.commands import (
     NewChat,
     OpenChat,
     SetHidden,
+    TryAgain,
     Undo,
 )
 from fish_audio_suite_voice.session.conversation import Conversation as Record
@@ -215,6 +216,43 @@ def test_the_selected_turn_shows_its_keys_and_y_copies_the_reply_without_cues() 
         await pilot.press("escape")  # back to typing: no keys under any turn
         await pilot.pause(0.05)
         assert all("Delete" not in _text(row) for row in harness.rows())
+
+    _drive(harness, scenario)
+
+
+def test_r_tries_the_newest_reply_again_and_is_offered_only_when_it_can() -> None:
+    harness = _Harness()
+    record = _record()
+    three = record.turns[2].id
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        harness.bus.emit(_shown(record))
+        await pilot.pause(0.1)
+        await pilot.press("tab")
+        assert "r Try again" in _text(harness.rows()[2])
+        commands = harness.app.get_system_commands(harness.app.screen)
+        assert next(iter(commands)).title == "Try again"
+        await pilot.press("k", "r")  # an older turn: nothing to try again
+        assert "r Try again" not in _text(harness.rows()[1])
+        assert harness.live.sent == []
+        await pilot.press("j", "r")
+        assert harness.live.sent == [TryAgain(three)]
+        assert harness.toasts == ["Trying again · z to undo"]
+        # The session drops the reply and answers the same line: it is drawn once.
+        record.try_again(three)
+        harness.bus.emit(_shown(record))
+        harness.bus.emit(Heard("three", 0.0))
+        harness.bus.emit(ReplyToken("A third try."))
+        await pilot.pause(0.1)
+        assert [line.splitlines()[0] for line in harness.lines()[-2:]] == [
+            "› three",
+            "A third try.",
+        ]
+        await pilot.press("r")  # a reply is in progress
+        assert harness.live.sent == [TryAgain(three)]
+        assert "Try again" not in [
+            c.title for c in harness.app.get_system_commands(harness.app.screen)
+        ]
 
     _drive(harness, scenario)
 

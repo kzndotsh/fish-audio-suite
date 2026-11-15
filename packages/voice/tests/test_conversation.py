@@ -239,6 +239,28 @@ def test_undo_reverses_changes_newest_first_and_then_has_nothing_left() -> None:
     assert not conversation.undo()
 
 
+def test_trying_again_drops_the_newest_reply_and_undo_puts_it_back() -> None:
+    conversation = _talk(Conversation("s"), ("one", "first"), ("two", "second"))
+    before = list(conversation.turns)
+    assert conversation.try_again(before[1].id) == "two"
+    assert conversation.turns[1].reply is None
+    assert conversation.last_user() == "two"
+    conversation.add_reply("another second", interrupted=False)
+    assert conversation.undo()
+    assert conversation.turns == before
+
+
+def test_only_the_newest_shown_reply_can_be_tried_again() -> None:
+    conversation = _talk(Conversation("s"), ("one", "first"), ("two", "second"), ("three", None))
+    for turn in conversation.turns[:2]:  # an older reply, and one before an open line
+        with pytest.raises(ValueError, match="newest answered"):
+            conversation.try_again(turn.id)
+    conversation = _talk(Conversation("s"), ("one", "first"))
+    conversation.set_hidden(conversation.turns[0].id, hidden=True)
+    with pytest.raises(ValueError, match="newest answered"):
+        conversation.try_again(conversation.turns[0].id)
+
+
 def test_new_turns_keep_coming_in_after_an_edit_is_undone() -> None:
     conversation = _talk(Conversation("s"), ("one", "first"))
     conversation.edit_reply(conversation.turns[0].id, "edited")

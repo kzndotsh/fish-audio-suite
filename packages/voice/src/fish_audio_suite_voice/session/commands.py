@@ -18,6 +18,7 @@ __all__ = [
     "NewChat",
     "OpenChat",
     "SetHidden",
+    "TryAgain",
     "Undo",
 ]
 
@@ -68,8 +69,21 @@ class SetHidden:
 
 
 @dataclass(frozen=True, slots=True)
+class TryAgain:
+    """Drop the newest turn's reply and answer its line again.
+
+    Attributes
+    ----------
+    turn_id : str
+        The newest turn, which has a reply. ``Undo`` puts that reply back.
+    """
+
+    turn_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class Undo:
-    """Reverse the last edit, hide or delete in this chat."""
+    """Reverse the last change to a turn in this chat."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -90,5 +104,5 @@ class NewChat:
     """Start a new chat, in a new file."""
 
 
-type ChatCommand = EditReply | DeleteTurn | SetHidden | Undo | OpenChat | NewChat
+type ChatCommand = EditReply | DeleteTurn | SetHidden | TryAgain | Undo | OpenChat | NewChat
 """Every change a display can ask for."""

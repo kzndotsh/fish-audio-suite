@@ -23,7 +23,7 @@ from fish_audio_suite_voice.llm.reply import (
     stream_turn,
 )
 from fish_audio_suite_voice.llm.transports import ChatUnusableError
-from fish_audio_suite_voice.logutil.debug import debug, debug_enabled
+from fish_audio_suite_voice.logutil.debug import debug, debug_enabled, mark_turn
 from fish_audio_suite_voice.session.cancel import StopFlag, never
 from fish_audio_suite_voice.session.chat_store import ChatLoadError, SavedChat, load_chat
 from fish_audio_suite_voice.session.commands import (
@@ -33,10 +33,11 @@ from fish_audio_suite_voice.session.commands import (
     NewChat,
     OpenChat,
     SetHidden,
+    TryAgain,
     Undo,
 )
 from fish_audio_suite_voice.session.conversation import Conversation
-from fish_audio_suite_voice.session.events import EVENTS, Bye, ExitCode, TurnEnded, notice
+from fish_audio_suite_voice.session.events import EVENTS, Bye, ExitCode, Heard, TurnEnded, notice
 from fish_audio_suite_voice.session.inputs import TurnSource
 from fish_audio_suite_voice.session.latency import LatencySnapshot
 from fish_audio_suite_voice.session.signals import DuplexSession
@@ -239,9 +240,9 @@ async def _session(
         last_user = ""
         while True:
             commands = source.take_commands() if source is not None else []
-            if commands:
-                await _apply_commands(ctx, commands)
-            heard = await _next_turn(ctx, source, last_user)
+            # A change can ask for a line already in the record to be answered again.
+            again = await _apply_commands(ctx, commands) if commands else None
+            heard = again or await _next_turn(ctx, source, last_user)
             if heard.kind == "bye":
                 return ExitCode.OK
             if heard.kind == "fatal":
@@ -260,7 +261,8 @@ async def _session(
                 continue
             turn.carry.take_resume()  # real speech, so the cut reply stays cut
             last_user = heard.text
-            chat.history.add_user_line(heard.text)
+            if again is None:
+                chat.history.add_user_line(heard.text)
             code = await _answer_line(ctx, heard)
             await chat.save()
             EVENTS.emit(chat.shown())
@@ -275,21 +277,37 @@ def _announce(verb: str, saved: SavedChat, prompt: str) -> None:
         notice("[this chat was saved with another system prompt; the current one is used]")
 
 
-async def _apply_commands(ctx: DuplexContext, commands: list[ChatCommand]) -> None:
-    """Apply the user's changes to the chat, between turns, then save and show it."""
+async def _apply_commands(ctx: DuplexContext, commands: list[ChatCommand]) -> HeardLine | None:
+    """Apply the user's changes to the chat, between turns, then save and show it.
+
+    Returns the line to answer now, when a change asked for its line to be answered again
+    and the record still ends with it, unanswered.
+    """
     chat = ctx.chat
     # A reply written ahead, or the unheard rest of a cut one, belongs to the chat as it was.
     drop_speculation(chat)
     ctx.turn_input.carry.take_resume()
+    answer = False
     for command in commands:
         if isinstance(command, OpenChat | NewChat):
             await chat.save()  # the changes so far belong to the chat being left
-        await _apply(ctx, command)
+            answer = False  # and so does a line asked to be answered again
+        answer = await _apply(ctx, command) or answer
     await chat.save()
     EVENTS.emit(chat.shown())
+    line = chat.history.last_user()
+    return _answer_again(line) if answer and line else None
 
 
-async def _apply(ctx: DuplexContext, command: ChatCommand) -> None:
+def _answer_again(text: str) -> HeardLine:
+    """Return a line already in the record as a turn to answer, and say it is being answered."""
+    mark_turn()
+    EVENTS.emit(Heard(text, 0.0))
+    return HeardLine("line", text=text, started=time.perf_counter())
+
+
+async def _apply(ctx: DuplexContext, command: ChatCommand) -> bool:
+    """Apply one change. True when it asks for the record's last line to be answered."""
     chat, prompt = ctx.chat, ctx.config.prompt
     match command:
         case OpenChat(path=path):
@@ -297,7 +315,7 @@ async def _apply(ctx: DuplexContext, command: ChatCommand) -> None:
                 saved = await asyncio.to_thread(load_chat, path)
             except ChatLoadError as exc:
                 notice(f"[cannot open that chat: {exc}]")
-                return
+                return False
             chat.history = saved.conversation.reopened(prompt)
             chat.file = chat_file(ctx.config, chat.history, saved)
             _announce("opened", saved, prompt)
@@ -308,13 +326,14 @@ async def _apply(ctx: DuplexContext, command: ChatCommand) -> None:
         case Undo():
             if not chat.history.undo():
                 notice("[nothing to undo]")
-        case EditReply() | DeleteTurn() | SetHidden():
-            _edit(chat.history, command)
+        case EditReply() | DeleteTurn() | SetHidden() | TryAgain():
+            return _edit(chat.history, command)
         case _:
             assert_never(command)
+    return False
 
 
-def _edit(history: Conversation, command: EditReply | DeleteTurn | SetHidden) -> None:
+def _edit(history: Conversation, command: EditReply | DeleteTurn | SetHidden | TryAgain) -> bool:
     try:
         match command:
             case EditReply(turn_id=turn_id, text=text):
@@ -323,10 +342,17 @@ def _edit(history: Conversation, command: EditReply | DeleteTurn | SetHidden) ->
                 history.delete_turn(turn_id)
             case SetHidden(turn_id=turn_id, hidden=hidden):
                 history.set_hidden(turn_id, hidden=hidden)
+            case TryAgain(turn_id=turn_id):
+                history.try_again(turn_id)
+                return True
     except KeyError:
         notice("[that turn is no longer in the chat]")
     except ValueError:
-        notice("[a reply cannot be blank: hide or delete the turn instead]")
+        if isinstance(command, TryAgain):
+            notice("[only the newest reply can be tried again]")
+        else:
+            notice("[a reply cannot be blank: hide or delete the turn instead]")
+    return False
 
 
 async def _next_turn(ctx: DuplexContext, source: TurnSource | None, last_user: str) -> HeardLine:
