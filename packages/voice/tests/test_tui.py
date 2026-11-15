@@ -1,8 +1,5 @@
 """The full-screen app, driven headless: events in, widgets and exit codes out."""
 
-# The user's lines start with a single angle quote mark, which is the design, not a typo.
-# ruff: noqa: RUF001
-
 from __future__ import annotations
 
 import asyncio
@@ -26,7 +23,7 @@ from fish_audio_suite_voice.cli import history_pane
 from fish_audio_suite_voice.cli import tui as tui_module
 from fish_audio_suite_voice.cli.chat_screens import KeysScreen
 from fish_audio_suite_voice.cli.diagnostics import DiagnosticsScreen, Timings
-from fish_audio_suite_voice.cli.history_pane import Conversation
+from fish_audio_suite_voice.cli.history_pane import Bubble, Conversation
 from fish_audio_suite_voice.cli.tui import Composer, VoiceApp, Waveform
 from fish_audio_suite_voice.session.commands import NewChat
 from fish_audio_suite_voice.session.events import (
@@ -103,8 +100,7 @@ class _Harness:
         return self.app.screen_stack[0]
 
     def messages(self) -> list[str]:
-        conversation = self.main.query_one("#conversation")
-        return [str(child.content) for child in conversation.children if isinstance(child, Static)]
+        return _shown(self.main.query_one("#conversation"))
 
     def text(self, selector: str) -> str:
         return str(self.main.query_one(selector, Static).content)
@@ -157,13 +153,13 @@ def test_a_turn_is_shown_as_it_happens_without_its_cues() -> None:
         ):
             harness.bus.emit(event)
         await pilot.pause(0.1)
-        assert harness.messages() == ["› tell me something fun", "Once upon a time."]
+        assert harness.messages() == ["you: tell me something fun", "ai: Once upon a time."]
         assert harness.state_line() == "◌ Thinking…"
         harness.bus.emit(ReplyToken("m, teasing] The end."))
         harness.bus.emit(ReplyEnd("[calm] Once upon a time. [warm, teasing] The end."))
         harness.bus.emit(Speaking())
         await pilot.pause(0.1)
-        assert harness.messages()[-1] == "Once upon a time. The end."
+        assert harness.messages()[-1] == "ai: Once upon a time. The end."
         assert harness.state_line() == "▶ Speaking  talk to interrupt, or press Esc"
         snapshot = LatencySnapshot(asr_ms=120.0, first_audio_ms=900.0)
         harness.bus.emit(TurnEnded(snapshot))
@@ -183,7 +179,7 @@ def test_square_brackets_are_never_read_as_markup() -> None:
         harness.bus.emit(Heard("[bold]hi[/bold] $name", 1.0))
         harness.bus.emit(ReplyEnd("[soft encouragement] Say hi to $name."))
         await pilot.pause(0.1)
-        assert harness.messages() == ["› [bold]hi[/bold] $name", "Say hi to $name."]
+        assert harness.messages() == ["you: [bold]hi[/bold] $name", "ai: Say hi to $name."]
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
@@ -198,7 +194,7 @@ def test_a_reply_the_user_talks_over_ends_in_an_ellipsis() -> None:
         harness.bus.emit(Speaking())
         harness.bus.emit(BargedIn())
         await pilot.pause(0.1)
-        assert harness.messages() == ["› hi", "Well, let me think…"]
+        assert harness.messages() == ["you: hi", "ai: Well, let me think…"]
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
@@ -516,7 +512,7 @@ def test_events_sent_before_the_screen_is_up_are_not_lost() -> None:
 
     async def scenario(pilot: Pilot[int]) -> None:
         await pilot.pause(0.2)
-        assert harness.messages() == ["› early"]
+        assert harness.messages() == ["you: early"]
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
@@ -606,7 +602,7 @@ def test_the_app_draws_under_every_builtin_theme() -> None:
             harness.app.theme = name
             await pilot.pause(0.02)
             assert harness.app.theme == name
-            assert harness.messages() == ["› hello", "hi there"]
+            assert harness.messages() == ["you: hello", "ai: hi there"]
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
@@ -636,8 +632,20 @@ class _ConversationApp(App[None]):
         yield Conversation(send=lambda _command: None, hold_mic=lambda _held: None)
 
 
-def _conversation_lines(conversation: Conversation) -> list[str]:
-    return [str(child.content) for child in conversation.children if isinstance(child, Static)]
+def _said(bubble: Bubble) -> str:
+    """A bubble as ``side: words``, the side being whose it is: ``you`` or ``ai``."""
+    sides = [side for side in ("you", "ai") if bubble.has_class(side)]
+    assert len(sides) == 1, bubble.classes
+    return f"{sides[0]}: {bubble.content}"
+
+
+def _shown(conversation: Widget) -> list[str]:
+    """Each message of the pane: a bubble as ``side: words``, and a note as it reads."""
+    return [
+        _said(child) if isinstance(child, Bubble) else str(child.content)
+        for child in conversation.children
+        if isinstance(child, Bubble | Static)
+    ]
 
 
 def test_the_conversation_widget_adds_its_reply_once_then_updates_it() -> None:
@@ -651,11 +659,11 @@ def test_the_conversation_widget_adds_its_reply_once_then_updates_it() -> None:
             conversation.show_reply("[calm] Hel")
             conversation.show_reply("[calm] Hello")
             await pilot.pause(0.05)
-            assert _conversation_lines(conversation) == ["› hi", "Hello"]
+            assert _shown(conversation) == ["you: hi", "ai: Hello"]
             conversation.add_user("again")
             conversation.show_reply("Sure")
             await pilot.pause(0.05)
-            assert _conversation_lines(conversation) == ["› hi", "Hello", "› again", "Sure"]
+            assert _shown(conversation) == ["you: hi", "ai: Hello", "you: again", "ai: Sure"]
 
     asyncio.run(asyncio.wait_for(main(), 20))
 
@@ -669,8 +677,8 @@ def test_the_conversation_widget_keeps_notes_in_order() -> None:
             conversation.add_note("[llm 429, retrying in 4s]")
             conversation.add_note("[a second note]")
             await pilot.pause(0.05)
-            assert _conversation_lines(conversation) == [
-                "› a",
+            assert _shown(conversation) == [
+                "you: a",
                 "[llm 429, retrying in 4s]",
                 "[a second note]",
             ]
@@ -689,11 +697,11 @@ def test_the_conversation_shows_no_you_line_until_words_are_recognised() -> None
         assert harness.messages() == []
         harness.bus.emit(Interim("hello"))
         await pilot.pause(0.1)
-        assert harness.messages() == ["› hello"]  # the words so far, and no dots
+        assert harness.messages() == ["you: hello"]  # the words so far, and no dots
         assert harness.main.query_one("#conversation .you").has_class("pending")  # dim
         harness.bus.emit(Heard("hello there", 120.0))
         await pilot.pause(0.1)
-        assert harness.messages() == ["› hello there"]  # the same line, now final
+        assert harness.messages() == ["you: hello there"]  # the same line, now final
         assert not harness.main.query_one("#conversation .you").has_class("pending")
         await pilot.press("ctrl+q")
 
@@ -720,7 +728,7 @@ def test_words_that_never_become_a_turn_go_away_and_come_back_for_the_next(
         # The turn was dropped as noise: no line followed, so the words go.
         assert await _settled(pilot, lambda: harness.messages() == [])
         harness.bus.emit(Interim("hello"))  # and the line comes back for the next words
-        assert await _settled(pilot, lambda: harness.messages() == ["› hello"])
+        assert await _settled(pilot, lambda: harness.messages() == ["you: hello"])
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
@@ -735,7 +743,7 @@ def test_a_typed_line_and_barge_in_levels_add_no_pending_line() -> None:
         assert harness.messages() == []
         harness.bus.emit(Heard("typed", 0.0))
         await pilot.pause(0.1)
-        assert harness.messages() == ["› typed"]
+        assert harness.messages() == ["you: typed"]
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0
@@ -759,7 +767,7 @@ def test_control_characters_in_untrusted_text_never_reach_the_screen() -> None:
         shown = harness.messages()
         assert len(shown) == 3
         assert all(clean(text) for text in shown)
-        assert "› a]0;pwnedb[2Jcde\tf" in shown  # the printable remainder is kept
+        assert "you: a]0;pwnedb[2Jcde\tf" in shown  # the printable remainder is kept
         await pilot.press("f12")
         await pilot.pause(0.1)
         (logged,) = harness.app.screen.query_one(Log).lines
@@ -1509,17 +1517,16 @@ def test_the_words_appear_on_the_you_line_as_they_are_recognised_then_become_the
         harness.bus.emit(Interim("hel"))
         await pilot.pause(0.1)
         (line,) = harness.messages()
-        assert line.startswith("› ")
-        assert line.endswith(" hel")
+        assert line == "you: hel"
         harness.bus.emit(Interim("hello there"))
         harness.bus.emit(Interim("hello there friend\x1b[2J"))  # untrusted text, like any other
         await pilot.pause(0.1)
         (line,) = harness.messages()  # the same line, replaced, not a new one each time
-        assert line.endswith(" hello there friend[2J")
+        assert line == "you: hello there friend[2J"
         assert "\x1b" not in line
         harness.bus.emit(Heard("hello there friend", 120.0))
         await pilot.pause(0.1)
-        assert harness.messages() == ["› hello there friend"]  # the same line, now final
+        assert harness.messages() == ["you: hello there friend"]  # the same line, now final
         await pilot.press("ctrl+q")
 
     assert _drive(harness, scenario) == 0

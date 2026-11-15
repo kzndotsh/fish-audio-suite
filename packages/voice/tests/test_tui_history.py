@@ -4,9 +4,6 @@ The app never changes the chat: each key sends a ``ChatCommand`` to the session,
 pane redraws from the ``ChatShown`` the session answers with.
 """
 
-# The user's lines start with a single angle quote mark, which is the design, not a typo.
-# ruff: noqa: RUF001
-
 from __future__ import annotations
 
 import asyncio
@@ -20,6 +17,7 @@ from pathlib import Path
 import pytest
 from session_fakes import FakeBackend, hello_tokens, quick_config, speak_with_fakes
 from textual.content import Content
+from textual.geometry import Region
 from textual.pilot import Pilot
 from textual.widget import Widget
 from textual.widgets import Input, OptionList, Static, TextArea
@@ -28,7 +26,7 @@ from voice_fakes import ScriptedMic, install_gate
 from fish_audio_suite_kit import CueStyle
 from fish_audio_suite_voice.cli.chat_screens import ChatPicker, when_label
 from fish_audio_suite_voice.cli.diagnostics import DiagnosticsScreen
-from fish_audio_suite_voice.cli.history_pane import Conversation, TurnRow
+from fish_audio_suite_voice.cli.history_pane import Bubble, Conversation, TurnRow
 from fish_audio_suite_voice.cli.tui import VoiceApp
 from fish_audio_suite_voice.cli.turn_editor import TurnEditor
 from fish_audio_suite_voice.session.chat_store import ChatFile, load_chat
@@ -70,11 +68,17 @@ from fish_audio_suite_voice.tts.speaker import FishSpeaker
 
 
 def _text(widget: Widget) -> str:
-    """What a row of the pane shows: each of its visible lines."""
-    if isinstance(widget, TurnRow):
-        return "\n".join(str(line.content) for line in widget.query(Static) if line.display)
-    assert isinstance(widget, Static)
-    return str(widget.content)
+    """What a row of the pane shows: each of its visible lines, a bubble as ``side: words``.
+
+    The side is whose the bubble is, ``you`` or ``ai``.
+    """
+    if isinstance(widget, Bubble):
+        (side,) = [side for side in ("you", "ai") if widget.has_class(side)]
+        return f"{side}: {widget.content}"
+    if isinstance(widget, Static):
+        return str(widget.content)
+    lines = [_text(child) for child in widget.children if child.display]
+    return "\n".join(line for line in lines if line)
 
 
 class _SpyInput(LiveInput):
@@ -173,9 +177,9 @@ def test_the_pane_shows_every_turn_as_it_was_heard_and_marks_hidden_and_edited_o
         await pilot.pause(0.1)
         # The first turn is older than the model is sent, which only Diagnostics says.
         assert harness.lines() == [
-            "› one\nfirst.",
-            "› two\nsecond.\nhidden from AI",
-            "› three\na better third.\nedited",
+            "you: one\nai: first.",
+            "you: two\nai: second.\nhidden from AI",
+            "you: three\nai: a better third.\nedited",
         ]
         assert [row.has_class("hidden") for row in harness.rows()] == [False, True, False]
 
@@ -263,8 +267,8 @@ def test_r_tries_the_newest_reply_again_and_is_offered_only_when_it_can() -> Non
         harness.bus.emit(ReplyToken("A third try."))
         await pilot.pause(0.1)
         assert [line.splitlines()[0] for line in harness.lines()[-2:]] == [
-            "› three",
-            "A third try.",
+            "you: three",
+            "ai: A third try.",
         ]
         await pilot.press("r")  # a reply is in progress
         assert harness.live.sent == [TryAgain(three)]
@@ -353,7 +357,7 @@ def test_a_reply_is_rewritten_in_place_without_its_cues_and_saved_or_left_as_it_
         assert _editor(harness).text == "How about Pepper? It suits him."
         # The reply line gives way to the editor, which lists its own keys.
         assert _text(row).splitlines() == [
-            "› Name the cat",
+            "you: Name the cat",
             "enter Save   esc Cancel   ^e Open in editor",
         ]
         harness.bus.emit(Speaking())  # even with a reply playing, the editor has Escape
@@ -451,7 +455,7 @@ def test_shift_e_rewrites_the_selected_line_in_place_and_sends_it_again() -> Non
         await pilot.press("E")
         await pilot.pause(0.05)
         assert _editor(harness).text == "two"
-        assert not _text(harness.rows()[1]).startswith("› two")
+        assert not _text(harness.rows()[1]).startswith("you: two")
         await pilot.press("exclamation_mark", "enter")
         assert harness.live.sent == [EditMessage(two, "two!")]
         assert harness.toasts[-1] == "Message edited and sent again · z to undo"
@@ -517,18 +521,28 @@ def test_a_recorded_turn_takes_the_place_of_the_turn_in_progress() -> None:
         harness.bus.emit(ReplyEnd("[calm] fourth."))
         harness.bus.emit(Notice("[after the reply]"))
         await pilot.pause(0.1)
-        assert harness.lines()[-3:] == ["› four", "fourth.", "[after the reply]"]
+        assert harness.lines()[-3:] == ["you: four", "ai: fourth.", "[after the reply]"]
         record.add_user_line("four")
         record.add_reply("[calm] fourth.", interrupted=True)
         harness.bus.emit(_shown(record, window=10))
         await pilot.pause(0.1)
         # Cut off: the reply ends in a dim ellipsis.
-        assert harness.lines()[-2:] == ["› four\nfourth.…", "[after the reply]"]
+        assert harness.lines()[-2:] == ["you: four\nai: fourth.…", "[after the reply]"]
 
     _drive(harness, scenario)
 
 
-def test_a_line_in_progress_starts_in_the_same_column_as_a_recorded_turn() -> None:
+def _live(harness: _Harness) -> list[Bubble]:
+    """The bubbles of the turn in progress, which no recorded turn holds yet."""
+    return [child for child in harness.pane.children if isinstance(child, Bubble)]
+
+
+def _box(bubble: Bubble) -> Region:
+    """Where the bubble's bordered box is drawn on the screen."""
+    return bubble.query_one(".text").region
+
+
+def test_a_line_in_progress_sits_where_its_recorded_bubble_will() -> None:
     harness = _Harness()
     record = _record()
 
@@ -536,34 +550,59 @@ def test_a_line_in_progress_starts_in_the_same_column_as_a_recorded_turn() -> No
         harness.bus.emit(_shown(record, window=10))
         harness.bus.emit(Heard("four", 0.0))
         await pilot.pause(0.1)
-        recorded = harness.rows()[-1]
-        live = [child for child in harness.pane.children if isinstance(child, Static)][-1]
-        assert str(live.content) == "› four"
-        # Otherwise the line jumps sideways once its turn is recorded.
-        assert live.content_region.x == recorded.content_region.x
+        (live,) = _live(harness)
+        assert _text(live) == "you: four"
+        box = _box(live)
+        # On the right, as the user's bubbles of the recorded turns are.
+        assert box.right == _box(harness.rows()[0].query_one(Bubble)).right
+        record.add_user_line("four")
+        harness.bus.emit(_shown(record, window=10))
+        await pilot.pause(0.1)
+        assert _live(harness) == []
+        recorded = harness.rows()[-1].query_one(Bubble)
+        assert _text(recorded) == "you: four"
+        # Otherwise the bubble jumps sideways, or changes width, once its turn is recorded.
+        assert (_box(recorded).x, _box(recorded).width) == (box.x, box.width)
 
     _drive(harness, scenario)
 
 
 def test_a_turn_in_progress_is_laid_out_as_its_recorded_turn_will_be() -> None:
     harness = _Harness(shape=CueStyle.for_model("s2.1-pro", official=True, lead=False).shape)
+    record = Record("be brief")
 
     async def scenario(pilot: Pilot[int]) -> None:
+        harness.bus.emit(_shown(record))
         harness.bus.emit(Heard("hello", 0.0))
         harness.bus.emit(ReplyToken("[happy] Hi"))
         harness.bus.emit(ReplyToken(" there."))
+        harness.bus.emit(Notice("[after the reply]"))
         await pilot.pause(0.1)
-        you, reply = [child for child in harness.pane.children if isinstance(child, Static)][-2:]
-        assert str(reply.content) == "Hi there."
-        # No blank line between the user's line and the reply, as in a recorded turn, and
-        # the reply is indented under the user's line.
+        note = harness.pane.children[-1]
+        assert _text(note) == "[after the reply]"
+        note_y = note.region.y
+        you, reply = _live(harness)
+        assert [_text(you), _text(reply)] == ["you: hello", "ai: Hi there."]
+        # No blank line between the user's bubble and the reply, as in a recorded turn.
         assert reply.region.y == you.region.y + you.region.height
-        assert reply.content_region.x == you.content_region.x + 2
+        live = [_box(you), _box(reply)]
+        assert live[1].x < live[0].x  # the reply on the left, the user's words on the right
+        record.add_user_line("hello")
+        record.add_reply("[happy] Hi there.", interrupted=False)
+        harness.bus.emit(_shown(record))
+        await pilot.pause(0.1)
+        assert _live(harness) == []
+        (row,) = harness.rows()
+        recorded = list(row.query(Bubble))
+        assert [_text(bubble) for bubble in recorded] == ["you: hello", "ai: Hi there."]
+        # The recorded turn takes the place of the live one without moving a cell.
+        assert [_box(bubble) for bubble in recorded] == live
+        assert note.region.y == note_y  # and what came after it stays put
 
     _drive(harness, scenario)
 
 
-def _dim(widget: Static) -> str:
+def _dim(widget: Bubble) -> str:
     content = widget.content
     assert isinstance(content, Content)
     return "".join(
@@ -580,7 +619,7 @@ def test_the_words_of_a_reply_not_heard_yet_are_dim_until_they_play() -> None:
         harness.bus.emit(ReplyHeard(0))  # the sound card is about to play it
         harness.bus.emit(ReplyToken(f"[warm] {reply}"))
         await pilot.pause(0.1)
-        live = [child for child in harness.pane.children if isinstance(child, Static)][-1]
+        live = _live(harness)[-1]
         assert str(live.content) == reply
         assert _dim(live) == reply
         harness.bus.emit(ReplyHeard(14))  # partway into "Does": only whole words count
@@ -605,7 +644,7 @@ def test_a_reply_talked_over_keeps_only_the_words_that_were_heard() -> None:
         harness.bus.emit(BargedIn())
         harness.bus.emit(ReplyHeard(40))  # the rest, spoken again after a false alarm
         await pilot.pause(0.1)
-        live = [child for child in harness.pane.children if isinstance(child, Static)][-1]
+        live = _live(harness)[-1]
         assert str(live.content) == "Bart it is.…"
         assert _dim(live) == "…"  # only the mark of the cut: no unheard words left
 
@@ -622,7 +661,7 @@ def test_another_chat_replaces_everything_in_the_pane() -> None:
         other.add_user_line("hello again")
         harness.bus.emit(_shown(other))
         await pilot.pause(0.1)
-        assert harness.lines() == ["› hello again"]
+        assert harness.lines() == ["you: hello again"]
 
     _drive(harness, scenario)
 

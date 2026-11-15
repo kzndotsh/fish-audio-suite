@@ -10,10 +10,10 @@ pane focused, a turn can be selected and changed. Each change goes to the sessio
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Literal
 
 from textual.binding import Binding, BindingType
-from textual.containers import VerticalGroup, VerticalScroll
+from textual.containers import HorizontalGroup, VerticalGroup, VerticalScroll
 from textual.content import Content
 from textual.timer import Timer
 from textual.widgets import Input, Static
@@ -34,6 +34,7 @@ from fish_audio_suite_voice.session.conversation import Turn
 from fish_audio_suite_voice.session.events import ChatShown
 
 __all__ = [
+    "Bubble",
     "Conversation",
     "TurnRow",
 ]
@@ -41,7 +42,6 @@ __all__ = [
 # How long the words so far stay up after the last update with no turn made of them, as
 # when the recogniser drops the turn as noise.
 _HEARING_HOLD_S = 3.0
-_YOU = ("› ", "bold $text-primary")  # noqa: RUF001 - the quote mark is the design
 _CUT = ("…", "dim")  # ends a reply that was cut off
 _UNHEARD = "dim"  # the words of a reply not played yet
 _KEY = "bold $text-accent"
@@ -89,6 +89,41 @@ def _hint(*pairs: tuple[str, str]) -> Content:
     return Content.assemble(*parts)
 
 
+class Bubble(HorizontalGroup):
+    """One message in a bordered box: the user's on the right, the reply on the left.
+
+    Parameters
+    ----------
+    content : Content
+        The message as shown.
+    side : {"you", "ai"}
+        Who said it, which decides the side and the border colour.
+    classes : str, optional
+        More classes, such as ``pending`` for words not yet final.
+    """
+
+    def __init__(self, content: Content, *, side: Literal["you", "ai"], classes: str = "") -> None:
+        self._content = content
+        self._text = Static(content, classes="text")
+        super().__init__(self._text, classes=f"bubble {side} {classes}".strip())
+
+    @property
+    def content(self) -> Content:
+        """The message as shown."""
+        return self._content
+
+    def update(self, content: Content) -> None:
+        """Show ``content`` in place of the message.
+
+        Parameters
+        ----------
+        content : Content
+            The message as shown now.
+        """
+        self._content = content
+        self._text.update(content)
+
+
 class TurnRow(VerticalGroup):
     """One recorded turn: the user's line, the reply as heard, its notes and, when selected, its keys.
 
@@ -102,8 +137,8 @@ class TurnRow(VerticalGroup):
 
     def __init__(self, turn: Turn) -> None:
         self._editing: EditKind | None = None
-        self._user = Static(classes="you")
-        self._reply = Static(classes="reply")
+        self._user = Bubble(Content(), side="you")
+        self._reply = Bubble(Content(), side="ai")
         self._note = Static(classes="turn-note")
         self._keys = Static(classes="actions")
         super().__init__(self._user, self._reply, self._note, self._keys, classes="message turn")
@@ -119,7 +154,7 @@ class TurnRow(VerticalGroup):
         """
         self.turn = turn
         reply = turn.reply
-        self._user.update(Content.assemble(_YOU, printable(turn.user)))
+        self._user.update(Content(printable(turn.user)))
         self._user.display = self._editing != "message"
         self._reply.display = reply is not None and self._editing != "reply"
         if reply is not None:
@@ -228,13 +263,13 @@ class Conversation(VerticalScroll):
         self._hold_mic = hold_mic
         self._editor: TurnEditor | None = None
         self._back_from: str | None = None  # the turn an editor was closed on
-        self._user: Static | None = None
-        self._reply: Static | None = None
+        self._user: Bubble | None = None
+        self._reply: Bubble | None = None
         self._reply_words = ""
         self._reply_cut = False
         # Characters of the reply heard so far while it plays; None shows it all as heard.
         self._heard: int | None = None
-        self._pending: Static | None = None
+        self._pending: Bubble | None = None
         self._expiry: Timer | None = None
         self._chat_id: str | None = None
         self._rows: dict[str, TurnRow] = {}
@@ -553,9 +588,9 @@ class Conversation(VerticalScroll):
         words = printable(text).strip()
         if not words:
             return
-        content = Content.assemble(_YOU, words)
+        content = Content(words)
         if self._pending is None:
-            self._pending = self._add("you pending", content)
+            self._pending = self._bubble("you", content, "pending")
             self.follow()
         else:
             self._pending.update(content)
@@ -563,7 +598,7 @@ class Conversation(VerticalScroll):
             self._expiry.stop()
         self._expiry = self.set_timer(_HEARING_HOLD_S, self._drop_pending)
 
-    def _stop_pending(self) -> Static | None:
+    def _stop_pending(self) -> Bubble | None:
         pending, self._pending = self._pending, None
         if self._expiry is not None:
             self._expiry.stop()
@@ -590,12 +625,12 @@ class Conversation(VerticalScroll):
         self._busy = True
         self._mark_selected()
         self.refresh_bindings()
-        content = Content.assemble(_YOU, printable(text))
+        content = Content(printable(text))
         pending = self._stop_pending()
         if pending is None and self._open_line() == text:
             return  # a line answered again: the record already shows it
         if pending is None:
-            self._user = self._add("you", content)
+            self._user = self._bubble("you", content)
         else:
             pending.remove_class("pending")
             pending.update(content)
@@ -630,7 +665,7 @@ class Conversation(VerticalScroll):
             return
         content = self._reply_content()
         if self._reply is None:
-            self._reply = self._add("reply", content)
+            self._reply = self._bubble("ai", content)
         else:
             self._reply.update(content)
 
@@ -677,3 +712,8 @@ class Conversation(VerticalScroll):
         message = Static(content, classes=f"message {role}")
         self.mount(message)
         return message
+
+    def _bubble(self, side: Literal["you", "ai"], content: Content, classes: str = "") -> Bubble:
+        bubble = Bubble(content, side=side, classes=f"message {classes}".strip())
+        self.mount(bubble)
+        return bubble

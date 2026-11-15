@@ -39,22 +39,44 @@ Screen {
         text-style: italic;
     }
 
-    /* Every row keeps the column the selection bar uses, and a live "›" line sits right on
-       its reply, so nothing shifts when the recorded turn takes their place. */
+    /* Every row keeps the column the selection bar uses, so nothing shifts when the
+       recorded turn takes the place of the live one. */
     .message {
         padding: 0 1 0 0;
         border-left: blank;
     }
 
-    .message.you {
+    /* Messages are bubbles: yours on the right in the primary colour, the reply on the
+       left in grey. A bubble is as wide as its words, up to three quarters of the pane. */
+    .bubble {
+        width: 1fr;
+        height: auto;
         margin-bottom: 0;
+
+        & > .text {
+            width: auto;
+            max-width: 75%;
+            padding: 0 1;
+            border: round $panel-lighten-2;
+        }
+
+        &.you {
+            align-horizontal: right;
+
+            & > .text {
+                border: round $primary;
+            }
+        }
+
+        /* A live reply leaves the gap a recorded turn leaves under it. */
+        &.message.ai {
+            margin-bottom: 1;
+        }
     }
 
-    /* A reply sits under the user's line, indented, and its wrapped lines keep the indent. */
-    .reply,
     .turn-note,
     .actions {
-        padding-left: 2;
+        padding-left: 1;
     }
 
     .turn.hidden {
@@ -69,6 +91,10 @@ Screen {
     &:focus-within .turn.selected {
         border-left: thick $primary;
         background: $boost;
+
+        .bubble > .text {
+            border: heavy $accent;
+        }
 
         .actions {
             display: block;
