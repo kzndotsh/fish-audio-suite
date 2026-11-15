@@ -39,6 +39,7 @@ __all__ = [
     "Bubble",
     "Conversation",
     "TurnRow",
+    "fade_at",
 ]
 
 # How long the words so far stay up after the last update with no turn made of them, as
@@ -48,6 +49,35 @@ _CUT = ("…", "dim")  # ends a reply that was cut off
 _UNHEARD = "dim"  # the words of a reply not played yet
 _KEY = "bold $text-accent"
 _UNDO_HINT = " · z to undo"
+# Messages fade toward the top of the pane, so the newest read clearest: full in the lower
+# part of the pane, easing down to the floor at the top edge.
+_FADE_BAND = 0.4  # the top share of the pane that fades
+_FADE_FLOOR = 0.4  # the opacity at the very top
+_FADE_STEP = 0.05  # opacities are rounded to this, so a scroll restyles only rows that change
+
+
+def fade_at(position: float) -> float:
+    """Return how opaque a message is at ``position`` in the pane.
+
+    Parameters
+    ----------
+    position : float
+        Where the message's visible middle sits: 0 at the top edge, 1 at the bottom.
+
+    Returns
+    -------
+    float
+        Opacity from 0.4 at the top up to 1 in the lower 60 % of the pane, eased in between.
+
+    Examples
+    --------
+    >>> fade_at(0.0), fade_at(0.2), fade_at(0.6)
+    (0.4, 0.7, 1.0)
+    """
+    t = min(1.0, max(0.0, position / _FADE_BAND))
+    eased = t * t * (3 - 2 * t)
+    level = _FADE_FLOOR + (1 - _FADE_FLOOR) * eased
+    return round(round(level / _FADE_STEP) * _FADE_STEP, 2)
 
 
 def _with_lead_cue(before: str, text: str) -> str:
@@ -120,6 +150,16 @@ class Bubble(HorizontalGroup):
     def content(self) -> Content:
         """The message as shown."""
         return self._content
+
+    def fade(self, opacity: float) -> None:
+        """Fade the bordered box to ``opacity``, on top of any dimming of the bubble itself.
+
+        Parameters
+        ----------
+        opacity : float
+            0 to 1.
+        """
+        self._text.styles.opacity = opacity
 
     def update(self, content: Content) -> None:
         """Show ``content`` in place of the message.
@@ -199,6 +239,19 @@ class TurnRow(VerticalGroup):
         self._editing = None
         self.remove_class("editing")
         self.show(self.turn)
+
+    def fade(self, opacity: float) -> None:
+        """Fade the turn's lines to ``opacity``, on top of the dimming of a hidden turn.
+
+        Parameters
+        ----------
+        opacity : float
+            0 to 1. An open editor is never faded.
+        """
+        self._user.fade(opacity)
+        self._reply.fade(opacity)
+        self._note.styles.opacity = opacity
+        self._keys.styles.opacity = opacity
 
     def on_resize(self) -> None:
         """Keep the whole of the selected turn in view as it grows, while the pane is in use."""
@@ -292,6 +345,7 @@ class Conversation(VerticalScroll):
         self._rows: dict[str, TurnRow] = {}
         self._order: list[str] = []
         self._selected: str | None = None
+        self._fade_queued = False
         # A turn is in progress: from its line until the record that holds it.
         self._busy = False
 
@@ -376,6 +430,48 @@ class Conversation(VerticalScroll):
         else:
             self.mount(row)
 
+    def on_mount(self) -> None:
+        """Fade the messages again whenever the pane scrolls."""
+        self.watch(self, "scroll_y", self._queue_fade, init=False)
+
+    def on_resize(self) -> None:
+        """Fade the messages again when the pane or its content changes size."""
+        self._queue_fade()
+
+    def on_blur(self) -> None:
+        """Fade the selected turn like the others once the pane is left."""
+        self._queue_fade()
+
+    def _queue_fade(self) -> None:
+        if not self._fade_queued:
+            self._fade_queued = True
+            self.call_later(self._fade)
+
+    def _fade(self) -> None:
+        # Only the rows in view are faded; a row scrolled into view is faded then.
+        self._fade_queued = False
+        height = self.scrollable_content_region.height
+        if not height:
+            return
+        top = self.scroll_offset.y
+        shown = self._selected if self.has_focus_within else None
+        editing = None if self._editor is None else self._editor.turn_id
+        for child in self.children:
+            if not child.display:
+                continue
+            region = child.virtual_region
+            start, end = max(0, region.y - top), min(height, region.bottom - top)
+            if end <= start:
+                continue
+            opacity = fade_at((start + end) / 2 / height)
+            if isinstance(child, TurnRow):
+                full = child.turn.id in (shown, editing)
+                child.fade(1.0 if full else opacity)
+            elif isinstance(child, Bubble):
+                child.fade(opacity)
+            else:
+                child.styles.opacity = opacity
+
     def follow(self) -> None:
         """Scroll to the newest line, unless the user is looking through older turns."""
         if not self.has_focus or self._following:
@@ -412,6 +508,7 @@ class Conversation(VerticalScroll):
             self.scroll_to_widget(row, animate=False, immediate=True)
 
     def _mark_selected(self) -> None:
+        self._queue_fade()
         target = self._try_again_target()
         for turn_id, row in self._rows.items():
             row.set_class(turn_id == self._selected, "selected")

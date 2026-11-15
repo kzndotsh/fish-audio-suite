@@ -629,28 +629,68 @@ def test_the_selected_turn_and_its_action_hint_are_scrolled_fully_into_view() ->
 
     async def scenario(pilot: Pilot[int]) -> None:
         harness.bus.emit(_shown(record))
-        await pilot.pause(0.1)
+        await _until(pilot, lambda: len(harness.rows()) == 12)
+        first, newest = harness.rows()[0], harness.rows()[-1]
         await pilot.press("tab")  # selects the newest turn, which grows its hint
-        await pilot.pause(0.1)
-        newest = harness.rows()[-1]
-        assert _in_view(harness, newest.query_one(".actions"))
+        await _until(pilot, lambda: _in_view(harness, newest.query_one(".actions")))
         await pilot.press("g")
-        await pilot.pause(0.1)
-        assert _in_view(harness, harness.rows()[0].query_one(".actions"))
+        await _until(pilot, lambda: _in_view(harness, first.query_one(".actions")))
         await pilot.press("G")
-        await pilot.pause(0.1)
+        await _until(pilot, lambda: _in_view(harness, _bubbles(newest)[0]))
         assert await pilot.click(_bubbles(newest)[0])  # its line, now selected
-        await pilot.pause(0.1)
-        assert harness.pane.editing
+        await _until(pilot, lambda: harness.pane.editing)
         editor = harness.pane.query_one(TurnEditor)
-        assert _in_view(harness, editor)
+        await _until(pilot, lambda: _in_view(harness, editor))
         await pilot.press("escape")
-        await pilot.pause(0.1)
+        await _until(pilot, lambda: not harness.pane.editing)
         harness.app.query_one("#line").focus()
-        await pilot.pause(0.2)  # the hint goes and the pane settles before the click
+        await _until(pilot, lambda: not newest.query_one(".actions").region)
+        await pilot.pause(0.1)  # the pane settles before the click
         assert await pilot.click(_bubbles(newest)[1])  # clicked from the composer
-        await pilot.pause(0.1)
-        assert _in_view(harness, newest.query_one(".actions"))
+        await _until(pilot, lambda: _in_view(harness, newest.query_one(".actions")))
+
+    _drive(harness, scenario)
+
+
+def _opacity(row: TurnRow) -> float:
+    """How opaque the row's user bubble is drawn, every dimming of it and its row included."""
+    return _bubbles(row)[0].opacity
+
+
+def _visible(harness: _Harness) -> list[TurnRow]:
+    """The rows whose user bubble is wholly in view, top to bottom."""
+    return [row for row in harness.rows() if _in_view(harness, _bubbles(row)[0])]
+
+
+def _faded_to_the_top(harness: _Harness) -> bool:
+    """Whether the rows in view grow fainter toward the top, and the lowest is full."""
+    levels = [_opacity(row) for row in _visible(harness)]
+    if len(levels) < 3:
+        return False
+    return levels == sorted(levels) and levels[0] < 0.9 and levels[-1] == 1.0
+
+
+def test_messages_fade_toward_the_top_of_the_pane_but_never_the_selected_turn() -> None:
+    harness = _Harness()
+    record = _record_of(12)  # more than fit in the pane
+    record.set_hidden(record.turns[1].id, hidden=True)
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        harness.bus.emit(_shown(record))
+        await _until(pilot, lambda: _faded_to_the_top(harness))
+        await pilot.press("tab", "g")  # the first turn, at the top and selected: full
+        first, second = harness.rows()[:2]
+        await _until(pilot, lambda: _visible(harness)[:1] == [first] and _opacity(first) == 1.0)
+        assert _opacity(second) < 1.0
+        # Back to typing: the first turn fades with the rest. The hidden one below it is
+        # faded less for where it sits, but keeps its own dimming on top.
+        await pilot.press("escape")
+        await _until(pilot, lambda: _opacity(first) < 1.0)
+        assert _opacity(second) < _opacity(first)
+        assert _opacity(second) <= 0.5
+        # Scrolled to the end, the rows at the bottom are full again.
+        harness.pane.scroll_end(animate=False)
+        await _until(pilot, lambda: _faded_to_the_top(harness))
 
     _drive(harness, scenario)
 
