@@ -29,6 +29,7 @@ from fish_audio_suite_voice.config.dotenv import apply_cli_env_files
 from fish_audio_suite_voice.config.playback_kind import PlaybackKind, playback_key
 from fish_audio_suite_voice.config.settings import (
     VoiceCliConfig,
+    editor_from_env,
     fish_problem,
     load_config,
     log_dir_from_env,
@@ -283,6 +284,7 @@ async def run_tui(c: VoiceCliConfig, *, debug: DebugLevel, resumed: SavedChat | 
                     info=info,
                     chat_dir=c.chat_dir,
                     shape=c.cue_style.shape,
+                    editor=editor_from_env(),
                 )
                 code = await app.run_async()
             finally:

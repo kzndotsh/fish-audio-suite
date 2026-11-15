@@ -326,7 +326,7 @@ containers = ["fish_audio_suite_voice"]
 # import each other. A new module goes in the lowest row it fits.
 layers = [
     "cli.main",
-    "session.duplex : cli.tui : cli.history_pane : cli.chat_screens : cli.diagnostics",
+    "session.duplex : cli.tui : cli.history_pane : cli.turn_editor : cli.chat_screens : cli.diagnostics",
     "llm.reply : asr.pipeline : asr.streaming : session.inputs",
     "capture.listen : capture.barge_in : tts.speaker : session.state : llm.speculate : tts.turn",
     "capture.mic : tts.websocket : llm.client : tts.playback : llm.transports : asr.backends : asr.deepgram : asr.fish_realtime : asr.turn_stream : asr.transcribe : capture.aec : session.chat_store",

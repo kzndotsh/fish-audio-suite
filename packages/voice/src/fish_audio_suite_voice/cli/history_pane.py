@@ -20,8 +20,9 @@ from textual.timer import Timer
 from textual.widgets import Input, Static
 
 from fish_audio_suite_kit import split_cues
-from fish_audio_suite_voice.cli.chat_screens import EditReplyScreen, printable
+from fish_audio_suite_voice.cli.chat_screens import printable
 from fish_audio_suite_voice.cli.session_view import wave_dots
+from fish_audio_suite_voice.cli.turn_editor import EditKind, TurnEditor
 from fish_audio_suite_voice.session.commands import (
     ChatCommand,
     DeleteTurn,
@@ -71,6 +72,21 @@ def spoken(text: str) -> str:
     return "\n".join(" ".join(line.split()) for line in words.split("\n")).strip()
 
 
+def _with_lead_cue(before: str, text: str) -> str:
+    """Return an edited reply led by the cue the reply opened with, unless it has its own.
+
+    The editor shows a reply without its cues, so an edit saves none of them. The cue a
+    reply opens with sets its mood, and keeping it is the one cue that maps without doubt
+    onto the new text.
+    """
+    if text.startswith("["):
+        return text
+    for piece, is_cue in split_cues(before):
+        if piece.strip():
+            return f"{piece} {text}" if is_cue else text
+    return text
+
+
 def _settled(text: str) -> str:
     # A reply still streaming can end in the first half of a cue ("[war"). Leave it out
     # until it closes, so it never flashes up as words.
@@ -99,6 +115,7 @@ class TurnRow(VerticalGroup):
     turn: Turn
 
     def __init__(self, turn: Turn) -> None:
+        self._editing: EditKind | None = None
         self._user = Static(classes="you")
         self._reply = Static(classes="reply")
         self._note = Static(classes="turn-note")
@@ -117,7 +134,8 @@ class TurnRow(VerticalGroup):
         self.turn = turn
         reply = turn.reply
         self._user.update(Content.assemble(_YOU, printable(turn.user)))
-        self._reply.display = reply is not None
+        self._user.display = self._editing != "message"
+        self._reply.display = reply is not None and self._editing != "reply"
         if reply is not None:
             cut = [_CUT] if reply.interrupted else []
             self._reply.update(Content.assemble(spoken(reply.content), *cut))
@@ -132,6 +150,25 @@ class TurnRow(VerticalGroup):
         self._note.display = bool(notes)
         self._note.update(Content.assemble((" · ".join(notes), "dim italic")))
         self.set_class(turn.hidden, "hidden")
+
+    def open_editor(self, editor: TurnEditor) -> None:
+        """Put ``editor`` in place of the line it edits.
+
+        Parameters
+        ----------
+        editor : TurnEditor
+            The editor, not yet mounted.
+        """
+        self._editing = editor.kind
+        self.add_class("editing")
+        self.mount(editor, after=self._reply if editor.kind == "reply" else self._user)
+        self.show(self.turn)
+
+    def close_editor(self) -> None:
+        """Show the edited line again. The caller removes the editor."""
+        self._editing = None
+        self.remove_class("editing")
+        self.show(self.turn)
 
     def show_keys(self, *, resend: bool, try_again: bool) -> None:
         """Show the keys that change this turn, under it while it is selected.
@@ -159,6 +196,11 @@ class Conversation(VerticalScroll):
     ----------
     send : Callable
         Takes each change the user asks for, such as ``LiveInput.send``.
+    hold_mic : Callable
+        Called with True when a line opens in the editor, and False when it closes, so the
+        mic is off while the user edits.
+    editor : str, optional
+        The command Ctrl+E hands a line being edited to. ``vi`` by default.
     **kwargs : Any
         Passed to ``VerticalScroll``.
 
@@ -186,9 +228,20 @@ class Conversation(VerticalScroll):
         Binding("escape,tab", "leave", "Back to typing"),
     ]
 
-    def __init__(self, *, send: Callable[[ChatCommand], None], **kwargs: Any) -> None:
+    def __init__(
+        self,
+        *,
+        send: Callable[[ChatCommand], None],
+        hold_mic: Callable[[bool], None],
+        editor: str = "vi",
+        **kwargs: Any,
+    ) -> None:
         super().__init__(**kwargs)
+        self._editor_command = editor
         self._send = send
+        self._hold_mic = hold_mic
+        self._editor: TurnEditor | None = None
+        self._back_from: str | None = None  # the turn an editor was closed on
         self._user: Static | None = None
         self._reply: Static | None = None
         self._reply_words = ""
@@ -240,6 +293,11 @@ class Conversation(VerticalScroll):
         Rows already drawn are updated where they stand, so notes stay where they were.
         A new row goes where the turn in progress was drawn, or beside its neighbour.
         """
+        editor = self._editor
+        if editor is not None and (
+            shown.chat_id != self._chat_id or editor.turn_id not in {t.id for t in shown.turns}
+        ):
+            self._close_editor()  # its turn is gone
         if shown.chat_id != self._chat_id:
             self._chat_id = shown.chat_id
             self._stop_pending()
@@ -287,8 +345,14 @@ class Conversation(VerticalScroll):
             self.scroll_end(animate=False)
 
     def on_focus(self) -> None:
-        """Select the newest turn whenever the pane is focused, where the chat is now."""
-        if self._order:
+        """Select the newest turn whenever the pane is focused, or go back to an open editor."""
+        if self._editor is not None:
+            self._editor.focus_text()
+            return
+        back_from, self._back_from = self._back_from, None
+        if back_from in self._rows:
+            self._select(back_from)  # the turn just edited stays selected
+        elif self._order:
             self._select(self._order[-1])
 
     def _select(self, turn_id: str | None) -> None:
@@ -369,37 +433,78 @@ class Conversation(VerticalScroll):
         self.screen.focus_next(Input)
 
     def action_edit(self) -> None:
-        """Open the selected reply to rewrite it."""
+        """Rewrite the selected reply in place, as it is heard."""
         turn = self.selected
-        if turn is None or turn.reply is None:
-            return
-        before = turn.reply.content
-        turn_id = turn.id
-
-        def edited(text: str | None) -> None:
-            if text is not None and text != before:
-                self._send(EditReply(turn_id, text))
-                self.notify("Reply edited" + _UNDO_HINT)
-
-        self.app.push_screen(EditReplyScreen(before), edited)
+        if turn is not None and turn.reply is not None:
+            self._open_editor(turn, "reply", spoken(turn.reply.content))
 
     def action_edit_message(self) -> None:
-        """Rewrite the user's line of the selected turn, then answer it afresh."""
+        """Rewrite the user's line of the selected turn in place, then answer it afresh."""
         turn = self.selected
-        if turn is None or self._busy:
-            return
-        before = turn.user
-        turn_id = turn.id
+        if turn is not None and not self._busy:
+            self._open_editor(turn, "message", turn.user)
 
-        def edited(text: str | None) -> None:
-            if text is not None and text != before:
-                self._send(EditMessage(turn_id, text))
+    @property
+    def editing(self) -> bool:
+        """Whether a line is open in the editor."""
+        return self._editor is not None
+
+    def _open_editor(self, turn: Turn, kind: EditKind, text: str) -> None:
+        self._close_editor()
+        row = self._rows.get(turn.id)
+        if row is None:
+            return
+        self._editor = TurnEditor(turn.id, kind, text, editor=self._editor_command)
+        row.open_editor(self._editor)
+        self._hold_mic(True)
+        self.refresh_bindings()
+
+    def _close_editor(self) -> None:
+        editor, self._editor = self._editor, None
+        if editor is None:
+            return
+        row = self._rows.get(editor.turn_id)
+        if row is not None:
+            row.close_editor()
+        editor.remove()
+        self._hold_mic(False)
+        self._back_from = editor.turn_id
+        self.focus()
+        self.refresh_bindings()
+
+    def on_turn_editor_cancelled(self, event: TurnEditor.Cancelled) -> None:
+        """Close the editor and keep the line as it was."""
+        event.stop()
+        self._close_editor()
+
+    def on_turn_editor_saved(self, event: TurnEditor.Saved) -> None:
+        """Send the change the editor holds, unless it is blank, then close it."""
+        event.stop()
+        row = self._rows.get(event.editor.turn_id)
+        turn = None if row is None else row.turn
+        text = event.text.strip()
+        if turn is None:
+            self._close_editor()
+            return
+        if not text:
+            refused = (
+                "A message cannot be blank. Delete the turn instead."
+                if event.editor.kind == "message"
+                else "A reply cannot be blank. Hide or delete the turn instead."
+            )
+            self.notify(refused, severity="warning")
+            return
+        self._close_editor()
+        if event.editor.kind == "message":
+            if text != turn.user:
+                self._send(EditMessage(turn.id, text))
                 self._busy = True
                 self._mark_selected()
                 self.refresh_bindings()
                 self.notify("Message edited and sent again" + _UNDO_HINT)
-
-        self.app.push_screen(EditReplyScreen(before, message=True), edited)
+        elif turn.reply is not None and text != spoken(turn.reply.content):
+            self._send(EditReply(turn.id, _with_lead_cue(turn.reply.content, text)))
+            self.notify("Reply edited" + _UNDO_HINT)
 
     def action_try_again(self) -> None:
         """Answer the selected turn's line again, in place of its reply."""

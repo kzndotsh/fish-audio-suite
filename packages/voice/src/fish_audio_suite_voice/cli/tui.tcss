@@ -60,13 +60,18 @@ Screen {
         margin-top: 1;
     }
 
-    &:focus .turn.selected {
+    &:focus-within .turn.selected {
         border-left: thick $primary;
         background: $boost;
 
         .actions {
             display: block;
         }
+    }
+
+    /* While a line is open in the editor, the editor lists its own keys. */
+    &:focus-within .turn.selected.editing .actions {
+        display: none;
     }
 }
 
@@ -128,13 +133,11 @@ Screen {
 }
 
 /* The dialogs (cli/chat_screens.py). */
-EditReplyScreen,
 ChatPicker,
 KeysScreen {
     align: center middle;
 }
 
-#edit-box,
 #picker-box,
 #keys-box {
     width: 80%;
@@ -154,10 +157,6 @@ KeysScreen {
 
 #keys-box {
     max-width: 64;
-}
-
-#edit-text {
-    height: 12;
 }
 
 #chats {

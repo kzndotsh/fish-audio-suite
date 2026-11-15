@@ -129,9 +129,11 @@ class _FakeApp:
         info: str = "",
         chat_dir: Path | None = None,
         shape: Callable[[str], str] | None = None,
+        editor: str = "vi",
     ) -> None:
         self.runner = runner
         self.shape = shape
+        self.editor = editor
         self.live = live
         self.session = session
         self.info = info
@@ -184,10 +186,13 @@ def test_run_tui_gives_the_session_to_the_app_with_the_console_off(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     c = _configured(monkeypatch)
+    monkeypatch.delenv("VISUAL", raising=False)
+    monkeypatch.setenv("EDITOR", "nano -w")
     calls: dict[str, Any] = {}
     _patch_session(monkeypatch, calls)
     assert asyncio.run(run_tui(c, debug=DebugLevel.EVENTS)) == 0
     app = _FakeApp.instances[0]
+    assert app.editor == "nano -w"  # what Ctrl+E opens a line being edited in
     assert "voice123" in app.info
     assert "model" in app.info
     args, kwargs = calls["duplex"]

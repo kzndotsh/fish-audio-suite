@@ -24,6 +24,7 @@ from fish_audio_suite_voice.config.env import (
     IntSetting,
     check_range,
     read_choice,
+    read_first,
     read_flag,
     read_text,
     read_verbatim,
@@ -45,6 +46,7 @@ __all__ = [
     "SinkLatency",
     "TtsCues",
     "VoiceCliConfig",
+    "editor_from_env",
     "fish_problem",
     "load_config",
     "log_dir_from_env",
@@ -290,6 +292,18 @@ def log_dir_from_env() -> str:
         The folder, or ``""``.
     """
     return read_text("FISH_VOICE_LOG_DIR")
+
+
+def editor_from_env() -> str:
+    """Read the editor the full-screen app hands a line to: ``VISUAL``, then ``EDITOR``.
+
+    Returns
+    -------
+    str
+        The command, which may carry arguments (``code --wait``), or ``vi`` when neither is
+        set.
+    """
+    return read_first("VISUAL", "EDITOR") or "vi"
 
 
 def load_config() -> VoiceCliConfig:

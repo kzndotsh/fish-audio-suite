@@ -604,7 +604,7 @@ class _ConversationApp(App[None]):
     """Hosts a ``Conversation`` alone, to test it without a session."""
 
     def compose(self) -> ComposeResult:
-        yield Conversation(send=lambda _command: None)
+        yield Conversation(send=lambda _command: None, hold_mic=lambda _held: None)
 
 
 def _conversation_lines(conversation: Conversation) -> list[str]:

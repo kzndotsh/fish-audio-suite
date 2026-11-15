@@ -10,6 +10,7 @@ pane redraws from the ``ChatShown`` the session answers with.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
@@ -23,10 +24,11 @@ from textual.widgets import Input, OptionList, Static, TextArea
 from voice_fakes import ScriptedMic, install_gate
 
 from fish_audio_suite_kit import CueStyle
-from fish_audio_suite_voice.cli.chat_screens import ChatPicker, EditReplyScreen
+from fish_audio_suite_voice.cli.chat_screens import ChatPicker
 from fish_audio_suite_voice.cli.diagnostics import DiagnosticsScreen
 from fish_audio_suite_voice.cli.history_pane import Conversation, TurnRow
 from fish_audio_suite_voice.cli.tui import VoiceApp
+from fish_audio_suite_voice.cli.turn_editor import TurnEditor
 from fish_audio_suite_voice.session.chat_store import ChatFile, load_chat
 from fish_audio_suite_voice.session.commands import (
     ChatCommand,
@@ -85,7 +87,10 @@ class _SpyInput(LiveInput):
 
 class _Harness:
     def __init__(
-        self, chat_dir: Path | None = None, shape: Callable[[str], str] | None = None
+        self,
+        chat_dir: Path | None = None,
+        shape: Callable[[str], str] | None = None,
+        editor: str = "vi",
     ) -> None:
         self.bus = EventBus()
         self.session = DuplexSession()
@@ -99,6 +104,7 @@ class _Harness:
             bus=self.bus,
             chat_dir=chat_dir,
             shape=shape,
+            editor=editor,
         )
         self.app.notify = lambda message, **_kwargs: self.toasts.append(str(message))
 
@@ -318,38 +324,109 @@ def test_the_edit_keys_type_into_the_input_line_while_it_has_focus() -> None:
     _drive(harness, scenario)
 
 
-def test_a_reply_is_rewritten_in_a_dialog_and_saved_or_left_as_it_was() -> None:
+def _editor(harness: _Harness) -> TextArea:
+    return harness.pane.query_one(TurnEditor).query_one(TextArea)
+
+
+def test_a_reply_is_rewritten_in_place_without_its_cues_and_saved_or_left_as_it_was() -> None:
     harness = _Harness()
-    record = _record()
-    three = record.turns[2].id
+    record = Record("be brief")
+    record.add_user_line("Name the cat")
+    record.add_reply("[warm] How about Pepper? [playful] It suits him.", interrupted=False)
+    turn = record.turns[0].id
 
     async def scenario(pilot: Pilot[int]) -> None:
         harness.bus.emit(_shown(record))
         await pilot.pause(0.1)
         await pilot.press("tab", "e")
-        assert isinstance(harness.app.screen, EditReplyScreen)
-        editor = harness.app.screen.query_one(TextArea)
-        assert editor.text == "a better third."
-        await pilot.press("escape")  # closes the dialog, and stops no reply
-        assert not isinstance(harness.app.screen, EditReplyScreen)
+        await pilot.pause(0.05)
+        row = harness.rows()[0]
+        assert _editor(harness).text == "How about Pepper? It suits him."
+        # The reply line gives way to the editor, which lists its own keys.
+        assert _text(row).splitlines() == [
+            "› Name the cat",
+            "enter Save   esc Cancel   ^e Open in editor",
+        ]
+        await pilot.press("escape")  # closes the editor, and stops no reply
+        assert not harness.pane.editing
         assert (harness.live.sent, harness.live.stops) == ([], 0)
+        assert harness.app.focused is harness.pane
+        assert harness.pane.selected is not None
+        assert harness.pane.selected.id == turn
 
         await pilot.press("e")
-        editor = harness.app.screen.query_one(TextArea)
-        editor.load_text("   ")
-        await pilot.press("ctrl+s")  # blank: refused, and the dialog stays
-        assert isinstance(harness.app.screen, EditReplyScreen)
-        editor.load_text("Calmer")
-        editor.move_cursor(editor.document.end)
-        await pilot.press("full_stop", "ctrl+s")
-        assert not isinstance(harness.app.screen, EditReplyScreen)
-        assert harness.live.sent == [EditReply(three, "Calmer.")]
+        _editor(harness).load_text("   ")
+        await pilot.press("enter")  # blank: refused, and the editor stays
+        assert harness.pane.editing
+        assert harness.toasts[-1] == "A reply cannot be blank. Hide or delete the turn instead."
+        _editor(harness).load_text("How about Bart")
+        _editor(harness).move_cursor(_editor(harness).document.end)
+        await pilot.press("question_mark", "enter")
+        assert not harness.pane.editing
+        # The cue the reply opened with still leads it; the others went with the edit.
+        assert harness.live.sent == [EditReply(turn, "[warm] How about Bart?")]
         assert harness.toasts[-1] == "Reply edited · z to undo"
 
     _drive(harness, scenario)
 
 
-def test_shift_e_rewrites_the_selected_line_and_sends_it_again() -> None:
+def test_ctrl_j_starts_a_new_line_and_ctrl_e_hands_the_text_to_the_editor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = _Harness(editor="my-editor --wait")
+    record = _record()
+    ran: list[list[str]] = []
+
+    def edit_in_place(command: list[str], **_kwargs: object) -> None:
+        ran.append(command[:-1])
+        path = Path(command[-1])
+        path.write_text(path.read_text(encoding="utf-8") + " Bart.\n", encoding="utf-8")
+
+    monkeypatch.setattr("fish_audio_suite_voice.cli.turn_editor.subprocess.run", edit_in_place)
+    monkeypatch.setattr(harness.app, "suspend", contextlib.nullcontext)
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        harness.bus.emit(_shown(record))
+        await pilot.pause(0.1)
+        await pilot.press("tab", "e", "ctrl+j", "B")
+        assert _editor(harness).text == "a better third.\nB"
+        await pilot.press("ctrl+e")
+        assert ran == [["my-editor", "--wait"]]
+        assert _editor(harness).text == "a better third.\nB Bart."
+        await pilot.press("tab")  # the editor keeps the focus until it is closed
+        assert harness.pane.editing
+        assert isinstance(harness.app.focused, TextArea)
+
+    _drive(harness, scenario)
+
+
+def test_the_mic_is_off_while_a_line_is_edited_and_comes_back_as_it_was() -> None:
+    harness = _Harness()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        harness.bus.emit(_shown(_record()))
+        harness.bus.emit(Listening())
+        await pilot.pause(0.1)
+        state = harness.app.screen_stack[0].query_one("#state", Static)
+        hint = harness.app.screen_stack[0].query_one("#hint", Static)
+        await pilot.press("tab", "e")
+        await pilot.pause(0.05)
+        assert harness.live.muted
+        assert str(state.content) == "○ Mic off while you edit"
+        assert str(hint.content) == "it comes back when you're done"
+        assert not harness.app.check_action("unmute", ())  # F2 waits for the editor
+        await pilot.press("escape")
+        await pilot.pause(0.05)
+        assert not harness.live.muted
+        assert str(state.content) == "● Listening"
+        # A mic the user had turned off stays off after the editor closes.
+        await pilot.press("f2", "E", "escape")
+        assert harness.live.muted
+
+    _drive(harness, scenario)
+
+
+def test_shift_e_rewrites_the_selected_line_in_place_and_sends_it_again() -> None:
     harness = _Harness()
     record = _record()
     two = record.turns[1].id
@@ -360,19 +437,37 @@ def test_shift_e_rewrites_the_selected_line_and_sends_it_again() -> None:
         await pilot.press("tab", "k")
         assert "E Edit my message" in _text(harness.rows()[1])
         await pilot.press("E")
-        editor = harness.app.screen.query_one(TextArea)
-        assert editor.text == "two"
-        editor.move_cursor(editor.document.end)
-        await pilot.press("exclamation_mark", "ctrl+s")
+        await pilot.pause(0.05)
+        assert _editor(harness).text == "two"
+        assert not _text(harness.rows()[1]).startswith("› two")
+        await pilot.press("exclamation_mark", "enter")
         assert harness.live.sent == [EditMessage(two, "two!")]
         assert harness.toasts[-1] == "Message edited and sent again · z to undo"
         await pilot.press("E")  # the line is being answered: no more edits until it is
-        assert isinstance(harness.app.screen.focused, Conversation)
+        assert not harness.pane.editing
 
     _drive(harness, scenario)
 
 
-def test_the_session_s_answer_redraws_the_pane_and_events_still_arrive_under_a_dialog() -> None:
+def test_an_editor_closes_when_its_turn_leaves_the_chat() -> None:
+    harness = _Harness()
+    record = _record()
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        harness.bus.emit(_shown(record))
+        await pilot.pause(0.1)
+        await pilot.press("tab", "e")
+        assert harness.live.muted
+        record.delete_turn(record.turns[2].id)
+        harness.bus.emit(_shown(record))
+        await pilot.pause(0.1)
+        assert not harness.pane.editing
+        assert not harness.live.muted
+
+    _drive(harness, scenario)
+
+
+def test_the_session_s_answer_redraws_the_pane_while_a_line_is_edited() -> None:
     harness = _Harness()
     record = _record()
 
@@ -385,6 +480,7 @@ def test_the_session_s_answer_redraws_the_pane_and_events_still_arrive_under_a_d
         record.delete_turn(record.turns[0].id)
         harness.bus.emit(_shown(record))
         await pilot.pause(0.1)
+        assert harness.pane.editing  # its turn is still there
         await pilot.press("escape")
         assert "[a note]" in harness.lines()
         assert [row.turn.user for row in harness.rows()] == ["two", "three"]
@@ -594,10 +690,10 @@ def test_a_resumed_chat_is_edited_in_the_app_and_the_file_changes(
             await pilot.press(*"hi there", "enter")
             await _until(pilot, lambda: len(rows()) == 2)
             await pilot.press("tab", "e")
-            editor = app.screen.query_one(TextArea)
+            editor = app.screen.query_one(TurnEditor).query_one(TextArea)
             assert editor.text == "Hello there friend."
             editor.load_text("Hi. How was your day?")
-            await pilot.press("ctrl+s")
+            await pilot.press("enter")
             await _until(pilot, lambda: "edited" in _text(rows()[-1]))
             await pilot.press("ctrl+q")
 

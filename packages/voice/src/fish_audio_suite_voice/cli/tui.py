@@ -375,6 +375,9 @@ class VoiceApp(App[int]):
         Cleans a reply the way it is cleaned before it is spoken (``CueStyle.shape``).
         Diagnostics shows the last reply that way, as Fish read it. None shows the model's
         text as written.
+    editor : str, optional
+        The command Ctrl+E hands a line being edited to, with any arguments
+        (``config.settings.editor_from_env``). ``vi`` by default.
     """
 
     TITLE: str | None = _APP_NAME
@@ -403,8 +406,10 @@ class VoiceApp(App[int]):
         info: str = "",
         chat_dir: Path | None = None,
         shape: Callable[[str], str] | None = None,
+        editor: str = "vi",
     ) -> None:
         super().__init__()
+        self._editor = editor
         self._runner = runner
         self._live = live
         self._session = session
@@ -413,6 +418,9 @@ class VoiceApp(App[int]):
         self._shape = shape
         self._chat_file: Path | None = None
         self._chat_title = ""
+        # While a line is open in the editor the mic is off; this is whether it was before.
+        self._editing = False
+        self._muted_before_edit = False
         self._view = SessionView()
         self._log_lines: deque[str] = deque(maxlen=LOG_LINES)
         self._wake_pending = threading.Event()
@@ -429,7 +437,9 @@ class VoiceApp(App[int]):
         with Horizontal(id="header"):
             yield Static(_APP_NAME, id="title")
             yield Static("? keys", id="keys-hint")
-        yield Conversation(id="conversation", send=self._live.send)
+        yield Conversation(
+            id="conversation", send=self._live.send, hold_mic=self._hold_mic, editor=self._editor
+        )
         yield Static(
             f"Terminal too small. Make it at least {_MIN_SIZE[0]}x{_MIN_SIZE[1]}, or Ctrl+Q to quit.",
             id="too-small",
@@ -547,6 +557,8 @@ class VoiceApp(App[int]):
             return "▶", "Speaking", hint, "speaking"
         if state is SessionState.THINKING:
             return "◌", "Thinking…", "", "thinking"
+        if self._editing:
+            return "○", "Mic off while you edit", "it comes back when you're done", "muted"
         if muted:
             return "○", "Mic off", "F2 turns it back on", "muted"
         if state is SessionState.LISTENING:
@@ -598,9 +610,9 @@ class VoiceApp(App[int]):
                 on_top = self.screen is self._main
                 return on_top and not self._ended and SessionAction.INTERRUPT in actions
             case "mute":
-                return SessionAction.MUTE in actions
+                return not self._editing and SessionAction.MUTE in actions
             case "unmute":
-                return SessionAction.UNMUTE in actions
+                return not self._editing and SessionAction.UNMUTE in actions
             case "chats":
                 return not isinstance(self.screen, ModalScreen)
             case _:
@@ -629,7 +641,9 @@ class VoiceApp(App[int]):
             )
         yield SystemCommand("New chat", "Start an empty chat", self.action_new_chat)
         yield SystemCommand("Chats…", "Open a saved chat, or start a new one", self.action_chats)
-        if self._live.muted:
+        if self._editing:
+            pass  # the mic stays off until the editor closes
+        elif self._live.muted:
             yield SystemCommand("Mic on", "Listen again", self.action_unmute)
         else:
             yield SystemCommand("Mic off", "Stop listening until you turn it on", self.action_mute)
@@ -687,6 +701,18 @@ class VoiceApp(App[int]):
                 sent=self._sent_to_fish,
             )
         )
+
+    def _hold_mic(self, held: bool) -> None:
+        """Turn the mic off while a line is edited, and back to what it was after."""
+        if held == self._editing:
+            return
+        self._editing = held
+        if held:
+            self._muted_before_edit = self._live.muted
+            self._live.mute()
+        elif not self._muted_before_edit:
+            self._live.unmute()
+        self._render_view()
 
     def action_mute(self) -> None:
         """Turn the mic off."""

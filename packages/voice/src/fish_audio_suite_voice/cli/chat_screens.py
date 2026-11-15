@@ -1,4 +1,4 @@
-"""The full-screen app's dialogs: rewriting a reply, choosing a saved chat, and the keys.
+"""The full-screen app's dialogs: choosing a saved chat, and the keys.
 
 None changes the chat. Each returns what the user chose, and the caller sends it to the
 session as a ``ChatCommand``.
@@ -17,7 +17,7 @@ from textual.binding import Binding, BindingType
 from textual.containers import Vertical
 from textual.content import Content
 from textual.screen import ModalScreen
-from textual.widgets import Footer, OptionList, Static, TextArea
+from textual.widgets import Footer, OptionList, Static
 from textual.widgets.option_list import Option
 
 from fish_audio_suite_voice.session.chat_store import ChatSummary, list_chats
@@ -26,7 +26,6 @@ from fish_audio_suite_voice.session.commands import ChatCommand, NewChat, OpenCh
 __all__ = [
     "KEYS",
     "ChatPicker",
-    "EditReplyScreen",
     "KeysScreen",
     "printable",
 ]
@@ -55,64 +54,6 @@ KEYS: tuple[tuple[str, str], ...] = (
     ("F12", "Diagnostics"),
     ("Ctrl+Q", "Quit"),
 )
-
-
-class EditReplyScreen(ModalScreen[str | None]):
-    """Rewrite one reply or line. Dismissed with the new text, or None to keep it as it was.
-
-    Parameters
-    ----------
-    text : str
-        The reply as the model is sent it now, or the user's line.
-    message : bool, optional
-        True to edit the user's line, which is then answered afresh.
-    """
-
-    BINDINGS: ClassVar[list[BindingType]] = [
-        Binding("ctrl+s", "save", "Save"),
-        Binding("escape", "cancel", "Cancel"),
-    ]
-
-    def __init__(self, text: str, *, message: bool = False) -> None:
-        super().__init__()
-        self._text = text
-        self._message = message
-
-    def compose(self) -> ComposeResult:
-        """Lay out the text in an editor, with the keys below it."""
-        with Vertical(id="edit-box") as box:
-            box.border_title = "edit my message" if self._message else "edit reply"
-            hint = (
-                "Saving drops the reply and the turns after it, and answers this afresh."
-                if self._message
-                else "The model is sent this reply from now on."
-            )
-            yield Static(hint, classes="dialog-hint")
-            yield TextArea(self._text, id="edit-text", soft_wrap=True)
-        yield Footer()
-
-    def on_mount(self) -> None:
-        """Put the cursor at the end of the reply."""
-        editor = self.query_one(TextArea)
-        editor.focus()
-        editor.move_cursor(editor.document.end)
-
-    def action_save(self) -> None:
-        """Keep the new text, unless it is blank."""
-        text = self.query_one(TextArea).text.strip()
-        if not text:
-            refused = (
-                "A message cannot be blank. Delete the turn instead."
-                if self._message
-                else "A reply cannot be blank. Hide or delete the turn instead."
-            )
-            self.notify(refused, severity="warning")
-            return
-        self.dismiss(text)
-
-    def action_cancel(self) -> None:
-        """Keep the reply as it was."""
-        self.dismiss(None)
 
 
 def printable(text: str) -> str:
