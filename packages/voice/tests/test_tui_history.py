@@ -177,6 +177,27 @@ def test_keys_on_the_focused_pane_send_changes_for_the_selected_turn() -> None:
     _drive(harness, scenario)
 
 
+def test_coming_back_to_the_pane_selects_the_newest_turn_again() -> None:
+    harness = _Harness()
+    record = _record()
+    newest = record.turns[-1].id
+
+    async def scenario(pilot: Pilot[int]) -> None:
+        harness.bus.emit(_shown(record))
+        await pilot.pause(0.1)
+        harness.pane.focus()
+        await pilot.press("k", "k")
+        assert harness.pane.selected is not None
+        assert harness.pane.selected.id != newest
+        harness.app.query_one("#line").focus()
+        harness.pane.focus()
+        await pilot.pause(0.1)
+        assert harness.pane.selected is not None
+        assert harness.pane.selected.id == newest
+
+    _drive(harness, scenario)
+
+
 def test_the_edit_keys_type_into_the_input_line_while_it_has_focus() -> None:
     harness = _Harness()
 

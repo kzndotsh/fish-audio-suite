@@ -247,8 +247,8 @@ class Conversation(VerticalScroll):
             self.scroll_end(animate=False)
 
     def on_focus(self) -> None:
-        """Select the newest turn when the pane is focused with nothing selected."""
-        if self._selected is None and self._order:
+        """Select the newest turn whenever the pane is focused, where the chat is now."""
+        if self._order:
             self._select(self._order[-1])
 
     def _select(self, turn_id: str | None) -> None:
