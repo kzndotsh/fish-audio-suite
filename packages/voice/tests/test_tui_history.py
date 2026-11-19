@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import replace
 from datetime import datetime
@@ -151,6 +152,25 @@ def _drive(harness: _Harness, scenario: Callable[[Pilot[int]], Awaitable[None]])
                 harness.session.request_quit()
 
     asyncio.run(asyncio.wait_for(main(), 20))
+
+
+async def _until(pilot: Pilot[int], ready: Callable[[], bool], timeout_s: float = 5.0) -> None:
+    """Pause until ``ready()`` holds. A slow runner lays the screen out later than a fixed pause.
+
+    ``ready`` raising ``ValueError`` (a widget not mounted yet) counts as not ready.
+    """
+    deadline = time.monotonic() + timeout_s
+    while True:
+        with contextlib.suppress(ValueError, LookupError):
+            if ready():
+                return
+        assert time.monotonic() < deadline, "the screen never reached the state the test waits for"
+        await pilot.pause(0.02)
+
+
+def _laid_out(*widgets: Widget) -> bool:
+    """Whether every widget has a place on the screen, so it can be measured or clicked."""
+    return all(bool(widget.region) for widget in widgets)
 
 
 def _record() -> Record:
@@ -520,32 +540,38 @@ def test_clicking_a_message_selects_its_turn_and_a_second_click_edits_it() -> No
     harness = _Harness()
     record = _record()
 
+    def selected(turn: int) -> bool:
+        return (
+            harness.pane.selected is not None and harness.pane.selected.id == record.turns[turn].id
+        )
+
     async def scenario(pilot: Pilot[int]) -> None:
         harness.bus.emit(_shown(record))
-        await pilot.pause(0.1)
+        await _until(
+            pilot, lambda: _laid_out(*_bubbles(harness.rows()[0]), *_bubbles(harness.rows()[1]))
+        )
         first = harness.rows()[0]
         you, reply = _bubbles(first)
         assert await pilot.click(reply)  # from the composer: select, do not edit yet
-        await pilot.pause(0.05)
+        await _until(pilot, lambda: selected(0) and "e Edit reply" in _text(first))
         assert harness.app.focused is harness.pane
-        assert harness.pane.selected is not None
-        assert harness.pane.selected.id == record.turns[0].id
-        assert "e Edit reply" in _text(first)
         assert not harness.pane.editing
-        assert await pilot.click(_bubbles(harness.rows()[1])[0])  # another turn's message
-        await pilot.pause(0.05)
-        assert harness.pane.selected.id == record.turns[1].id
+        other = _bubbles(harness.rows()[1])[0]
+        await _until(pilot, lambda: _laid_out(other))
+        assert await pilot.click(other)  # another turn's message
+        await _until(pilot, lambda: selected(1))
         assert not harness.pane.editing
-        assert await pilot.click(_bubbles(harness.rows()[1])[1])  # its reply, now selected
-        await pilot.pause(0.05)
-        assert harness.pane.editing
+        its_reply = _bubbles(harness.rows()[1])[1]
+        await _until(pilot, lambda: _laid_out(its_reply))
+        assert await pilot.click(its_reply)  # its reply, now selected
+        await _until(pilot, lambda: harness.pane.editing)
         assert _editor(harness).text == "second."
         await pilot.press("escape")
-        await pilot.pause(0.05)
+        await _until(pilot, lambda: not harness.pane.editing and _laid_out(you))
         assert await pilot.click(you)  # the first turn again, then its own line
-        await pilot.pause(0.05)
+        await _until(pilot, lambda: selected(0) and _laid_out(you))
         assert await pilot.click(you)
-        await pilot.pause(0.05)
+        await _until(pilot, lambda: harness.pane.editing)
         assert _editor(harness).text == "one"
 
     _drive(harness, scenario)
@@ -599,7 +625,13 @@ def test_the_turn_in_progress_takes_no_clicks() -> None:
         harness.bus.emit(_shown(record, window=10))
         harness.bus.emit(Heard("four", 0.0))
         harness.bus.emit(ReplyToken("fourth."))
-        await pilot.pause(0.1)
+        await _until(
+            pilot,
+            lambda: (
+                len(_live(harness)) == 2
+                and _laid_out(*(b.query_one(".text") for b in _live(harness)))
+            ),
+        )
         you, reply = _live(harness)
         assert await pilot.click(you.query_one(".text"))
         assert await pilot.click(reply.query_one(".text"))
@@ -770,7 +802,14 @@ def test_a_line_in_progress_sits_where_its_recorded_bubble_will() -> None:
     async def scenario(pilot: Pilot[int]) -> None:
         harness.bus.emit(_shown(record, window=10))
         harness.bus.emit(Heard("four", 0.0))
-        await pilot.pause(0.1)
+        await _until(
+            pilot,
+            lambda: (
+                len(_live(harness)) == 1
+                and bool(_box(_live(harness)[0]))
+                and _laid_out(harness.rows()[0].query_one(Bubble).query_one(".text"))
+            ),
+        )
         (live,) = _live(harness)
         assert _text(live) == "you: four"
         box = _box(live)
@@ -778,7 +817,14 @@ def test_a_line_in_progress_sits_where_its_recorded_bubble_will() -> None:
         assert box.right == _box(harness.rows()[0].query_one(Bubble)).right
         record.add_user_line("four")
         harness.bus.emit(_shown(record, window=10))
-        await pilot.pause(0.1)
+        await _until(
+            pilot,
+            lambda: (
+                _live(harness) == []
+                and _text(harness.rows()[-1].query_one(Bubble)) == "you: four"
+                and bool(_box(harness.rows()[-1].query_one(Bubble)))
+            ),
+        )
         assert _live(harness) == []
         recorded = harness.rows()[-1].query_one(Bubble)
         assert _text(recorded) == "you: four"
@@ -798,7 +844,15 @@ def test_a_turn_in_progress_is_laid_out_as_its_recorded_turn_will_be() -> None:
         harness.bus.emit(ReplyToken("[happy] Hi"))
         harness.bus.emit(ReplyToken(" there."))
         harness.bus.emit(Notice("[after the reply]"))
-        await pilot.pause(0.1)
+        await _until(
+            pilot,
+            lambda: (
+                len(_live(harness)) == 2
+                and _text(_live(harness)[1]) == "ai: Hi there."
+                and all(bool(_box(bubble)) for bubble in _live(harness))
+                and _laid_out(harness.pane.children[-1])
+            ),
+        )
         note = harness.pane.children[-1]
         assert _text(note) == "[after the reply]"
         note_y = note.region.y
@@ -811,7 +865,14 @@ def test_a_turn_in_progress_is_laid_out_as_its_recorded_turn_will_be() -> None:
         record.add_user_line("hello")
         record.add_reply("[happy] Hi there.", interrupted=False)
         harness.bus.emit(_shown(record))
-        await pilot.pause(0.1)
+        await _until(
+            pilot,
+            lambda: (
+                _live(harness) == []
+                and len(harness.rows()) == 1
+                and all(bool(_box(bubble)) for bubble in harness.rows()[0].query(Bubble))
+            ),
+        )
         assert _live(harness) == []
         (row,) = harness.rows()
         recorded = list(row.query(Bubble))
@@ -1055,14 +1116,6 @@ def test_with_no_chat_folder_the_list_offers_only_a_new_chat() -> None:
         assert harness.live.sent == [NewChat()]
 
     _drive(harness, scenario)
-
-
-async def _until(pilot: Pilot[int], ready: Callable[[], bool]) -> None:
-    for _ in range(200):
-        if ready():
-            return
-        await pilot.pause(0.02)
-    raise AssertionError("the app did not get there in time")
 
 
 def test_a_resumed_chat_is_edited_in_the_app_and_the_file_changes(

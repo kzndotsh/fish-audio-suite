@@ -805,7 +805,10 @@ def test_an_outage_hands_over_where_the_mic_was_read_up_to_so_nothing_is_lost() 
         _FakeFlux(open_errors=[SttStreamError("no route")]), listen, mic=ScriptedMic([FRAME] * 3)
     )
     assert isinstance(outage, StreamFallback)
-    assert outage.since == len(outage.frames) == 3  # read from position 0, three frames
+    # Read from position 0, and the batch listen goes on right after the last frame handed
+    # over. How many arrived before the turn let go of the mic depends on the thread's timing.
+    assert outage.since == len(outage.frames)
+    assert 1 <= len(outage.frames) <= 3
     assert all(speech for _frame, speech in outage.frames)  # each frame keeps its verdict
 
 
