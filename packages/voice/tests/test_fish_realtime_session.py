@@ -193,9 +193,12 @@ def test_an_edited_conversation_is_told_again_on_a_new_connection() -> None:
 def test_what_fish_says_about_an_earlier_turn_never_reaches_the_next_one() -> None:
     fish = _Fish()
 
+    chat: list[ContextLine] = []
+
     async def run() -> list[TurnMessage]:
-        session = _session(fish, list)
+        session = _session(fish, lambda: list(chat))
         await _committed_turn(session, fish, 0, "first")
+        chat.append(ContextLine("user", "first"))  # the chat keeps it, as the app does
         turn = session.turn()
         await turn.open()
         fish.last.feed("draft", turn_index=0, text="late words about the first")
@@ -370,11 +373,12 @@ def test_the_settings_carry_the_last_32_lines_each_cut_to_2000_characters() -> N
 
 
 def test_unsaid_lines_skips_what_fish_heard_and_spots_any_change_to_what_it_was_told() -> None:
-    mm = ContextLine("user", "mm-hmm")
-    # Fish heard "hi" itself, and an "mm-hmm" the chat skipped, which it keeps.
-    assert unsaid_lines([], [USER, mm], [USER, BOT]) == ([BOT], [mm])
-    assert unsaid_lines([], [], [USER, BOT]) == ([USER, BOT], [])
-    assert unsaid_lines([USER, BOT], [], [USER, BOT]) == ([], [])
+    assert unsaid_lines([], [USER], [USER, BOT]) == [BOT]  # Fish heard "hi" itself
+    assert unsaid_lines([], [], [USER, BOT]) == [USER, BOT]
+    assert unsaid_lines([USER, BOT], [], [USER, BOT]) == []
+    # A line Fish heard that the chat does not hold: skipped, deleted, or another chat.
+    assert unsaid_lines([], [ContextLine("user", "mm-hmm")], [USER, BOT]) is None
+    assert unsaid_lines([], [USER], []) is None  # a new chat before the next sync
     assert unsaid_lines([USER, BOT], [], [USER]) is None  # the reply was deleted
     assert unsaid_lines([BOT], [], [ContextLine("assistant", "edited")]) is None
     assert unsaid_lines([USER], [], [ContextLine("user", "edited")]) is None  # a user line too
@@ -615,9 +619,22 @@ def test_a_failure_sending_the_mic_leaves_the_gate_to_decide_and_ends_the_reply_
         judge.hear(b"\x00\x00")
         await _settle()
         verdict = judge.take(1.0)
-        fish.last.send = _LiveSocket.send.__get__(fish.last)
-        await judge.finish()  # does not raise
+        await judge.finish()  # the socket still fails telling Fish the reply ended: no raise
+        assert fish.last.closed
         await session.close()
         return verdict
 
     assert asyncio.run(run()) == "turn"
+
+
+def test_a_new_chat_before_the_first_sync_gets_a_new_connection() -> None:
+    fish = _Fish()
+
+    async def run() -> None:
+        session = _session(fish, list)  # the chat never keeps "old": a new one began
+        await _committed_turn(session, fish, 0, "old")
+        await _committed_turn(session, fish, 0, "new chat")
+        await session.close()
+
+    asyncio.run(run())
+    assert len(fish.sockets) == 2

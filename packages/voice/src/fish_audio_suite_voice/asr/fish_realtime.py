@@ -175,7 +175,7 @@ def _context_items(lines: Iterable[ContextLine]) -> list[dict[str, str]]:
 
 def unsaid_lines(
     told: Sequence[ContextLine], heard: Sequence[ContextLine], wanted: Sequence[ContextLine]
-) -> tuple[list[ContextLine], list[ContextLine]] | None:
+) -> list[ContextLine] | None:
     """Say which lines of the conversation Fish has not been told yet.
 
     Parameters
@@ -191,18 +191,21 @@ def unsaid_lines(
 
     Returns
     -------
-    tuple of (list of ContextLine, list of ContextLine) or None
-        The lines to send, the new lines of ``wanted`` less the user lines Fish heard itself,
-        and what is left of ``heard``: lines Fish heard that the conversation does not keep,
-        such as an "mm-hmm" it skipped. None when ``told`` no longer leads up to ``wanted``,
-        after an edit, a delete or a new chat, so Fish has to be told again from the start.
+    list of ContextLine or None
+        The lines to send: the new lines of ``wanted`` less the user lines Fish heard itself.
+        None when what Fish knows is not all in the conversation: ``told`` no longer leads up
+        to ``wanted`` (an edit, a delete or a new chat), or a line Fish heard is not in it (a
+        chat switched or a turn deleted before the next sync, or a line the chat skipped,
+        such as an "mm-hmm"). Fish then has to be told again from the start.
 
     Examples
     --------
     >>> user, bot = ContextLine("user", "hi"), ContextLine("assistant", "hello")
     >>> unsaid_lines([], [user], [user, bot])
-    ([ContextLine(role='assistant', text='hello')], [])
+    [ContextLine(role='assistant', text='hello')]
     >>> unsaid_lines([user], [], [ContextLine("user", "edited")]) is None
+    True
+    >>> unsaid_lines([], [user], []) is None
     True
     """
     if list(wanted[: len(told)]) != list(told):
@@ -214,7 +217,7 @@ def unsaid_lines(
             left.remove(line)
         else:
             unsaid.append(line)
-    return unsaid, left
+    return None if left else unsaid
 
 
 def _committed(message: dict[str, Any]) -> TurnMessage:
@@ -528,11 +531,11 @@ class FishRealtimeSession:
             await self._drop("Fish has a turn open that no one is reading")
             return
         wanted = list(self._context())
-        found = unsaid_lines(self._told, self._heard, wanted)
-        if found is None:
+        unsaid = unsaid_lines(self._told, self._heard, wanted)
+        if unsaid is None:
             await self._drop("the conversation changed under it")
             return
-        unsaid, self._heard = found
+        self._heard = []
         for start in range(0, len(unsaid), _CONTEXT_LINES):
             batch = unsaid[start : start + _CONTEXT_LINES]
             await self.send({"type": "context_add", "items": _context_items(batch)})
@@ -590,6 +593,8 @@ class FishRealtimeSession:
                 )
             except TimeoutError:
                 await self._drop("Fish stopped taking messages")
+            except Exception as exc:  # noqa: BLE001 - the reply is over; the next turn reconnects
+                await self._drop(f"telling Fish the reply ended failed: {exc}")
         if self._idle_s == 0:
             await self._drop("FISH_VOICE_STT_IDLE is 0")
 

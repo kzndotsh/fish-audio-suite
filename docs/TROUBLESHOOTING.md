@@ -135,7 +135,7 @@ Your account is at its concurrency limit, which every open Fish request and conn
 
 ### `stt session opened` on every turn with `FISH_VOICE_STT=fish-realtime`
 
-The connection is meant to stay open between turns, so later turns show `stt context told Fish ...` instead. Look for the `stt session closed: ...` line just before: `no turn for 120 s` means you paused longer than `FISH_VOICE_STT_IDLE` (raise it if you pause a lot); `the turn ended before Fish committed it` follows a typed line, a mute or a knock; `the conversation changed under it` follows an edit, a delete or a chat switch; `FISH_VOICE_STT_IDLE is 0` means it is set to close after every turn. Each is on purpose and costs only the connect on the next turn.
+The connection is meant to stay open between turns, so later turns show `stt context told Fish ...` instead. Look for the `stt session closed: ...` line just before: `no turn for 120 s` means you paused longer than `FISH_VOICE_STT_IDLE` (raise it if you pause a lot); `the turn ended before Fish committed it` follows a typed line, a mute or a knock; `the conversation changed under it` follows an edit, a delete, a chat switch or a line the app skipped (such as an "mm-hmm" heard as its own turn); `FISH_VOICE_STT_IDLE is 0` means it is set to close after every turn. Each is on purpose and costs only the connect on the next turn.
 
 ### `fish-voice: FISH_VOICE_BARGE_JUDGE=fish needs FISH_VOICE_STT=fish-realtime, using local`
 
