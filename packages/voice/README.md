@@ -316,17 +316,26 @@ uv sync --extra fish-realtime     # or pip install 'fish-audio-suite-voice[fish-
 FISH_VOICE_STT=fish-realtime fish-voice
 ```
 
-It runs the same way as the Deepgram path described next: nothing is sent until you speak, one
-connection carries one turn, an outage hands that turn to Fish ASR, and a transcript is judged
-the same. What differs:
+It runs the same way as the Deepgram path described next: no audio is sent until you speak, an
+outage hands that turn to Fish ASR, and a transcript is judged the same. What differs:
 
 - Fish ends the turn from what you said and how you said it. There is no threshold to set, so
   `FISH_VOICE_EOT_THRESHOLD` does nothing here, and any `FISH_VOICE_EAGER_EOT_THRESHOLD` above
   0 turns Fish's early end of turn on.
 - A turn Fish judges not to be yours (noise, another voice) is dropped without an answer.
 - `FISH_VOICE_SILENCE_FRAMES` is raised to at least 3 s on this path. Fish ends a turn about 1.3 s after you stop, so a shorter limit would end every turn first and Fish's judgment would never be used. Turns end a little later than with a short fixed silence; `FISH_VOICE_EAGER_EOT_THRESHOLD` starts the reply earlier.
-- Fish bills the session by the second at the batch price, and each open connection counts
-  toward your account's concurrency limit. The connection is open only while you speak.
+- One connection serves the whole conversation. It opens when you first speak and stays open
+  between turns, so later turns skip the connect. Only your speech is sent as audio; between
+  turns the app sends keepalives and nothing else.
+- Fish is told the conversation so far (who said what, without cues, hidden turns left out),
+  and each reply you heard is added as it goes, so it hears names and follow-ups better. After
+  an edit, a delete or a chat switch, the next turn opens a new connection told the
+  conversation again. `FISH_VOICE_STT_TERMS` adds words to listen out for, such as names.
+- Fish bills an open connection by the second at the batch price, silence included, and each
+  counts toward your account's concurrency limit. The app closes it after
+  `FISH_VOICE_STT_IDLE` seconds (120) with no turn, and the next turn opens a new one. `0`
+  closes it after every turn. A turn that ends before Fish commits it (a typed line, a knock)
+  closes it too, so nothing Fish says about that turn reaches the next.
 - The `FISH_VOICE_DEEPGRAM_*` settings and the Deepgram privacy options do not apply. The audio
   goes to `FISH_BASE`.
 
@@ -540,6 +549,8 @@ Speech recognition. See [Streaming speech recognition](#streaming-speech-recogni
 | `FISH_VOICE_DEEPGRAM_REGION` | `global` | `eu`, `au` or `in` to have Deepgram process the audio inside the European Union, Australia or India. A regional request fails instead of going elsewhere |
 | `FISH_VOICE_EOT_THRESHOLD` | `0.7` | How sure Flux must be that you have finished, 0.5 to 1. Higher waits a little longer and cuts in less often |
 | `FISH_VOICE_EAGER_EOT_THRESHOLD` | `0` (off) | 0.3 to 0.9, and with Deepgram no higher than `FISH_VOICE_EOT_THRESHOLD`. Flux says when a turn is probably over a little before it is sure, and the reply starts being written then, held back until Flux confirms it. Saves about 150 to 250 ms, and costs 50 to 70 percent more model calls. See the streaming section |
+| `FISH_VOICE_STT_TERMS` | unset | `fish-realtime` only. Comma-separated words to listen out for, such as names. At most 100, each at most 32 characters; others are dropped with a warning |
+| `FISH_VOICE_STT_IDLE` | `120` | `fish-realtime` only. Seconds without a turn before the connection kept open between turns is closed, since Fish bills it while open. `0` closes it after every turn. 0 to 3000 |
 | `FISH_VOICE_STT_SAVE_DIR` | unset | A folder. Each streamed turn's audio, as Deepgram was sent it, is saved there as a 16 kHz WAV, to find out why it heard nothing. Only for debugging: it writes your voice to disk |
 
 Sounding more human. All off by default. See [Sounding more human](#sounding-more-human-opt-in).

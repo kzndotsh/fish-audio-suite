@@ -12,7 +12,7 @@ import functools
 import time
 from dataclasses import replace
 
-from fish_audio_suite_kit import is_asr_hallucination
+from fish_audio_suite_kit import is_asr_hallucination, split_cues
 from fish_audio_suite_voice.asr.backends import recogniser
 from fish_audio_suite_voice.asr.outcome import Circumstances, HeardLine, heard_line
 from fish_audio_suite_voice.asr.result import (
@@ -32,7 +32,7 @@ from fish_audio_suite_voice.asr.turn_check import (
     first_clip_tune,
     wait_frames,
 )
-from fish_audio_suite_voice.asr.turn_stream import RecogniserSettings
+from fish_audio_suite_voice.asr.turn_stream import ContextLine, RecogniserSettings, SharedTurns
 from fish_audio_suite_voice.capture.listen import mic_failure, record_utterance
 from fish_audio_suite_voice.capture.pcm import FRAME_MS
 from fish_audio_suite_voice.capture.portaudio import PortAudioMissingError
@@ -46,10 +46,11 @@ from fish_audio_suite_voice.logutil.debug import (
     trace,
 )
 from fish_audio_suite_voice.session.cancel import StopFlag, any_of
+from fish_audio_suite_voice.session.conversation import Conversation
 from fish_audio_suite_voice.session.events import EVENTS, Listening
 from fish_audio_suite_voice.session.state import DuplexContext
 
-__all__ = ["hear_line"]
+__all__ = ["hear_line", "open_shared_turns", "spoken_lines"]
 
 
 async def hear_line(
@@ -123,15 +124,84 @@ async def hear_line(
     return line
 
 
+def _recogniser_settings(ctx: DuplexContext) -> RecogniserSettings:
+    return RecogniserSettings(
+        ctx.config.stt, fish_key=ctx.config.fish_api_key, fish_base=ctx.config.fish_base
+    )
+
+
+def spoken_lines(conversation: Conversation) -> list[ContextLine]:
+    """Return the conversation as a recogniser is told it: who said what, without cues.
+
+    Parameters
+    ----------
+    conversation : Conversation
+        The record. It is not changed.
+
+    Returns
+    -------
+    list of ContextLine
+        Every visible turn, oldest first: each line of the user's, then the words of the
+        reply the user heard (an edit when there is one), with no ``[cue]`` or paired tags.
+        Hidden turns and empty lines are left out.
+
+    Examples
+    --------
+    >>> from fish_audio_suite_voice.session.conversation import Conversation
+    >>> chat = Conversation("system")
+    >>> chat.add_user_line("Hi")
+    >>> chat.add_reply("[happy] Hello!", interrupted=False)
+    >>> [(line.role, line.text) for line in spoken_lines(chat)]
+    [('user', 'Hi'), ('assistant', 'Hello!')]
+    """
+    lines: list[ContextLine] = []
+    for turn in conversation.turns:
+        if turn.hidden:
+            continue
+        lines += [
+            ContextLine("user", said) for raw in turn.user.split("\n") if (said := raw.strip())
+        ]
+        if turn.reply is not None:
+            words = "".join(piece for piece, is_cue in split_cues(turn.reply.content) if not is_cue)
+            if said := " ".join(words.split()):
+                lines.append(ContextLine("assistant", said))
+    return lines
+
+
+def open_shared_turns(ctx: DuplexContext) -> SharedTurns | None:
+    """Make the session's connection to a recogniser that keeps one open across turns.
+
+    Parameters
+    ----------
+    ctx : DuplexContext
+        The session. Its chat is read for the conversation each time the recogniser is told
+        it, so a chat switched or edited later is the one told.
+
+    Returns
+    -------
+    SharedTurns or None
+        Nothing is connected until a turn's speech starts; the caller closes it when the
+        session ends. None when the chosen recogniser opens a connection per turn, or none
+        streams.
+    """
+    settings = _recogniser_settings(ctx)
+    spec = recogniser(settings.stt.provider)
+    if spec is None or spec.shared is None:
+        return None
+    chat = ctx.chat
+    return spec.shared(
+        spec.url(settings), spec.key(settings), settings, lambda: spoken_lines(chat.history)
+    )
+
+
 async def _hear_streaming(
     ctx: DuplexContext, barge: BargeIn | None, stop: StopFlag, wrap_up: StopFlag | None
 ) -> Recognised:
     """Hear one turn through the streaming recogniser, from the barge-in clip if there is one."""
     eager = ctx.config.stt.eager
+    shared = ctx.stt_turns
     return await stream_turn(
-        settings=RecogniserSettings(
-            ctx.config.stt, fish_key=ctx.config.fish_api_key, fish_base=ctx.config.fish_base
-        ),
+        settings=_recogniser_settings(ctx),
         listen=ctx.config.listen,
         mic=ctx.turn_input.mic,
         quit_requested=ctx.turn_input.session.quit_requested,
@@ -141,6 +211,7 @@ async def _hear_streaming(
         on_eager=functools.partial(start_speculation, ctx.chat) if eager else None,
         on_resumed=functools.partial(drop_speculation, ctx.chat) if eager else None,
         held=ctx.turn_input.typing,
+        make_stream=(lambda _url, _key: shared.turn()) if shared is not None else None,
     )
 
 

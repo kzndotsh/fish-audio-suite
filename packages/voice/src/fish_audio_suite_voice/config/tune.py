@@ -40,6 +40,7 @@ __all__ = [
     "DEFAULT_MIN_VOICED_FRAMES",
     "DEFAULT_NOISE_SUPPRESSION_DB",
     "DEFAULT_POST_SPEAK_COOLDOWN_S",
+    "DEFAULT_STT_IDLE_S",
     "DEFAULT_TURN_EXTENSIONS",
     "DEFAULT_TURN_SILENCE_FRAMES",
     "DEFAULT_VAD_AGGRESSIVENESS",
@@ -51,6 +52,8 @@ __all__ = [
     "MAX_UTTERANCE_FRAMES",
     "STREAMING_STT_PROVIDERS",
     "STT_PROVIDERS",
+    "STT_TERMS_MAX",
+    "STT_TERM_CHARS",
     "AecTune",
     "BargeTune",
     "DeepgramTune",
@@ -88,6 +91,14 @@ _EOT_THRESHOLD_HI: Final = 1.0
 _EAGER_EOT_OFF: Final = 0.0
 _EAGER_EOT_LO: Final = 0.3
 _EAGER_EOT_HI: Final = 0.9
+# A recogniser that keeps its connection open between turns closes it after this many seconds
+# with no turn, since an open connection is billed. 0 closes it after every turn.
+DEFAULT_STT_IDLE_S: Final = 120
+_STT_IDLE_HI: Final = 3000
+# Words to listen out for: Fish takes at most 100, each at most 32 characters, and closes a
+# session whose settings break either.
+STT_TERMS_MAX: Final = 100
+STT_TERM_CHARS: Final = 32
 
 DEFAULT_VAD_AGGRESSIVENESS: Final = 1
 DEFAULT_VAD_ENGINE: Final = "webrtc"
@@ -187,6 +198,7 @@ _EOT = FloatSetting(
 _STT: Final[ChoiceSetting[SttProvider]] = ChoiceSetting(
     "FISH_VOICE_STT", DEFAULT_STT, STT_PROVIDERS
 )
+_STT_IDLE = IntSetting("FISH_VOICE_STT_IDLE", DEFAULT_STT_IDLE_S, lo=0, hi=_STT_IDLE_HI)
 
 
 @dataclass(frozen=True, slots=True)
@@ -601,17 +613,27 @@ class SttTune:
     save_dir : str
         A folder to write each streamed turn's audio to, as a 16 kHz WAV, to hear what the
         streaming recogniser was sent. Empty (the default) saves nothing.
+    terms : tuple of str
+        Words to listen out for, such as names, for a recogniser that takes them (Fish's
+        realtime one). At most ``STT_TERMS_MAX``, each at most ``STT_TERM_CHARS`` characters.
+    idle_s : int
+        Seconds without a turn after which a recogniser that keeps its connection open
+        between turns (Fish's realtime one) closes it, since an open connection is billed.
+        The next turn opens a new one. 0 closes it after every turn.
 
     Raises
     ------
     ValueError
-        When the provider is unknown or the early threshold is neither 0 nor in its range.
+        When the provider is unknown, the early threshold is neither 0 nor in its range, a
+        term is blank or too long, there are too many, or ``idle_s`` is out of range.
     """
 
     provider: SttProvider = DEFAULT_STT
     deepgram: DeepgramTune = field(default_factory=DeepgramTune)
     eager_eot_threshold: float = _EAGER_EOT_OFF
     save_dir: str = ""
+    terms: tuple[str, ...] = ()
+    idle_s: int = DEFAULT_STT_IDLE_S
 
     def __post_init__(self) -> None:
         """Reject an unknown recogniser or an early threshold ``from_env`` would not give.
@@ -630,6 +652,14 @@ class SttTune:
                 lo=_EAGER_EOT_LO,
                 hi=_EAGER_EOT_HI if cap is None else min(_EAGER_EOT_HI, cap),
             )
+        _STT_IDLE.check("SttTune.idle_s", self.idle_s)
+        if len(self.terms) > STT_TERMS_MAX:
+            msg = f"SttTune.terms has {len(self.terms)} terms, at most {STT_TERMS_MAX}"
+            raise ValueError(msg)
+        for term in self.terms:
+            if not term.strip() or len(term) > STT_TERM_CHARS:
+                msg = f"SttTune.terms: {term!r} must be 1 to {STT_TERM_CHARS} characters"
+                raise ValueError(msg)
 
     @property
     def eager(self) -> bool:
@@ -638,7 +668,7 @@ class SttTune:
 
     @classmethod
     def from_env(cls) -> Self:
-        """Build from ``FISH_VOICE_STT``, the Deepgram and end-of-turn keys, and ``DEEPGRAM_API_KEY``.
+        """Build from ``FISH_VOICE_STT``, its ``FISH_VOICE_STT_*`` and Deepgram keys, and ``DEEPGRAM_API_KEY``.
 
         Returns
         -------
@@ -652,4 +682,24 @@ class SttTune:
             deepgram=deepgram,
             eager_eot_threshold=_eager_threshold(_eager_cap(provider, deepgram)),
             save_dir=read_text("FISH_VOICE_STT_SAVE_DIR"),
+            terms=_terms(),
+            idle_s=_STT_IDLE.read(),
         )
+
+
+def _terms() -> tuple[str, ...]:
+    """Read ``FISH_VOICE_STT_TERMS``: comma-separated words, dropping any Fish would refuse."""
+    name = "FISH_VOICE_STT_TERMS"
+    terms: list[str] = []
+    for raw in read_text(name).split(","):
+        term = raw.strip()
+        if not term:
+            continue
+        if len(term) > STT_TERM_CHARS:
+            warn(f"fish-voice: {name}: dropping {term!r}, longer than {STT_TERM_CHARS} characters")
+            continue
+        terms.append(term)
+    if len(terms) > STT_TERMS_MAX:
+        warn(f"fish-voice: {name} has {len(terms)} terms, keeping the first {STT_TERMS_MAX}")
+        del terms[STT_TERMS_MAX:]
+    return tuple(terms)

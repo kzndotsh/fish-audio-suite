@@ -1,4 +1,4 @@
-"""``hear_line`` with Deepgram selected: each way a streamed turn can end, and the way back."""
+"""``hear_line`` with a streaming recogniser: each way a streamed turn can end, and the way back."""
 
 from __future__ import annotations
 
@@ -11,8 +11,9 @@ import pytest
 from session_fakes import FakeBackend, ScriptedAsr, ScriptedRecordings, barge_clip, make_ctx
 
 from fish_audio_suite_kit import ChatMessage
+from fish_audio_suite_voice.asr.fish_realtime import FishRealtimeSession
 from fish_audio_suite_voice.asr.outcome import HeardLine
-from fish_audio_suite_voice.asr.pipeline import hear_line
+from fish_audio_suite_voice.asr.pipeline import hear_line, open_shared_turns
 from fish_audio_suite_voice.asr.result import NoTurn, StreamFallback, Transcript
 from fish_audio_suite_voice.config.tune import DeepgramTune, SttProvider, SttTune
 from fish_audio_suite_voice.session.events import EVENTS, Event, ExitCode, Heard
@@ -247,3 +248,32 @@ def test_a_reply_started_early_never_edits_an_unanswered_line_in_the_history(
     assert heard.kind == "line"
     assert ctx.chat.messages()[-1] == {"role": "user", "content": "are you there"}
     assert asked[0][-1]["content"] == "are you there\nwhat is the weather"
+
+
+def test_fish_realtime_gets_one_connection_for_the_session_and_deepgram_none() -> None:
+    fish = _ctx(provider="fish-realtime")
+    fish = replace(fish, config=replace(fish.config, fish_api_key="fk"))
+    assert isinstance(open_shared_turns(fish), FishRealtimeSession)
+    assert open_shared_turns(_ctx(provider="deepgram")) is None
+    assert open_shared_turns(_ctx(provider="fish")) is None
+
+
+def test_a_streamed_turn_borrows_the_sessions_connection(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = _stream_returns(monkeypatch, _turn())
+    lent: list[object] = []
+
+    class _Shared:
+        def turn(self) -> object:
+            stream = object()
+            lent.append(stream)
+            return stream
+
+        async def close(self) -> None:
+            return None
+
+    ctx = replace(_ctx(), stt_turns=_Shared())
+    asyncio.run(hear_line(ctx, ""))
+    assert calls[0]["make_stream"]("url", "key") is lent[0]
+    plain = _stream_returns(monkeypatch, _turn())
+    asyncio.run(hear_line(_ctx(), ""))
+    assert plain[0]["make_stream"] is None  # no shared connection: one per turn

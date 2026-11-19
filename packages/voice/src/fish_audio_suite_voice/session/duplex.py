@@ -6,11 +6,12 @@ import asyncio
 import threading
 import time
 from contextlib import AsyncExitStack
+from dataclasses import replace
 from pathlib import Path
 from typing import assert_never
 
 from fish_audio_suite_voice.asr.outcome import HeardLine
-from fish_audio_suite_voice.asr.pipeline import hear_line
+from fish_audio_suite_voice.asr.pipeline import hear_line, open_shared_turns
 from fish_audio_suite_voice.asr.transcribe import asr_client
 from fish_audio_suite_voice.capture.listen import cooldown_report
 from fish_audio_suite_voice.capture.mic import SessionMic
@@ -244,6 +245,9 @@ async def _session(
             full_screen=full_screen,
             resumed=resumed,
         )
+        if (stt_turns := open_shared_turns(ctx)) is not None:
+            stack.push_async_callback(stt_turns.close)
+            ctx = replace(ctx, stt_turns=stt_turns)
         if resumed is not None:
             _announce("resumed", resumed, c.prompt)
         turn, chat = ctx.turn_input, ctx.chat

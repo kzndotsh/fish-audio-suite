@@ -5,6 +5,9 @@ has finished. Each one is an adapter module (``asr.deepgram``, ``asr.fish_realti
 declares a ``Recogniser``: its settings name, how it is opened from the settings, and what it
 needs. It reads its own protocol into the messages below, so ``asr.streaming`` hears a turn the
 same way through any of them.
+
+A recogniser may also keep one connection open across turns (``Recogniser.shared``), and lend
+it to each turn as a ``TurnStream``. It is told the conversation so far as ``ContextLine``s.
 """
 
 from __future__ import annotations
@@ -12,17 +15,20 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import ssl
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Final, Protocol
+from typing import Any, Final, Literal, Protocol
 
 from fish_audio_suite_kit import SuiteDefaults
 from fish_audio_suite_voice.config.tune import SttTune
 
 __all__ = [
+    "ContextLine",
+    "ContextSource",
     "EagerTurnEnd",
     "Recogniser",
     "RecogniserSettings",
+    "SharedTurns",
     "SocketStream",
     "StreamError",
     "StreamWarning",
@@ -201,6 +207,38 @@ class TurnStream(Protocol):
         ...
 
 
+class SharedTurns(Protocol):
+    """One connection to a recogniser kept open across turns, lent to one turn at a time."""
+
+    def turn(self) -> TurnStream:
+        """Return the next turn's stream. ``open`` on it connects, or reuses the connection."""
+        ...
+
+    async def close(self) -> None:
+        """Close the connection. Safe to call twice, or when it never opened."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class ContextLine:
+    """One line of the conversation, as a recogniser is told it to hear names and follow-ups.
+
+    Attributes
+    ----------
+    role : {"user", "assistant"}
+        Who said it.
+    text : str
+        The words, without cues.
+    """
+
+    role: Literal["user", "assistant"]
+    text: str
+
+
+type ContextSource = Callable[[], Sequence[ContextLine]]
+"""Returns the conversation so far, oldest line first, each time it is called."""
+
+
 @dataclass(frozen=True, slots=True)
 class RecogniserSettings:
     """The settings a streaming recogniser is opened with, read once at start-up.
@@ -244,6 +282,10 @@ class Recogniser:
         The least local silence, in 30 ms frames, before the app ends a turn itself. A
         recogniser that needs longer than the user's silence limit to end a turn on its own
         sets it, so its judgment is not cut short. 0 keeps the user's limit.
+    shared : Callable or None
+        Opens a ``SharedTurns`` given ``(url, key, settings, context)``, for a recogniser
+        that keeps its connection open across turns and is told the conversation. Nothing
+        connects until a turn opens. None opens a connection for each turn with ``stream``.
     """
 
     name: str
@@ -254,6 +296,7 @@ class Recogniser:
     url: Callable[[RecogniserSettings], str]
     stream: Callable[[str, str, RecogniserSettings], TurnStream]
     min_silence_frames: int = 0
+    shared: Callable[[str, str, RecogniserSettings, ContextSource], SharedTurns] | None = None
 
     def problem(self, settings: RecogniserSettings) -> str | None:
         """Say why this recogniser cannot be used, before the session starts.
