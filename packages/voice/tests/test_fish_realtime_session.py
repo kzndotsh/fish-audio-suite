@@ -17,6 +17,7 @@ from fish_audio_suite_voice.asr.fish_realtime import (
 )
 from fish_audio_suite_voice.asr.pipeline import spoken_lines
 from fish_audio_suite_voice.asr.turn_stream import (
+    BargeJudge,
     ContextLine,
     SttStreamError,
     TurnDropped,
@@ -517,7 +518,7 @@ def test_a_reply_judge_tells_fish_the_reply_plays_sends_the_mic_and_reads_its_ve
         frame = b"\x02\x00" * 480
         judge.hear(frame)
         await _settle()
-        fish.last.feed("speech_start", turn_index=0)
+        fish.last.feed("speech_start", turn_index=0, audio_ms=0)
         fish.last.feed("user_backchannel", turn_index=0, audio_ms=300)
         await _settle()
         first = await asyncio.to_thread(judge.take, 1.0)  # the barge-in thread asks
@@ -640,22 +641,36 @@ def test_a_new_chat_before_the_first_sync_gets_a_new_connection() -> None:
     assert len(fish.sockets) == 2
 
 
-def test_an_acknowledgement_fish_placed_before_the_speech_being_judged_does_not_count() -> None:
+async def _judge_after(fish: _Fish, seconds: float) -> tuple[FishRealtimeSession, BargeJudge]:
+    """A judge that has heard and sent ``seconds`` of the reply's mic."""
+    session = _session(fish, list)
+    judge = session.judge()
+    await judge.start()
+    for _ in range(round(seconds / 0.03)):
+        judge.hear(b"\x01\x00" * 480)  # 30 ms
+    await _settle()
+    return session, judge
+
+
+@pytest.mark.parametrize(
+    ("earlier_turn_ms", "label"),
+    [(100, "well before"), (1000, "inside the 300 ms slack")],
+)
+def test_an_acknowledgement_of_an_earlier_separate_turn_does_not_count(
+    earlier_turn_ms: int, label: str
+) -> None:
+    del label
     fish = _Fish()
-    frame = b"\x01\x00" * 480  # 30 ms
 
     async def run() -> tuple[str | None, str | None]:
-        session = _session(fish, list)
-        judge = session.judge()
-        await judge.start()
-        for _ in range(50):  # 1.5 s of the reply's mic, all sent
-            judge.hear(frame)
+        session, judge = await _judge_after(fish, 1.5)
+        # Speech the gate let pass, then the speech that tripped it, at 1.2 s into the audio.
+        fish.last.feed("speech_start", turn_index=0, audio_ms=earlier_turn_ms)
+        fish.last.feed("speech_start", turn_index=1, audio_ms=1210)
+        fish.last.feed("user_backchannel", turn_index=0, audio_ms=1250)  # late, about turn 0
         await _settle()
-        # The speech that tripped the gate began 0.3 s ago, at 1.2 s into the audio.
-        fish.last.feed("user_backchannel", turn_index=0, audio_ms=100)  # late, about earlier speech
-        await _settle()
-        earlier = judge.take(0.3)
-        fish.last.feed("user_backchannel", turn_index=1, audio_ms=1250)  # about this speech
+        earlier = judge.take(0.3)  # the tripping speech began 0.3 s ago
+        fish.last.feed("user_backchannel", turn_index=1, audio_ms=1400)  # about this speech
         await _settle()
         this = judge.take(0.3)
         await judge.finish()
@@ -663,3 +678,18 @@ def test_an_acknowledgement_fish_placed_before_the_speech_being_judged_does_not_
         return earlier, this
 
     assert asyncio.run(run()) == (None, "backchannel")
+
+
+def test_an_acknowledgement_that_cannot_be_matched_to_a_turn_does_not_count() -> None:
+    fish = _Fish()
+
+    async def run() -> str | None:
+        session, judge = await _judge_after(fish, 1.5)
+        fish.last.feed("user_backchannel", turn_index=3, audio_ms=1300)  # no speech_start seen
+        await _settle()
+        verdict = judge.take(0.3)
+        await judge.finish()
+        await session.close()
+        return verdict
+
+    assert asyncio.run(run()) is None  # so the gate stops the reply when its wait runs out
