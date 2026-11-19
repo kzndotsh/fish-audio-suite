@@ -658,3 +658,14 @@ def test_the_judge_settings_are_read_and_checked(monkeypatch: pytest.MonkeyPatch
         BargeTune(judge_wait_s=0.1)
     with pytest.raises(ValueError, match="judge"):
         BargeTune(judge="other")  # pyright: ignore[reportArgumentType]
+
+
+def test_with_a_judge_only_a_verdict_on_the_speech_that_tripped_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frames = [level_frame(0)] * 10 + [level_frame(500 + n) for n in range(3)]
+    judge = _ScriptedJudge("turn")
+    gate, cancel = _judged_gate(monkeypatch, frames, judge)
+    gate.watch(cancel)
+    # Asked about the 3 frames of speech, not the 10 quiet ones before them or the lookback.
+    assert judge.windows[0] == pytest.approx(0.09)

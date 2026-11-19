@@ -270,7 +270,8 @@ def test_ending_a_turn_fish_never_heard_start_drops_it_at_once_and_one_it_heard_
     dropped, heard = asyncio.run(run())
     assert dropped == [TurnDropped()]
     assert heard == [TurnStarted(""), TurnEnded("ok", 1.0, "manual")]
-    assert len(fish.sockets) == 1
+    # The turn dropped here closed its connection: Fish may still open a turn for it.
+    assert len(fish.sockets) == 2
     assert "finalize" in fish.last.kinds()
 
 
@@ -368,13 +369,96 @@ def test_the_settings_carry_the_last_32_lines_each_cut_to_2000_characters() -> N
     assert config["context"]["terms"] == ["Bart"]
 
 
-def test_unsaid_lines_passes_over_user_lines_fish_heard_but_the_chat_dropped() -> None:
+def test_unsaid_lines_skips_what_fish_heard_and_spots_any_change_to_what_it_was_told() -> None:
     mm = ContextLine("user", "mm-hmm")
-    assert unsaid_lines([USER, mm], [USER, BOT]) == [BOT]
-    assert unsaid_lines([], [USER, BOT]) == [USER, BOT]
-    assert unsaid_lines([USER, BOT], [USER, BOT]) == []
-    assert unsaid_lines([USER, BOT], [USER]) is None  # the reply was deleted
-    assert unsaid_lines([BOT], [ContextLine("assistant", "edited")]) is None
+    # Fish heard "hi" itself, and an "mm-hmm" the chat skipped, which it keeps.
+    assert unsaid_lines([], [USER, mm], [USER, BOT]) == ([BOT], [mm])
+    assert unsaid_lines([], [], [USER, BOT]) == ([USER, BOT], [])
+    assert unsaid_lines([USER, BOT], [], [USER, BOT]) == ([], [])
+    assert unsaid_lines([USER, BOT], [], [USER]) is None  # the reply was deleted
+    assert unsaid_lines([BOT], [], [ContextLine("assistant", "edited")]) is None
+    assert unsaid_lines([USER], [], [ContextLine("user", "edited")]) is None  # a user line too
+    assert unsaid_lines([USER], [], []) is None  # a new chat
+
+
+def test_an_edited_user_line_fish_heard_itself_is_told_again_on_a_new_connection() -> None:
+    fish = _Fish()
+    chat: list[ContextLine] = []
+
+    async def run() -> None:
+        session = _session(fish, lambda: list(chat))
+        await _committed_turn(session, fish, 0, "hello there")
+        chat.extend([ContextLine("user", "hello there"), BOT])
+        await _committed_turn(session, fish, 1, "next")  # told only the reply: one connection
+        chat[0] = ContextLine("user", "hello, edited")
+        await _committed_turn(session, fish, 0, "again")
+        await session.close()
+
+    asyncio.run(run())
+    assert len(fish.sockets) == 2
+    assert fish.sockets[1].sent[0]["context"]["history"][0]["text"] == "hello, edited"
+
+
+def test_no_audio_goes_up_once_fish_committed_the_turn_even_before_it_is_read() -> None:
+    fish = _Fish()
+
+    async def run() -> None:
+        session = _session(fish, list)
+        turn = session.turn()
+        await turn.open()
+        fish.last.feed("speech_start", turn_index=0)
+        fish.last.feed("committed", turn_index=0, text="done", reason="eot")
+        await _settle()  # the reader has it; the turn has not read it yet
+        await turn.send_audio(b"\x01\x00" * 160)
+        await turn.close()
+        await session.close()
+
+    asyncio.run(run())
+    assert "audio" not in fish.last.kinds()
+
+
+def test_a_judge_whose_connection_closed_lets_the_gate_stop_the_reply() -> None:
+    fish = _Fish()
+
+    async def run() -> str | None:
+        session = _session(fish, list)
+        judge = session.judge()
+        await judge.start()
+        fish.last.hang_up()
+        await _settle()
+        verdict = judge.take(1.0)
+        await judge.finish()
+        await session.close()
+        return verdict
+
+    assert asyncio.run(run()) == "turn"
+
+
+def test_ending_a_reply_never_waits_long_on_a_stuck_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(fish_realtime, "_END_REPLY_WAIT_S", 0.05)
+    fish = _Fish()
+
+    async def run() -> None:
+        session = _session(fish, list)
+        judge = session.judge()
+        await judge.start()
+        stuck = asyncio.Event()
+
+        async def hang(data: bytes) -> None:
+            del data
+            await stuck.wait()
+
+        judge.hear(b"\x00\x00")
+        fish.last.send = hang
+        judge.hear(b"\x00\x00")
+        await _settle()
+        await asyncio.wait_for(judge.finish(), 1.0)  # the pump and the goodbye are both stuck
+        assert fish.last.closed
+        await session.close()
+
+    asyncio.run(run())
 
 
 def test_spoken_lines_are_the_visible_turns_without_cues_one_line_each() -> None:

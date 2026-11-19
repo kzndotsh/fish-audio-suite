@@ -255,6 +255,7 @@ class BargeGate:
         judge = self._judge
         waiting: list[bytes] | None = None  # the kept speech, while the judge decides
         waited = 0  # frames since the trip
+        run_start = 0  # the frame the speech that is counted began on
         for idle_frames, frame in enumerate(
             self.mic.frames(any_of(cancel, self._muted), since=start),
             start=1,
@@ -277,13 +278,17 @@ class BargeGate:
                 judge.hear(frame)
             self._heard.append(frame)
             if waiting is None:
-                if not run.step(
+                was = run.hit
+                tripped = run.step(
                     voiced=heard.voiced,
                     rms=heard.rms,
                     need=need,
                     far=far,
                     want=self.tune.hit_frames,
-                ):
+                )
+                if was == 0 and run.hit:
+                    run_start = idle_frames
+                if not tripped:
                     continue
                 if judge is None:
                     self._trip(cancel, b"".join(self._heard), start + idle_frames)
@@ -295,8 +300,8 @@ class BargeGate:
                 waited += 1
             else:  # only a judge waits, so this is never reached
                 continue
-            # A verdict counts from as far back as the kept speech starts.
-            verdict = judge.take(len(waiting) * FRAME_MS / 1000)
+            # Only a verdict on the speech that tripped the gate counts, not one on earlier speech.
+            verdict = judge.take((idle_frames - run_start + 1) * FRAME_MS / 1000)
             if verdict == "backchannel":
                 debug("barge.go_on Fish heard an acknowledgement, the reply goes on")
                 run = _Run()

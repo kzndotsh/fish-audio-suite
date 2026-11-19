@@ -60,6 +60,7 @@ from fish_audio_suite_voice.asr.turn_stream import (
 )
 from fish_audio_suite_voice.capture.pcm import FRAME_MS, SAMPLE_RATE
 from fish_audio_suite_voice.logutil.debug import debug, trace, warn
+from fish_audio_suite_voice.session.cancel import reap
 
 __all__ = [
     "FISH_REALTIME",
@@ -88,6 +89,9 @@ _CONTEXT_CHARS: Final = 2000
 _KEEPALIVE_S: Final = 10.0
 # Fish ends a session at 3600 s. One older than this is replaced before a turn, not during it.
 _MAX_AGE_S: Final = 3300.0
+# The longest the end of a reply waits to tell Fish it is over. A send that takes longer
+# means the connection is stuck, so it is closed and the next turn opens a new one.
+_END_REPLY_WAIT_S: Final = 2.0
 # Fish's messages about speech over a reply, as what they mean.
 _VERDICTS: Final[dict[str, BargeVerdict]] = {
     "user_turn_taken": "turn",
@@ -170,41 +174,47 @@ def _context_items(lines: Iterable[ContextLine]) -> list[dict[str, str]]:
 
 
 def unsaid_lines(
-    told: Sequence[ContextLine], wanted: Sequence[ContextLine]
-) -> list[ContextLine] | None:
+    told: Sequence[ContextLine], heard: Sequence[ContextLine], wanted: Sequence[ContextLine]
+) -> tuple[list[ContextLine], list[ContextLine]] | None:
     """Say which lines of the conversation Fish has not been told yet.
 
     Parameters
     ----------
     told : Sequence of ContextLine
-        What Fish knows: the history it was opened with, the lines added since, and each
-        user turn it committed, which it adds itself.
+        The conversation as Fish was last told it: the history it was opened with and the
+        lines added since.
+    heard : Sequence of ContextLine
+        User turns Fish committed, which it adds to what it knows itself, that ``told`` does
+        not hold yet.
     wanted : Sequence of ContextLine
         The conversation as it stands.
 
     Returns
     -------
-    list of ContextLine or None
-        The lines at the end of ``wanted`` that Fish lacks. A user line Fish heard that the
-        conversation does not keep (an "mm-hmm" it skipped) is passed over. None when what Fish
-        knows no longer leads up to the conversation, after an edit, a delete or a new chat,
-        so it has to be told again from the start.
+    tuple of (list of ContextLine, list of ContextLine) or None
+        The lines to send, the new lines of ``wanted`` less the user lines Fish heard itself,
+        and what is left of ``heard``: lines Fish heard that the conversation does not keep,
+        such as an "mm-hmm" it skipped. None when ``told`` no longer leads up to ``wanted``,
+        after an edit, a delete or a new chat, so Fish has to be told again from the start.
 
     Examples
     --------
     >>> user, bot = ContextLine("user", "hi"), ContextLine("assistant", "hello")
-    >>> unsaid_lines([user], [user, bot])
-    [ContextLine(role='assistant', text='hello')]
-    >>> unsaid_lines([bot], [user]) is None
+    >>> unsaid_lines([], [user], [user, bot])
+    ([ContextLine(role='assistant', text='hello')], [])
+    >>> unsaid_lines([user], [], [ContextLine("user", "edited")]) is None
     True
     """
-    at = 0
-    for line in told:
-        if at < len(wanted) and wanted[at] == line:
-            at += 1
-        elif line.role != "user":
-            return None
-    return list(wanted[at:])
+    if list(wanted[: len(told)]) != list(told):
+        return None
+    left = list(heard)
+    unsaid: list[ContextLine] = []
+    for line in wanted[len(told) :]:
+        if line.role == "user" and line in left:
+            left.remove(line)
+        else:
+            unsaid.append(line)
+    return unsaid, left
 
 
 def _committed(message: dict[str, Any]) -> TurnMessage:
@@ -419,7 +429,8 @@ class FishRealtimeSession:
         self._clock = clock
         self._socket: Any = None
         self._tasks: list[asyncio.Task[None]] = []
-        self._told: list[ContextLine] = []  # what Fish knows of the conversation
+        self._told: list[ContextLine] = []  # the conversation as Fish was last told it
+        self._heard: list[ContextLine] = []  # user turns Fish committed, not in _told yet
         self._inbox: asyncio.Queue[TurnMessage | None] | None = None  # the open turn's
         self._busy = False  # a turn is open, or opening
         self._opened_at = 0.0
@@ -478,6 +489,16 @@ class FishRealtimeSession:
         """Whether Fish has opened a turn since the open turn began."""
         return self._seen >= self._floor
 
+    @property
+    def turn_settled(self) -> bool:
+        """Whether Fish has committed a turn since the open turn began. Read as it arrives."""
+        return self._committed >= self._floor
+
+    @property
+    def connected(self) -> bool:
+        """Whether a connection is open. Safe to read from any thread."""
+        return self._socket is not None
+
     async def begin_turn(self) -> asyncio.Queue[TurnMessage | None]:
         """Have a connection ready for a turn, and return the queue its messages go to.
 
@@ -506,14 +527,16 @@ class FishRealtimeSession:
             # Audio sent after the last turn ended opened another, which nobody reads.
             await self._drop("Fish has a turn open that no one is reading")
             return
-        unsaid = unsaid_lines(self._told, self._context())
-        if unsaid is None:
+        wanted = list(self._context())
+        found = unsaid_lines(self._told, self._heard, wanted)
+        if found is None:
             await self._drop("the conversation changed under it")
             return
+        unsaid, self._heard = found
         for start in range(0, len(unsaid), _CONTEXT_LINES):
             batch = unsaid[start : start + _CONTEXT_LINES]
             await self.send({"type": "context_add", "items": _context_items(batch)})
-        self._told += unsaid
+        self._told = wanted
         if unsaid:
             debug("stt.context told Fish {} new line(s)", len(unsaid))
 
@@ -524,6 +547,7 @@ class FishRealtimeSession:
         socket = await self._connect_fn(self._url, key=self._key)
         self._socket = socket
         self._told = lines
+        self._heard = []
         self._opened_at = self._clock()
         self._seen = self._committed = -1
         await self.send(
@@ -552,12 +576,20 @@ class FishRealtimeSession:
         await self.send({"type": "agent_speaking", "speaking": True})
 
     async def end_reply(self) -> None:
-        """Tell Fish the reply is over, and let the connection go idle."""
-        if self._judging:
-            await self.send({"type": "agent_speaking", "speaking": False})
-        self._judging = False
+        """Tell Fish the reply is over, and let the connection go idle.
+
+        Never waits more than ``_END_REPLY_WAIT_S`` on Fish: the next listen waits for this.
+        """
+        judging, self._judging = self._judging, False
         self._busy = False
         self._last_turn = self._clock()
+        if judging:
+            try:
+                await asyncio.wait_for(
+                    self.send({"type": "agent_speaking", "speaking": False}), _END_REPLY_WAIT_S
+                )
+            except TimeoutError:
+                await self._drop("Fish stopped taking messages")
         if self._idle_s == 0:
             await self._drop("FISH_VOICE_STT_IDLE is 0")
 
@@ -664,7 +696,7 @@ class FishRealtimeSession:
             self._committed = max(self._committed, index)
         text = str(message.get("text") or "").strip()
         if message.get("user_turn") is not False and text:
-            self._told.append(ContextLine("user", text))
+            self._heard.append(ContextLine("user", text))
 
     async def _keep_alive(self, socket: Any) -> None:
         while self._socket is socket:
@@ -693,8 +725,9 @@ class FishRealtimeSession:
         if socket is None:
             return
         debug("stt.session closed: {}", why)
-        with contextlib.suppress(Exception):  # it may be closed already
-            await socket.send(ormsgpack.packb({"type": "audio_done"}))
+        with contextlib.suppress(Exception):  # it may be closed already, or stuck
+            goodbye = ormsgpack.packb({"type": "audio_done"})
+            await asyncio.wait_for(socket.send(goodbye), _END_REPLY_WAIT_S)
         with contextlib.suppress(Exception):
             await socket.close()
 
@@ -757,16 +790,19 @@ class _ReplyJudge:
             What Fish said, ``"turn"`` when it is not connected, or None when it has said
             nothing yet.
         """
-        if not self._live.is_set():
+        if not self._live.is_set() or not self._session.connected:
             return "turn"
         return self._session.take_verdict(within_s)
 
     async def finish(self) -> None:
-        """Stop sending the mic and tell Fish the reply is over."""
+        """Stop sending the mic and tell Fish the reply is over, without waiting on a stuck send.
+
+        Frames still queued are dropped: once the reply is over Fish has nothing to judge.
+        """
         self._live.clear()
         if self._pump is not None:
-            self._frames.put_nowait(None)
-            await self._pump
+            self._pump.cancel()
+            await reap(self._pump)
             self._pump = None
         await self._session.end_reply()
 
@@ -778,6 +814,7 @@ class _SessionTurn:
         self._session = session
         self._inbox: asyncio.Queue[TurnMessage | None] | None = None
         self._committed = False
+        self._dropped_here = False  # ended before Fish opened a turn, which it still may
         self._closed = False
 
     async def open(self) -> None:
@@ -793,7 +830,8 @@ class _SessionTurn:
             16-bit mono samples. Empty bytes are skipped.
         """
         # Audio after Fish committed the turn would open another that no one reads.
-        if pcm and self._inbox is not None and not self._closed and not self._committed:
+        settled = self._committed or self._session.turn_settled
+        if pcm and self._inbox is not None and not self._closed and not settled:
             await self._session.send({"type": "audio", "data": pcm})
 
     async def force_end_turn(self) -> None:
@@ -805,6 +843,7 @@ class _SessionTurn:
         if self._inbox is None or self._closed:
             return
         if not self._session.turn_heard:
+            self._dropped_here = True
             self._inbox.put_nowait(TurnDropped())
             return
         await self._session.send({"type": "finalize"})
@@ -836,7 +875,9 @@ class _SessionTurn:
             self._closed = True
             return
         self._closed = True
-        await self._session.end_turn(committed=self._committed)
+        # A turn dropped here is not settled at Fish: a late speech_start for it would carry
+        # the next turn's index, so the connection goes.
+        await self._session.end_turn(committed=self._committed and not self._dropped_here)
 
 
 def _stream(url: str, key: str, settings: RecogniserSettings) -> FishRealtimeStream:
