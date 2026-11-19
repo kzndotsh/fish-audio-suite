@@ -693,3 +693,43 @@ def test_an_acknowledgement_that_cannot_be_matched_to_a_turn_does_not_count() ->
         return verdict
 
     assert asyncio.run(run()) is None  # so the gate stops the reply when its wait runs out
+
+
+def test_an_earlier_turns_acknowledgement_before_fish_names_the_new_turn_does_not_count() -> None:
+    fish = _Fish()
+
+    async def run() -> tuple[str | None, str | None]:
+        session, judge = await _judge_after(fish, 1.5)
+        # The tripping speech began at 1.2 s; Fish has not yet said it started a turn.
+        fish.last.feed("speech_start", turn_index=0, audio_ms=1000)
+        fish.last.feed("user_backchannel", turn_index=0, audio_ms=1100)
+        await _settle()
+        before = judge.take(0.3)
+        fish.last.feed("speech_start", turn_index=1, audio_ms=1190)
+        fish.last.feed("user_backchannel", turn_index=1, audio_ms=1400)
+        await _settle()
+        after = judge.take(0.3)
+        await judge.finish()
+        await session.close()
+        return before, after
+
+    assert asyncio.run(run()) == (None, "backchannel")
+
+
+def test_a_turn_fish_ended_before_the_speech_being_judged_is_not_that_speech() -> None:
+    fish = _Fish()
+
+    async def run() -> str | None:
+        session, judge = await _judge_after(fish, 1.5)
+        fish.last.feed("speech_start", turn_index=0, audio_ms=1100)  # inside the window...
+        fish.last.feed("user_backchannel", turn_index=0, audio_ms=1120)
+        fish.last.feed(  # ...but over before the tripping speech began at 1.2 s
+            "committed", turn_index=0, text="", user_turn=False, audio_end_ms=1150
+        )
+        await _settle()
+        verdict = judge.take(0.3)
+        await judge.finish()
+        await session.close()
+        return verdict
+
+    assert asyncio.run(run()) is None

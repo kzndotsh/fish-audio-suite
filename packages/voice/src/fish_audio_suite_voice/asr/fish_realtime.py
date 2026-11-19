@@ -93,9 +93,11 @@ _MAX_AGE_S: Final = 3300.0
 # The longest the end of a reply waits to tell Fish it is over. A send that takes longer
 # means the connection is stuck, so it is closed and the next turn opens a new one.
 _END_REPLY_WAIT_S: Final = 2.0
-# How much later than where the gate counts the speech that tripped it Fish may say a turn
-# started and still mean that speech: the two hear the start a few frames apart.
+# How far from where the gate counts the speech that tripped it Fish may say a turn started
+# and still mean that speech: the two hear the start a few frames apart. Before it the window
+# is short, since Fish cannot end a turn and start another that close together.
 _MATCH_SLACK_MS: Final = 300.0
+_MATCH_BEFORE_MS: Final = 150.0
 # Fish's messages about speech over a reply, as what they mean.
 _VERDICTS: Final[dict[str, BargeVerdict]] = {
     "user_turn_taken": "turn",
@@ -449,8 +451,9 @@ class FishRealtimeSession:
         self._verdict_lock = threading.Lock()  # the barge-in thread takes the verdicts
         # When each verdict arrived, what it was, and the turn of Fish's it was about.
         self._verdicts: list[tuple[float, BargeVerdict, int | None]] = []
-        # Where in the audio each of Fish's turns started while a reply played.
+        # Where in the audio each of Fish's turns started, and ended, while a reply played.
         self._starts: list[tuple[int, float]] = []
+        self._ends: dict[int, float] = {}
         self._audio_bytes = 0  # audio sent on this connection, which Fish's times count from
 
     def turn(self) -> TurnStream:
@@ -590,6 +593,7 @@ class FishRealtimeSession:
         with self._verdict_lock:
             self._verdicts.clear()
             self._starts.clear()
+            self._ends.clear()
         self._judging = True
         await self.send({"type": "agent_speaking", "speaking": True})
 
@@ -625,8 +629,10 @@ class FishRealtimeSession:
         speech_from_ms : float or None, optional
             Where in the connection's audio the speech being judged starts. An acknowledgement
             counts only when it is about the turn of Fish's that started there: the last one to
-            start no later than ``_MATCH_SLACK_MS`` after it. With no such turn, or one about
-            another turn, it is about other speech and does not count. None counts every one.
+            start between ``_MATCH_BEFORE_MS`` before it and ``_MATCH_SLACK_MS`` after it, and
+            not already ended before it. With no such turn (Fish may not have said yet that the
+            speech started a turn), or one about another turn, it is about other speech and does
+            not count. None counts every one.
 
         Returns
         -------
@@ -640,7 +646,12 @@ class FishRealtimeSession:
         with self._verdict_lock:
             judged = None
             if speech_from_ms is not None:
-                started = [n for n, at in self._starts if at <= speech_from_ms + _MATCH_SLACK_MS]
+                lo, hi = speech_from_ms - _MATCH_BEFORE_MS, speech_from_ms + _MATCH_SLACK_MS
+                started = [
+                    n
+                    for n, at in self._starts
+                    if lo <= at <= hi and self._ends.get(n, math.inf) > speech_from_ms
+                ]
                 judged = max(started, default=None)
 
             def counts(verdict: BargeVerdict, turn: int | None) -> bool:
@@ -741,6 +752,11 @@ class FishRealtimeSession:
         if started and turn is not None and isinstance(at_ms, int | float):
             with self._verdict_lock:
                 self._starts.append((turn, float(at_ms)))
+        end_ms = message.get("audio_end_ms")
+        ended = self._judging and kind == "committed"
+        if ended and turn is not None and isinstance(end_ms, int | float):
+            with self._verdict_lock:
+                self._ends[turn] = float(end_ms)
         if kind != "committed":
             return
         if isinstance(index, int):
