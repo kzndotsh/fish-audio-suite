@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import math
 import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Sequence
@@ -58,7 +59,7 @@ from fish_audio_suite_voice.asr.turn_stream import (
     is_closed,
     websockets_connect,
 )
-from fish_audio_suite_voice.capture.pcm import FRAME_MS, SAMPLE_RATE
+from fish_audio_suite_voice.capture.pcm import BYTES_PER_S, FRAME_MS, SAMPLE_RATE
 from fish_audio_suite_voice.logutil.debug import debug, trace, warn
 from fish_audio_suite_voice.session.cancel import reap
 
@@ -92,6 +93,9 @@ _MAX_AGE_S: Final = 3300.0
 # The longest the end of a reply waits to tell Fish it is over. A send that takes longer
 # means the connection is stuck, so it is closed and the next turn opens a new one.
 _END_REPLY_WAIT_S: Final = 2.0
+# How much earlier than the speech that tripped the gate an acknowledgement Fish heard may
+# start and still be that speech: the gate counts speech a few frames after it begins.
+_MATCH_SLACK_MS: Final = 300.0
 # Fish's messages about speech over a reply, as what they mean.
 _VERDICTS: Final[dict[str, BargeVerdict]] = {
     "user_turn_taken": "turn",
@@ -443,7 +447,9 @@ class FishRealtimeSession:
         self._floor = 0  # the lowest turn index the open turn takes
         self._judging = False  # a reply is playing and Fish has been told
         self._verdict_lock = threading.Lock()  # the barge-in thread takes the verdicts
-        self._verdicts: list[tuple[float, BargeVerdict]] = []
+        # When each verdict arrived, what it was, and where in the audio Fish put it.
+        self._verdicts: list[tuple[float, BargeVerdict, float | None]] = []
+        self._audio_bytes = 0  # audio sent on this connection, which Fish's times count from
 
     def turn(self) -> TurnStream:
         """Return the next turn's stream.
@@ -496,6 +502,11 @@ class FishRealtimeSession:
     def turn_settled(self) -> bool:
         """Whether Fish has committed a turn since the open turn began. Read as it arrives."""
         return self._committed >= self._floor
+
+    @property
+    def audio_bytes(self) -> int:
+        """Bytes of audio sent on this connection: Fish's ``audio_ms`` counts from its start."""
+        return self._audio_bytes
 
     @property
     def connected(self) -> bool:
@@ -553,6 +564,7 @@ class FishRealtimeSession:
         self._heard = []
         self._opened_at = self._clock()
         self._seen = self._committed = -1
+        self._audio_bytes = 0
         await self.send(
             realtime_config(
                 sample_rate=self._sample_rate, eager=self._eager, history=lines, terms=self._terms
@@ -598,24 +610,40 @@ class FishRealtimeSession:
         if self._idle_s == 0:
             await self._drop("FISH_VOICE_STT_IDLE is 0")
 
-    def take_verdict(self, within_s: float) -> BargeVerdict | None:
+    def take_verdict(
+        self, within_s: float, speech_from_ms: float | None = None
+    ) -> BargeVerdict | None:
         """Return and forget what Fish said about speech over the reply lately.
 
         Parameters
         ----------
         within_s : float
             How far back a verdict still counts, in seconds.
+        speech_from_ms : float or None, optional
+            Where in the connection's audio the speech being judged starts. An acknowledgement
+            Fish placed earlier than that, less ``_MATCH_SLACK_MS``, or did not place, is about
+            other speech and does not count. None counts every acknowledgement.
 
         Returns
         -------
         {"turn", "backchannel"} or None
             ``"turn"`` when Fish said the user took the turn in that time, even after an
-            acknowledgement, else ``"backchannel"`` when it heard one, else None. Safe from any
-            thread.
+            acknowledgement, else ``"backchannel"`` when it heard one of this speech, else
+            None. Safe from any thread.
         """
         now = self._clock()
+
+        def counts(verdict: BargeVerdict, audio_ms: float | None) -> bool:
+            if verdict == "turn" or speech_from_ms is None:
+                return True  # stopping the reply is never wrong
+            return audio_ms is not None and audio_ms >= speech_from_ms - _MATCH_SLACK_MS
+
         with self._verdict_lock:
-            recent: list[BargeVerdict] = [v for at, v in self._verdicts if now - at <= within_s]
+            recent: list[BargeVerdict] = [
+                verdict
+                for at, verdict, audio_ms in self._verdicts
+                if now - at <= within_s and counts(verdict, audio_ms)
+            ]
             self._verdicts.clear()
         if "turn" in recent:
             return "turn"
@@ -655,6 +683,9 @@ class FishRealtimeSession:
             if not is_closed(exc):
                 raise
             # The reader sees the same close and ends the turn.
+            return
+        if message.get("type") == "audio" and isinstance(data := message.get("data"), bytes):
+            self._audio_bytes += len(data)
 
     async def _read(self, socket: Any) -> None:
         try:
@@ -693,8 +724,15 @@ class FishRealtimeSession:
         kind = message.get("type")
         if self._judging and (verdict := _VERDICTS.get(str(kind))) is not None:
             debug("stt.judge Fish heard {} over the reply", verdict)
+            at_ms = message.get("audio_ms")
             with self._verdict_lock:
-                self._verdicts.append((self._clock(), verdict))
+                self._verdicts.append(
+                    (
+                        self._clock(),
+                        verdict,
+                        float(at_ms) if isinstance(at_ms, int | float) else None,
+                    )
+                )
         if kind != "committed":
             return
         if isinstance(index, int):
@@ -750,6 +788,12 @@ class _ReplyJudge:
         self._live = threading.Event()  # Fish knows the reply is playing
         self._frames: asyncio.Queue[bytes | None] = asyncio.Queue()
         self._pump: asyncio.Task[None] | None = None
+        # Where the heard frames sit in Fish's audio: the gate's frames are counted in bytes
+        # heard, those from the first one sent on are Fish's, after the bytes sent before it.
+        self._count_lock = threading.Lock()
+        self._heard_bytes = 0
+        self._first_sent: int | None = None  # bytes heard before the first frame sent
+        self._sent_before = 0  # bytes the connection had sent when the reply began
 
     async def start(self) -> None:
         """Tell Fish the reply is playing. An outage leaves the gate to decide alone."""
@@ -758,6 +802,7 @@ class _ReplyJudge:
         except SttStreamError as exc:
             warn(f"[barge-in] Fish cannot judge this reply, the gate decides alone: {exc}")
             return
+        self._sent_before = self._session.audio_bytes
         self._pump = asyncio.create_task(self._send_frames())
         self._live.set()
 
@@ -777,9 +822,15 @@ class _ReplyJudge:
         frame : bytes
             16-bit mono samples.
         """
-        if self._live.is_set():
-            with contextlib.suppress(RuntimeError):  # the loop closed as the session ended
-                self._loop.call_soon_threadsafe(self._frames.put_nowait, frame)
+        with self._count_lock:
+            heard_before = self._heard_bytes
+            self._heard_bytes += len(frame)
+            if not self._live.is_set():
+                return
+            if self._first_sent is None:
+                self._first_sent = heard_before
+        with contextlib.suppress(RuntimeError):  # the loop closed as the session ended
+            self._loop.call_soon_threadsafe(self._frames.put_nowait, frame)
 
     def take(self, within_s: float) -> BargeVerdict | None:
         """Return and forget Fish's verdict of the last ``within_s`` seconds.
@@ -787,17 +838,27 @@ class _ReplyJudge:
         Parameters
         ----------
         within_s : float
-            How far back a verdict still counts.
+            How long ago, in the frames heard, the speech being judged began. A verdict
+            older than that does not count, and an acknowledgement Fish placed before it in
+            the audio is about other speech and does not count either.
 
         Returns
         -------
         {"turn", "backchannel"} or None
             What Fish said, ``"turn"`` when it is not connected, or None when it has said
-            nothing yet.
+            nothing about this speech yet.
         """
         if not self._live.is_set() or not self._session.connected:
             return "turn"
-        return self._session.take_verdict(within_s)
+        with self._count_lock:
+            heard, first_sent = self._heard_bytes, self._first_sent
+        if first_sent is None:
+            speech_from_ms = math.inf  # nothing sent, so no acknowledgement can be of it
+        else:
+            speech_heard = heard - within_s * BYTES_PER_S
+            sent = self._sent_before + max(0.0, speech_heard - first_sent)
+            speech_from_ms = sent * 1000 / BYTES_PER_S
+        return self._session.take_verdict(within_s, speech_from_ms)
 
     async def finish(self) -> None:
         """Stop sending the mic and tell Fish the reply is over, without waiting on a stuck send.

@@ -781,3 +781,29 @@ def test_a_reply_has_fish_judge_speech_over_it_only_when_asked_and_listening(
     )
     assert log == expected
     assert (gates[0]["judge"] is not None) == bool(expected)
+
+
+class _NeverStartedJudge(_RecordingJudge):
+    async def start(self) -> None:
+        await asyncio.Event().wait()  # still connecting when the reply ends
+        self.log.append("start")
+
+
+class _SharedWithStuckJudge(_SharedWithJudge):
+    def judge(self) -> _NeverStartedJudge:
+        return _NeverStartedJudge(self.log)
+
+
+def test_a_reply_that_ends_before_its_judge_started_still_finishes_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    log: list[str] = []
+    install_gate(monkeypatch)
+    ctx = _asked()
+    ctx = replace(
+        ctx,
+        config=replace(ctx.config, barge=replace(ctx.config.barge, judge="fish")),
+        stt_turns=_SharedWithStuckJudge(log),
+    )
+    _speak_once(monkeypatch, ctx, make_result(spoken="Hello there friend"))
+    assert log == ["finish"]  # the start was cancelled, and Fish is still told the reply is over

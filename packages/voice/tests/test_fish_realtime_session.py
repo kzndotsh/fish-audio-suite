@@ -638,3 +638,28 @@ def test_a_new_chat_before_the_first_sync_gets_a_new_connection() -> None:
 
     asyncio.run(run())
     assert len(fish.sockets) == 2
+
+
+def test_an_acknowledgement_fish_placed_before_the_speech_being_judged_does_not_count() -> None:
+    fish = _Fish()
+    frame = b"\x01\x00" * 480  # 30 ms
+
+    async def run() -> tuple[str | None, str | None]:
+        session = _session(fish, list)
+        judge = session.judge()
+        await judge.start()
+        for _ in range(50):  # 1.5 s of the reply's mic, all sent
+            judge.hear(frame)
+        await _settle()
+        # The speech that tripped the gate began 0.3 s ago, at 1.2 s into the audio.
+        fish.last.feed("user_backchannel", turn_index=0, audio_ms=100)  # late, about earlier speech
+        await _settle()
+        earlier = judge.take(0.3)
+        fish.last.feed("user_backchannel", turn_index=1, audio_ms=1250)  # about this speech
+        await _settle()
+        this = judge.take(0.3)
+        await judge.finish()
+        await session.close()
+        return earlier, this
+
+    assert asyncio.run(run()) == (None, "backchannel")
