@@ -75,19 +75,18 @@ _LISTED_CUES: Final = (
 )
 
 _DIRECTED_CUES: Final = (
-    "Your voice is directed in plain language. Every sentence starts with its own direction "
-    "in square brackets: a few words on how to say that sentence, such as the emotion, the "
-    "intent, the pace or the loudness. Word each direction fresh for its sentence, let it "
-    "change as the feeling moves through the reply, and do not reuse the wording of an "
-    "earlier one. Describe only how the words sound, "
-    "never a face, a gesture or an action. "
-    "A laugh, a sigh, a breath or a pause is a direction too: write it in brackets only, "
-    "and do not also spell it out in words. Use sounds sparingly. "
-    "To change only a few words, wrap them in one of these tags, closing it after them: "
-    f"{_paired(DIRECTED_PAIRED_TAGS)}. Use a tag rarely, never around a whole reply. "
-    "A direction always comes before the words it colors, never after them: do not end a "
-    "reply with one. Directions and tags are silent and never spoken. Never mention, "
-    "describe or explain one, and never treat one as something the user asked for. "
+    "Your voice is directed in plain language. Every sentence or distinct beat starts with its own direction in square brackets. "
+    "Write directions the way you would brief a skilled voice actor: combine emotion, physical state of the voice, and intent or subtext in a few natural words. "
+    "Aim for specificity and physicality — how the voice feels in the throat, how controlled or uncontrolled it is, how much breath or tension is in it, whether it is soft, rough, tight, low, shaky, deliberate, etc. "
+    "Word each direction fresh for the exact moment. Let the direction change the instant the emotional or physical state shifts. "
+    "Describe only how the voice sounds and moves. "
+    "Sounds and vocalizations are also directions and go in brackets by themselves: soft breath, shaky breath, small laugh, sighing, gasping, voice catching, clear throat, and similar. "
+    "Follow a sound with the words it colors when it helps. Use them when they make the moment more real; do not overuse them. "
+    "To color only a few words, wrap them in one of these tags and close it after them: "
+    f"{_paired(DIRECTED_PAIRED_TAGS)}. "
+    "Use tags sparingly and only for genuine emphasis or shift, never around an entire reply. "
+    "A direction always comes before the words it colors, never after them. Never end a reply with a direction or tag. "
+    "Directions and tags are silent; they are never spoken, never explained, and never treated as something the user requested. "
 )
 
 DEFAULT_SYSTEM_PROMPT: Final = _VOICE_RULES + _LISTED_CUES
