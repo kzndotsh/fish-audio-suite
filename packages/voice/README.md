@@ -95,7 +95,7 @@ In the [full-screen app](#the-full-screen-app), Ctrl+O lists the saved chats, ne
 
 The chat history gets only what you probably heard. For PCM that is a word-aligned estimate from the bytes played, the speed, and the device buffer. Encoded playback (`mpv`) cannot be cut by length, so an interrupted or failed reply is left out of history. It keeps the reply as the model wrote it: the mood carried into each streamed sentence is sent to Fish but not kept, so the model does not learn to open every reply the same way.
 
-If the interrupt turns out not to be speech (Fish hears no words, a backchannel such as "mm-hmm", or a clip too short to keep), the rest of the reply is spoken again from where it was cut, and joins the same history message. A real line drops the rest. Only text the model had already written is resumed.
+If the interrupt turns out not to be speech (Fish hears no words, a backchannel such as "mm-hmm", or a clip too short to keep), the rest of the reply is spoken again from where it was cut, and joins the same history message. A real line drops the rest. Only text the model had already written is resumed. With `FISH_VOICE_BARGE_JUDGE=fish` and `FISH_VOICE_STT=fish-realtime`, Fish tells an acknowledgement apart before the reply is stopped, so it plays on without the stop; see [Fish realtime](#streaming-speech-recognition-fish-realtime).
 
 On a turn of its own, a lone "yeah", "yep" or "uh-huh" is an answer and gets a reply. Only a hesitation such as "um" or "hmm" is skipped there.
 

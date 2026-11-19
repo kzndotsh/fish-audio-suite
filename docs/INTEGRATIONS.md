@@ -363,7 +363,7 @@ Fish sends the format the sink declares in `audio_format`, and 16-bit mono PCM w
 ### Other building blocks
 
 The package root also exports:
-- **`BargeGate`:** interruption detection.
+- **`BargeGate`:** interruption detection. Its optional `judge` lets a recogniser decide whether speech over the reply was an acknowledgement; `fish-voice` passes Fish's realtime one with `FISH_VOICE_BARGE_JUDGE=fish`.
 - **`EchoCanceller`:** WebRTC's mic cleanup: a high-pass filter, automatic gain and noise suppression on every frame, and AEC3 echo cancellation while the speaker plays (the `aec` extra).
 - **`DuplexSession`:** the cancel and quit flags.
 - **`ChatBackend`:** a streaming LLM interface.
