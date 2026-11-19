@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Final, Literal, overload
 from urllib.parse import urlsplit
@@ -306,6 +306,18 @@ def editor_from_env() -> str:
     return read_first("VISUAL", "EDITOR") or "vi"
 
 
+def _barge(stt: SttTune) -> BargeTune:
+    """Read ``BargeTune``, keeping the Fish judge only with Fish's realtime recogniser."""
+    barge = BargeTune.from_env()
+    if barge.judge == "fish" and stt.provider != "fish-realtime":
+        warn(
+            "fish-voice: FISH_VOICE_BARGE_JUDGE=fish needs FISH_VOICE_STT=fish-realtime, "
+            "using local"
+        )
+        barge = replace(barge, judge="local")
+    return barge
+
+
 def load_config() -> VoiceCliConfig:
     """Read ``VoiceCliConfig`` from the current process environment.
 
@@ -343,9 +355,9 @@ def load_config() -> VoiceCliConfig:
         asr_model=read_choice("FISH_ASR_MODEL", d.asr_model, FISH_ASR_MODEL_IDS, quiet=True),
         llm=LlmTune.from_env(),
         listen=ListenTune.from_env(),
-        barge=BargeTune.from_env(),
+        barge=_barge(stt := SttTune.from_env()),
         aec=AecTune.from_env(),
-        stt=SttTune.from_env(),
+        stt=stt,
         turn=TurnTune.from_env(),
         hear_tone=read_flag("FISH_VOICE_HEAR_TONE", default=False),
         history_turns=_HISTORY_TURNS.read(),

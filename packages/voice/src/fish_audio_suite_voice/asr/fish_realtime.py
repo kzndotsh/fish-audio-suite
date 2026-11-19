@@ -17,12 +17,18 @@ audio, and it closes after ``SttTune.idle_s`` without a turn, since an open conn
 billed. A turn that ends any way but with Fish committing it closes the connection, so nothing
 Fish says about it can reach the next turn; the next turn opens a new one, told the
 conversation again.
+
+With ``FISH_VOICE_BARGE_JUDGE=fish`` the same connection also hears the mic while a reply
+plays (``FishRealtimeSession.judge``): Fish is told the reply is playing (``agent_speaking``),
+and its ``user_backchannel`` and ``user_turn_taken`` messages say whether speech over the reply
+was an acknowledgement or an interruption.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Sequence
 from typing import Any, Final
@@ -31,6 +37,8 @@ import ormsgpack
 
 from fish_audio_suite_kit import MS_PER_S
 from fish_audio_suite_voice.asr.turn_stream import (
+    BargeJudge,
+    BargeVerdict,
     ContextLine,
     ContextSource,
     EagerTurnEnd,
@@ -39,6 +47,7 @@ from fish_audio_suite_voice.asr.turn_stream import (
     SocketStream,
     StreamError,
     StreamWarning,
+    SttStreamError,
     TurnDropped,
     TurnEnded,
     TurnMessage,
@@ -79,6 +88,11 @@ _CONTEXT_CHARS: Final = 2000
 _KEEPALIVE_S: Final = 10.0
 # Fish ends a session at 3600 s. One older than this is replaced before a turn, not during it.
 _MAX_AGE_S: Final = 3300.0
+# Fish's messages about speech over a reply, as what they mean.
+_VERDICTS: Final[dict[str, BargeVerdict]] = {
+    "user_turn_taken": "turn",
+    "user_backchannel": "backchannel",
+}
 
 
 def realtime_url(fish_base: str) -> str:
@@ -413,6 +427,9 @@ class FishRealtimeSession:
         self._seen = -1  # the highest turn index Fish has named
         self._committed = -1  # the highest turn index Fish has committed
         self._floor = 0  # the lowest turn index the open turn takes
+        self._judging = False  # a reply is playing and Fish has been told
+        self._verdict_lock = threading.Lock()  # the barge-in thread takes the verdicts
+        self._verdicts: list[tuple[float, BargeVerdict]] = []
 
     def turn(self) -> TurnStream:
         """Return the next turn's stream.
@@ -426,9 +443,35 @@ class FishRealtimeSession:
         """
         return _SessionTurn(self)
 
+    def judge(self) -> BargeJudge:
+        """Return a judge for one reply, on this connection.
+
+        Returns
+        -------
+        BargeJudge
+            Bound to the running event loop, which every other use of the session is on.
+        """
+        return _ReplyJudge(self, asyncio.get_running_loop())
+
     async def close(self) -> None:
         """End the session and its billing. Safe to call twice, or when it never opened."""
         await self._drop("the session ended")
+
+    async def _ready(self) -> None:
+        """Have a connection told the conversation, reusing the open one when it can be.
+
+        Marks the session busy, so it is not closed as idle, and leaves it so on success.
+        """
+        self._busy = True
+        try:
+            if self._socket is not None:
+                await self._reuse()
+            if self._socket is None:
+                await self._open()
+        except BaseException:
+            self._busy = False
+            await self._drop("it could not be opened")
+            raise
 
     @property
     def turn_heard(self) -> bool:
@@ -448,16 +491,7 @@ class FishRealtimeSession:
         SttStreamError
             When Fish cannot be reached or refuses the connection.
         """
-        self._busy = True
-        try:
-            if self._socket is not None:
-                await self._reuse()
-            if self._socket is None:
-                await self._open()
-        except BaseException:
-            self._busy = False
-            await self._drop("it could not be opened")
-            raise
+        await self._ready()
         # Anything Fish still says about a turn before this one is not this turn's.
         self._floor = self._seen + 1
         self._inbox = asyncio.Queue()
@@ -502,6 +536,53 @@ class FishRealtimeSession:
             asyncio.create_task(self._keep_alive(socket)),
         ]
         debug("stt.session opened, told {} line(s) and {} term(s)", len(lines), len(self._terms))
+
+    async def begin_reply(self) -> None:
+        """Tell Fish a reply is playing, connecting first if needed.
+
+        Raises
+        ------
+        SttStreamError
+            When Fish cannot be reached or refuses the connection.
+        """
+        await self._ready()
+        with self._verdict_lock:
+            self._verdicts.clear()
+        self._judging = True
+        await self.send({"type": "agent_speaking", "speaking": True})
+
+    async def end_reply(self) -> None:
+        """Tell Fish the reply is over, and let the connection go idle."""
+        if self._judging:
+            await self.send({"type": "agent_speaking", "speaking": False})
+        self._judging = False
+        self._busy = False
+        self._last_turn = self._clock()
+        if self._idle_s == 0:
+            await self._drop("FISH_VOICE_STT_IDLE is 0")
+
+    def take_verdict(self, within_s: float) -> BargeVerdict | None:
+        """Return and forget what Fish said about speech over the reply lately.
+
+        Parameters
+        ----------
+        within_s : float
+            How far back a verdict still counts, in seconds.
+
+        Returns
+        -------
+        {"turn", "backchannel"} or None
+            ``"turn"`` when Fish said the user took the turn in that time, even after an
+            acknowledgement, else ``"backchannel"`` when it heard one, else None. Safe from any
+            thread.
+        """
+        now = self._clock()
+        with self._verdict_lock:
+            recent: list[BargeVerdict] = [v for at, v in self._verdicts if now - at <= within_s]
+            self._verdicts.clear()
+        if "turn" in recent:
+            return "turn"
+        return recent[-1] if recent else None
 
     async def end_turn(self, *, committed: bool) -> None:
         """End the open turn, keeping the connection only when Fish committed it.
@@ -572,7 +653,12 @@ class FishRealtimeSession:
         index = message.get("turn_index")
         if isinstance(index, int):
             self._seen = max(self._seen, index)
-        if message.get("type") != "committed":
+        kind = message.get("type")
+        if self._judging and (verdict := _VERDICTS.get(str(kind))) is not None:
+            debug("stt.judge Fish heard {} over the reply", verdict)
+            with self._verdict_lock:
+                self._verdicts.append((self._clock(), verdict))
+        if kind != "committed":
             return
         if isinstance(index, int):
             self._committed = max(self._committed, index)
@@ -608,6 +694,74 @@ class FishRealtimeSession:
             await socket.send(ormsgpack.packb({"type": "audio_done"}))
         with contextlib.suppress(Exception):
             await socket.close()
+
+
+class _ReplyJudge:
+    """A ``BargeJudge`` for one reply, on a ``FishRealtimeSession``.
+
+    Mic frames from the barge-in thread are queued onto the event loop and sent in order by
+    one task, so they reach Fish as they were heard.
+    """
+
+    def __init__(self, session: FishRealtimeSession, loop: asyncio.AbstractEventLoop) -> None:
+        self._session = session
+        self._loop = loop
+        self._live = threading.Event()  # Fish knows the reply is playing
+        self._frames: asyncio.Queue[bytes | None] = asyncio.Queue()
+        self._pump: asyncio.Task[None] | None = None
+
+    async def start(self) -> None:
+        """Tell Fish the reply is playing. An outage leaves the gate to decide alone."""
+        try:
+            await self._session.begin_reply()
+        except SttStreamError as exc:
+            warn(f"[barge-in] Fish cannot judge this reply, the gate decides alone: {exc}")
+            return
+        self._pump = asyncio.create_task(self._send_frames())
+        self._live.set()
+
+    async def _send_frames(self) -> None:
+        while (frame := await self._frames.get()) is not None:
+            await self._session.send({"type": "audio", "data": frame})
+
+    def hear(self, frame: bytes) -> None:
+        """Queue one mic frame for Fish. Dropped while Fish does not know the reply plays.
+
+        Parameters
+        ----------
+        frame : bytes
+            16-bit mono samples.
+        """
+        if self._live.is_set():
+            with contextlib.suppress(RuntimeError):  # the loop closed as the session ended
+                self._loop.call_soon_threadsafe(self._frames.put_nowait, frame)
+
+    def take(self, within_s: float) -> BargeVerdict | None:
+        """Return and forget Fish's verdict of the last ``within_s`` seconds.
+
+        Parameters
+        ----------
+        within_s : float
+            How far back a verdict still counts.
+
+        Returns
+        -------
+        {"turn", "backchannel"} or None
+            What Fish said, ``"turn"`` when it is not connected, or None when it has said
+            nothing yet.
+        """
+        if not self._live.is_set():
+            return "turn"
+        return self._session.take_verdict(within_s)
+
+    async def finish(self) -> None:
+        """Stop sending the mic and tell Fish the reply is over."""
+        self._live.clear()
+        if self._pump is not None:
+            self._frames.put_nowait(None)
+            await self._pump
+            self._pump = None
+        await self._session.end_reply()
 
 
 class _SessionTurn:

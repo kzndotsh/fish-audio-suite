@@ -18,12 +18,14 @@ from fish_audio_suite_voice.asr.fish_realtime import (
 from fish_audio_suite_voice.asr.pipeline import spoken_lines
 from fish_audio_suite_voice.asr.turn_stream import (
     ContextLine,
+    SttStreamError,
     TurnDropped,
     TurnEnded,
     TurnMessage,
     TurnStarted,
     TurnUpdate,
 )
+from fish_audio_suite_voice.config.settings import load_config
 from fish_audio_suite_voice.config.tune import STT_TERM_CHARS, STT_TERMS_MAX, SttTune
 from fish_audio_suite_voice.session.conversation import Conversation
 
@@ -415,3 +417,99 @@ def test_stt_tune_refuses_terms_or_an_idle_limit_fish_or_from_env_would_not_take
 ) -> None:
     with pytest.raises(ValueError, match="SttTune"):
         SttTune(**kwargs)
+
+
+def test_a_reply_judge_tells_fish_the_reply_plays_sends_the_mic_and_reads_its_verdict() -> None:
+    fish = _Fish()
+
+    async def run() -> tuple[str | None, str | None]:
+        session = _session(fish, lambda: [USER])
+        judge = session.judge()
+        await judge.start()
+        frame = b"\x02\x00" * 480
+        judge.hear(frame)
+        await _settle()
+        fish.last.feed("speech_start", turn_index=0)
+        fish.last.feed("user_backchannel", turn_index=0, audio_ms=300)
+        await _settle()
+        first = await asyncio.to_thread(judge.take, 1.0)  # the barge-in thread asks
+        again = judge.take(1.0)  # taken once
+        await judge.finish()
+        await session.close()
+        return first, again
+
+    first, again = asyncio.run(run())
+    assert (first, again) == ("backchannel", None)
+    kinds = fish.last.kinds()
+    assert kinds[:2] == ["config", "agent_speaking"]
+    assert fish.last.sent[1] == {"type": "agent_speaking", "speaking": True}
+    assert {"type": "audio", "data": b"\x02\x00" * 480} in fish.last.sent
+    assert {"type": "agent_speaking", "speaking": False} in fish.last.sent
+
+
+def test_taking_the_turn_outweighs_an_acknowledgement_and_old_verdicts_do_not_count() -> None:
+    fish = _Fish()
+    now = [0.0]
+
+    async def run() -> tuple[str | None, str | None]:
+        session = _session(fish, list, clock=lambda: now[0])
+        judge = session.judge()
+        await judge.start()
+        fish.last.feed("user_turn_taken", turn_index=0)
+        fish.last.feed("user_backchannel", turn_index=0)  # later, but the turn still counts
+        await _settle()
+        both = judge.take(1.0)
+        fish.last.feed("user_turn_taken", turn_index=1)
+        await _settle()
+        now[0] = 5.0
+        stale = judge.take(1.0)
+        await judge.finish()
+        await session.close()
+        return both, stale
+
+    assert asyncio.run(run()) == ("turn", None)
+
+
+def test_a_judge_that_cannot_reach_fish_leaves_the_gate_to_stop_the_reply() -> None:
+    async def refuse(url: str, *, key: str) -> _LiveSocket:
+        del url, key
+        raise SttStreamError("Fish realtime speech to text refused the connection (HTTP 503)")
+
+    async def run() -> str | None:
+        session = FishRealtimeSession(
+            "wss://x", "k", context=list, sample_rate=16000, connect=refuse
+        )
+        judge = session.judge()
+        await judge.start()
+        judge.hear(b"\x00\x00")  # dropped: nothing to send it on
+        verdict = judge.take(1.0)
+        await judge.finish()
+        await session.close()
+        return verdict
+
+    assert asyncio.run(run()) == "turn"
+
+
+def test_fish_messages_about_speech_over_a_reply_are_ignored_outside_one() -> None:
+    fish = _Fish()
+
+    async def run() -> str | None:
+        session = _session(fish, list)
+        await _committed_turn(session, fish, 0, "hi")
+        fish.last.feed("user_turn_taken", turn_index=1)  # no reply playing
+        await _settle()
+        verdict = session.take_verdict(10.0)
+        await session.close()
+        return verdict
+
+    assert asyncio.run(run()) is None
+
+
+def test_the_fish_judge_needs_fish_realtime_and_otherwise_falls_back_to_local(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("FISH_VOICE_BARGE_JUDGE", "fish")
+    monkeypatch.setenv("FISH_VOICE_STT", "deepgram")
+    assert load_config().barge.judge == "local"
+    monkeypatch.setenv("FISH_VOICE_STT", "fish-realtime")
+    assert load_config().barge.judge == "fish"

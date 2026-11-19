@@ -23,6 +23,8 @@ from fish_audio_suite_kit import SuiteDefaults
 from fish_audio_suite_voice.config.tune import SttTune
 
 __all__ = [
+    "BargeJudge",
+    "BargeVerdict",
     "ContextLine",
     "ContextSource",
     "EagerTurnEnd",
@@ -207,11 +209,48 @@ class TurnStream(Protocol):
         ...
 
 
+type BargeVerdict = Literal["turn", "backchannel"]
+"""What a recogniser made of speech over a reply: the user taking the turn, or an
+acknowledgement such as "mm-hmm" that lets the reply go on."""
+
+
+class BargeJudge(Protocol):
+    """A recogniser that hears the mic while a reply plays, and says what speech over it was.
+
+    ``start`` and ``finish`` run on the session's event loop, around the reply. ``hear`` and
+    ``take`` are called from the barge-in thread.
+    """
+
+    async def start(self) -> None:
+        """Say a reply is playing, connecting first if needed. Never raises for an outage."""
+        ...
+
+    def hear(self, frame: bytes) -> None:
+        """Pass on one mic frame, 16-bit mono. Returns at once; safe from any thread."""
+        ...
+
+    def take(self, within_s: float) -> BargeVerdict | None:
+        """Return and forget the verdict of the last ``within_s`` seconds.
+
+        ``"turn"`` when it cannot judge (not connected), so the reply stops as it would
+        without it. None when it has said nothing yet. Safe from any thread.
+        """
+        ...
+
+    async def finish(self) -> None:
+        """Say the reply is over. Safe to call when ``start`` failed or was cancelled."""
+        ...
+
+
 class SharedTurns(Protocol):
     """One connection to a recogniser kept open across turns, lent to one turn at a time."""
 
     def turn(self) -> TurnStream:
         """Return the next turn's stream. ``open`` on it connects, or reuses the connection."""
+        ...
+
+    def judge(self) -> BargeJudge:
+        """Return a judge for one reply. Call it on the session's event loop."""
         ...
 
     async def close(self) -> None:

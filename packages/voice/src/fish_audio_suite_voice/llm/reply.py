@@ -16,12 +16,13 @@ from fish_audio_suite_kit import (
     make_traceparent,
 )
 from fish_audio_suite_voice.asr.outcome import HeardLine
+from fish_audio_suite_voice.asr.turn_stream import BargeJudge
 from fish_audio_suite_voice.capture.barge_in import BargeGate
 from fish_audio_suite_voice.capture.portaudio import PortAudioMissingError
 from fish_audio_suite_voice.llm.speculate import Speculation
 from fish_audio_suite_voice.llm.transports import ChatUnusableError
 from fish_audio_suite_voice.logutil.debug import debug, warn
-from fish_audio_suite_voice.session.cancel import is_cancel_noise, is_own_cancel
+from fish_audio_suite_voice.session.cancel import is_cancel_noise, is_own_cancel, reap
 from fish_audio_suite_voice.session.events import (
     EVENTS,
     ExitCode,
@@ -313,6 +314,33 @@ def _keep_for_resume(
         )
 
 
+def _barge_judge(ctx: DuplexContext) -> tuple[BargeJudge | None, asyncio.Task[None] | None]:
+    """Start Fish judging speech over this reply, when it is asked to and can.
+
+    Returns
+    -------
+    tuple of BargeJudge or None and asyncio.Task or None
+        The judge for the barge-in gate, and the task telling Fish the reply plays, which
+        ``_finish_judge`` ends. Both None with ``FISH_VOICE_BARGE_JUDGE=local``, without a
+        connection kept across turns, or while muted, when nothing is heard.
+    """
+    shared = ctx.stt_turns
+    if ctx.config.barge.judge != "fish" or shared is None or ctx.turn_input.muted():
+        return None, None
+    judge = shared.judge()
+    return judge, asyncio.create_task(judge.start())
+
+
+async def _finish_judge(judge: BargeJudge | None, starting: asyncio.Task[None] | None) -> None:
+    """Tell Fish the reply is over, after the barge-in watch has stopped hearing."""
+    if judge is None or starting is None:
+        return
+    if not starting.done():
+        starting.cancel()  # the reply ended while it was still connecting
+    await reap(starting)
+    await judge.finish()
+
+
 async def speak_reply(
     ctx: DuplexContext,
     reply: str | Unheard,
@@ -335,8 +363,13 @@ async def speak_reply(
     if is_tts_junk(prepared, drop_narration=c.drop_narration):
         notice("  (skip junk TTS)")
         return snapshot, None
+    judge, starting = _barge_judge(ctx)
     barge = BargeGate(
-        mic=ctx.turn_input.mic, tune=c.barge, listen=c.listen, muted=ctx.turn_input.muted
+        mic=ctx.turn_input.mic,
+        tune=c.barge,
+        listen=c.listen,
+        muted=ctx.turn_input.muted,
+        judge=judge,
     )
     thread = barge.start_after_bleed(cancel)
     sink = _reply_sink(ctx, cancel)
@@ -368,6 +401,7 @@ async def speak_reply(
         # starts as soon as this function returns.
         cancel.set()
         thread.join(timeout=_BARGE_JOIN_S)
+        await _finish_judge(judge, starting)
 
 
 def _end_llm_when_tts_stops(task: asyncio.Future[TtsResult], llm_cancel: asyncio.Event) -> None:
@@ -417,8 +451,13 @@ async def stream_turn(
     """
     c = ctx.config
     pipe = _TokenPipe()
+    judge, starting = _barge_judge(ctx)
     barge = BargeGate(
-        mic=ctx.turn_input.mic, tune=c.barge, listen=c.listen, muted=ctx.turn_input.muted
+        mic=ctx.turn_input.mic,
+        tune=c.barge,
+        listen=c.listen,
+        muted=ctx.turn_input.muted,
+        judge=judge,
     )
     barge_threads: list[threading.Thread] = []
     first_audio: list[float] = []
@@ -480,6 +519,7 @@ async def stream_turn(
         cancel.set()
         for thread in barge_threads:
             thread.join(timeout=_BARGE_JOIN_S)
+        await _finish_judge(judge, starting)
     if not reply.strip():
         # Nothing to say. The non-streaming path never opens a Fish turn for an
         # empty reply, so skip the "silent" report and the history entry too.

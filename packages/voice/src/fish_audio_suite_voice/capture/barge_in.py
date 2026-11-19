@@ -3,10 +3,16 @@
 After the bleed delay the gate reads the session mic and counts frames that are both
 over an adaptive floor and voiced by the voice detector. Enough of them in a row stop
 the reply, and the frames that did it are kept for the next listen.
+
+With a judge (``BargeTune.judge="fish"``) every frame also goes to Fish's realtime recogniser,
+and a trip waits for its word: an acknowledgement such as "mm-hmm" lets the reply go on, the
+user taking the turn stops it, and no word within ``BargeTune.judge_wait_s`` stops it too, as
+the gate alone would.
 """
 
 from __future__ import annotations
 
+import math
 import threading
 from collections import deque
 from collections.abc import Callable
@@ -14,9 +20,10 @@ from dataclasses import dataclass
 from typing import Final
 
 from fish_audio_suite_voice.asr.result import BargeIn
+from fish_audio_suite_voice.asr.turn_stream import BargeJudge
 from fish_audio_suite_voice.capture.aec import EchoCanceller
 from fish_audio_suite_voice.capture.mic import Mic
-from fish_audio_suite_voice.capture.pcm import LISTEN_HEARTBEAT_FRAMES
+from fish_audio_suite_voice.capture.pcm import FRAME_MS, LISTEN_HEARTBEAT_FRAMES
 from fish_audio_suite_voice.capture.scoring import FrameScorer
 from fish_audio_suite_voice.capture.vad import open_vad
 from fish_audio_suite_voice.config.tune import (
@@ -145,6 +152,9 @@ class BargeGate:
         Says whether the user has muted the mic. A reply that starts muted is not
         watched, and muting during a reply ends the watch without interrupting it.
         Unmuting does not restart a watch that ended.
+    judge : BargeJudge or None, optional
+        Hears every watched frame and says what speech over the reply was, after a trip.
+        None (the default) stops the reply at the trip.
 
     Notes
     -----
@@ -157,7 +167,8 @@ class BargeGate:
     floor (see ``capture.scoring.FrameScorer``). A trip keeps the last 20 frames and the mic
     position after them; the next listen starts from that clip, reads on from that position,
     and skips the post-reply cooldown. Three missed frames in a row take one hit back, so a
-    short gap does not reset the phrase.
+    short gap does not reset the phrase. With a judge, the frames heard while it decides are
+    kept too, after the 20.
     """
 
     def __init__(
@@ -167,6 +178,7 @@ class BargeGate:
         tune: BargeTune | None = None,
         listen: ListenTune | None = None,
         muted: Callable[[], bool] | None = None,
+        judge: BargeJudge | None = None,
     ) -> None:
         self.mic: Mic = mic
         self.tune: BargeTune = tune or BargeTune()
@@ -178,6 +190,8 @@ class BargeGate:
         self.failure: Exception | None = None
         self._muted: Callable[[], bool] = muted or never
         self._listen: ListenTune = listen or ListenTune()
+        self._judge: BargeJudge | None = judge
+        self._judge_frames: int = math.ceil(self.tune.judge_wait_s * 1000 / FRAME_MS)
 
     def clip(self) -> BargeIn | None:
         """Return the speech that tripped the gate, for the next listen to start from.
@@ -238,6 +252,9 @@ class BargeGate:
         # what is about to reach the mic.
         self.aec.align()
         start = self.mic.position
+        judge = self._judge
+        waiting: list[bytes] | None = None  # the kept speech, while the judge decides
+        waited = 0  # frames since the trip
         for idle_frames, frame in enumerate(
             self.mic.frames(any_of(cancel, self._muted), since=start),
             start=1,
@@ -256,17 +273,48 @@ class BargeGate:
                 hit=run.hit,
                 aec_on=aec_on,
             )
+            if judge is not None:
+                judge.hear(frame)
             self._heard.append(frame)
-            if run.step(
-                voiced=heard.voiced, rms=heard.rms, need=need, far=far, want=self.tune.hit_frames
-            ):
-                self.captured = b"".join(self._heard)
-                self.resume_at = start + idle_frames
-                self.aec.clear()
-                debug("barge.keep frames={} bytes={}", len(self._heard), len(self.captured))
-                EVENTS.emit(BargedIn())
-                cancel.set()
+            if waiting is None:
+                if not run.step(
+                    voiced=heard.voiced,
+                    rms=heard.rms,
+                    need=need,
+                    far=far,
+                    want=self.tune.hit_frames,
+                ):
+                    continue
+                if judge is None:
+                    self._trip(cancel, b"".join(self._heard), start + idle_frames)
+                    return
+                debug("barge.judge waiting up to {}s for Fish", self.tune.judge_wait_s)
+                waiting, waited = list(self._heard), 0
+            elif judge is not None:
+                waiting.append(frame)
+                waited += 1
+            else:  # only a judge waits, so this is never reached
+                continue
+            # A verdict counts from as far back as the kept speech starts.
+            verdict = judge.take(len(waiting) * FRAME_MS / 1000)
+            if verdict == "backchannel":
+                debug("barge.go_on Fish heard an acknowledgement, the reply goes on")
+                run = _Run()
+                self._heard.clear()
+                waiting = None
+            elif verdict == "turn" or waited >= self._judge_frames:
+                debug("barge.judged {}", verdict or "no word from Fish in time")
+                self._trip(cancel, b"".join(waiting), start + idle_frames)
                 return
+
+    def _trip(self, cancel: threading.Event, captured: bytes, resume_at: int) -> None:
+        """Keep the speech for the next listen and stop the reply."""
+        self.captured = captured
+        self.resume_at = resume_at
+        self.aec.clear()
+        debug("barge.keep bytes={}", len(captured))
+        EVENTS.emit(BargedIn())
+        cancel.set()
 
     def start_after_bleed(self, cancel: threading.Event) -> threading.Thread:
         """Sleep out speaker bleed, then start ``watch`` unless already cancelled.

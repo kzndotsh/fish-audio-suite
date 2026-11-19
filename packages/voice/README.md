@@ -336,6 +336,13 @@ outage hands that turn to Fish ASR, and a transcript is judged the same. What di
   `FISH_VOICE_STT_IDLE` seconds (120) with no turn, and the next turn opens a new one. `0`
   closes it after every turn. A turn that ends before Fish commits it (a typed line, a knock)
   closes it too, so nothing Fish says about that turn reaches the next.
+- `FISH_VOICE_BARGE_JUDGE=fish` lets Fish judge speech over a reply. Fish is told the reply is
+  playing and hears the echo-cancelled mic all through it. When barge-in trips, the reply keeps
+  playing for up to `FISH_VOICE_BARGE_JUDGE_WAIT` seconds (1) while Fish decides: an
+  acknowledgement such as "mm-hmm" or "right" lets it go on without a stop, and you taking the
+  turn stops it as usual. No word from Fish in time stops it too. This sends audio Fish would
+  not otherwise get, the room around you while the bot talks, and a real interruption stops
+  the reply a little later than with `local` (the default), which stops it at once.
 - The `FISH_VOICE_DEEPGRAM_*` settings and the Deepgram privacy options do not apply. The audio
   goes to `FISH_BASE`.
 
@@ -587,6 +594,8 @@ Listen and interrupt. Times are approximate at 30 ms frames.
 | `FISH_VOICE_BARGE_FRAMES` | `10` | Loud voiced frames that interrupt (about 300 ms). They need not be in a row: three missed frames take one hit back. At least 1 |
 | `FISH_VOICE_BARGE_RMS` | `220` | Barge floor seed, above 0. It follows the room, never below this. With automatic gain on, typing can pass 220 ([#58](https://github.com/kzndotsh/fish-audio-suite/issues/58)) |
 | `FISH_VOICE_BARGE_PLAYING_GAIN` | `2.2` | Floor multiplier while the speaker plays and AEC is off. At least 1 |
+| `FISH_VOICE_BARGE_JUDGE` | `local` | `fish` lets Fish's realtime recogniser decide whether speech over a reply was an "mm-hmm" (the reply goes on) or you taking the turn (it stops). Needs `FISH_VOICE_STT=fish-realtime`, else `local` is used with a warning. It sends the echo-cancelled mic to Fish for the whole of every reply. See [Fish realtime](#streaming-speech-recognition-fish-realtime) |
+| `FISH_VOICE_BARGE_JUDGE_WAIT` | `1.0` | With `FISH_VOICE_BARGE_JUDGE=fish`, the longest the reply keeps playing after barge-in trips while Fish decides; with no word from Fish by then it stops. 0.2 to 3 |
 | `FISH_VOICE_DEBUG` | off | `1` or `--debug` logs events. `2`, `trace` or `--trace` adds mic heartbeats, raw audio events, HTTP lines and each raw chat event (`llm event`) |
 | `FISH_VOICE_SAVE_CHATS` | on | Save each chat to a file, so `--resume` can go on with it. `0` saves nothing. See [Saved chats](#saved-chats) |
 | `FISH_VOICE_CHAT_DIR` | unset: `$XDG_DATA_HOME/fish-audio-suite/chats` | The folder chats are saved in and `--resume` looks in. Unset, it is under `XDG_DATA_HOME`, or `~/.local/share/fish-audio-suite/chats` when that is unset or not an absolute path. Made readable only by you |
