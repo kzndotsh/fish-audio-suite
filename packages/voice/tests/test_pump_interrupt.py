@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import gc
+import logging
 import threading
 from collections.abc import AsyncIterator
 
@@ -15,7 +17,17 @@ def _play(stream: AsyncIterator[bytes], sink: RecordingSink | None = None) -> Tt
     return result
 
 
-def test_a_keyboard_interrupt_in_the_stream_stops_the_process_instead_of_being_queued() -> None:
+def _never_reported(caplog: pytest.LogCaptureFixture) -> None:
+    """Check the reader task that raised was read, so asyncio never reports it later, in
+    whichever test happens to be running when it is collected."""
+    with caplog.at_level(logging.ERROR, logger="asyncio"):
+        gc.collect()
+    assert "never retrieved" not in caplog.text
+
+
+def test_a_keyboard_interrupt_in_the_stream_stops_the_process_instead_of_being_queued(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     async def stream() -> AsyncIterator[bytes]:
         yield b"\x01\x02"
         raise KeyboardInterrupt
@@ -25,15 +37,19 @@ def test_a_keyboard_interrupt_in_the_stream_stops_the_process_instead_of_being_q
         _play(stream(), sink)
     # Queued, it would wait behind the audio the reader had read ahead, and that would play.
     assert sink.chunks == []
+    _never_reported(caplog)
 
 
-def test_a_system_exit_in_the_stream_is_not_queued_either() -> None:
+def test_a_system_exit_in_the_stream_is_not_queued_either(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     async def stream() -> AsyncIterator[bytes]:
         yield b"\x01\x02"
         raise SystemExit(3)
 
     with pytest.raises(SystemExit):
         _play(stream())
+    _never_reported(caplog)
 
 
 def test_an_ordinary_error_in_the_stream_still_reaches_the_turn() -> None:

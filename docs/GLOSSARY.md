@@ -7,8 +7,9 @@ Terms used across the fish-audio-suite docs and code. Where a term names a part 
 | **AEC / AEC3** | Acoustic echo cancellation. WebRTC's AEC3 removes the bot's own voice from the microphone signal, using what was sent to the speakers as the reference ("far end"). In `capture.aec` |
 | **AGC** | Automatic gain control. Part of the mic cleanup: it raises a quiet voice to a steady level (`FISH_VOICE_AGC`, on by default) |
 | **ASR** | Automatic speech recognition: Fish's speech-to-text, which hears one finished clip. `FISH_VOICE_STT=deepgram` streams to Deepgram Flux instead, and `FISH_VOICE_STT=fish-realtime` to Fish's realtime speech to text. The `asr` subpackage holds both paths |
-| **Backchannel** | A listener noise such as "mm-hmm" or "yeah". Over a reply it means "go on" and is ignored; on its own turn "yeah" is an answer |
+| **Backchannel** | A listener noise such as "mm-hmm" or "yeah". Over a reply it means "go on" and is ignored; on its own turn "yeah" is an answer. With `FISH_VOICE_BARGE_JUDGE=fish`, Fish spots one over a reply (`user_backchannel`) before the reply is stopped |
 | **Barge-in** | Talking over the bot. Enough loud voiced frames in a row cancel the reply and start a new listen. The gate is `BargeGate`, in `capture.barge_in` |
+| **Barge-in judge** | With `FISH_VOICE_BARGE_JUDGE=fish`, Fish's realtime recogniser hearing the mic while a reply plays (`BargeJudge`). When the gate trips it decides: an acknowledgement lets the reply go on, the user taking the turn stops it |
 | **Barge floor** | The loudness a frame must pass to count toward a barge-in: the quiet percentile of recent mic frames, never below `FISH_VOICE_BARGE_RMS` (`AdaptiveFloor`, in `capture.energy_floor`) |
 | **Bleed delay** | Time after playback starts before barge-in listens, so the speaker's own sound is not taken for a user: 0.3 s with AEC loaded (`FISH_VOICE_AEC_BLEED_DELAY`), 0.9 s without (`FISH_VOICE_BLEED_DELAY`) |
 | **Carry-over** | What a barge-in leaves for the next turn (`CarryOver`): the clip that tripped it, which the next listen starts from instead of waiting out the cooldown, and the unheard rest of the cut reply, spoken again if the interrupt turns out to be noise |
@@ -39,6 +40,7 @@ Terms used across the fish-audio-suite docs and code. Where a term names a part 
 | **Private loop** | The separate asyncio event loop and thread a Fish websocket turn runs on |
 | **Provider sort** | OpenRouter's `provider.sort`: which of a model's providers to prefer. The voice app sends `latency` by default |
 | **Reference id / voice id** | The id of a Fish voice model. Fish calls it `reference_id`; OpenAI clients send it as `voice`; the voice app reads `FISH_VOICE_ID` |
+| **Session connection (Fish realtime)** | The one connection to Fish's realtime speech to text that a session keeps across turns (`FishRealtimeSession`), told the conversation so far. It closes after `FISH_VOICE_STT_IDLE` without a turn, and after a turn Fish did not commit |
 | **Session mic** | The one mic stream (`SessionMic`) that stays open for the whole session. A reader thread cleans every frame and keeps the last two seconds, so a listen that starts late, such as the one after a barge-in, misses no words. Mute releases it. In `capture.mic` |
 | **Sink** | Where audio goes: `SounddeviceSink` (speakers), `FileSink`, `StdoutSink`, `MpvSink` |
 | **Soft limiter** | Bends peaks above a knee toward a ceiling below full scale instead of cutting them flat, so a boosted reply does not clip |

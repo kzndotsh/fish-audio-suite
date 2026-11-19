@@ -379,6 +379,10 @@ async def _pump_ws_audio(
         if not reader.done():
             reader.cancel()
             await reap(reader, wait_s=_REAP_TIMEOUT_S)
+        elif not reader.cancelled():
+            # A Ctrl+C or SystemExit raised in the reader left the loop before this turn
+            # read it. Read it now, or asyncio reports it whenever the task is collected.
+            reader.exception()
 
 
 def _watch_cancel(cancel: threading.Event) -> tuple[asyncio.Event, threading.Event]:

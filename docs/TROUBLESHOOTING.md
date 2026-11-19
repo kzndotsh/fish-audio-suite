@@ -133,6 +133,18 @@ Run with `--debug` and look for `stt.dropped not the user's turn`. Fish judged t
 
 Your account is at its concurrency limit, which every open Fish request and connection counts toward. That turn is heard with Fish ASR instead. HTTP 401 or 402 means the key was refused or has no credit, and the app stops.
 
+### `stt session opened` on every turn with `FISH_VOICE_STT=fish-realtime`
+
+The connection is meant to stay open between turns, so later turns show `stt context told Fish ...` instead. Look for the `stt session closed: ...` line just before: `no turn for 120 s` means you paused longer than `FISH_VOICE_STT_IDLE` (raise it if you pause a lot); `the turn ended before Fish committed it` follows a typed line, a mute or a knock; `the conversation changed under it` follows an edit, a delete, a chat switch or a line the app skipped (such as an "mm-hmm" heard as its own turn); `FISH_VOICE_STT_IDLE is 0` means it is set to close after every turn. Each is on purpose and costs only the connect on the next turn.
+
+### `fish-voice: FISH_VOICE_BARGE_JUDGE=fish needs FISH_VOICE_STT=fish-realtime, using local`
+
+The Fish judge listens on the realtime connection, so it needs `FISH_VOICE_STT=fish-realtime`. Set that, or leave `FISH_VOICE_BARGE_JUDGE` unset.
+
+### `[barge-in] Fish cannot judge this reply, the gate decides alone: ...`
+
+The connection could not be opened when the reply started (an outage, or HTTP 429 at your concurrency limit). That reply's barge-in works as with `FISH_VOICE_BARGE_JUDGE=local`: speech over it stops it at once.
+
 ### `stt could not reach Deepgram: ... CERTIFICATE_VERIFY_FAILED`
 
 The WebSocket could not verify Deepgram's certificate. The connection uses `certifi`'s certificates, so this means `certifi` is missing or a proxy is rewriting TLS. That turn is heard with Fish ASR instead, from the speech already captured.
@@ -164,6 +176,14 @@ These help:
 ### The bot interrupts itself
 
 `barge hit` lines appear while no one is talking, and in `--trace` the `barge mic` lines around them show `far=True` (the speaker is playing). Echo cancellation is missing the speaker's sound. Check that the `aec on` line at start shows `echo=True`. `aec skip extra pywebrtc-audio not installed` means it is missing: install the `cli` extra, which includes it. `echo=False` means `FISH_VOICE_AEC` is `0`. Lower the volume, or raise `FISH_VOICE_BARGE_FRAMES`. Values below about 8 let echo through.
+
+### With `FISH_VOICE_BARGE_JUDGE=fish`, the bot keeps talking for a moment after I interrupt
+
+That is the judge waiting for Fish: the reply plays on until Fish says you took the turn, or `FISH_VOICE_BARGE_JUDGE_WAIT` (1 s) runs out. `barge judged turn` in `--debug` means Fish said so; `barge judged no word from Fish in time` means it ran out. Lower `FISH_VOICE_BARGE_JUDGE_WAIT` (0.6 is a start), or set `FISH_VOICE_BARGE_JUDGE=local` to stop at once and let an "mm-hmm" be caught after the stop instead.
+
+### With `FISH_VOICE_BARGE_JUDGE=fish`, saying "mm-hmm" still stops the bot
+
+Look at the `barge` lines in `--debug`. `barge judged turn` means Fish took it for you taking the turn: keep acknowledgements short. `barge judged no word from Fish in time` means Fish had not decided yet: raise `FISH_VOICE_BARGE_JUDGE_WAIT` a little. No `barge judge waiting` line at all means the judge is off: check for the `FISH_VOICE_BARGE_JUDGE=fish needs ...` or `Fish cannot judge this reply` warnings above. Either way the reply is resumed after the stop when the words turn out to be an acknowledgement, as without the judge.
 
 ### Talking over the bot does nothing
 

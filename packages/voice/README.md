@@ -95,7 +95,7 @@ In the [full-screen app](#the-full-screen-app), Ctrl+O lists the saved chats, ne
 
 The chat history gets only what you probably heard. For PCM that is a word-aligned estimate from the bytes played, the speed, and the device buffer. Encoded playback (`mpv`) cannot be cut by length, so an interrupted or failed reply is left out of history. It keeps the reply as the model wrote it: the mood carried into each streamed sentence is sent to Fish but not kept, so the model does not learn to open every reply the same way.
 
-If the interrupt turns out not to be speech (Fish hears no words, a backchannel such as "mm-hmm", or a clip too short to keep), the rest of the reply is spoken again from where it was cut, and joins the same history message. A real line drops the rest. Only text the model had already written is resumed.
+If the interrupt turns out not to be speech (Fish hears no words, a backchannel such as "mm-hmm", or a clip too short to keep), the rest of the reply is spoken again from where it was cut, and joins the same history message. A real line drops the rest. Only text the model had already written is resumed. With `FISH_VOICE_BARGE_JUDGE=fish` and `FISH_VOICE_STT=fish-realtime`, Fish tells an acknowledgement apart before the reply is stopped, so it plays on without the stop; see [Fish realtime](#streaming-speech-recognition-fish-realtime).
 
 On a turn of its own, a lone "yeah", "yep" or "uh-huh" is an answer and gets a reply. Only a hesitation such as "um" or "hmm" is skipped there.
 
@@ -316,17 +316,33 @@ uv sync --extra fish-realtime     # or pip install 'fish-audio-suite-voice[fish-
 FISH_VOICE_STT=fish-realtime fish-voice
 ```
 
-It runs the same way as the Deepgram path described next: nothing is sent until you speak, one
-connection carries one turn, an outage hands that turn to Fish ASR, and a transcript is judged
-the same. What differs:
+It runs the same way as the Deepgram path described next: no audio is sent until you speak, an
+outage hands that turn to Fish ASR, and a transcript is judged the same. What differs:
 
 - Fish ends the turn from what you said and how you said it. There is no threshold to set, so
   `FISH_VOICE_EOT_THRESHOLD` does nothing here, and any `FISH_VOICE_EAGER_EOT_THRESHOLD` above
   0 turns Fish's early end of turn on.
 - A turn Fish judges not to be yours (noise, another voice) is dropped without an answer.
 - `FISH_VOICE_SILENCE_FRAMES` is raised to at least 3 s on this path. Fish ends a turn about 1.3 s after you stop, so a shorter limit would end every turn first and Fish's judgment would never be used. Turns end a little later than with a short fixed silence; `FISH_VOICE_EAGER_EOT_THRESHOLD` starts the reply earlier.
-- Fish bills the session by the second at the batch price, and each open connection counts
-  toward your account's concurrency limit. The connection is open only while you speak.
+- One connection serves the whole conversation. It opens when you first speak and stays open
+  between turns, so later turns skip the connect. Only your speech is sent as audio; between
+  turns the app sends keepalives and nothing else.
+- Fish is told the conversation so far (who said what, without cues, hidden turns left out),
+  and each reply you heard is added as it goes, so it hears names and follow-ups better. After
+  an edit, a delete or a chat switch, the next turn opens a new connection told the
+  conversation again. `FISH_VOICE_STT_TERMS` adds words to listen out for, such as names.
+- Fish bills an open connection by the second at the batch price, silence included, and each
+  counts toward your account's concurrency limit. The app closes it after
+  `FISH_VOICE_STT_IDLE` seconds (120) with no turn, and the next turn opens a new one. `0`
+  closes it after every turn. A turn that ends before Fish commits it (a typed line, a knock)
+  closes it too, so nothing Fish says about that turn reaches the next.
+- `FISH_VOICE_BARGE_JUDGE=fish` lets Fish judge speech over a reply. Fish is told the reply is
+  playing and hears the echo-cancelled mic all through it. When barge-in trips, the reply keeps
+  playing for up to `FISH_VOICE_BARGE_JUDGE_WAIT` seconds (1) while Fish decides: an
+  acknowledgement such as "mm-hmm" or "right" lets it go on without a stop, and you taking the
+  turn stops it as usual. No word from Fish in time stops it too. This sends audio Fish would
+  not otherwise get, the room around you while the bot talks, and a real interruption stops
+  the reply a little later than with `local` (the default), which stops it at once.
 - The `FISH_VOICE_DEEPGRAM_*` settings and the Deepgram privacy options do not apply. The audio
   goes to `FISH_BASE`.
 
@@ -540,6 +556,8 @@ Speech recognition. See [Streaming speech recognition](#streaming-speech-recogni
 | `FISH_VOICE_DEEPGRAM_REGION` | `global` | `eu`, `au` or `in` to have Deepgram process the audio inside the European Union, Australia or India. A regional request fails instead of going elsewhere |
 | `FISH_VOICE_EOT_THRESHOLD` | `0.7` | How sure Flux must be that you have finished, 0.5 to 1. Higher waits a little longer and cuts in less often |
 | `FISH_VOICE_EAGER_EOT_THRESHOLD` | `0` (off) | 0.3 to 0.9, and with Deepgram no higher than `FISH_VOICE_EOT_THRESHOLD`. Flux says when a turn is probably over a little before it is sure, and the reply starts being written then, held back until Flux confirms it. Saves about 150 to 250 ms, and costs 50 to 70 percent more model calls. See the streaming section |
+| `FISH_VOICE_STT_TERMS` | unset | `fish-realtime` only. Comma-separated words to listen out for, such as names. At most 100, each at most 32 characters; others are dropped with a warning |
+| `FISH_VOICE_STT_IDLE` | `120` | `fish-realtime` only. Seconds without a turn before the connection kept open between turns is closed, since Fish bills it while open. `0` closes it after every turn. 0 to 3000 |
 | `FISH_VOICE_STT_SAVE_DIR` | unset | A folder. Each streamed turn's audio, as Deepgram was sent it, is saved there as a 16 kHz WAV, to find out why it heard nothing. Only for debugging: it writes your voice to disk |
 
 Sounding more human. All off by default. See [Sounding more human](#sounding-more-human-opt-in).
@@ -576,6 +594,8 @@ Listen and interrupt. Times are approximate at 30 ms frames.
 | `FISH_VOICE_BARGE_FRAMES` | `10` | Loud voiced frames that interrupt (about 300 ms). They need not be in a row: three missed frames take one hit back. At least 1 |
 | `FISH_VOICE_BARGE_RMS` | `220` | Barge floor seed, above 0. It follows the room, never below this. With automatic gain on, typing can pass 220 ([#58](https://github.com/kzndotsh/fish-audio-suite/issues/58)) |
 | `FISH_VOICE_BARGE_PLAYING_GAIN` | `2.2` | Floor multiplier while the speaker plays and AEC is off. At least 1 |
+| `FISH_VOICE_BARGE_JUDGE` | `local` | `fish` lets Fish's realtime recogniser decide whether speech over a reply was an "mm-hmm" (the reply goes on) or you taking the turn (it stops). Needs `FISH_VOICE_STT=fish-realtime`, else `local` is used with a warning. It sends the echo-cancelled mic to Fish for the whole of every reply. See [Fish realtime](#streaming-speech-recognition-fish-realtime) |
+| `FISH_VOICE_BARGE_JUDGE_WAIT` | `1.0` | With `FISH_VOICE_BARGE_JUDGE=fish`, the longest the reply keeps playing after barge-in trips while Fish decides; with no word from Fish by then it stops. 0.2 to 3 |
 | `FISH_VOICE_DEBUG` | off | `1` or `--debug` logs events. `2`, `trace` or `--trace` adds mic heartbeats, raw audio events, HTTP lines and each raw chat event (`llm event`) |
 | `FISH_VOICE_SAVE_CHATS` | on | Save each chat to a file, so `--resume` can go on with it. `0` saves nothing. See [Saved chats](#saved-chats) |
 | `FISH_VOICE_CHAT_DIR` | unset: `$XDG_DATA_HOME/fish-audio-suite/chats` | The folder chats are saved in and `--resume` looks in. Unset, it is under `XDG_DATA_HOME`, or `~/.local/share/fish-audio-suite/chats` when that is unset or not an absolute path. Made readable only by you |

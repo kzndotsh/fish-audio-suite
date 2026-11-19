@@ -11,6 +11,7 @@ import httpx
 
 from fish_audio_suite_kit import ChatMessage
 from fish_audio_suite_voice.asr.result import BargeIn
+from fish_audio_suite_voice.asr.turn_stream import SharedTurns
 from fish_audio_suite_voice.capture.aec import EchoCanceller
 from fish_audio_suite_voice.capture.mic import Mic
 from fish_audio_suite_voice.config.settings import SinkLatency, VoiceCliConfig, sink_latency
@@ -205,6 +206,9 @@ class DuplexContext:
     sink_latency : {"low", "high"}
         The playback buffer each reply's sink asks for, ``config.output_latency`` with
         ``auto`` decided for this run by ``config.settings.sink_latency``.
+    stt_turns : SharedTurns or None
+        The streaming recogniser's connection kept open across turns, for one that keeps it
+        (``Recogniser.shared``). None opens a connection for each turn, or hears no stream.
     """
 
     config: VoiceCliConfig
@@ -214,6 +218,7 @@ class DuplexContext:
     tts: FishSpeaker
     asr_http: httpx.AsyncClient
     sink_latency: SinkLatency
+    stt_turns: SharedTurns | None = None
 
 
 def chat_file(

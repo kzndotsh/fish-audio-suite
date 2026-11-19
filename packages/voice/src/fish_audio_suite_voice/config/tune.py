@@ -25,10 +25,13 @@ from fish_audio_suite_voice.config.env import (
 from fish_audio_suite_voice.logutil.debug import warn
 
 __all__ = [
+    "BARGE_JUDGES",
     "DEEPGRAM_HOSTS",
     "DEEPGRAM_REGIONS",
     "DEFAULT_AEC_BLEED_DELAY_S",
     "DEFAULT_BARGE_HIT_FRAMES",
+    "DEFAULT_BARGE_JUDGE",
+    "DEFAULT_BARGE_JUDGE_WAIT_S",
     "DEFAULT_BARGE_PLAYING_GAIN",
     "DEFAULT_BARGE_RMS",
     "DEFAULT_BLEED_DELAY_S",
@@ -40,6 +43,7 @@ __all__ = [
     "DEFAULT_MIN_VOICED_FRAMES",
     "DEFAULT_NOISE_SUPPRESSION_DB",
     "DEFAULT_POST_SPEAK_COOLDOWN_S",
+    "DEFAULT_STT_IDLE_S",
     "DEFAULT_TURN_EXTENSIONS",
     "DEFAULT_TURN_SILENCE_FRAMES",
     "DEFAULT_VAD_AGGRESSIVENESS",
@@ -51,7 +55,10 @@ __all__ = [
     "MAX_UTTERANCE_FRAMES",
     "STREAMING_STT_PROVIDERS",
     "STT_PROVIDERS",
+    "STT_TERMS_MAX",
+    "STT_TERM_CHARS",
     "AecTune",
+    "BargeJudgeKind",
     "BargeTune",
     "DeepgramTune",
     "ListenTune",
@@ -88,6 +95,14 @@ _EOT_THRESHOLD_HI: Final = 1.0
 _EAGER_EOT_OFF: Final = 0.0
 _EAGER_EOT_LO: Final = 0.3
 _EAGER_EOT_HI: Final = 0.9
+# A recogniser that keeps its connection open between turns closes it after this many seconds
+# with no turn, since an open connection is billed. 0 closes it after every turn.
+DEFAULT_STT_IDLE_S: Final = 120
+_STT_IDLE_HI: Final = 3000
+# Words to listen out for: Fish takes at most 100, each at most 32 characters, and closes a
+# session whose settings break either.
+STT_TERMS_MAX: Final = 100
+STT_TERM_CHARS: Final = 32
 
 DEFAULT_VAD_AGGRESSIVENESS: Final = 1
 DEFAULT_VAD_ENGINE: Final = "webrtc"
@@ -125,6 +140,16 @@ _PLAYING_GAIN_LO: Final = 1.0
 DEFAULT_BLEED_DELAY_S: Final = 0.9
 DEFAULT_AEC_BLEED_DELAY_S: Final = 0.3
 DEFAULT_POST_SPEAK_COOLDOWN_S: Final = 0.8
+# Who decides that speech over a reply interrupts it: the gate alone, or Fish's realtime
+# recogniser, which tells an "mm-hmm" from a real interruption, after the gate trips.
+BargeJudgeKind = Literal["local", "fish"]
+DEFAULT_BARGE_JUDGE: Final[BargeJudgeKind] = "local"
+BARGE_JUDGES: Final[tuple[BargeJudgeKind, ...]] = ("local", "fish")
+# How long a tripped gate waits for Fish's word before stopping the reply anyway. Fish
+# usually says within about a second of the speech starting, and the gate trips about 0.3 s in.
+DEFAULT_BARGE_JUDGE_WAIT_S: Final = 1.0
+_JUDGE_WAIT_LO: Final = 0.2
+_JUDGE_WAIT_HI: Final = 3.0
 _NO_WAIT_S: Final = 0.0
 
 DEFAULT_AEC_WET: Final = 0.85
@@ -167,6 +192,12 @@ _AEC_BLEED_DELAY = FloatSetting(
     "FISH_VOICE_AEC_BLEED_DELAY", DEFAULT_AEC_BLEED_DELAY_S, lo=_NO_WAIT_S
 )
 _COOLDOWN = FloatSetting("FISH_VOICE_COOLDOWN", DEFAULT_POST_SPEAK_COOLDOWN_S, lo=_NO_WAIT_S)
+_BARGE_JUDGE: Final[ChoiceSetting[BargeJudgeKind]] = ChoiceSetting(
+    "FISH_VOICE_BARGE_JUDGE", DEFAULT_BARGE_JUDGE, BARGE_JUDGES
+)
+_JUDGE_WAIT = FloatSetting(
+    "FISH_VOICE_BARGE_JUDGE_WAIT", DEFAULT_BARGE_JUDGE_WAIT_S, lo=_JUDGE_WAIT_LO, hi=_JUDGE_WAIT_HI
+)
 _AEC_WET = FloatSetting("FISH_VOICE_AEC_WET", DEFAULT_AEC_WET, lo=_WET_LO, hi=_WET_HI)
 # Read within the outer steps first; ``AecTune`` then takes only a step itself.
 _NOISE = IntSetting(
@@ -187,6 +218,7 @@ _EOT = FloatSetting(
 _STT: Final[ChoiceSetting[SttProvider]] = ChoiceSetting(
     "FISH_VOICE_STT", DEFAULT_STT, STT_PROVIDERS
 )
+_STT_IDLE = IntSetting("FISH_VOICE_STT_IDLE", DEFAULT_STT_IDLE_S, lo=0, hi=_STT_IDLE_HI)
 
 
 @dataclass(frozen=True, slots=True)
@@ -347,6 +379,15 @@ class BargeTune:
         ``bleed_delay_s``. It is shorter, since AEC3 takes the speaker out of the mic.
     cooldown_s : float
         Seconds to wait after a reply before the mic opens again.
+    judge : {"local", "fish"}
+        ``"local"`` (the default) stops the reply as soon as the gate trips. ``"fish"`` also
+        streams the mic to Fish's realtime recogniser while the reply plays (so it needs
+        ``FISH_VOICE_STT=fish-realtime``), and when the gate trips, waits for Fish to say
+        whether it was an acknowledgement such as "mm-hmm", which lets the reply go on, or
+        the user taking the turn, which stops it.
+    judge_wait_s : float
+        With ``judge="fish"``, the longest a tripped gate waits for Fish before it stops the
+        reply anyway. 0.2 to 3.
 
     Raises
     ------
@@ -361,6 +402,8 @@ class BargeTune:
     bleed_delay_s: float = DEFAULT_BLEED_DELAY_S
     aec_bleed_delay_s: float = DEFAULT_AEC_BLEED_DELAY_S
     cooldown_s: float = DEFAULT_POST_SPEAK_COOLDOWN_S
+    judge: BargeJudgeKind = DEFAULT_BARGE_JUDGE
+    judge_wait_s: float = DEFAULT_BARGE_JUDGE_WAIT_S
 
     def __post_init__(self) -> None:
         """Reject values the barge gate cannot use.
@@ -376,10 +419,12 @@ class BargeTune:
         _BLEED_DELAY.check("BargeTune.bleed_delay_s", self.bleed_delay_s)
         _AEC_BLEED_DELAY.check("BargeTune.aec_bleed_delay_s", self.aec_bleed_delay_s)
         _COOLDOWN.check("BargeTune.cooldown_s", self.cooldown_s)
+        _BARGE_JUDGE.check("BargeTune.judge", self.judge)
+        _JUDGE_WAIT.check("BargeTune.judge_wait_s", self.judge_wait_s)
 
     @classmethod
     def from_env(cls) -> Self:
-        """Build from ``FISH_VOICE_BARGE_*``, the two bleed delays and ``FISH_VOICE_COOLDOWN``.
+        """Build from ``FISH_VOICE_BARGE_*`` (the judge too), the bleed delays and ``FISH_VOICE_COOLDOWN``.
 
         Returns
         -------
@@ -393,6 +438,8 @@ class BargeTune:
             bleed_delay_s=_BLEED_DELAY.read(),
             cooldown_s=_COOLDOWN.read(),
             aec_bleed_delay_s=_AEC_BLEED_DELAY.read(),
+            judge=_BARGE_JUDGE.read(),
+            judge_wait_s=_JUDGE_WAIT.read(),
         )
 
 
@@ -601,17 +648,27 @@ class SttTune:
     save_dir : str
         A folder to write each streamed turn's audio to, as a 16 kHz WAV, to hear what the
         streaming recogniser was sent. Empty (the default) saves nothing.
+    terms : tuple of str
+        Words to listen out for, such as names, for a recogniser that takes them (Fish's
+        realtime one). At most ``STT_TERMS_MAX``, each at most ``STT_TERM_CHARS`` characters.
+    idle_s : int
+        Seconds without a turn after which a recogniser that keeps its connection open
+        between turns (Fish's realtime one) closes it, since an open connection is billed.
+        The next turn opens a new one. 0 closes it after every turn.
 
     Raises
     ------
     ValueError
-        When the provider is unknown or the early threshold is neither 0 nor in its range.
+        When the provider is unknown, the early threshold is neither 0 nor in its range, a
+        term is blank or too long, there are too many, or ``idle_s`` is out of range.
     """
 
     provider: SttProvider = DEFAULT_STT
     deepgram: DeepgramTune = field(default_factory=DeepgramTune)
     eager_eot_threshold: float = _EAGER_EOT_OFF
     save_dir: str = ""
+    terms: tuple[str, ...] = ()
+    idle_s: int = DEFAULT_STT_IDLE_S
 
     def __post_init__(self) -> None:
         """Reject an unknown recogniser or an early threshold ``from_env`` would not give.
@@ -630,6 +687,14 @@ class SttTune:
                 lo=_EAGER_EOT_LO,
                 hi=_EAGER_EOT_HI if cap is None else min(_EAGER_EOT_HI, cap),
             )
+        _STT_IDLE.check("SttTune.idle_s", self.idle_s)
+        if len(self.terms) > STT_TERMS_MAX:
+            msg = f"SttTune.terms has {len(self.terms)} terms, at most {STT_TERMS_MAX}"
+            raise ValueError(msg)
+        for term in self.terms:
+            if not term.strip() or len(term) > STT_TERM_CHARS:
+                msg = f"SttTune.terms: {term!r} must be 1 to {STT_TERM_CHARS} characters"
+                raise ValueError(msg)
 
     @property
     def eager(self) -> bool:
@@ -638,7 +703,7 @@ class SttTune:
 
     @classmethod
     def from_env(cls) -> Self:
-        """Build from ``FISH_VOICE_STT``, the Deepgram and end-of-turn keys, and ``DEEPGRAM_API_KEY``.
+        """Build from ``FISH_VOICE_STT``, its ``FISH_VOICE_STT_*`` and Deepgram keys, and ``DEEPGRAM_API_KEY``.
 
         Returns
         -------
@@ -652,4 +717,24 @@ class SttTune:
             deepgram=deepgram,
             eager_eot_threshold=_eager_threshold(_eager_cap(provider, deepgram)),
             save_dir=read_text("FISH_VOICE_STT_SAVE_DIR"),
+            terms=_terms(),
+            idle_s=_STT_IDLE.read(),
         )
+
+
+def _terms() -> tuple[str, ...]:
+    """Read ``FISH_VOICE_STT_TERMS``: comma-separated words, dropping any Fish would refuse."""
+    name = "FISH_VOICE_STT_TERMS"
+    terms: list[str] = []
+    for raw in read_text(name).split(","):
+        term = raw.strip()
+        if not term:
+            continue
+        if len(term) > STT_TERM_CHARS:
+            warn(f"fish-voice: {name}: dropping {term!r}, longer than {STT_TERM_CHARS} characters")
+            continue
+        terms.append(term)
+    if len(terms) > STT_TERMS_MAX:
+        warn(f"fish-voice: {name} has {len(terms)} terms, keeping the first {STT_TERMS_MAX}")
+        del terms[STT_TERMS_MAX:]
+    return tuple(terms)

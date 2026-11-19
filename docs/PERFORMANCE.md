@@ -98,7 +98,7 @@ Fish's speech-to-text has no streaming mode; each clip is sent once after you st
 As Fish documents them in October 2026; check Fish's pricing page for today's numbers.
 
 - **Text to speech:** $15 per million UTF-8 bytes, so a 1,200-character reply costs about 2 cents. Cue tags count as text, and a CJK character is 3 bytes. `FISH_TTS_MODEL=s2.1-pro-free` is the same model at no cost for testing, under fair use and with no latency guarantee. Fish's changelog lists it as free through November 30, 2026, and its pricing page gives no end date. `drama-3` costs $50 per million bytes.
-- **Speech to text:** $0.36 per audio hour. The whole clip is billed, silence included, rounded up to the second. With `FISH_VOICE_STT=deepgram` Fish ASR is not used, and Deepgram bills separately. With `FISH_VOICE_STT=fish-realtime` Fish bills each connection by the second at the same $0.36 per hour, and a connection is open only while you speak.
+- **Speech to text:** $0.36 per audio hour. The whole clip is billed, silence included, rounded up to the second. With `FISH_VOICE_STT=deepgram` Fish ASR is not used, and Deepgram bills separately. With `FISH_VOICE_STT=fish-realtime` Fish bills each connection by the second at the same $0.36 per hour, silence included. One connection stays open across turns, about $0.006 a minute, and closes after `FISH_VOICE_STT_IDLE` seconds (120) without a turn. With `FISH_VOICE_BARGE_JUDGE=fish` it is also open through every reply.
 - **Concurrency:** 5 requests on the starter tier (under $100 paid), 15 from $100 and 50 from $1,000. The limit counts every request on the account, a text-to-speech socket holds its slot for the whole reply, and a 429 carries no `Retry-After` header. One chat is nowhere near it; several sessions or a busy proxy could be.
 
 ### Turn-taking
@@ -111,7 +111,7 @@ As Fish documents them in October 2026; check Fish's pricing page for today's nu
 | `FISH_VOICE_MIN_VOICED_FRAMES` | `12` (360 ms) | `7` (210 ms) | A one-word answer is about 200 to 250 ms of voice. Lower lets "yes" and "no" through, but some coughs and desk taps reach speech-to-text too, where they usually come back empty |
 | `FISH_VOICE_SPEECH_FRAMES` | `4` (120 ms) | | How long a sound must last before it starts a turn |
 | `FISH_VOICE_STT` | `fish` | `deepgram` | Streams your speech to Deepgram Flux while you talk, which ends the turn by the model's own judgment instead of a fixed silence. Needs the `deepgram` extra and a key. Quiet speech was missed more often than with Fish ASR in testing, and near-homophones can differ |
-| `FISH_VOICE_STT` | `fish` | `fish-realtime` | The same, with Fish's `transcribe-stream-1` (preview) on the Fish key. Needs the `fish-realtime` extra. On one 3 s clip streamed at speaking pace, the first words came back about 0.5 s after the audio started and the turn ended 1.3 to 1.4 s after the speech did (two runs, 2026-11-11). Speech at a very low level was judged not to be the user's and dropped, so keep `FISH_VOICE_AGC` on |
+| `FISH_VOICE_STT` | `fish` | `fish-realtime` | The same, with Fish's `transcribe-stream-1` (preview) on the Fish key. Needs the `fish-realtime` extra. On one 3 s clip streamed at speaking pace, the first words came back about 0.5 s after the audio started and the turn ended 1.3 to 1.4 s after the speech did (two runs, 2026-11-11). Speech at a very low level was judged not to be the user's and dropped, so keep `FISH_VOICE_AGC` on. The connection stays open between turns, so only the first turn after a start, an idle close (`FISH_VOICE_STT_IDLE`) or a chat edit pays for connecting |
 | `FISH_VOICE_EOT_THRESHOLD` | `0.7` | `0.6` | How sure Flux must be that you have finished. Lower ends turns sooner but may cut in on a long pause. Turns that end at `trigger=manual` waited for the silence timer instead |
 | `FISH_VOICE_EAGER_EOT_THRESHOLD` | `0` (off) | `0.5` | Starts the reply on Flux's early guess, held back until it is confirmed. Faster, and costs 50 to 70 percent more model calls |
 
@@ -123,6 +123,8 @@ As Fish documents them in October 2026; check Fish's pricing page for today's nu
 | `FISH_VOICE_BARGE_RMS` | `220` | The loudness floor. It follows the room and never drops below this. With automatic gain on, typing can pass it; see [issue #58](https://github.com/kzndotsh/fish-audio-suite/issues/58) and [TROUBLESHOOTING](TROUBLESHOOTING.md#coughs-chairs-sniffs-or-keyboard-noise-interrupt-the-bot) |
 | `FISH_VOICE_VAD_ENGINE` | `webrtc` | `silero` tells speech from clicks and noise better, for under 0.1 ms a frame. Listening and barge-in both use it |
 | `FISH_VOICE_AEC` | on | Leave it on. Barge-in waits out the speaker's bleed before it listens: `FISH_VOICE_AEC_BLEED_DELAY` (0.3 s) with echo cancellation, `FISH_VOICE_BLEED_DELAY` (0.9 s) without |
+| `FISH_VOICE_BARGE_JUDGE` | `local` | `fish` (with `FISH_VOICE_STT=fish-realtime`) lets Fish tell an "mm-hmm" from an interruption, so an acknowledgement no longer stops and restarts the reply. The cost is time: a real interruption stops the reply when Fish says so, usually 0.3 to 0.8 s after the gate trips, and the reply is not turned down meanwhile |
+| `FISH_VOICE_BARGE_JUDGE_WAIT` | `1.0` | With the Fish judge, the longest a reply plays on after the gate trips. Lower it if interruptions feel slow; too low and an "mm-hmm" stops the reply before Fish has said what it was |
 
 ### LLM
 
@@ -212,6 +214,9 @@ Lines worth watching:
 | `barge hit 3/10 ...` then `barge decay` (`--trace`) | Something loud nearly interrupted the bot. Frequent near-misses with no one talking mean echo is leaking |
 | `stt end trigger=model confidence=0.80` | Flux ended the turn itself. `trigger=manual` means the silence limit ended it, usually because Flux was not sure |
 | `stt empty ...` / `stt gave_up ...` / `stt noise ...` | A streamed turn with no words in it, dropped on purpose. The text says how much audio was sent, if any |
+| `stt session opened, told N line(s)` / `stt context told Fish N new line(s)` | With `fish-realtime`: a new connection, told the conversation, or the open one reused and told only the new lines. An `opened` line on every turn means the connection is not being kept: see `stt session closed` for why |
+| `stt session closed: <reason>` | Why the kept connection closed: `no turn for 120 s` (idle), `the turn ended before Fish committed it`, `the conversation changed under it`, `Fish has a turn open that no one is reading` (after an interruption) or `it is near Fish's hour limit` |
+| `barge judge waiting ...` then `barge go_on ...` or `barge judged turn` | With `FISH_VOICE_BARGE_JUDGE=fish`: the gate tripped and asked Fish, which heard an acknowledgement (the reply went on) or an interruption. `barge judged no word from Fish in time` means it stopped at `FISH_VOICE_BARGE_JUDGE_WAIT` |
 | `llm speculate hit` / `miss` / `dropped` | With the early reply on: the reply written ahead of time was used, replaced because the words changed, or thrown away |
 | `listen reject too_little_voice` | A sound too short to be a turn. If real words show up here, lower `FISH_VOICE_MIN_VOICED_FRAMES` |
 | `listen speech_start` right after `listen waiting for you`, with no one talking | Echo after the reply. Raise `FISH_VOICE_COOLDOWN` |
@@ -250,6 +255,8 @@ Transcribing an hour-long file spends about 0.2 s of CPU building the captions, 
 These are known and left alone for now:
 
 - **One Fish websocket per turn.** Fish's protocol allows several utterances on one socket, but the setup cost is already hidden behind the LLM, so reuse would gain little.
+- **The reply is not turned down while Fish judges an interruption.** With `FISH_VOICE_BARGE_JUDGE=fish` it plays on at full volume for up to `FISH_VOICE_BARGE_JUDGE_WAIT`; playback has no gain hook to lower it yet.
+- **A real interruption reopens the Fish realtime connection.** Fish is left with the interrupting turn open, so the next turn opens a new connection and sends the barge-in clip again rather than reading on from that turn.
 - **Speech in the cooldown is not used.** The mic stays open for the session, and the listen after a barge-in reads on from the frame after the clip that tripped it, so nothing is lost there. Words said during `FISH_VOICE_COOLDOWN` still are, because the cooldown keeps the bot's echo from starting a turn.
 - **Silence-only turn-taking on the Fish ASR path.** Deepgram Flux decides turns itself (see above). The Fish ASR path still waits out a fixed silence; a turn-detection model (Pipecat's Smart Turn runs in under 100 ms on CPU) would allow a 0.3 to 0.5 s wait there without cutting off mid-sentence pauses.
 - **Trailing silence goes to speech-to-text.** Each clip ends with the full end-of-speech silence (a third of a short clip). Trimming it to about 0.25 s would cut the upload and reduce invented words. The gain is mostly accuracy, and about 20 to 50 ms of time.

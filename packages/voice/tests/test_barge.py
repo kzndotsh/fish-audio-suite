@@ -570,3 +570,102 @@ def test_each_gate_asks_its_detector_about_a_frame_at_most_once(
     assert cooldown.asked == collections.Counter(frames)
     # Barge-in asks only about frames at its level, once each: quiet frames are never heard.
     assert barged.asked == collections.Counter(loud)
+
+
+class _ScriptedJudge:
+    """A judge that gives one verdict after it has heard a set number of frames."""
+
+    def __init__(self, verdict: str | None, *, after: int = 0) -> None:
+        self.heard: list[bytes] = []
+        self.windows: list[float] = []
+        self._verdict = verdict
+        self._after = after
+
+    async def start(self) -> None:
+        return None
+
+    def hear(self, frame: bytes) -> None:
+        self.heard.append(frame)
+
+    def take(self, within_s: float) -> str | None:
+        self.windows.append(within_s)
+        if len(self.heard) < self._after:
+            return None
+        verdict, self._verdict = self._verdict, None  # taken once
+        return verdict
+
+    async def finish(self) -> None:
+        return None
+
+
+def _judged_gate(
+    monkeypatch: pytest.MonkeyPatch, frames: list[bytes], judge: _ScriptedJudge, **tune: float
+) -> tuple[BargeGate, threading.Event]:
+    install_detector(monkeypatch, lambda _frame: True)
+    aec = EchoCanceller(AecTune(enabled=False))
+    gate = BargeGate(
+        mic=ScriptedMic(frames, aec=aec),
+        tune=BargeTune(hit_frames=3, min_rms=200.0, judge="fish", **tune),
+        judge=judge,  # pyright: ignore[reportArgumentType]
+    )
+    return gate, threading.Event()
+
+
+def test_with_a_judge_an_acknowledgement_lets_the_reply_go_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Longer than the wait, so a reply that was only waiting for Fish would stop.
+    frames = [level_frame(500 + n) for n in range(5)] + [level_frame(0)] * 50
+    judge = _ScriptedJudge("backchannel")
+    gate, cancel = _judged_gate(monkeypatch, frames, judge)
+    gate.watch(cancel)
+    assert not cancel.is_set()
+    assert gate.clip() is None
+    assert judge.heard == frames  # every watched frame went to the judge
+
+
+def test_with_a_judge_the_user_taking_the_turn_stops_the_reply_with_all_the_speech(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frames = [level_frame(500 + n) for n in range(10)]
+    judge = _ScriptedJudge("turn", after=6)  # Fish says so three frames after the trip
+    gate, cancel = _judged_gate(monkeypatch, frames, judge)
+    gate.watch(cancel)
+    assert cancel.is_set()
+    # The speech that tripped the gate and what came while Fish decided are both kept.
+    assert gate.captured == b"".join(frames[:6])
+    assert gate.resume_at == 6
+    assert judge.windows[0] == pytest.approx(0.09)  # from where the kept speech starts
+
+
+def test_with_a_judge_that_says_nothing_the_reply_stops_after_the_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frames = [level_frame(500)] * 40
+    judge = _ScriptedJudge(None)
+    gate, cancel = _judged_gate(monkeypatch, frames, judge, judge_wait_s=0.3)
+    gate.watch(cancel)
+    assert cancel.is_set()
+    assert gate.resume_at == 3 + 10  # the trip, then 0.3 s of 30 ms frames
+
+
+def test_the_judge_settings_are_read_and_checked(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FISH_VOICE_BARGE_JUDGE", "fish")
+    monkeypatch.setenv("FISH_VOICE_BARGE_JUDGE_WAIT", "1.5")
+    tune = BargeTune.from_env()
+    assert (tune.judge, tune.judge_wait_s) == ("fish", 1.5)
+    with pytest.raises(ValueError, match="judge_wait_s"):
+        BargeTune(judge_wait_s=0.1)
+    with pytest.raises(ValueError, match="judge"):
+        BargeTune(judge="other")  # pyright: ignore[reportArgumentType]
+
+
+def test_with_a_judge_only_a_verdict_on_the_speech_that_tripped_counts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    frames = [level_frame(0)] * 10 + [level_frame(500 + n) for n in range(3)]
+    judge = _ScriptedJudge("turn")
+    gate, cancel = _judged_gate(monkeypatch, frames, judge)
+    gate.watch(cancel)
+    # Asked about the 3 frames of speech, not the 10 quiet ones before them or the lookback.
+    assert judge.windows[0] == pytest.approx(0.09)

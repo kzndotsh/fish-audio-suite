@@ -5,6 +5,9 @@ has finished. Each one is an adapter module (``asr.deepgram``, ``asr.fish_realti
 declares a ``Recogniser``: its settings name, how it is opened from the settings, and what it
 needs. It reads its own protocol into the messages below, so ``asr.streaming`` hears a turn the
 same way through any of them.
+
+A recogniser may also keep one connection open across turns (``Recogniser.shared``), and lend
+it to each turn as a ``TurnStream``. It is told the conversation so far as ``ContextLine``s.
 """
 
 from __future__ import annotations
@@ -12,17 +15,22 @@ from __future__ import annotations
 import contextlib
 import importlib.util
 import ssl
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Final, Protocol
+from typing import Any, Final, Literal, Protocol
 
 from fish_audio_suite_kit import SuiteDefaults
 from fish_audio_suite_voice.config.tune import SttTune
 
 __all__ = [
+    "BargeJudge",
+    "BargeVerdict",
+    "ContextLine",
+    "ContextSource",
     "EagerTurnEnd",
     "Recogniser",
     "RecogniserSettings",
+    "SharedTurns",
     "SocketStream",
     "StreamError",
     "StreamWarning",
@@ -201,6 +209,75 @@ class TurnStream(Protocol):
         ...
 
 
+type BargeVerdict = Literal["turn", "backchannel"]
+"""What a recogniser made of speech over a reply: the user taking the turn, or an
+acknowledgement such as "mm-hmm" that lets the reply go on."""
+
+
+class BargeJudge(Protocol):
+    """A recogniser that hears the mic while a reply plays, and says what speech over it was.
+
+    ``start`` and ``finish`` run on the session's event loop, around the reply. ``hear`` and
+    ``take`` are called from the barge-in thread.
+    """
+
+    async def start(self) -> None:
+        """Say a reply is playing, connecting first if needed. Never raises for an outage."""
+        ...
+
+    def hear(self, frame: bytes) -> None:
+        """Pass on one mic frame, 16-bit mono. Returns at once; safe from any thread."""
+        ...
+
+    def take(self, within_s: float) -> BargeVerdict | None:
+        """Return and forget the verdict of the last ``within_s`` seconds.
+
+        ``"turn"`` when it cannot judge (not connected), so the reply stops as it would
+        without it. None when it has said nothing yet. Safe from any thread.
+        """
+        ...
+
+    async def finish(self) -> None:
+        """Say the reply is over. Safe to call when ``start`` failed or was cancelled."""
+        ...
+
+
+class SharedTurns(Protocol):
+    """One connection to a recogniser kept open across turns, lent to one turn at a time."""
+
+    def turn(self) -> TurnStream:
+        """Return the next turn's stream. ``open`` on it connects, or reuses the connection."""
+        ...
+
+    def judge(self) -> BargeJudge:
+        """Return a judge for one reply. Call it on the session's event loop."""
+        ...
+
+    async def close(self) -> None:
+        """Close the connection. Safe to call twice, or when it never opened."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class ContextLine:
+    """One line of the conversation, as a recogniser is told it to hear names and follow-ups.
+
+    Attributes
+    ----------
+    role : {"user", "assistant"}
+        Who said it.
+    text : str
+        The words, without cues.
+    """
+
+    role: Literal["user", "assistant"]
+    text: str
+
+
+type ContextSource = Callable[[], Sequence[ContextLine]]
+"""Returns the conversation so far, oldest line first, each time it is called."""
+
+
 @dataclass(frozen=True, slots=True)
 class RecogniserSettings:
     """The settings a streaming recogniser is opened with, read once at start-up.
@@ -244,6 +321,10 @@ class Recogniser:
         The least local silence, in 30 ms frames, before the app ends a turn itself. A
         recogniser that needs longer than the user's silence limit to end a turn on its own
         sets it, so its judgment is not cut short. 0 keeps the user's limit.
+    shared : Callable or None
+        Opens a ``SharedTurns`` given ``(url, key, settings, context)``, for a recogniser
+        that keeps its connection open across turns and is told the conversation. Nothing
+        connects until a turn opens. None opens a connection for each turn with ``stream``.
     """
 
     name: str
@@ -254,6 +335,7 @@ class Recogniser:
     url: Callable[[RecogniserSettings], str]
     stream: Callable[[str, str, RecogniserSettings], TurnStream]
     min_silence_frames: int = 0
+    shared: Callable[[str, str, RecogniserSettings, ContextSource], SharedTurns] | None = None
 
     def problem(self, settings: RecogniserSettings) -> str | None:
         """Say why this recogniser cannot be used, before the session starts.
