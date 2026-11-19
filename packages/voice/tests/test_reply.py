@@ -759,6 +759,25 @@ def test_a_reply_has_fish_judge_speech_over_it_only_when_asked_and_listening(
         turn_input=replace(ctx.turn_input, muted=lambda: muted),
         stt_turns=_SharedWithJudge(log),
     )
-    _speak_once(monkeypatch, ctx, make_result(spoken="Hello there friend"))
+    result = make_result(spoken="Hello there friend")
+
+    def speak(*_args: object, **_kwargs: object) -> TtsResult:
+        # A real reply plays for seconds; give the judge's start, a task on the loop, its turn.
+        deadline = time.monotonic() + 2
+        while expected and "start" not in log and time.monotonic() < deadline:
+            time.sleep(0.005)
+        return result
+
+    set_tts(monkeypatch, ctx.tts, speak=speak)
+    asyncio.run(
+        speak_reply(
+            ctx,
+            "Hello there friend",
+            threading.Event(),
+            LatencySnapshot(),
+            started=0.0,
+            trace_id=None,
+        )
+    )
     assert log == expected
     assert (gates[0]["judge"] is not None) == bool(expected)

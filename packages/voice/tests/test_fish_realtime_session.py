@@ -513,3 +513,27 @@ def test_the_fish_judge_needs_fish_realtime_and_otherwise_falls_back_to_local(
     assert load_config().barge.judge == "local"
     monkeypatch.setenv("FISH_VOICE_STT", "fish-realtime")
     assert load_config().barge.judge == "fish"
+
+
+def test_a_failure_sending_the_mic_leaves_the_gate_to_decide_and_ends_the_reply_quietly() -> None:
+    fish = _Fish()
+
+    async def run() -> str | None:
+        session = _session(fish, list)
+        judge = session.judge()
+        await judge.start()
+
+        async def broken(data: bytes) -> None:
+            del data
+            raise RuntimeError("socket in a state nobody expected")
+
+        fish.last.send = broken
+        judge.hear(b"\x00\x00")
+        await _settle()
+        verdict = judge.take(1.0)
+        fish.last.send = _LiveSocket.send.__get__(fish.last)
+        await judge.finish()  # does not raise
+        await session.close()
+        return verdict
+
+    assert asyncio.run(run()) == "turn"

@@ -671,6 +671,7 @@ class FishRealtimeSession:
             await asyncio.sleep(_KEEPALIVE_S)
             if self._socket is not socket:
                 return
+            # With idle_s 0, end_turn and end_reply close the connection, so it is never idle here.
             if not self._busy and self._clock() - self._last_turn >= self._idle_s:
                 await self._drop(f"no turn for {self._idle_s} s")
                 return
@@ -685,6 +686,8 @@ class FishRealtimeSession:
             if task is not current:
                 task.cancel()
         await asyncio.gather(*(t for t in tasks if t is not current), return_exceptions=True)
+        # The reader may have put its own None already; the turn reads up to the first, and
+        # each turn gets a new queue, so a second one is never read.
         if self._inbox is not None:
             self._inbox.put_nowait(None)
         if socket is None:
@@ -721,8 +724,12 @@ class _ReplyJudge:
         self._live.set()
 
     async def _send_frames(self) -> None:
-        while (frame := await self._frames.get()) is not None:
-            await self._session.send({"type": "audio", "data": frame})
+        try:
+            while (frame := await self._frames.get()) is not None:
+                await self._session.send({"type": "audio", "data": frame})
+        except Exception as exc:  # noqa: BLE001 - a background task: the gate decides on its own
+            warn(f"[barge-in] sending the mic to Fish failed, the gate decides alone: {exc}")
+            self._live.clear()
 
     def hear(self, frame: bytes) -> None:
         """Queue one mic frame for Fish. Dropped while Fish does not know the reply plays.
@@ -815,6 +822,8 @@ class _SessionTurn:
         if inbox is None:
             return
         while (message := await inbox.get()) is not None:
+            # A TurnDropped is Fish committing the turn as not the user's (noise, another
+            # voice), or none having started: either way Fish has no turn of ours left open.
             if isinstance(message, TurnEnded | TurnDropped):
                 self._committed = True
             yield message
